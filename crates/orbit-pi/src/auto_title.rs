@@ -49,6 +49,31 @@ impl AutoTitleConfig {
             .unwrap_or_default()
     }
 
+    pub fn load_suggestions() -> Self {
+        let raw = std::fs::read_to_string(suggestions_path()).unwrap_or_default();
+        let mut config = Self::from_json(&raw);
+        // Unlike titles, suggestions incur a request on every settled turn.
+        config.enabled = serde_json::from_str::<Value>(&raw)
+            .ok()
+            .and_then(|v| v.get("enabled").and_then(Value::as_bool))
+            .unwrap_or(false);
+        config
+    }
+
+    pub fn persist_suggestions(&self) {
+        let path = suggestions_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut value: Value = serde_json::from_str(&self.to_json()).unwrap_or_default();
+        value["revision"] = json!(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_string());
+        let _ = std::fs::write(path, value.to_string());
+    }
+
     /// Parse the persisted shape. Unknown/missing fields fall back to the
     /// defaults; a half-written model is treated as "active model".
     pub fn from_json(raw: &str) -> Self {
@@ -88,6 +113,12 @@ impl AutoTitleConfig {
         }
         let _ = std::fs::write(path, self.to_json());
     }
+}
+
+fn suggestions_path() -> PathBuf {
+    crate::platform::home_dir()
+        .join(".orbit-pi")
+        .join("suggestions.json")
 }
 
 /// `~/.orbit-pi/auto-title.json` — the app writes it, the title extension

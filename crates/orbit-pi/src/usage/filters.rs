@@ -9,7 +9,11 @@
 //! Every control writes through `UsagePage`'s filter setters, so one state
 //! object drives every panel on the page (§10).
 
-use crate::app::{press, refresh_glyph, PopoverSurface, BUTTON_GROUP};
+use crate::app::{
+    button_frame, context_menu_separator, icon_button_frame, menu_header, picker_entry,
+    picker_search_frame, picker_surface, press, refresh_glyph, ControlExt, PressedRamp,
+    StatefulControlExt, TipExt, BUTTON_GROUP,
+};
 use chrono::Datelike;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
@@ -20,12 +24,19 @@ use super::format;
 use super::model::{
     local_day_start, local_month_start, next_bucket, Granularity, RangePreset, UsageIndex,
 };
-use super::page::{
-    BucketSort, ExportFormat, MenuKind, SeriesSort, SessionSort, UsagePage, PAGE_SIZES,
-};
+use super::page::{BucketSort, ExportFormat, MenuKind, SessionSort, UsagePage, PAGE_SIZES};
 use super::table::FailureSort;
+use crate::theme::tokens::RaisedExt;
+use crate::theme::tokens::{
+    context_menu, input, list, picker, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
+};
 use crate::theme::Theme;
 use crate::{app::icon, composer::ComposerInput};
+
+/// Every trigger on the filter bar and under the tables — filter chips, the
+/// removable narrowing chips, text and pager buttons — shares one button
+/// size, so a row of them lines up and a menu knows how far to drop.
+const TRIGGER_SIZE: ButtonSize = ButtonSize::Medium;
 
 /// One selectable value in a multi-select menu.
 pub struct FilterOption {
@@ -41,6 +52,7 @@ pub fn chip_with_menu(
     chip: impl IntoElement,
     open: bool,
     corner: Corner,
+    theme: Theme,
     panel: impl FnOnce() -> AnyElement,
 ) -> AnyElement {
     div()
@@ -52,25 +64,30 @@ pub fn chip_with_menu(
         .child(chip)
         .children(open.then(|| {
             // The anchor corner sits at the chip's own top edge, so the offset
-            // must clear the full 28px chip before the 5px gap — otherwise the
-            // panel hangs over the chip that opened it (and a second click
-            // lands inside the popup). See the same fix in `settings.rs`.
+            // must clear the full trigger height before the menu gap —
+            // otherwise the panel hangs over the chip that opened it (and a
+            // second click lands inside the popup). See the same fix in
+            // `settings.rs`.
             anchored()
                 .position_mode(gpui::AnchoredPositionMode::Local)
                 .anchor(corner)
-                .offset(point(px(-1.), px(33.)))
-                .snap_to_window()
+                .offset(point(
+                    px(-1.),
+                    TRIGGER_SIZE.height(&theme) + popover::MENU_OFFSET,
+                ))
+                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
                 .child(deferred(panel()))
         }))
         .into_any_element()
 }
 
-/// A filter chip: 28px, hairline, and unmistakably "on" when it narrows the
-/// view (active fill, `active_fg` text — never accent alone).
+/// A filter chip: a [`TRIGGER_SIZE`] button, hairline, and unmistakably "on"
+/// when it narrows the view (active fill, `selection_fg` text — never accent
+/// alone).
 ///
 /// `inset` picks the resting fill for the surface the chip sits on: a chip on
-/// the canvas takes `bg_raised`, while a chip inside a raised card takes
-/// `bg_main` so it reads as a recessed well instead of vanishing into the card.
+/// the canvas takes `surface_elevated`, while a chip inside a raised card takes
+/// `background` so it reads as a recessed well instead of vanishing into the card.
 ///
 /// `icon_path` is the optional leading icon. A plain picker (rows-per-page)
 /// passes `None`: the trailing chevron already marks it as a dropdown, and a
@@ -85,74 +102,83 @@ pub fn chip(
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let foreground = if active {
-        theme.active_fg
+        theme.text_primary
     } else {
-        theme.text_2
+        theme.text_secondary
     };
     let resting = if inset {
-        theme.bg_main
+        theme.background
     } else {
-        theme.bg_raised
+        theme.surface_elevated
     };
     let leading_color = if active {
-        theme.active_fg
+        theme.text_primary
     } else {
-        theme.text_3
+        theme.text_muted
     };
-    div()
-        .id(ElementId::Name(SharedString::from(id)))
-        .h(px(28.))
-        .px(px(9.))
-        .rounded(px(8.))
-        .border_1()
-        .border_color(if active {
-            theme.border_strong
+    button_frame(
+        div().id(ElementId::Name(SharedString::from(id))),
+        &theme,
+        TRIGGER_SIZE,
+    )
+    .border_1()
+    .border_color(if active {
+        theme.border_strong
+    } else {
+        theme.border
+    })
+    .raised(
+        if active {
+            theme.surface_active
         } else {
-            theme.border
-        })
-        .bg(if active { theme.active } else { resting })
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .cursor_pointer()
-        .hover(|style| style.bg(if active { theme.active } else { theme.bg_hover }))
-        .on_mouse_down(MouseButton::Left, on_click)
-        .children(icon_path.map(|path| icon(path, 12., leading_color)))
-        .child(
-            div()
-                .max_w(px(180.))
-                .truncate()
-                .text_size(theme.ui_px(12.))
-                .text_color(foreground)
-                .child(label),
+            resting
+        },
+        &theme,
+    )
+    .cursor_pointer()
+    .hover_state_open(&theme, active)
+    .on_mouse_down(MouseButton::Left, on_click)
+    .children(icon_path.map(|path| {
+        icon(
+            path,
+            ButtonSize::Medium.icon_size().px(&theme),
+            leading_color,
         )
-        .child(icon(
-            "icons/chevron-down.svg",
-            10.,
-            if active {
-                theme.active_fg
-            } else {
-                theme.text_3
-            },
-        ))
+    }))
+    .child(
+        div()
+            .max_w(px(180.))
+            .truncate()
+            .text_color(foreground)
+            .child(label),
+    )
+    .child(icon(
+        "icons/chevron-down.svg",
+        IconSize::XSmall.px(&theme),
+        if active {
+            theme.text_primary
+        } else {
+            theme.text_muted
+        },
+    ))
 }
 
-/// The popover shell shared by every filter menu. A click outside closes it,
+/// The popover shell shared by every filter menu, on the branch selector's
+/// picker metrics ([`picker_surface`]). `width` pins menus whose content needs
+/// a definite width (a truncating list, the calendar grid); `None` sizes the
+/// menu to its entries from the shell's minimum. A click outside closes it,
 /// and so does Escape — while a filter menu is open it owns that key, so it can
 /// never reach the global abort binding.
 fn panel(
     id: &'static str,
-    width: f32,
+    width: Option<f32>,
     theme: Theme,
     children: Vec<AnyElement>,
     page: Entity<UsagePage>,
 ) -> AnyElement {
     let dismiss_click = page.clone();
-    div()
-        .id(ElementId::Name(SharedString::from(id)))
-        .w(px(width))
-        .rounded(px(9.))
-        .popover_surface(theme)
+    picker_surface(div().id(ElementId::Name(SharedString::from(id))), &theme)
+        .when_some(width, |menu, width| menu.w(px(width)))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -178,30 +204,21 @@ fn panel(
 
 /// The search field row at the top of a multi-select menu.
 fn search_row(query: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
-    div()
-        .p(px(6.))
-        .pb(px(4.))
-        .border_b_1()
-        .border_color(theme.border)
-        .child(
-            div()
-                .h(px(26.))
-                .px(px(8.))
-                .rounded(px(6.))
-                .bg(theme.bg_main)
-                .border_1()
-                .border_color(theme.border)
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .text_size(theme.ui_px(12.))
-                .child(icon("icons/search.svg", 12., theme.text_3))
-                .child(div().flex_1().min_w_0().child(query.clone())),
-        )
+    picker_search_frame(div(), &theme)
+        .child(icon(
+            "icons/search.svg",
+            input::ICON.px(&theme),
+            theme.text_muted,
+        ))
+        .child(div().flex_1().min_w_0().child(query.clone()))
         .into_any_element()
 }
 
-/// One row in a menu.
+/// One row in a menu: the title, and — when the row carries one — the
+/// description on its own second line (a path, a count, a hint), with the
+/// check mark in a trailing column. Selection is carried by the check and the
+/// title's weight; only the highlighted row takes a fill, so a picked row
+/// never reads as a slab.
 #[allow(clippy::too_many_arguments)]
 fn row(
     id: ElementId,
@@ -213,57 +230,64 @@ fn row(
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_hover: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .h(px(28.))
-        .mx(px(4.))
-        .px(px(8.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
+    picker_entry(div().id(id), &theme)
+        .h(if sub.is_some() {
+            picker::two_line_entry_height(&theme)
+        } else {
+            picker::entry_height(&theme)
+        })
+        .flex_none()
         .cursor_pointer()
-        .when(highlighted, |row| row.bg(theme.active))
-        .hover(|style| style.bg(theme.overlay))
+        .pressed_state(&theme, PressedRamp::Wash)
+        .when(highlighted, |row| row.bg(theme.surface_hover))
+        .when(!highlighted, |row| row.hover_state(&theme))
         .on_hover(on_hover)
         .on_mouse_down(MouseButton::Left, on_click)
-        .child(
-            // A check mark column keeps labels aligned whether or not a row
-            // is selected; selection is also carried by the row's text weight.
-            div()
-                .w(px(12.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .child(if selected {
-                    icon("icons/check.svg", 11., theme.accent).into_any_element()
-                } else {
-                    div().into_any_element()
-                }),
-        )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
-                .text_size(theme.ui_px(12.))
-                .when(selected, |text| text.font_weight(FontWeight::MEDIUM))
-                .text_color(if highlighted {
-                    theme.active_fg
-                } else {
-                    theme.text_2
-                })
-                .child(label.to_string()),
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .when(selected, |text| text.font_weight(FontWeight::MEDIUM))
+                        .text_color(if highlighted || selected {
+                            theme.text_primary
+                        } else {
+                            theme.text_secondary
+                        })
+                        .child(label.to_string()),
+                )
+                .children(sub.map(|sub| {
+                    div()
+                        .truncate()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(sub.to_string())
+                })),
         )
-        .children(sub.map(|sub| {
+        // A trailing slot keeps the check hugging the row's right edge, its
+        // column reserved whether or not the row is selected; selection is
+        // also carried by the title's weight.
+        .child(
             div()
+                .w(context_menu::ICON.px(&theme))
                 .flex_none()
-                .max_w(px(120.))
-                .truncate()
-                .text_size(theme.ui_px(10.5))
-                .text_color(theme.text_3)
-                .child(sub.to_string())
-        }))
+                .flex()
+                .justify_end()
+                .child(if selected {
+                    icon(
+                        "icons/check.svg",
+                        context_menu::ICON.px(&theme),
+                        theme.accent_text,
+                    )
+                    .into_any_element()
+                } else {
+                    div().into_any_element()
+                }),
+        )
         .into_any_element()
 }
 
@@ -273,30 +297,25 @@ fn footer_row(
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .h(px(26.))
-        .flex_1()
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .justify_center()
+    button_frame(div().id(id), &theme, ButtonSize::Medium)
         .cursor_pointer()
-        .text_size(theme.ui_px(11.5))
-        .text_color(theme.text_3)
-        .hover(|style| style.bg(theme.bg_hover).text_color(theme.text_2))
+        .text_color(theme.text_muted)
+        .hover_quiet(&theme)
         .on_mouse_down(MouseButton::Left, on_click)
         .child(label.to_string())
         .into_any_element()
 }
 
 fn menu_footer(theme: Theme, left: AnyElement, right: AnyElement) -> AnyElement {
+    // Ghost actions pinned to the two edges under a hairline, not two slabs.
     div()
+        .flex_none()
         .flex()
         .items_center()
-        .gap(px(4.))
-        .px(px(4.))
-        .py(px(4.))
+        .justify_between()
+        .gap(DynamicSpacing::Base04.px(&theme))
+        .px(DynamicSpacing::Base06.px(&theme))
+        .py(DynamicSpacing::Base04.px(&theme))
         .border_t_1()
         .border_color(theme.border)
         .child(left)
@@ -386,7 +405,7 @@ pub fn multi_menu(
             .id("usage-menu-list")
             .max_h(px(260.))
             .overflow_y_scroll()
-            .py(px(4.))
+            .py(list::padding_y(&theme))
             .flex()
             .flex_col()
             .children(list)
@@ -394,12 +413,16 @@ pub fn multi_menu(
     );
     if rows.is_empty() && !query.trim().is_empty() {
         children.push(
-            div()
-                .px(px(12.))
-                .pb(px(8.))
-                .text_size(theme.ui_px(11.5))
-                .text_color(theme.text_3)
-                .child(tr!("usage.no_query_match", query = query.trim()))
+            picker_entry(div(), &theme)
+                .h(picker::entry_height(&theme))
+                .flex_none()
+                .text_color(theme.text_muted)
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(tr!("usage.no_query_match", query = query.trim())),
+                )
                 .into_any_element(),
         );
     }
@@ -422,7 +445,7 @@ pub fn multi_menu(
     );
     children.push(menu_footer(theme, select_all, clear));
     let page = cx.entity();
-    panel("usage-filter-menu", 268., theme, children, page)
+    panel("usage-filter-menu", Some(268.), theme, children, page)
 }
 
 /// The export popover: the two things the page can write, and what each
@@ -462,7 +485,7 @@ pub fn export_menu(cx: &mut gpui::Context<UsagePage>, theme: Theme) -> AnyElemen
         ));
     }
     let page = cx.entity();
-    panel("usage-export-menu", 268., theme, children, page)
+    panel("usage-export-menu", Some(268.), theme, children, page)
 }
 
 /// The rows-per-page picker (§26): one choice, applied immediately.
@@ -490,7 +513,7 @@ pub fn page_size_menu(
         ));
     }
     let page = cx.entity();
-    panel("usage-page-size-menu", 180., theme, children, page)
+    panel("usage-page-size-menu", None, theme, children, page)
 }
 
 /// The column-visibility picker (§41). The title column is fixed; every other
@@ -545,7 +568,7 @@ pub fn columns_menu(
     );
     children.push(menu_footer(theme, show_all, div().into_any_element()));
     let page = cx.entity();
-    panel("usage-columns-menu", 220., theme, children, page)
+    panel("usage-columns-menu", None, theme, children, page)
 }
 
 /// The breakdown table's column-visibility picker. The name column is fixed;
@@ -583,7 +606,7 @@ pub fn breakdown_columns_menu(
     );
     children.push(menu_footer(theme, show_all, div().into_any_element()));
     let page = cx.entity();
-    panel("usage-breakdown-columns-menu", 220., theme, children, page)
+    panel("usage-breakdown-columns-menu", None, theme, children, page)
 }
 
 /// The breakdown table's rows-per-page picker.
@@ -613,84 +636,11 @@ pub fn breakdown_page_size_menu(
     let page = cx.entity();
     panel(
         "usage-breakdown-page-size-menu",
-        180.,
+        None,
         theme,
         children,
         page,
     )
-}
-
-/// The usage-over-time table's column-visibility picker. Time is fixed.
-pub fn series_columns_menu(
-    page: &UsagePage,
-    cx: &mut gpui::Context<UsagePage>,
-    theme: Theme,
-) -> AnyElement {
-    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
-    for column in SeriesSort::HIDEABLE {
-        let selected = page.series_column_visible(column);
-        let label = if column == SeriesSort::Value {
-            page.metric().label()
-        } else {
-            column.label()
-        };
-        let entity = cx.entity();
-        children.push(row(
-            ElementId::Name(SharedString::from(format!(
-                "usage-series-col-{}",
-                column.id()
-            ))),
-            &label,
-            None,
-            selected,
-            false,
-            theme,
-            move |_, _, cx| {
-                entity.update(cx, |page, cx| page.toggle_series_column(column, cx));
-            },
-            |_, _, _| {},
-        ));
-    }
-    let entity = cx.entity();
-    let show_all = footer_row(
-        "usage-series-columns-all",
-        &tr!("usage.show_all"),
-        theme,
-        move |_, _, cx| {
-            entity.update(cx, |page, cx| page.show_all_series_columns(cx));
-        },
-    );
-    children.push(menu_footer(theme, show_all, div().into_any_element()));
-    let page = cx.entity();
-    panel("usage-series-columns-menu", 220., theme, children, page)
-}
-
-/// The usage-over-time table's rows-per-page picker.
-pub fn series_page_size_menu(
-    page: &UsagePage,
-    cx: &mut gpui::Context<UsagePage>,
-    theme: Theme,
-) -> AnyElement {
-    let current = page.series_page_size();
-    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
-    for size in PAGE_SIZES {
-        let selected = size == current;
-        let entity = cx.entity();
-        children.push(row(
-            ElementId::NamedInteger("usage-series-page-size".into(), size as u64),
-            &size.to_string(),
-            None,
-            selected,
-            false,
-            theme,
-            move |_, _, cx| {
-                entity.update(cx, |page, cx| page.set_series_page_size(size, cx));
-            },
-            |_, _, _| {},
-        ));
-    }
-    let page = cx.entity();
-    panel("usage-series-page-size-menu", 180., theme, children, page)
 }
 
 /// The Daily records table's column-visibility picker. Date is fixed.
@@ -730,7 +680,7 @@ pub fn bucket_columns_menu(
     );
     children.push(menu_footer(theme, show_all, div().into_any_element()));
     let page = cx.entity();
-    panel("usage-bucket-columns-menu", 220., theme, children, page)
+    panel("usage-bucket-columns-menu", None, theme, children, page)
 }
 
 /// The Daily records table's rows-per-page picker.
@@ -758,7 +708,7 @@ pub fn bucket_page_size_menu(
         ));
     }
     let page = cx.entity();
-    panel("usage-bucket-page-size-menu", 180., theme, children, page)
+    panel("usage-bucket-page-size-menu", None, theme, children, page)
 }
 
 /// The Failures records table's column-visibility picker. When is fixed.
@@ -798,7 +748,7 @@ pub fn failure_columns_menu(
     );
     children.push(menu_footer(theme, show_all, div().into_any_element()));
     let page = cx.entity();
-    panel("usage-failure-columns-menu", 220., theme, children, page)
+    panel("usage-failure-columns-menu", None, theme, children, page)
 }
 
 /// The Failures records table's rows-per-page picker.
@@ -826,20 +776,12 @@ pub fn failure_page_size_menu(
         ));
     }
     let page = cx.entity();
-    panel("usage-failure-page-size-menu", 180., theme, children, page)
+    panel("usage-failure-page-size-menu", None, theme, children, page)
 }
 
-/// A small heading at the top of a menu.
+/// A small heading at the top of a menu: Zed's list sub-header.
 fn menu_title(label: &str, theme: Theme) -> AnyElement {
-    div()
-        .px(px(12.))
-        .pt(px(8.))
-        .pb(px(4.))
-        .text_size(theme.ui_px(10.5))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.text_3)
-        .child(label.to_uppercase())
-        .into_any_element()
+    menu_header(label.to_string(), &theme).into_any_element()
 }
 
 /// The date-range menu: presets, then a compact calendar for custom windows.
@@ -877,26 +819,13 @@ pub fn range_menu(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Th
     }
     // The calendar appears in place once "Custom…" is chosen.
     if page.calendar_open() {
-        rows.push(
-            div()
-                .h(px(1.))
-                .mx(px(8.))
-                .my(px(4.))
-                .bg(theme.border)
-                .into_any_element(),
-        );
+        rows.push(context_menu_separator(&theme).into_any_element());
         rows.push(calendar(page, cx, theme));
     }
-    children.push(
-        div()
-            .py(px(4.))
-            .flex()
-            .flex_col()
-            .children(rows)
-            .into_any_element(),
-    );
+    // The shell already pads the list top and bottom.
+    children.push(div().flex().flex_col().children(rows).into_any_element());
     let page = cx.entity();
-    panel("usage-range-menu", 244., theme, children, page)
+    panel("usage-range-menu", Some(244.), theme, children, page)
 }
 
 /// The hint shown on the right of each preset row.
@@ -939,22 +868,18 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
     };
     let offset = dt.weekday().num_days_from_monday() as i64;
 
-    // Month header with the two navigation affordances.
+    // Month header with the two navigation affordances. One button tall, so
+    // it lines up with the icon buttons it holds.
     let header = div()
-        .h(px(28.))
-        .px(px(8.))
+        .h(TRIGGER_SIZE.height(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_center()
         .child(
-            div()
-                .id("usage-cal-prev")
-                .size(px(22.))
-                .rounded(px(6.))
-                .flex()
-                .items_center()
-                .justify_center()
+            icon_button_frame(div().id("usage-cal-prev"), &theme, ButtonSize::Default)
+                .tip(tr!("usage.previous_month"))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
+                .hover_state(&theme)
                 .on_mouse_down(MouseButton::Left, {
                     let entity = cx.entity();
                     let prev = local_month_start(first - 86_400_000);
@@ -962,28 +887,27 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                         entity.update(cx, |page, cx| page.set_calendar_month(prev, cx));
                     }
                 })
-                .child(icon("icons/chevron-left.svg", 12., theme.text_3)),
+                .child(icon(
+                    "icons/chevron-left.svg",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    theme.text_muted,
+                )),
         )
         .child(
             div()
                 .flex_1()
                 .flex()
                 .justify_center()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(dt.format("%B %Y").to_string()),
         )
         .child(
-            div()
-                .id("usage-cal-next")
-                .size(px(22.))
-                .rounded(px(6.))
-                .flex()
-                .items_center()
-                .justify_center()
+            icon_button_frame(div().id("usage-cal-next"), &theme, ButtonSize::Default)
+                .tip(tr!("usage.next_month"))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
+                .hover_state(&theme)
                 .on_mouse_down(MouseButton::Left, {
                     let entity = cx.entity();
                     let next = next_bucket(first, Granularity::Month);
@@ -991,26 +915,36 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                         entity.update(cx, |page, cx| page.set_calendar_month(next, cx));
                     }
                 })
-                .child(icon("icons/chevron-right.svg", 12., theme.text_3)),
+                .child(icon(
+                    "icons/chevron-right.svg",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    theme.text_muted,
+                )),
         );
 
-    let weekdays =
-        div()
-            .flex()
-            .px(px(8.))
-            .pb(px(2.))
-            .children(["M", "T", "W", "T", "F", "S", "S"].map(|day| {
-                div()
-                    .flex_1()
-                    .flex()
-                    .justify_center()
-                    .text_size(theme.ui_px(10.))
-                    .text_color(theme.text_3)
-                    .child(day)
-                    .into_any_element()
-            }));
+    let weekdays = div()
+        .flex()
+        .px(DynamicSpacing::Base08.px(&theme))
+        .pb(DynamicSpacing::Base02.px(&theme))
+        .children(["M", "T", "W", "T", "F", "S", "S"].map(|day| {
+            div()
+                .flex_1()
+                .flex()
+                .justify_center()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_muted)
+                .child(day)
+                .into_any_element()
+        }));
 
-    let mut grid = div().flex().flex_col().px(px(8.)).pb(px(6.));
+    // Each day is a Default-size button; an empty slot keeps the same height
+    // so every week row lines up.
+    let day_h = ButtonSize::Default.height(&theme);
+    let mut grid = div()
+        .flex()
+        .flex_col()
+        .px(DynamicSpacing::Base08.px(&theme))
+        .pb(DynamicSpacing::Base06.px(&theme));
     let day_ix = 1i64;
     let mut cell_ix = 0i64;
     let total_cells = ((offset + days_in_month + 6) / 7) * 7;
@@ -1019,7 +953,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
         for _ in 0..7 {
             let day_number = day_ix + cell_ix - offset;
             if day_ix + cell_ix <= offset || day_number > days_in_month {
-                week = week.child(div().flex_1().h(px(24.)).into_any_element());
+                week = week.child(div().flex_1().h(day_h).into_any_element());
             } else {
                 let day_ms = local_day_start(first + (day_number - 1) * 86_400_000);
                 let selected = Some(day_ms) == start || Some(day_ms) == end;
@@ -1029,38 +963,35 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                 };
                 let entity = cx.entity();
                 week = week.child(
-                    div()
-                        .id(ElementId::NamedInteger(
+                    button_frame(
+                        div().id(ElementId::NamedInteger(
                             "usage-cal-day".into(),
                             day_number as u64,
-                        ))
-                        .flex_1()
-                        .h(px(24.))
-                        .rounded(px(5.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(theme.ui_px(11.5))
-                        .cursor_pointer()
-                        .when(selected, |cell| {
-                            cell.bg(theme.active).text_color(theme.active_fg)
+                        )),
+                        &theme,
+                        ButtonSize::Default,
+                    )
+                    .flex_1()
+                    .cursor_pointer()
+                    .when(selected, |cell| {
+                        cell.bg(theme.surface_active).text_color(theme.text_primary)
+                    })
+                    .when(in_range, |cell| {
+                        cell.bg(theme.overlay).text_color(theme.text_primary)
+                    })
+                    .when(!selected && !in_range, |cell| {
+                        cell.text_color(if day_ms == today {
+                            theme.accent_text
+                        } else {
+                            theme.text_secondary
                         })
-                        .when(in_range, |cell| {
-                            cell.bg(theme.overlay).text_color(theme.text)
-                        })
-                        .when(!selected && !in_range, |cell| {
-                            cell.text_color(if day_ms == today {
-                                theme.accent
-                            } else {
-                                theme.text_2
-                            })
-                            .hover(|style| style.bg(theme.bg_hover))
-                        })
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            entity.update(cx, |page, cx| page.pick_day(day_ms, cx));
-                        })
-                        .child(day_number.to_string())
-                        .into_any_element(),
+                        .hover_state(&theme)
+                    })
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        entity.update(cx, |page, cx| page.pick_day(day_ms, cx));
+                    })
+                    .child(day_number.to_string())
+                    .into_any_element(),
                 );
             }
             cell_ix += 1;
@@ -1082,10 +1013,10 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
         .child(grid)
         .child(
             div()
-                .px(px(12.))
-                .pb(px(6.))
-                .text_size(theme.ui_px(10.5))
-                .text_color(theme.text_3)
+                .px(DynamicSpacing::Base12.px(&theme))
+                .pb(DynamicSpacing::Base06.px(&theme))
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_muted)
                 .child(hint),
         )
         .into_any_element()
@@ -1113,35 +1044,36 @@ pub fn toggle_chip(
     on_clear: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let clear_id = format!("{id}-clear");
-    div()
-        .id(ElementId::Name(SharedString::from(id)))
-        .h(px(28.))
-        .pl(px(9.))
-        .pr(px(6.))
-        .rounded(px(8.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.active)
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .text_size(theme.ui_px(12.))
-        .text_color(theme.active_fg)
-        .child(label.into())
-        .child(
-            div()
-                .id(ElementId::Name(SharedString::from(clear_id)))
-                .size(px(16.))
-                .rounded(px(4.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|style| style.bg(theme.overlay_strong))
-                .on_mouse_down(MouseButton::Left, on_clear)
-                .child(icon("icons/x.svg", 10., theme.active_fg)),
+    // Sized like the filter chips it sits beside; the right edge is tighter
+    // so the clear button reads as part of the chip.
+    button_frame(
+        div().id(ElementId::Name(SharedString::from(id))),
+        &theme,
+        TRIGGER_SIZE,
+    )
+    .pr(DynamicSpacing::Base06.px(&theme))
+    .border_1()
+    .border_color(theme.border_strong)
+    .raised(theme.surface_active, &theme)
+    .text_color(theme.text_primary)
+    .child(label.into())
+    .child(
+        icon_button_frame(
+            div().id(ElementId::Name(SharedString::from(clear_id))),
+            &theme,
+            ButtonSize::None,
         )
-        .into_any_element()
+        .tip(tr!("usage.clear_filter"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .on_mouse_down(MouseButton::Left, on_clear)
+        .child(icon(
+            "icons/x.svg",
+            ButtonSize::None.icon_size().px(&theme),
+            theme.text_primary,
+        )),
+    )
+    .into_any_element()
 }
 
 /// A flat text button (Clear filters, Export…).
@@ -1154,41 +1086,41 @@ pub fn text_button(
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let color = if enabled { theme.text_2 } else { theme.text_3 };
-    div()
-        .id(ElementId::Name(SharedString::from(id)))
-        .group(BUTTON_GROUP)
-        .h(px(28.))
-        .px(px(8.))
-        .rounded(px(8.))
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .text_size(theme.ui_px(12.))
-        .text_color(color)
-        .when(enabled, |button| {
-            press(button)
-                .cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
-                .on_mouse_down(MouseButton::Left, on_click)
-        })
-        .children(icon_path.map(|path| {
-            if icon_active {
-                // The leading glyph is the refresh affordance: turn it in
-                // place instead of swapping in a loader, matching the popover.
-                refresh_glyph(
-                    ElementId::Name(SharedString::from(format!("{id}-spin"))),
-                    12.,
-                    true,
-                    color,
-                    theme,
-                )
-            } else {
-                icon(path, 12., color).into_any_element()
-            }
-        }))
-        .child(label.to_string())
-        .into_any_element()
+    let color = if enabled {
+        theme.text_secondary
+    } else {
+        theme.text_muted
+    };
+    button_frame(
+        div().id(ElementId::Name(SharedString::from(id))),
+        &theme,
+        TRIGGER_SIZE,
+    )
+    .group(BUTTON_GROUP)
+    .text_color(color)
+    .when(enabled, |button| {
+        press(button)
+            .cursor_pointer()
+            .hover_state(&theme)
+            .on_mouse_down(MouseButton::Left, on_click)
+    })
+    .children(icon_path.map(|path| {
+        if icon_active {
+            // The leading glyph is the refresh affordance: turn it in
+            // place instead of swapping in a loader, matching the popover.
+            refresh_glyph(
+                ElementId::Name(SharedString::from(format!("{id}-spin"))),
+                ButtonSize::Medium.icon_size().px(&theme),
+                true,
+                color,
+                theme,
+            )
+        } else {
+            icon(path, ButtonSize::Medium.icon_size().px(&theme), color).into_any_element()
+        }
+    }))
+    .child(label.to_string())
+    .into_any_element()
 }
 
 /// Outlined pager control: Previous / Next sit under the table card.
@@ -1199,34 +1131,34 @@ pub fn outline_button(
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(ElementId::Name(SharedString::from(id)))
-        .group(BUTTON_GROUP)
-        .h(px(28.))
-        .px(px(12.))
-        .rounded(px(8.))
-        .border_1()
-        .border_color(theme.border)
-        .bg(if enabled {
-            theme.bg_main
-        } else {
-            theme.overlay
-        })
-        .flex()
-        .items_center()
-        .text_size(theme.ui_px(12.))
-        .text_color(if enabled { theme.text } else { theme.text_3 })
-        .when(enabled, |button| {
-            press(button)
-                .cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover).border_color(theme.border_strong))
-                .on_mouse_down(MouseButton::Left, on_click)
-        })
-        .child(label.to_string())
-        .into_any_element()
+    button_frame(
+        div().id(ElementId::Name(SharedString::from(id))),
+        &theme,
+        TRIGGER_SIZE,
+    )
+    .group(BUTTON_GROUP)
+    .border_1()
+    .border_color(theme.border)
+    .text_color(if enabled {
+        theme.text_primary
+    } else {
+        theme.text_disabled
+    })
+    .when(!enabled, |button| button.bg(theme.overlay))
+    .when(enabled, |button| {
+        press(button)
+            .raised(theme.background, &theme)
+            .cursor_pointer()
+            .hover_bordered(&theme)
+            .on_mouse_down(MouseButton::Left, on_click)
+    })
+    .child(label.to_string())
+    .into_any_element()
 }
 
-/// Options for the workspace dimension, ranked by request count.
+/// Options for the workspace dimension, ranked by request count. The second
+/// line is the folder's parent (`~/Personal`) — the informative half of the
+/// path, as in the breakdown table.
 pub fn workspace_options(index: &UsageIndex) -> Vec<FilterOption> {
     let mut counts = vec![0u64; index.workspaces.len()];
     for record in &index.requests {
@@ -1240,7 +1172,7 @@ pub fn workspace_options(index: &UsageIndex) -> Vec<FilterOption> {
                 FilterOption {
                     id: ix as u16,
                     label: entry.label.clone(),
-                    sub: Some(entry.path.clone()),
+                    sub: Some(super::aggregate::parent_hint(&entry.path)),
                 },
             )
         })

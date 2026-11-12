@@ -7,6 +7,1567 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-11-12
+
+### Added
+
+- **Settings → Permissions: per-command and per-agent rules.** The access mode
+  could only say "ask before commands" or "do not". The page is one row per tool
+  family (commands, edits, reads, web fetches, MCP tools, delegation, other) with
+  `Inherit · Allow · Ask · Deny`, the value it resolves to shown beside it, and
+  pattern rules beneath (`rm *` → Deny) added inline. The scope row switches the
+  whole page between every session, main sessions only, and one subagent, so
+  "`bash` may run, but `rm` asks" and "the worker may run commands" need no mode
+  change. Most specific scope wins, and inside it deny > ask > allow. Full
+  access is answered before the rules — the mode keeps its promise that nothing
+  asks and nothing is refused, and the page says so instead of offering rows
+  that cannot take effect. Rules live in `~/.orbit-pi/access-rules.json`, which
+  the guard extension reads on every tool call, so they apply to running
+  sessions.
+  Two deliberate limits: an `allow` never covers a chained or redirected command
+  (`ls; rm -rf x` still asks), and an `ask` rule is a refusal inside a subagent,
+  which has no approval window. Web fetches are now their own family so they can
+  be gated; their default behaviour is unchanged. See
+  `crates/orbit-pi/docs/permissions.md`.
+- **Glass panes over the wallpaper.** Panes that sit over a wallpaper now
+  frost what is behind them instead of showing the picture sharp through a
+  tint: the sidebar, the composer, and every floating layer (menus, pickers,
+  popovers, modals, notifications). The image stays sharp in the content area
+  beside them, which is what separates glass from a uniformly blurred
+  backdrop. Text contrast is unchanged — the fill keeps the alpha the contrast
+  pass computed, and only the pixels *under* it are blurred. Settings →
+  Appearance → Glass panes turns it off. macOS only: the frost is a Metal pass
+  over the frame (`backdrop-filter: blur()` has no GPUI equivalent, so gpui
+  0.2.2 is vendored under `vendor/gpui` with the marker, the shader and the
+  blur pass added — see `vendor/gpui/README.orbit.md`); elsewhere the panes
+  keep the plain translucent fill they had before.
+
+### Changed
+
+- **The sidebar and the chat are one plane again.** The chat column no longer
+  rounds its left corners, and the hairline between it and the sidebar runs the
+  full height of the window instead of stopping an 8px radius short at each end.
+  The curved notch the two corners left against the sidebar was the most
+  noticeable detail in light mode.
+- **Typing no longer rebuilds the window.** A composer edit used to repaint the
+  app on every keystroke so the send control could move between two states; in a
+  long session that paid for the sidebar, the header and every visible
+  transcript row to redraw one text caret. The observer now compares the facts
+  the app-level chrome actually reads — the send control, the attachment tray,
+  the follow-up chips, the slash/`@` menu — and repaints only when one of them
+  moved. The text itself, the caret and the box's grown height were always
+  drawn by the composer and still are.
+
+### Removed
+
+- **Settings → Privacy no longer lists or deletes temporary files.** The
+  **Temporary files** and **AI scratch files** sections are gone, along with
+  the scanning and cleanup code behind them (`temp_files.rs`, `temp_ui.rs`).
+  Session retention remains. Bug-report screenshots, update staging, and login
+  helpers are still written to `<system temp>/orbit-pi/`; Orbit simply stops
+  offering to enumerate and remove them, so clean that folder up yourself if
+  you want it emptied.
+
+## [0.2.17] - 2026-11-08
+
+### Changed
+
+- **A delegation card opens one child's log, not all of them.** Clicking a
+  child row shows that child's steps and report and leaves the row selected;
+  clicking it again closes the card, and picking another child swaps the body.
+  A parallel run with three finished children used to expand into three
+  unlabelled logs in a row — the steps were there, but not whose they were.
+  A one-child delegation is unchanged: opening the card is opening its log.
+- **`@` mentions no longer freeze the window while you type.** Each keystroke
+  used to spawn `fd` on the UI thread and wait for it — 300–700 ms per
+  character on a large project, and worst of all when nothing matched, because
+  `--max-results` could only short-circuit when hits existed. The composer now
+  ranks an in-memory index of the workspace instead: the same queries cost
+  milliseconds and spawn nothing. The index is built off the UI thread, rebuilt
+  at most once every 2 s after a change, and immediately after your own file
+  operations, so a created, renamed, or deleted file is in the next `@`.
+  Dotfiles stay searchable as they were (`.env`, `.github/**`) while
+  version-control and OS metadata (`.git`, `.svn`, `.hg`, `.jj`, `.DS_Store`,
+  `Thumbs.db`) is never indexed, and a `.gitignore` in a *parent* directory is
+  no longer consulted — matching `fd`, and the same walk the Explorer uses.
+- **A `/` command opens after any whitespace, not only at the start of the
+  message.** Typing `run /rev` opens the command menu with the caret still in
+  that word, so a skill or extension command can be reached mid-sentence the
+  same way it can at column 0. A slash glued to the previous word (`http://`,
+  `please/review`) stays plain text, and so does a path like `/usr/local`: the
+  menu opens on it but no command matches, and the word is never coloured as
+  one.
+
+## [0.2.16] - 2026-11-05
+
+### Added
+
+- **Subagents.** The agent can delegate a scoped task to a child `pi` process
+  with its own context window and get back a short report plus its cost, instead
+  of spending the session's context on the reading. One tool, three shapes —
+  single, chain with `{previous}`, and parallel — bounded at 8 tasks per run,
+  4 concurrent, 24 per session and depth 1. Agents are markdown files in
+  `~/.pi/agent/agents/` (the path `pi-subagents` reads); `scout`, `worker` and
+  `reviewer` ship built in. A child inherits the session's access and workflow
+  modes and is clamped to the ceiling its declared tools imply, so a read-only
+  agent cannot edit even under Full access. A delegation the session mode cannot
+  finish — a command-running agent under Supervised or Plan — is refused before
+  it spends anything. Abort kills the whole child process group; a child's cost
+  lands in the session usage meter. The transcript shows a delegation card —
+  each child's agent, capability, current step, tool count, elapsed time and
+  model, the run's cost, and the mode that blocked or refused a call; expanding
+  it reveals the child's real steps and the report it returned. The parent's
+  working line names what the child is doing, and the turn header counts
+  delegations. **Settings → Subagents** manages the library in-app: create,
+  duplicate, rename, disable, delete (with Undo) and reset an agent to its
+  shipped definition; edit its capability tier, workflow mode, model, thinking
+  level, description and prompt; and see the exact description block the model
+  will read. Saves touch only the five keys Orbit owns and refuse to clobber a
+  file edited elsewhere. Inspectable child transcripts are not built yet.
+
+- **Export a response or visible transcript as Markdown.** Each settled response's
+  footer offers a save action; the command palette can export the visible transcript.
+  Both open a native save dialog and exclude thinking, tool output, and image data.
+  The visible transcript can omit earlier history after compaction. Existing files
+  are never overwritten. GUI verification remains.
+
+- **"Work in" is one control, and it answers for every kind of place.** The
+  status bar's chip now reads `Local` at the repository's main checkout (it
+  used to appear only inside a worktree, so the composer could never enter one)
+  and offers the repository's worktrees, a new worktree, an existing worktree
+  folder on disk, a remote branch, a clone, recent folders, and any other folder.
+  The new-task page's folder field uses the same vocabulary, so a task can
+  start in a worktree without visiting the Worktrees page first. Choosing a different location
+  starts a task there; a running session is parked, and an idle session's
+  transcript remains on disk.
+
+- **Clone a repository from the working-folder picker.** Enter a URL and folder
+  name, choose a destination, and follow Git's progress or cancel. A successful
+  clone opens as a working folder and joins the sidebar; a failed or cancelled
+  clone is not opened, and Git may leave a partial directory. The new-task picker
+  offers cloning even outside a repository. The Windows job-object cancellation
+  path now runs on the Windows CI leg (`repository_clone::` tests); manual GUI
+  verification remains.
+
+- **Remote branches become local branches that track them.** Choosing a
+  remote-tracking ref used to run `git worktree add <path> origin/feat`, which
+  leaves a **detached** worktree with no branch to push. It now creates
+  `feat` (or `feat-2` when that name is taken) with `--track`, and the create
+  dialog says which branch it will create before you press Create.
+
+- **A worktree folder Git stopped listing can be reconnected.** A directory
+  that was moved by hand shows up as prunable, and the picker's
+  "Existing worktree…" row (and the Worktrees page's Advanced menu) can reconnect
+  the chosen directory with `git worktree repair` before opening it. A worktree
+  whose administrative metadata is gone is reported instead of opened.
+
+- **Rewind a conversation to an earlier message.** A user message's footer now
+  offers a rewind beside its copy action, and the palette's *Rewind to a
+  Message…* lists the same messages for the keyboard. pi forks: the branch up
+  to just before the chosen message is written to a **new** session file, so
+  the conversation you leave stays in the sidebar and nothing is destroyed. The
+  forked-from prompt is handed back to the composer to edit and resend. A run
+  in flight has to stop first, and an extension that cancels the fork leaves
+  everything untouched.
+
+- **Discover session shortcuts by holding ⌘ or Ctrl.** The first nine visible
+  sessions show their numbered keycaps while the modifier is held; the hints
+  follow the current sidebar order and disappear on release.
+
+- **The command palette advertises both of its shortcuts.** `⌘P` and `⌘K` have
+  always both opened it, but only `⌘P` was shown on Settings → Shortcuts.
+  Both chords now appear, so a user who learned `⌘K` is not told otherwise.
+
+### Changed
+
+- **A check reads the feed; downloading is your decision.** The updater used to
+  fetch and stage the whole artifact during the background check, so the footer
+  pill appeared only after 20–40 MB had already moved and clicking it went
+  straight to the swap. A check now stops after the feed and names the target
+  version beside the running one, with a **Changelog** link to the release page
+  and the notes already rendered, before any bytes are requested. **Download**
+  fetches, verifies, and stages with a real progress bar and a Cancel; when it
+  finishes the same card offers **Restart & Update**, which is what hands the
+  swap to the installer helper. The pill's glyph follows suit: a download arrow
+  while the release is only offered, a restart arrow once it is on disk. Two
+  consequences worth knowing: the modal's copy no longer promises that
+  downloading installs, and a silent launch check costs one small request
+  instead of a download.
+
+- **The `+N −N` chip opens the Git page's Changes tab.** The dirty-tree
+  counts now reveal the files they count instead of opening the Review dock;
+  the plain side-panel glyph still toggles Review.
+
+- **Labelled buttons no longer repeat their label on hover.** New Task, the
+  Git page tabs, a widened access-mode chip, and sidebar session titles drop
+  the tooltip that restated text already on screen; icon-only controls and
+  truncated previews keep theirs. Session rows now show their shortcut hint
+  on hover instead of a title tooltip.
+
+- **Composer delivery hints use keycaps.** Queue and Steer show the same
+  platform-aware keyboard styling as the sidebar while keeping the shortcuts
+  matched to the selected Enter behavior.
+
+- **Settings is easier to scan and use.** Navigation rows keep their full
+  height in short windows, page and section headings have clearer hierarchy,
+  descriptions use the regular UI text size, and select controls match the
+  app's 32px buttons. The selected navigation row uses a neutral surface.
+
+- **Session search shows the command palette shortcut.** Compact keycaps in
+  the empty sidebar input show ⌘P / Ctrl+P for the separate command palette.
+  The footer Search icon is removed. ⌘⇧F / Ctrl+Shift+F now focuses session
+  search, while ⌘P / ⌘K (Ctrl+P / Ctrl+K) open the command palette.
+
+- **Workspace icons fill more of their existing sidebar frames.** Project logos
+  and marks have less inner padding, and their frames use a neutral surface
+  instead of an accent tint. The frame size is unchanged.
+
+- **Windows installs and updates pi with pi's own installer.** Orbit used to
+  tell Windows users to run `npm install -g` itself and refused to migrate an
+  npm install there, on the belief that pi shipped no installer for the
+  platform. pi documents one — `powershell -c "irm https://pi.dev/install.ps1 | iex"`
+  — and it lays down the same pinned, self-updating managed install under
+  `%USERPROFILE%\.pi\agent\install`, so install, migration, and `pi update`
+  now work on Windows the way they already did on macOS and Linux. The setup
+  page's copyable hint follows the platform, and an npm global install on
+  Windows (whose `pi.cmd` shim sits beside `node_modules` rather than inside
+  it) is now recognised as an npm install instead of being reported as a
+  package manager Orbit will not touch.
+
+- **Typing in the command palette no longer rebuilds its rows.** Session,
+  command, settings, and MCP rows are built once when the palette opens and a
+  keystroke only filters and ranks them, instead of re-deriving every label
+  (and re-reading every session title) on each key. A row whose *name* matches
+  now outranks one that only matched a search keyword.
+
+### Fixed
+
+- **Settings dropdowns paint their options again.** Every select in Settings —
+  theme, font, model, retention, language — opened an empty panel: the option
+  list is `w_full` inside a popup that carried only a `min_w`, and a
+  percentage width inside an auto-width parent resolves to 0, so each row laid
+  out 8px *narrower than nothing*. The popup now sets an explicit width, and a
+  layout test checks the list and its rows keep a real width.
+
+- **Tests no longer add temporary projects to the real sidebar.** Workspace
+  preferences and the last-workspace file use isolated, self-cleaning test
+  directories instead of the user's Orbit files.
+
+- **Sidebar session search now filters the visible list.** Search results and
+  keyboard navigation use the same sessions, respect the archive filter, and
+  show each result's workspace. Clearing the search restores the list.
+
+- **The active sidebar session uses the hover surface.** Its background stays
+  neutral even with a custom accent; the border still marks the open session.
+  Other list rows use their palette's selected surface, while text selection
+  keeps its own highlight.
+
+- **Runtime settings show where pi actually is.** The page listed the pi
+  *package root* — a `node_modules/@earendil-works/pi-coding-agent` path deep
+  enough to take the whole row — and because a control never shrinks it
+  squeezed "Package root" into one letter per line. The deep path now rides
+  the RPC-patches row as a home-shortened, truncating detail line, and the
+  binary row keeps naming the launcher Orbit spawns, which is what `which pi`
+  prints.
+
+- **Dismissing the command palette returns focus to whatever opened it.** It
+  always went to the composer, so opening it from the sessions sidebar and
+  pressing Escape dropped the keyboard into the wrong surface; running a row
+  left the window with no focused element at all, so typing did nothing until
+  the next click.
+
+- **`⌘P` / `⌘K` are no longer swallowed just after a menu closes.** The 200 ms
+  guard that stops a dismissing click from immediately re-opening a popover was
+  applied to the keyboard path too, so a shortcut pressed right after closing a
+  chip or a row menu silently did nothing.
+
+## [0.2.15] - 2026-11-01
+
+### Added
+
+- **File count and previous / next arrows in the Review toolbar.** The diff
+  toolbar names how many files the snapshot changes when there is room and
+  walks between them with previous / next arrows around the reader's
+  place (`12/187`). The arrows and the `n` / `p` shortcuts share one step,
+  measured from the file at the top of the diff so scrolling to another file
+  and pressing the arrow continues from there; both go inert at the first and
+  last file. The count and navigator fold away as space gets tight rather than
+  overflowing the row.
+
+### Fixed
+
+- **"Open in" Rex opens the folder when Rex has to start.** A folder handed to
+  Rex while the app was still launching was dropped: Rex came up on its About
+  window and never opened the workspace, because a launch-time open request
+  arrives before its client has connected to its server. Opening in Rex is now
+  two steps when the app isn't running — start it, then hand it the folder a
+  moment later — which opens the workspace. Rex's About window still appears;
+  only the lost folder is worked around, and a Rex that is already running is
+  handed the folder in one step as before.
+
+- **One usage card per Ollama account.** A setup with both `ollama` and
+  `ollama-cloud` configured showed the same account twice — two cards carrying
+  identical windows and balances, and a header count to match — because the
+  popover rendered one card per provider id while both ids resolve one
+  ollama.com account (the adapter borrows a key stored under either). The
+  popover now collapses ids that share an account into a single card, named
+  after the id the active model uses, preferring the report that carries
+  numbers over an errored sibling and keeping a lone failure visible rather
+  than folding it away. The eye toggle stores the shared id, so hiding the card
+  survives a model switch between the two, and an entry saved under either id
+  before this change still hides it.
+
+- **Ollama's monthly credit window explains its missing countdown.** The note
+  naming the plan-anniversary reset was dropped whenever the session and weekly
+  windows carried their own reset times — which is always — because a note only
+  rendered when *every* window lacked one. It now renders when any window does.
+
+- **An expired Ollama session reads as expired, not as "fetch failed".**
+  Redirects were refused at the fetch layer, so the settings-page reader never
+  saw the sign-in redirect it was written to translate. An expired cookie now
+  reports "Ollama session expired — sign in again", while the usage endpoints
+  still refuse to follow a redirect at all.
+
+- **A nested `/api/balance` payload keeps its meters.** The balances parser already
+  unwrapped the payload's optional `balance` container, but the window parser
+  read `included` from the top level — so a nested payload showed its purchased
+  credit and silently dropped the session and weekly meters. Both parsers now
+  unwrap the same container, and a bucket's reset is read under any of the names
+  it has shipped with.
+
+- **A dead Ollama endpoint is reported, not disguised.** When one endpoint
+  failed and the other carried nothing to show — `/api/balance` dying while
+  `/api/usage` has no meters is the normal shape for a current account — the
+  card read "reported no usage or balance for this account", describing a
+  healthy account that uses nothing rather than the endpoint that did not
+  answer. It now reports the HTTP failure, from either side.
+
+- **The skill enable/disable switch is clickable again on Windows.** Settings →
+  Skills puts the switch at the right edge of the detail header, directly under
+  the caption buttons the app paints over the window's top-right corner, so the
+  maximize button covered it and swallowed the click. The header now reserves
+  the caption strip, the same inset the Files and Explorer headers already use.
+
+- **Enter and Backspace during an IME composition no longer act on the
+  draft.** Sogou Pinyin, and Chinese IMEs generally, keep the composition
+  session — and its candidate window — open after Backspace has emptied the
+  pinyin buffer, and report that as an empty preedit. Orbit read the empty
+  preedit as "not composing", so Enter submitted the draft and Backspace
+  deleted committed text behind it. The composer now tracks the session
+  separately from the preedit span and holds its own shortcuts while one is
+  open; on Windows it also reports the empty span as marked, so the platform
+  hands the keystroke to the IME instead of dispatching `Submit` /
+  `Backspace`, and a session the IME abandoned on focus loss is closed on the
+  next frame instead of claiming keys. Regression tests cover the Sogou
+  sequence (Backspace down to an empty pinyin buffer, then Enter / Backspace /
+  arrows), the Windows marked-span gate, and session teardown on focus and
+  window loss.
+
+## [0.2.14] - 2026-10-30
+
+### Added
+
+- **Edit a queued message, or send it now.** The queue bar above the composer
+  gives every pending steer or follow-up its own **Edit** and **Send now**
+  controls. Edit opens the row in place with Save and Cancel (⏎ saves,
+  Esc cancels) and rewrites just that message; Send now moves a queued message
+  into the steering lane at the front, so pi delivers it before the next model
+  call instead of behind the rest of the queue. pi has no per-message queue
+  command, so Orbit rebuilds the queue — clear, then re-queue the survivors in
+  their original lanes and order — and keeps the bar from blinking through the
+  empty state while it does.
+
+- **Every installed terminal is in the "open in" menu.** Rex, Ghostty, iTerm2, Kitty, Alacritty, WezTerm, Tabby, Hyper, Rio, Wave and Warp appear next to Terminal once their app is installed, and tmux appears when the binary is. tmux has no window of its own, so it opens a session at the workspace in the system terminal; the list scrolls instead of growing past the window.
+
+- **GitHub CLI release check:** Settings → Git Accounts can check the latest stable `gh` version on request and show manual update commands. Normal status refresh stays local; Orbit does not update the CLI or use credentials for the check.
+
+- **Bug-report draft model picker:** choose a model for Generate draft independently of the active session and Git commit-message model. The choice is remembered, with the active session model as the default.
+
+- **Git Accounts diagnostics** in Settings: inspect local author identity, GitHub CLI version, SSH agent fingerprints, conventional public-key file presence, generic and host-scoped credential-helper configuration, sanitized remote hosts and credential environment-variable presence without managing credentials or testing remote access. GitHub CLI authentication is shown as unknown because its status command may contact hosts and refresh credentials.
+
+### Fixed
+
+- Pasting files copied in macOS Finder resolves file-reference URLs to real paths and attaches image contents rather than the generic file icon. Windows file lists and Linux file URI lists exposed as text also use the attachment tray; other files use the existing file references.
+
+- **Global Refresh is a full resync.** ⌘R, File → Refresh, and the command
+  palette entry now re-read the session list, branch lines, installed plugins,
+  workspace skills, custom providers, auth files, and MCP configuration even
+  when their Settings page is closed, and re-ask the running agent for its
+  state, model/thinking/command catalog, context stats, auth, and quota. The
+  refresh confirms with a toast, so a manual refresh never looks like a no-op.
+
+- **Follow-up suggestion chips stay inside the composer.** A long model
+  suggestion wraps to two lines inside its chip and the chip is capped at the
+  composer column's width, so the row can no longer push past the window edge
+  on a narrow window. Clicking a clamped chip still inserts the full text.
+
+- **Agent errors are reported for the turn, not for every attempt.** A retry
+  that recovers retires the failed attempt's card, banner, and "Agent error"
+  notification, so a turn that finished is announced as finished. A stop the
+  user asked for reads as the quiet "Stopped" marker even when it landed
+  while a provider request was in flight (pi records it as an error carrying
+  the SDK's abort text) or cancelled a retry. A turn that really ended on a
+  provider error still reports it.
+- **Review and Git changes refresh** after a file change or manual refresh arrives while a diff is still loading; diff failures are shown instead of leaving stale results silently visible.
+- **Bug-report screenshots** fall back to GitHub's web form when the CLI cannot upload them without repository write access or another preflight requirement. Orbit opens the saved screenshot folder for dragging into the form, preserves colliding filenames, and names compressed images for their actual format.
+
+### Changed
+
+- **The Usage Summary board reads any day under the pointer.** Each headline
+  metric (requests, tokens, cache hit rate, average response) now carries a
+  40px sparkline of the selected range, following the bklit KPI-sparkline
+  recipe: the line draws itself in on first paint and a range change morphs the
+  old shape into the new one. Pointing at any card's line swaps the whole row's
+  figure, date, and change to that bucket (its change measured against the
+  bucket before it) and highlights that point immediately — hovering never
+  replays a transition. Leaving the board snaps every card back to the range.
+  Reduced motion paints the final frame. A bucket with no measurement for a card
+  reads as a gap and a dash, never a zero.
+
+- **Usage breakdown reads as one legend.** Models, providers, workspaces, and
+  tools share a single row design (bklit's legend with progress bars): a brand
+  tile — the model's or provider's mark from the model picker, the workspace
+  folder, or the tool's glyph from the transcript — then the name and its scope,
+  the figure with its share, and a track whose fill is the share. The same mark
+  leads each row in the table below. Clicking a row still scopes the page, and a
+  row in scope reads as selected. Hover washes the row at once, with no
+  transition.
+
+### Fixed
+
+- **Stop and Esc now interrupt a stuck pi.** They sent `abort` and then waited
+  for `agent_settled`, which a pi whose event loop is wedged never sends — one
+  bash call that dumps several GB (`rg -r '' -n ""` over a large repo) was enough
+  to freeze it, and both controls went silent while the turn stayed “Working
+  for…” for minutes. A stop is now timestamped: the composer says it is waiting
+  on pi, pressing again after a moment acts at once, and if pi has not answered
+  within 10 s Orbit closes the turn itself, takes the process down and starts a
+  fresh one on the same session. The process kill is a tree kill on Windows, so
+  the wedged tool child goes with it instead of outliving the restart. Queue text
+  that was waiting behind the stop is handed back to the composer.
+
+## [0.2.13] - 2026-10-27
+
+### Added
+
+- **Optional sidebar message previews.** The sidebar view menu's **Show first
+  message** toggle hides or restores the first-message line in grouped and flat
+  session lists. Enabled by default, remembered across restarts, and leaves titles,
+  metadata, session content, and actions intact.
+
+- **Branch pickers show when each branch last moved.** Every row carries the
+  age of its tip commit (`3d ago`) in a right-aligned column: in the status-bar
+  branch popover the dates read as a timeline, newest work first, with the
+  current branch marked by an accent glyph and a check in a slot every row
+  reserves so the dates never shift; the header counts what the filter found.
+  The Git panel's branch menu dates its Recent, Local, and Remote sections the
+  same way (the age is the row's last element, so all dates share one right
+  edge next to the `Current` marker or the hover delete), and remote refs now
+  carry their tip date in `list_refs`. Filtering still matches branch names.
+
+- **Session execution status in the sidebar.** Open and background sessions show
+  Running, Waiting for approval/input, Retrying, Compacting, Completed, Failed,
+  Stopped, Disconnected, or Idle from real pi events. Completed/Failed/Stopped
+  remain after opening a result and after warm-process reaping for this launch.
+  Historical and external sessions have no guessed status until observed.
+  Only `agent_settled` finishes a run, and its abort flag distinguishes a stopped
+  run even when no assistant message was produced. Native approvals, dialogs,
+  and questionnaire answers now stay with their session when switching away;
+  requests arriving in the background wait for the user instead of being cancelled.
+- **Mermaid flowcharts render in the transcript.** A `flowchart`/`graph` fence
+  (TD/TB, BT, LR, RL) now paints as a diagram — nodes, shapes, orthogonal edges,
+  arrowheads, and edge labels — drawn with GPUI paths and text, so there is no
+  webview, no JavaScript, and no network involved. The fence is still a code
+  block underneath: the copy button and a **Show source** disclosure keep the
+  exact Mermaid source selectable, and anything outside the supported subset
+  (sequence/gantt/pie/class diagrams) keeps the existing source block rather
+  than drawing a partial graph. `subgraph … end` groups render as titled frames,
+  and an edge that skips a rank routes around the boxes instead of through them.
+  Layout is cached per fence and interface font, so a streaming run re-renders
+  the same diagram for free.
+- **A session that finishes while you are not looking stays marked.** Its sidebar
+  row carries an unread mark — a green eye and "Needs review" for a finished turn,
+  a red cross with a small corner dot for one that failed — until the session is
+  actually shown in a foreground window. That mark then gives way to the read
+  glyph, while a separate execution state distinguishes Completed from Failed and
+  remains after the mark is spent. The mark is what is left after the toast has
+  gone: with several sessions open, or after stepping away, the finished one is
+  findable instead of merely somewhere in the list. It is independent of the
+  running, pinned, and archived glyphs (it never replaces one) and a marked row
+  stays visible under a collapsed project group, the same way a running row does.
+  Opening the session spends the mark; selecting it while Orbit is behind another
+  app does not, because that is not reading it, and neither is settling behind a
+  full-page surface (Files, Git, Usage, Worktrees, or a full-width Review).
+  Marks live in memory only — what happened while Orbit was closed is not claimed,
+  since there is no way to know whether it was already read elsewhere. The labels
+  distinguish a finished turn from a failed one without relying on colour.
+- **Onest interface font** — available in Settings → Appearance → Interface font,
+  bundled in Regular, Medium, SemiBold, and Bold weights for offline use.
+- Git page → commit bar → **model chip**: the **Generate** button now chooses its
+  own model instead of always borrowing the chat session's. Commit messages are a
+  short, cheap task, so a small local model is often enough, and a model with a
+  different context window changes how much of a large change set fits the prompt.
+  The chip opens a searchable catalog with each provider's mark, an
+  **Active session model** row that restores the default, and ↑/↓/Enter/Escape
+  navigation; the pick persists to `~/.orbit-pi/commit-model.json`, and the prompt
+  budget is sized from the picked model's own window. Issue and PR draft generation
+  keeps using the session model.
+- **Attachments in the composer** — images, non-image files, and collapsed long
+  pastes now share one tray above the input. Each item is a chip leading with the
+  same 20px slot — the image thumbnail, or the file type's devicons mark — then its
+  name, its size or line count, and its own remove button; the text sits in one
+  `line_height(1.)` box and the chip's insets are symmetric, so the mark and the label
+  share one centreline with balanced edges. The file mark is drawn bare, with no tinted
+  square behind it — a rounded square behind a glyph whose art is itself a box read as
+  an avatar monogram, not a file icon — and it is centred by its *ink* rather than its
+  line box, because glyph artwork is not centred inside its font cell. The type's short
+  label (`MD`, `PDF`, `ZIP`, …) on a tinted square fills the slot when no Nerd Font or
+  no glyph is available; two or more chips add a count header with **Clear**, and all three kinds
+  share one eight-item budget that the send button and the paste/drop paths read
+  through a single predicate. Attaching a file queues it as a chip instead of
+  splicing its path into the middle of the message; on send it folds into the
+  prompt as an `@path` mention (relative to the workspace, backticked when the
+  path has whitespace) so the agent opens it with its own tools. The sent user
+  message reads that block back out of its own text and renders it as the same
+  file chips under the bubble — the path stays selectable — so an attachment no
+  longer appears as a raw `@/Users/…` line, and a reloaded session shows the same
+  chips because the split is derived from the message, not from local state.
+  Re-attaching the same path is a no-op, and a file-only message is sendable.
+- Appearance → **Design system**, an opt-in switch between the existing **Classic**
+  design and the new **Operational** (Restrained Operational Minimalism) system.
+  Operational adds dark and light near-black/neutral palettes with a lime
+  interaction accent, a separate olive selected-row wash, tighter radii, 11px
+  captions, and flatter elevation. The choice is persisted alongside the existing
+  Light/Dark/System preference; switching back restores the previous Classic
+  palette, and every Classic palette and geometry stays unchanged.
+- Settings → Agent → **Agent call details** chooses whether a tool call or
+  activity group you have not opened yourself follows the run (the previous
+  behavior: open while streaming, closed once the turn settles), stays always
+  expanded, or stays always collapsed. Opening or closing one call yourself
+  still wins over the setting, which only moves the default. Persisted to
+  `~/.orbit-pi/agent-calls.json`.
+
+### Changed
+
+- **Refined session navigation.** Tinted project marks, tonal count and status
+  badges, clearer title/preview hierarchy, and distinct selection and keyboard
+  focus outlines. Provider marks overlap less, and truncated titles, prompts,
+  and branches have tooltips. Existing session information and actions remain.
+- **Session rows carry three lines.** Title, the first message, and a metadata
+  strip — age, workspace, and branch with `↑n`/`↓n` against its upstream (green
+  ahead, amber behind). The message line always shows the prompt, because the
+  title is capped and the row is narrower still: a title that happens to be the
+  same sentence is cut short, not redundant, so the message is the only place
+  the ask reads end to end. Branches are fetched off-thread per project (`git
+  branch` + `rev-list`, one pair at launch and whenever the project list or the
+  current checkout changes), so painting a row never shells out. A project that
+  is not a git repository has no branch item rather than an empty slot. The
+  workspace item appears in the flat list only — under a project header it would
+  repeat the header one line up.
+- **Session row actions moved to the right-click context menu.** The
+  hover-revealed `…` is gone, so the title owns the full line width; pin,
+  archive, copy path, reveal, clone, and delete are all on the context menu
+  (the palette still carries its own commands). The keyboard and palette delete
+  paths anchor the same confirmation to the row instead of to a button that no
+  longer exists.
+- Sidebar project names no longer look like the session titles under them. A
+  group header takes the palette's accent hue at body-ink brightness — a quiet
+  warm cast by default — or, when the project has a mark tint, that hue on its
+  name and not only on its icon. Session titles stay a step below at secondary
+  ink. The three sidebar levels now read as section label, project, session
+  instead of one wall of identically colored rows.
+- Standardized corner radii by component role: buttons and header chips use the
+  button token, text fields and composers use the input token, cards/panels/
+  popovers/dialogs use `panel::RADIUS`, list rows use `list_item::RADIUS`, and
+  badges/checkboxes use the small radius. Fixed the outliers (header controls,
+  the top-bar quota/usage chip, terminal and file-viewer tabs, the Worktrees
+  dismiss button, MCP row action, star-project banner, several alert/preview
+  cards, and the Git commit composer).
+  Operational now gives every standard field and composer one input radius;
+  Classic keeps its legacy composer silhouette.
+
+- The Usage page is now one continuous page instead of a Simple | Details
+  switch: the Daily-activity calendar leads, then the Summary board, Usage
+  over time, Breakdown, and Records read top to bottom in one scroll, with
+  each section's own selector (chart metric, breakdown dimension, records
+  table) inside its card. Summary figures are larger, and the metric the
+  trend is currently plotting is picked out in the accent color on the board,
+  so the click-through from a figure to its chart reads before it is made.
+
+### Removed
+
+- Usage: the trend's duplicate Buckets data table, the Signals notes card,
+  and the Token health panels are gone. Their headline figures live on: cache
+  hit rate is a Summary metric, every metric still plots on the trend chart,
+  and the day/week/month table remains under Records. The JSON export no
+  longer carries the `insights` block.
+
+### Fixed
+
+- **Auto session titles now actually land.** The bundled title extension decided
+a session was worth naming only when its branch held *exactly one* user prompt at
+settle time, and it treated a settle with nothing to describe as final:
+
+  - sending a steering message or follow-up during the first run added a second
+    prompt, so the settle looked like a resumed session and no title was asked for;
+  - a session Orbit reopened from disk (its warm-process pool makes this the
+    normal case) was permanently ineligible, however untitled it was;
+  - one transient provider error was enough to lose the title for good — the
+    "retry on the next settle" path needed another settle with one prompt,
+    which a new prompt makes impossible, so the retry was dead code;
+  - a settle that arrived before the assistant had produced any text wrote the
+    session off for the life of the process.
+
+  The rule is now the one a reader expects: **any session without a name gets a
+title**, from its first exchange, on the first settle that has something to
+describe. An existing name is never replaced (that is the user's rename or an
+earlier title) except by the details popover's explicit **Generate title**. A
+settle with no reply yet leaves the session open for the next turn, and a
+transient failure is retried up to three times instead of once. A completed ask
+that produced no text is still final, so a model that keeps answering nothing is
+not asked on every turn.
+- The status bar no longer prints extension color codes as literal text. An
+  entry set with `ctx.ui.setStatus()` that styled itself via `ctx.ui.theme.fg()`
+  used to render the raw SGR escape (e.g. `[38;5;71m●[39m`), because the status
+  line drew its string verbatim. It now passes through the same ANSI parser the
+  extension-widget path already uses, so the codes are stripped and the entry
+  reads `● ADHD ON` as intended.
+- The Git page's **Generate** button now writes a commit message that describes
+  what the commit actually records, including long files. Four things were
+  wrong: the prompt always read the index (`git diff --cached`) even when
+  *Include unstaged changes* was on, so most of a worktree commit arrived
+  labelled "context only, not part of this commit" and untracked files arrived
+  as a bare path with no diff at all; ORIGINAL CODE was the first 48 KiB of the
+  HEAD file with no line numbers, so a change deep inside a long file had no
+  surrounding code to read; diffs were capped per file but never in total, so
+  a set of long files overflowed the model's context window and silently
+  became the filename-based fallback; and every body line was rewritten into a
+  `- ` bullet, mangling the headings and footers a long change produces. The
+  prompt now picks its diff source from what the commit will record
+  (synthesizing untracked files' diffs), windows a line-numbered ORIGINAL CODE
+  excerpt around each hunk, sizes the whole prompt from the selected model's
+  context window so a commit of a hundred-plus files still gets a diff for every
+  one of them (and keeps each long diff's first and last hunks), and passes the
+  model's fenced message through verbatim. Regenerating now tells the model
+  about the previous attempt, so it stops repeating the message you rejected,
+  and a fallback is reported in the failure banner instead of being passed off
+  as generated. Set `ORBIT_COMMIT_PROMPT_DUMP=/tmp/prompt.txt` to write the exact
+  prompt the model sees.
+
+- The Usage page's daily-activity calendar no longer lets its hover readout
+  paint over the shade key. Hovering a day in the middle of the grid pushed
+  the readout past the bottom of the calendar, where it covered the "Less /
+  More" legend and the text under it. The readout now sits beside the day
+  under the pointer and is clamped inside the calendar, so the hovered day
+  stays visible and the readout never reaches the legend or the section
+  below.
+
+- A failed command or shortcut no longer leaves Orbit stuck on a banner that
+  never clears and a session that answers nothing. A failed write to pi's stdin
+  used to kill the writer thread for good while the process kept running, so
+  the app still reported it alive and every later command and shortcut went
+  into a pipe nobody read. The dead transport is now reported as an exit, so
+  the reconnect action appears instead of a zombie session, and the app no
+  longer leaves a response waiter behind for a command that never landed.
+- An error banner now clears when the thing that raised it succeeds, decided by
+  the raising command rather than by matching the banner's text. Failures whose
+  wording never matched a command label — a failed write, or a banner raised
+  under one language and read under another — used to stay up indefinitely.
+- Stopping or restarting pi now drops that process's modal dialog, approval
+  bar, queued messages, and retry counter with it; the dialog could never be
+  answered, and its reply would have gone to the process that replaced it.
+- Extension UI left over a dead pi process is dropped with it. A `custom`
+  surface (what a command like `/review` opens) stayed on screen after the
+  process that owned it went away, swallowing keystrokes into a client that
+  could never answer it, and a compaction or title command in flight kept the
+  composer on Stop because `is_compacting` stayed set.
+- Commands pi runs itself no longer leave the app "working" forever. A slash
+  command pi hands to an extension (`/review`) answers `prompt` with
+  `disposition: "handled"` and starts no turn, but the composer had already
+  armed the live "Working for…" row at the send, so the row and the Stop button
+  stayed up with nothing that could ever clear them — cancelling the command's
+  custom UI could not help, because there was no run to settle. Only the
+  composer's own prompt is unwound this way: the title regenerator sends a
+  `prompt` too, and regenerating a title mid-run used to close the live row and
+  the checkpoint turn of the run that was still streaming.
+- Cancelling a run no longer reports it as a failure. pi answers a stopped
+  automatic retry with `auto_retry_end { success: false }`, which the app read as
+  a failed retry and left on screen as a banner; the request itself now decides,
+  so a stop is a stop and an exhausted retry still reports. That applies to the
+  Retry strip's Cancel button as well as to Escape.
+- A pi process that exits mid-session is respawned automatically, so the next
+  command or shortcut lands on a live process instead of a toast saying nothing
+  is running. The respawn is bounded (three consecutive tries, a budget a
+  healthy run refills) and yields to a Start or Stop in the meantime, so a pi
+  that is broken on startup shows the Reconnect banner instead of crash-looping.
+  It also comes back on the session that was open: a fresh launch opens a new
+  one, which would have left the transcript showing a conversation pi no longer
+  had and the next prompt reaching a model with none of it. Restart and
+  Reconnect do the same.
+- A pi process that dies at launch now says why. The banner carries pi's own
+  last stderr line (redacted, clipped to one line) instead of only "pi process
+  exited", which read as a connection problem even when the launcher never
+  connected to anything. The case it was hiding: a bundled `.app` starts with a
+  minimal `PATH`, and pi's `#!/usr/bin/env node` launcher exits with
+  `env: node: No such file or directory` when `node` lives under nvm, fnm,
+  volta, mise, or asdf. The child `PATH` now includes those install dirs (the
+  newest nvm/fnm version, and pi's own managed node), and every spawn that
+  needs node — the RPC session, `pi update`, the MCP probe, the RPC patcher —
+  resolves it from a `.app` launch. Settings → Runtime's stderr panel redacts
+  known MCP secret values before showing the child's lines.
+
+## [0.2.12] - 2026-10-24
+
+### Added
+
+- **Orbit Azure** and **Orbit Azure Light** are new themes, and they are the
+  appearance default: a charcoal (or cool near-white) canvas with a restrained
+  blue accent and accent-filled primary buttons. The original ember palette
+  stays available as **Orbit** / **Orbit Light**, unchanged in identity —
+  near-black canvas, ember accent, light primary buttons with dark ink. Saved
+  preferences keep working: `orbit` still resolves to the ember palette and the
+  old theme keys migrate as before.
+- Primary buttons now read a dedicated fill role (`action`) rather than the
+  accent, so a palette can use a neutral button fill without giving up its
+  accent for selection washes, focus, tints, and accent-colored text.
+- **Settings → Privacy → Temporary files** lists Orbit's scratch entries in
+  its `orbit-pi` folder inside the system temp directory, with each file's size
+  and age, an **Open folder** action, and **Clean up now**. The list covers
+  bug-report screenshots, update downloads, and helper scripts, plus older
+  top-level `orbit-*` leftovers, except entries a live Orbit process still
+  needs.
+- A separate **AI scratch files** group lists pi's own `pi-*` entries (shell
+  output, codemode images, share/editor working files) and removes only those
+  last used more than an hour ago. Neither section touches your workspace or
+  pi's session store.
+- **Linux arm64 builds** ship next to the x86_64 ones: a native `arm64` `.deb`
+  and an `aarch64` `.tar.gz`, built on the same release run and published as
+  their own update feed, so Orbit installs and updates natively on Arm machines
+  instead of only on x86_64.
+
+### Removed
+
+- **Thirty-six ported editor themes** are gone from Settings → Appearance.
+  Orbit's six palettes and **Flexoki** / **Flexoki Light** remain (plus the new
+  **Orbit Azure** pair), and the theme
+  dropdown now lists every palette for the mode in effect instead of hiding most
+  of them behind an "All themes…" disclosure. A saved preference that names a
+  retired theme still loads: dark keys fall back to Orbit, light keys to Orbit
+  Light.
+
+### Changed
+
+- Color is a single semantic vocabulary now. `Theme` exposes the design system's
+  complete surface/text/accent/status roles (`background`, `surface`,
+  `surface_secondary`, `surface_elevated`, `surface_hover`, `surface_active`,
+  `border`, `border_subtle`, `text_primary`, `text_secondary`, `text_muted`,
+  `text_disabled`, `accent`, `accent_hover`, `accent_pressed`, `accent_fg`,
+  `accent_text`, `selection`, `selection_fg`, `focus_ring`, `success`, `warning`,
+  `error`, `error_fg`, `info`), and every component paints through them instead of
+  the old per-palette names. The raw palette layer uses the same names, so a
+  palette edit touches one place.
+- Accent-colored text and icons read `accent_text` (a legible blue: `#6EA0FF` on
+  charcoal, `#1F5DD8` on light) while `accent` stays the fill role; selected
+  navigation and list rows paint `selection`, pressed/open controls paint
+  `surface_active`, and keyboard focus paints `focus_ring` (with `button_frame` /
+  `icon_button_frame` gaining a visible focus ring).
+- Status colors are checked as text: light success/warning/error and dark
+  Flexoki/Azure error were stepped until they clear 4.5:1 on the raised card, and
+  `text_muted` was lifted in every palette so metadata on a card stops falling
+  below AA. The default dark selection wash is `#2F3949` (one step below the
+  reference `#303A4B`) so accent labels on the active row clear AA too.
+- Disabled controls use `text_disabled` instead of a component-level
+  `opacity(0.5)`, so a dimmed control's label stays predictable in both themes.
+- The design-token spacing sweep is finished: every on-scale hard-coded
+  padding / margin / gap in the app's chrome (top-level view, transcript row
+  chrome, session strip, Sidepane, diff view, context meter, Explorer panel
+  and viewer, update dialog, Skills page, custom-UI surfaces, Git panel
+  widgets, dialogs) now resolves through `DynamicSpacing`, so all of it scales
+  with the UI font size and Spacing Density setting like the already-migrated
+  surfaces did. Optical 1–2px nudges, off-scale legacy rhythm values
+  (10/14/18/22px), and bespoke geometry keep their fixed px.
+- Repeated popover-width magic numbers became named constants (`BRANCH_MENU_W`,
+  `ACTION_MENU_W` in the Git panel; `MODE_POPUP_W` for the Access / Workflow
+  pickers), and a legacy NaN font-size value no longer panics startup — it
+  migrates to the default UI font size.
+
+### Added
+
+- **Image attachments are compressed at ingest.** A large PNG/JPEG attached to a
+  prompt is downscaled (longest edge 1400 px, never upscaled) and re-encoded as
+  JPEG (quality steps down to fit a 512 KiB base64 payload), while images with an
+  alpha channel become lossless WebP so transparency survives. Images already
+  under both caps pass through untouched, and animated GIFs pass through so their
+  frames survive. The status line reports the before/after size when an image
+  shrank, and both the composer chip and bug-report screenshots use the
+  compressed bytes — so a visual-debugging session can no longer balloon the
+  request body (see `docs/provider-request-limits.md`).
+
+### Changed
+
+- **Session-store scans are O(changed files).** The sidebar's session metadata is
+  now cached per file, keyed on the file's `(mtime, length)`, so a turn settle or
+  a watcher reload re-reads only the session files that actually grew instead of
+  rescanning the whole store (which could hold hundreds of MB). A watcher reload
+  that changed nothing no longer rebuilds the sidebar or repaints.
+
+- **The transcript's tok/s figure is labeled honestly.** It is an *average* over
+  the whole provider request (prefill plus decode), so it now reads `tok/s avg`
+  instead of implying instantaneous decode speed — the reason a long, mostly
+  cached prompt still shows a lower number.
+
+- **The navigation rail no longer rescans the message list every frame.** Its
+  user-turn index is cached in `Transcript` and rebuilt only when the message
+  list actually changes (messages only append or are rebuilt wholesale), so a
+  long transcript does not pay an O(message-count) pass on every render.
+
+### Debug
+
+- **Per-turn diagnostic log.** Debug builds (`cargo run`) print one `[orbit:perf]`
+  line to stderr when a turn settles — context window, cache read and hit rate,
+  uncached prompt, output, duration, and average rate — so a drop in tok/s can be
+  attributed to prefill vs. decode at a glance. This is local-only diagnostic
+  output, compiled out of release builds; nothing leaves the process.
+
+## [0.2.11] - 2026-10-21
+
+### Added
+
+- The new-task page's background is now a living ordered-dither field instead of a
+  static dot grid. An 8×8 Bayer screen of four dot sizes over a soft density field
+  covers the page edge to edge — densest in a band behind the composer, calmer but never
+  empty at the window's borders and corners — and drifts slowly enough that dots cross
+  their thresholds a few at a time, so
+  the page breathes instead of strobing. It reads the same dither language the photo
+  backdrop already speaks, costs no asset, follows the palette, and freezes under
+  Reduce Motion. A configured background image still replaces it.
+- The app monogram is screened into that field. Its mask is sampled from the mark the
+  binary already ships (`app-icon.png`) rather than redrawn, so the backdrop cannot drift
+  from the icon and a `cargo run` build never grows the Alpha pill; the glyphs hold a quiet
+  density at rest and a soft band of light crosses them about every twenty seconds, filling
+  each letter with the largest dot in turn. A window too small to hold the mark drops it.
+- The terminal panel is tabbed. ⌘T opens another shell in the current
+  workspace, ⌘W closes the active one (the panel closes with its last tab), and
+  ⌘⇧] / ⌘⇧[ step between tabs — all scoped to the terminal, so Ctrl+Tab still
+  reaches the shell and session cycling is untouched elsewhere. Where Ctrl+W and
+  Ctrl+T belong to the shell (Windows, Linux), the same actions take
+  Ctrl+Shift+W / Ctrl+Shift+T instead. A background
+  tab keeps its PTY alive: a build left running in one tab keeps running while
+  you work in another. Switching sessions no longer kills the shells either;
+  new tabs follow the active workspace, existing ones stay where they are.
+- Each tab carries its login-shell profile mark (zsh, bash, fish — the Simple
+  Icons shell logos, CC0), with the shell name and start directory on hover.
+  The panel also gained a proper resize handle above the tab strip, so the
+  header row belongs to the tabs instead of doubling as a drag target.
+
+### Fixed
+
+- Sending a prompt now shows the run immediately. The composer used to stay on
+  **Send** and the transcript stayed silent until pi's `agent_start` and the
+  first streamed token — on a slow provider, or a pi that was still booting,
+  the send looked dropped. The turn is now in flight from the moment you press
+  Enter: the composer flips to Stop, the transcript shows the live
+  “Working for…” row (its clock starting at the send), and a second Enter
+  queues a follow-up instead of racing a second prompt. A prompt pi rejects
+  unwinds that state, so nothing is left spinning.
+- macOS: closing the window no longer strands the app. The Dock icon kept its
+  running dot but a click did nothing — the reopen request macOS sends to a
+  windowless app had no handler, so only a full quit brought a window back.
+  Clicking the Dock icon (or the app's Dock tile) now opens the window again,
+  on the session that was still open — the shell, the pi process behind it,
+  and any stream that kept running while the window was closed all survive the
+  close. The heartbeat runs on the app rather than the window, so a run that
+  settles with no window open still posts its notification.
+
+## [0.2.10] - 2026-10-16
+
+### Changed
+
+- Trim chrome that restates the default (#62)
+
+## [0.2.9] - 2026-10-14
+
+### Changed
+
+- The composer's **model** and **thinking-level** pickers now read as one
+  quiet list: option rows sit one hairline-free `Base01` step apart (matching
+  the access/workflow menus) instead of a 6px gap with a hairline between
+  every row, the provider scope row is a touch tighter, and each row's
+  leading provider/reasoning tile stays neutral so ember marks only the
+  selected row's check. A full-height popover is ~36px shorter, and the key
+  legend can no longer wrap into a second line.
+
+## [0.2.8] - 2026-10-12
+
+### Added
+
+- **Report a bug** from Settings → Report a bug: choose an **issue type**
+  (bug / feature / other, which sets the GitHub label and the section names),
+  paste the context into the field at the top, and **Generate draft** turns it
+  into an issue title and description with the app's active model (falling back
+  to the notes when pi is unavailable). The form attaches the build details —
+  Orbit version, app ID, OS and architecture, install kind, pi CLI version, and
+  the signed-in `gh` account — and creates the issue through the `gh` CLI when
+  it is installed and signed in, otherwise opening GitHub's new-issue page with
+  the title, body, and label prefilled. **Screenshots** can be attached too:
+  they upload with `gh issue create --attach` when `gh` is signed in, and
+  otherwise GitHub's web form opens with the images saved to a temp folder to
+  drag in. The form is its own settings section (also reachable from the command
+  palette), and its strings are localized in all ten shipped locales.
+
+### Fixed
+
+- Removing a workspace from the sidebar no longer leaves its heading behind.
+  Workspace paths are canonicalized (symlinks resolved, so macOS `/tmp` and
+  `/private/tmp` are one folder) when the project list is loaded, when a folder
+  is added, and when the active workspace is set — so a session's recorded
+  `cwd` always lands under its project, a legacy store that listed the same
+  folder twice collapses to one entry, and one click removes the folder for
+  good.
+
+## [0.2.7] - 2026-10-09
+
+### Added
+
+- The Worktrees page opens with a short **How worktrees work** primer: what a
+  worktree is, how to create and open one, the optional
+  `.orbit/worktree-setup.sh` step, and the folder-vs-branch rule. It is
+  dismissible and stays gone once closed.
+- Git worktrees as first-class workspaces. A new Worktrees page (workspace
+  header menu or the `Open Worktrees` command) lists every worktree Git
+  reports, creates one from a new or existing branch (name, branch, and path
+  are independent concepts), opens it as the active workspace — Explorer,
+  terminal, Git page, Review, MCP scope, and the agent all follow its path —
+  and supports rename (directory only, never the branch), move, lock/unlock,
+  remove with a dirty-worktree confirmation, and advanced prune/repair. The
+  status bar's **Work in** chip switches between the main working directory and
+  any linked worktree and opens the create dialog with a suggested but fully
+  editable (custom) worktree name; the default root is `repo/.wt`, configurable
+  globally (Settings → Worktrees) and per repository (`.orbit/worktree.json`),
+  and an optional setup script (default `.orbit/worktree-setup.sh`, explicitly
+  allowed per repository on first use) runs asynchronously after creation with
+  `ORBIT_ROOT_PATH` and `ORBIT_WORKTREE_PATH`, keeping the worktree on failure.
+  Sessions record and restore the worktree path; an unavailable worktree is
+  surfaced instead of silently falling back to the main repository. See
+  `crates/orbit-pi/docs/worktrees.md`.
+
+### Changed
+
+- **Refresh** (⌘R, the File menu, or the command palette) now refreshes the
+  whole app, not just the session list. It re-reads sessions and settings from
+  disk, re-lists the active repository's worktrees, rebuilds the Explorer tree
+  and the Review diff, refreshes Git status, re-scans the Usage analytics,
+  re-reads the MCP config, and re-asks the running agent for its model/skill
+  catalog, session stats, and provider auth/quota. The menu and palette entry
+  is now labelled **Refresh** rather than **Refresh Sessions**.
+- Quieter chrome on the work surfaces:
+  - The sidebar's "star the project" card is gone — the same link stays in
+    Settings → About.
+  - Appearance drops the duplicate palette-swatch strip beside each theme
+    picker.
+  - The Usage page's cards lose their explanatory subtitles; the metric
+    captions that carry data stay.
+  - The status bar drops the redundant branch-count chip (the branch chip's
+    own popover lists every branch) and hides the MCP indicator while every
+    server is connected.
+  - The composer's Plan/Build/Ask chip is the single home for the workflow
+    scope: the new-task page no longer draws its own centred Mode control
+    (a block of tiles in the empty state). The chip sits with the other
+    agent controls on every composer, new task included, and still holds the
+    choice as pending until the session id exists.
+  - Settings → General states the notification trigger once — "When a run
+    finishes or pi needs an answer" — instead of repeating it on each of the
+    three channel rows.
+  - The pull-request detail page drops its metadata rail, which only
+    repeated the chips above it (review, checks, changes, branches). It now
+    reads as one centred column, with the opened/updated times folded into
+    the header line and the checkout/close/open actions moved below the
+    review actions.
+  - The pull-request list row now splits identity (number, title, labels,
+    author, branches) from status (review, checks, diffstat, time), which
+    reads down the right edge, and merged/closed rows carry their own state
+    glyph instead of a recoloured open-PR icon.
+  - The issue pages get the same treatment: the list row moves its comment
+    count into the right status column, and the detail page drops its rail —
+    assignees, the labels editor, and the updated time fold into the header
+    as one centred reading column.
+  - Inline code in the transcript keeps the body ink and its wash instead of
+    painting the glyphs in the accent. A code-heavy answer used to become a
+    field of ember and read as one long link; now only links carry the
+    accent, and code is marked by the mono face and the chip wash.
+  - The sidebar wordmark is held to a quieter size, so it labels the
+    workbench instead of reading as the column's headline.
+  - An expanded command tool call now reads as one terminal surface. The
+    **Command** and **Output** sections sit on a single recessed code plane
+    (`code_bg`) divided by a hairline, each with its label and copy control on
+    a shared axis, instead of two label-plus-body groups floating on the card
+    with only a gap between them. The command keeps its `$` prompt gutter, so
+    a wrapped command hangs under the first line.
+  - Settled tool activity is monochrome. Tool glyphs used to shift the accent
+    into a per-kind hue (amber for run, cyan for explore, green for mutate,
+    violet for web); a long transcript became a field of tinted badges. The
+    glyph shape already names the kind, so settled work now uses one muted
+    ink. Running still takes the accent and failure still takes red.
+  - Transcript cards (tool, summary, thought, ask) use the plain `border`
+    hairline instead of `border_strong`. `border_strong` is the focus/hover
+    edge; using it at rest made every card read a step too loud.
+
+### Fixed
+
+- Hover fills no longer square off rounded cards. gpui 0.2.2 clips
+  `overflow_hidden` to a rectangle, not the border radius, so a full-bleed
+  child background painted square corners over the rounded edge. The tool
+  card's header (the reported case), its error strip and detail surface, the
+  summary card's header, the code-block title strip, and the MCP server rows'
+  first/last entries now carry the matching corner radius themselves.
+- Two `tr!` call sites bound the wrong placeholder name, so the literal token
+  was printed instead of the value: the tool-detail and edit-diff fold labels
+  showed `Show all %{count} lines` (the call bound `total` for a `%{count}`
+  key), and a failed branch creation toasted `Branch create failed: %{err}`
+  (the call bound `error`). Both now bind the declared name.
+  `scripts/check_i18n.py` gained a placeholder pass so the class cannot
+  recur — it validates every `tr!` call's bindings against its key's
+  `%{…}` placeholders and exits non-zero on a mismatch.
+- A truncated tool result no longer renders its **truncated** chip twice in
+  the activity row; the chip was queued twice back-to-back.
+- The transcript no longer writes a per-render `[card-dbg]` line to stderr
+  for every read/edit/write tool card.
+- The transcript's **tok/s** rate reads correctly again. It was measured
+  client-side from the gaps between pi's streamed deltas, but pi emits the
+  response in bursts, so that window collapsed to a fraction of the real
+  generation and the rate ballooned (e.g. `600 tok/s` against a true ~100).
+  The settled rate now uses pi's own per-call `durationMs`, and the live rate
+  divides by the time since the turn's `turn_start` — the same clock basis —
+  so the two figures agree.
+- Baseten's provider-usage readout works again. Its billing summary requires
+  an explicit ISO 8601 `start_date`/`end_date` range (31 days maximum), so the
+  old `?window=30d` query returned HTTP 400 and the Providers page showed an
+  error instead of a spend figure. The adapter now asks for a rolling 30-day
+  window and sums the response's `dedicated_usage`, `training_usage`, and
+  `model_apis_usage` totals — the shape Baseten actually returns — showing the
+  combined spend with a per-category breakdown.
+- The issue and pull-request detail headers no longer collapse their meta
+  line to one character per line. The text beside the state chip is now
+  `flex_1` + `whitespace_normal`, so it takes the column's remaining width
+  and wraps there instead of shrinking inside a wrapping flex row and
+  overrunning the rows beneath it.
+- A review or comment card with no body (a bare approval, for example) no
+  longer draws a stray hairline across its bottom — the header rule that
+  separates a body from its header now appears only when there is a body.
+- RPC patch auto-apply now locates the pi package for pi's **managed
+  installer** as well as npm/pnpm/bun globals. The managed launcher at
+  `<agent>/bin/pi` is not inside a `node_modules`, so the old ancestor walk
+  never reached the package at
+  `<agent>/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent`
+  and the Settings → Runtime row read *pi package not found*. Resolution now
+  handles that layout on every platform — via `PI_MANAGED_INSTALL_ROOT`,
+  `install/current-version`, or the newest release — searches the usual
+  install roots when even the launcher is missing. The resolved path is
+  recorded in `~/.orbit-pi/rpc-patches/config.json` (shown as **Package
+  root** in Settings); the live launcher stays authoritative, so the row
+  follows `pi update` to the new release dir and the saved path is only the
+  fallback when no launcher resolves. Override for a single run with
+  `PI_PACKAGE_ROOT`; the bundled `contrib/pi-*-rpc/apply.mjs` scripts honour it
+  and fall back to the managed layout, so hand-runs work too.
+
+## [0.2.6] - 2026-10-07
+
+### Added
+
+- The live **Working for…** line now shows the streaming output rate — e.g.
+  **Working for 12s · 42 tok/s**. The rate is generation-only: output
+  tokens over the time the model was actively decoding, so tool execution,
+  round-trips, and provider stalls don't drag it down. Tokens come from the
+  provider's cumulative `usage.output` when reported, with a `chars/4`
+  estimate otherwise; the client-measured decode window carries through to
+  the settled footer, where the `↑in ↓out · $cost` metric also shows the
+  rate and the hover breakdown gains a **Rate** row.
+
+### Fixed
+
+- The cache hit rate no longer reads 100% for a session that wrote cache.
+  pi normalizes the token buckets as disjoint, so the denominator now
+  includes cache-write tokens — `cache reads / (reads + uncached input +
+  writes)` — instead of only reads and uncached input. A share below the
+  whole is also withheld from rounding up to a displayed `100%` (it shows
+  `99.9%`), and cache rates now render to one decimal.
+
+## [0.2.5] - 2026-10-06
+
+### Changed
+
+- Filled buttons now read as raised from the surface: each carries a soft
+  top-lit gradient built from its own fill color plus a short contact/ambient
+  shadow (`RaisedExt::raised` in `theme/tokens.rs`). Segmented controls get the
+  gradient without the per-segment shadow; ghost icon buttons and disabled
+  buttons stay flat.
+
+### Fixed
+
+- Switching to a session in another workspace no longer kills the one that is
+  running. The MCP config fingerprint is workspace-specific, but the
+  parked-session resume check compared it against the workspace being left,
+  so every cross-workspace switch looked like an MCP change and dropped
+  (killed) the parked process — truncating its stream mid-turn. The check now
+  uses the target session's own workspace, and a busy run is never dropped for
+  staleness (#46).
+- A parked session no longer stalls mid-run when a tool asks for approval.
+  Its `extension_ui_request` is now cancelled with the top-level
+  `cancelled` flag pi expects; the previous payload nested it under `value`,
+  so the extension kept waiting and the background run stayed `busy` forever
+  (#46).
+
+## [0.2.4] - 2026-10-02
+
+### Added
+
+- **⌘⇧G** opens the Git/GitHub page (and closes it again), and the **…**
+  overflow menu now shows each row's shortcut — the Git row reads **⌘⇧G**.
+
+### Changed
+
+- The Git page's commit message box now matches the chat composer: the
+  multi-line editor and its action row share one rounded, lifted surface, so
+  the message reads as a text area instead of a one-line field. **Enter**
+  inserts a newline and **⌘↵** / **Ctrl+Enter** commits.
+- The top bar's right side now carries only what shows live state: the
+  provider quota, **Open in**, the Review chip, and a single **…** menu. The
+  Review chip folds together the side-panel toggle and the working tree's
+  `+N −N` counts (one or the other); the new **…** menu holds **Session
+  details**, **Explorer**, **Terminal**, and **Git**, each still on its
+  shortcut and one click away.
+- Stashes moved off the Git page's **Changes** tab onto their own **Stashes**
+  tab (⌘⌥4), so **Changes** stays the review browser plus commit bar; the
+  **Issues** and **Pull requests** tabs moved to ⌘⌥5 and ⌘⌥6.
+
+### Fixed
+
+- Switching to another session no longer kills a session that is still
+  starting. A process pi has not named a session file for yet parks in a
+  pending pool, keeps draining its run, and joins the warm pool under its
+  file as soon as the boot handshake names it — instead of the incoming
+  session's adopt dropping (and killing) it (#46).
+
+## [0.2.3] - 2026-10-01
+
+### Added
+
+- Add MCP server management, settings UI, and status (#45)
+- Check installed packages for updates and surface a notice (#43)
+
+### Changed
+
+- Feat/add star the repo button (#44)
+
+## [0.2.2] - 2026-09-30
+
+### Added
+
+- Hover hints now carry the shortcut: the model and thinking chips, New Task,
+  the sidebar's Search/Usage rows, the top-bar panel toggles, the Git page
+  tabs, and the workspace **+** use registry-backed tooltips ("Choose Model
+  (⌘⇧M)"), and hovering a session row shows the **⌘1…⌘9** slot that opens it.
+
+- A single command registry now backs the keymap, the command palette, and
+  Settings → Shortcuts, so a chord, its chip, and the action it runs can never
+  drift apart. The palette gained **Rename Session**, **Pin / Unpin**, **Clone
+  Session**, **Delete Session**, **Choose Model** (⌘⇧M), **Choose Thinking
+  Level** (⌘⇧T), **Review Changes** (⌘⇧R), and **Keyboard Shortcuts** (⌘/).
+
+- Session management is number- and cycle-addressable: **⌘1…⌘9**
+  (**Ctrl+1…9**) open the Nth session in the sidebar's visible order, and
+  **Ctrl+Tab / Ctrl+Shift+Tab** cycle to the next or previous session. The
+  palette also lists **Next Session** and **Previous Session**.
+
+- The Review pane is fully keyboard operable: `Tab` / `Shift+Tab` move between
+  the workbench's focus stops, arrows walk the changed-files tree, `Enter`
+  opens a file or toggles a folder, `n` / `p` jump between changed files,
+  `[` / `]` jump between hunks, `e` / `c` expand or collapse every file, and
+  `Escape` returns to the chat. The composer's autocomplete and the terminal
+  keep `Tab` for their own use.
+
+### Changed
+
+- The Git page tabs moved from ⌘1…⌘5 to **⌘⌥1…⌘⌥5** (**Ctrl+Alt+1…5**) so
+  the number keys can address sessions directly.
+
+### Fixed
+
+- Orbit and `orbit-rpc` also probe `~/.pi/agent/bin` for the `pi` launcher,
+  alongside the npm/pnpm/bun home dirs they already checked. A bundled `.app`
+  never inherits the shell PATH that contains it, so a pi installed there used
+  to read as missing.
+
+- Shortcuts that were advertised but macOS-only (`cmd-` editor clipboard and
+  undo, Files close, Git page tabs) now use the platform modifier, so Windows
+  and Linux get the same keys. The ⌘. abort chord was dead — gpui names the key
+  `.`, not `period` — and now fires.
+
+- Compaction and branch summaries now appear in the transcript as boundary
+  cards: **Compaction — Compacted from 150K tokens** (click to expand the
+  summary) and **Branch summary**. A successful compaction also re-reads pi's
+  compacted context right away, so the summarized history is replaced by the
+  summary the moment it lands instead of lingering until the session is
+  reopened.
+
+## [0.2.1] - 2026-09-29
+
+### Changed
+
+- Dropdown menus across the app now match the branch selector's popover
+  style: one surface treatment, roomier rows with the same hover, and the
+  current choice marked with the active fill and a check. This covers the Git
+  page's Sync and "…" menus, changed-file and merge/rebase menus, the Review
+  source menu, the Usage filter and row menus, the composer's add/mode
+  popups, and the sidebar session menu; the branch, label, template, and
+  Settings pickers now share the same row treatment. Right-click context
+  menus stay compact.
+
+### Fixed
+
+- The Issue page's **Label** dropdown now closes when its trigger is clicked a
+  second time. The popup dismissed on mouse-down and the trigger's mouse-up
+  re-opened it on the same click; the trigger now honors the same gesture
+  guard every other dropdown uses.
+
+- **New Task** now starts a fresh session when pi has exited instead of doing
+  nothing. With no turn in flight the button sent `new_session` to the live
+  process, so while the reconnect banner was up the command went into the dead
+  process's stdin and was never answered; it now spawns a replacement whenever
+  the process is not alive, dropping the corpse and its stale exit banner. The
+  sidebar's workspace **+** gets the same fix.
+
+## [0.2.0] - 2026-09-28
+
+### Added
+
+- The Git page's **Issues** and **Pull requests** forms now discover the repository's own
+  templates (`.github/ISSUE_TEMPLATE/` Markdown and YAML issue forms, plus
+  `.github/PULL_REQUEST_TEMPLATE.md` and its variants). A lone template applies
+  automatically; with several, a **Template** picker (including **Blank**) chooses one.
+  The choice prefills the title prefix and body skeleton — a YAML issue form is flattened
+  into Markdown — and its `labels:` ride along on **Create**.
+
+- The Git page's **Issues** and **Pull requests** forms can now draft their title and
+  Markdown body with a **Generate** button. Add optional notes (or leave them blank) and
+  Orbit makes the same one-shot, tool-free `pi -p` call the commit-message generator uses,
+  reading the branch, its commits, and its changed files; when pi is missing or has no
+  credentials it falls back to a local heuristic built from those same facts. Nothing is
+  created until you review the draft and press **Create**.
+
+- Every icon-only button across the app now carries the same native tooltip the
+  send / stop button has — a localized label, usually with its keyboard shortcut
+  (e.g. `Toggle Terminal (⌘J)`). Covers the top bar, sidebar, transcript copy /
+  diff controls, composer add button, window caption buttons, Explorer, Review
+  pane, Git, Usage, terminal, settings, and the picker / dialog controls.
+
+- The sidebar's Projects list now defaults to most recent activity, with a
+  sort control on the header to order workspace groups by recently added, name
+  (A–Z or Z–A), or session count, or fall back to the manual added order. The
+  choice persists in `~/.orbit-pi/workspaces.json` and each project now records
+  when it was added.
+
+- Each project in the sidebar can now wear its own mark: pick from a curated
+  set of the bundled HugeIcons and tint it with one of eight semantic colors
+  (which follow the active palette). Reach it from the workspace header's `⋯`
+  menu → **Icon & color**, with a Reset back to the folder default. The choice
+  persists in `~/.orbit-pi/workspaces.json` beside the project list.
+
+### Fixed
+
+- Images in issue/PR bodies, comments, and transcripts now render. The markdown image
+  element forced a definite `height: 0`, and gpui derives a missing width from a definite
+  height before the image decodes (0 × ratio), so a loaded screenshot collapsed to a 0×0
+  box with only its border visible. The height is left auto now: the image scales to the
+  reading column and taffy keeps its aspect ratio.
+
+- Screenshots in replies load again when GitHub stored them as signed
+  `private-user-images.githubusercontent.com/…?jwt=…` URLs. That JWT expires within
+  minutes, so the app got a 404 and showed the alt-text fallback; the renderer rewrites
+  the URL to the durable `github.com/user-attachments/assets/<uuid>` form encoded in the
+  filename, which serves the same image.
+
+- GitHub issue/PR bodies and comments now render screenshots that GitHub stored as raw
+  HTML `<img src="…">` tags when the line is inside a blockquote or list item — a quoted
+  bug report is a common case. Previously only a standalone top-level `<img>` line became
+  an image, so these showed the tag as text; the whole tag/its URL rendered as a link.
+
+- The **New pull request** form's **Base branch** picker, and the **Template** pickers on
+  both new-issue/new-PR forms, no longer float over the wrong part of the form or paint
+  behind its fields. They are anchored to the chip that opens them (opening upward at the
+  bottom of the PR form), draw above the form, and use the top branch selector's dropdown
+  chip (glyph, value, chevron) and picker surface — list inset, rows, and search row for
+  the branch list.
+
+- The **Issues** tab's **Label** picker — the list filter chip and the detail view's
+  **Edit labels** button — no longer opens at the page's top-right over the issue list.
+  It anchors to the button that opened it, opens directly beneath it, and uses the same
+  picker surface and rows as the branch selector.
+
+- The conversation rail's active tick now follows every navigation path, not
+  just wheel and scrollbar gestures. Clicking a tick and pressing ⌘↑/⌘↓ scroll
+  the list programmatically, which never fired gpui's scroll handler, so the
+  highlight stayed on the turn the reader left behind. Repeated ⌘↑/⌘↓ presses
+  also walked a single turn and stalled; they now step through the transcript,
+  and ⌘↑ from the live edge jumps back to the previous turn instead of doing
+  nothing. The viewport hint wins while a run streams too, so scrolling up to
+  read history moves the rail even mid-stream.
+
+- The sidebar's project headers now stay pinned as you scroll through *any*
+  expanded group, not just the active workspace. Previously only the open
+  workspace's header was sticky, so a long list under the first project pinned
+  while every other expanded project scrolled its header away.
+
+- The "open in" menu's app icons are crisp and no longer tiny. macOS returns an
+  icon whose largest representation is 1024×1024, and the menu embedded that PNG
+  unchanged, so the renderer's single bilinear pass had to squeeze it into a
+  14px slot — the blur. Icons are now rasterized to exactly the pixel size the
+  menu draws (36×36 for the now-18px slot, matching a Retina blit 1:1), which
+  also drops each embedded icon from roughly 1 MB to 2 KB.
+
+## [0.0.19] - 2026-09-28
+
+### Changed
+
+- **The Review pane gained view controls.** The changed files collapse to their
+  headers or expand back in one click (each header is its own toggle), long lines
+  wrap or unwrap (unwrapping pans only the diff body — the file name and change
+  counts stay fixed at the pane's edges), the diff switches between unified and
+  side-by-side rows, and the pane can own the page — the session view yields and
+  the sessions sidebar opens beside it — or minimize to a rail, returning to the
+  docked side pane first. All icon toggles with tooltips.
+
+### Added
+
+- Settings → Agent → Behavior now lets Enter queue a follow-up (the existing
+  default) or steer the running task. The preference persists across launches
+  without changing pi’s settings or messages already queued.
+- Compact Send/Steer/Queue hints on the right side of the composer footer,
+  immediately left of the context-window indicator, plus send/steer/stop tooltips.
+  Settings → Shortcuts reflects the selected default. Hints remain visible with
+  an empty draft; the newline shortcut stays in Settings rather than adding
+  clutter below the composer.
+- Transcript tool cards show the file's language icon on `read` / `edit` /
+  `write` rows and on the changed-files summary. `web_fetch` rows show the URL
+  as a clickable link with the scheme hidden, and `web_search` rows show the
+  query instead of the raw arguments JSON.
+- Bare `http(s)://` URLs in user and assistant prose are links now: accent
+  colored, underlined, marked with the HugeIcons external-link arrow, and
+  opened in the default browser on click. Markdown `[label](url)` links keep
+  their own label.
+
+### Changed
+
+- Alt/Option+Enter uses the opposite sending mode; ⌘⇧Enter / Ctrl+Shift+Enter
+  remains an explicit steer. Idle sends still start a normal prompt, and
+  Shift+Enter still inserts a new line. Steering and alternate-send shortcuts
+  are scoped to the chat input so they cannot submit drafts from other fields.
+
+### Fixed
+
+- File icons render everywhere they are used (the Explorer tree, `@file`
+  mention rows, attachment chips, and Git changed-file rows). The bundled Nerd
+  Fonts symbols face was embedded in the app but never registered with the text
+  system, so every devicon silently fell back to a text extension badge.
+
+### Fixed
+
+- Dragging the header of a window that is maximized on the primary display no
+  longer locks the app up: the drag now starts the system's caption-move
+  command instead of posting a non-client left-button message, which GPUI
+  dispatches back into the drag region and the drag region answers with another
+  post. Restoring and moving at the start of the drag behave like a native
+  titlebar.
+- The Git page's Back button leaves the page again: the leading controls (Back
+  and the page title) now sit outside the window drag region, so pressing them
+  no longer starts a window move that swallows the click. The empty bar after
+  the controls still drags the window.
+
+## [0.0.18] - 2026-09-26
+
+### Added
+
+- **Default session model** — Settings → Agent can pick the model and thinking level
+  every new session starts on, whichever workflow mode it runs in. The choice lives
+  in Orbit's own `~/.orbit-pi/session-defaults.json` (pi's global settings file is
+  untouched), rides the spawn flags for a session's first turn and
+  `set_model` / `set_thinking_level` RPC for every later session in a live process,
+  and leaves pi's own default alone when unset. The thinking options are the levels
+  pi itself derives for the selected model, so the control tracks the model rather
+  than the live session. Resumed sessions keep the model in their file; the
+  composer chip still changes model / thinking per session.
+- **Zed design tokens** — `theme/tokens.rs` ports Zed's sizing system: dynamic
+  spacing with Compact / Default / Comfortable density, text / headline / icon /
+  button sizes, list, popover, context-menu, modal, tooltip, input and scrollbar
+  metrics, the corner-radius scale, elevation shadows with `elevation_1/2/3`, and
+  motion durations. Tokens equal Zed's default pixels at Orbit's defaults and
+  follow the UI font size and Spacing Density settings.
+
+### Changed
+
+- Context menus (sidebar session / workspace, Explorer, Git sync / branch / file)
+  now follow Zed's context-menu metrics: 200px minimum width, 23px entries,
+  14px text and icons, Base04 / Base06 insets, `ListSeparator` spacing, an 8px
+  radius with Zed's lighter popover shadow, and an 8px window-edge margin.
+  Their sizes now scale with the UI font size.
+- Tooltips use Zed's tooltip metrics: offset off the cursor, 14px text, and
+  wrapping at 288px instead of overflowing on one line.
+- Extension dialogs use Zed's modal layout: `ModalHeader` / section / footer
+  insets, a Small headline, a 32px input field, 32px confirm buttons, and the
+  four-layer modal shadow.
+- The remaining floating modals — provider usage / API key / provider editor
+  (Settings), the update dialog, and the custom-UI card — use Zed's
+  `ModalSurface` (`elevation_3`): the four-layer shadow, an 8px radius, and
+  `ModalHeader` / section / `ModalFooter` insets. The legacy heavier
+  `popover_shadow` helper is gone.
+- Sidebar session and workspace rows use Zed's list-item tokens: a 4px
+  (`rounded_sm`) hover/selection radius, `TextSize` for title / label / metadata
+  text, and `DynamicSpacing` for their padding and gaps.
+- Transcript chrome follows the token scales: message-row padding, user-bubble
+  radius / padding / text, tool and question card shells and headers, tool error
+  strips, and the usage footer metric and breakdown card now read `TextSize`,
+  `DynamicSpacing`, `Radius`, and `BufferLineHeight` instead of ad-hoc px.
+- Settings chrome follows the token scales: the page header, section labels,
+  grouped boards, and `setting_row` layout use `TextSize` / `DynamicSpacing` /
+  `Radius`, the row separators use the 1px hairline token, and keycap chips size
+  to `ButtonSize::Default` height. Setting cards and toolbars migrate next.
+- Spacing is unified on `DynamicSpacing`. The ad-hoc `Theme::space` helper — which
+  scaled with density but ignored the UI font size — is removed, and its ~185
+  call sites (mostly the Git panel, Usage page, and Settings) now resolve through
+  the token scale, so they follow the UI font size too.
+- UI type is unified on `TextSize`. ~370 `.text_size(theme.ui_px(…))` sites snap
+  onto the 10 / 12 / 14 / 16 scale (`XSmall` / `Small` / `Default` / `Large`); at
+  most a 1px shift each. Sub-10px badge glyphs and 17px+ display headings, which
+  the UI scale doesn't cover, keep their sizing.
+- Corner radii are unified on `Radius`. gpui's fixed `rounded_sm/md/lg/xl` helpers
+  and every on-scale `rounded(px(N))` (`2/4/6/8/12`) now resolve through the theme,
+  so card, chip, and input corners also follow the UI font size.
+- One-shot transitions adopt `AnimationDuration` (`Fast`, 150ms). Looping affordances
+  (spinner, shimmer, streaming) and feedback timers keep their own cadences, which
+  the three-value token scale doesn't cover.
+- The settings page is fully on the token scales. Its side nav, headers, sections,
+  rows, toolbars, select popups, cards, and modals now read `DynamicSpacing` /
+  `TextSize` / `Radius` / `ButtonSize`; the last gpui spacing utilities and raw px
+  literals are gone, leaving only bespoke geometry (avatar / dot / toggle sizes,
+  fixed panel and modal widths).
+- The Usage page (and its chart / heatmap / table / filters / tooltip modules) is on
+  the same scales: all spacing, type, and on-scale radii resolve through the tokens;
+  only chart and table geometry keeps its own px.
+- Every input box follows the `InputField` tokens. The branch picker's create-branch
+  field (previously frameless) now uses `input_field_frame`, and the Ask panel's
+  custom-answer field uses `DynamicSpacing` offsets; all other single-line inputs
+  already routed through `input_field_frame` / `picker_search_frame`. The main
+  composer, file editor, and inline tree rename stay bespoke components.
+- Every search box is the picker search row (`picker_search_frame`), matching the
+  command palette: the settings / Git / Usage searches and the skills filter were
+  boxed `InputField`s and now share the palette's flat 36px row, so all searches
+  read identically. The Git panel's issue / pull-request search grows to fill its
+  filter bar and shrinks when tight (min 160px) instead of a fixed 200px, so the
+  Pulls tab no longer overflows with its extra state chip.
+- The session-details title (rename) input follows the `InputField` tokens: its
+  block uses `DynamicSpacing` / `input::gap` / `input_label` / `input_field_frame`,
+  and the Generate-title and Update buttons size to `ButtonSize::Large` (32px) so
+  the row lines up with the 32px field.
+- Picker ↑/↓ now scroll the focused row into view. The command palette,
+  workspace picker, and branch picker set a **positive** `ScrollHandle` offset,
+  but gpui stores it **negative** once scrolled down (the model selector already
+  negated it) — so the list never actually scrolled and the highlight walked
+  off-screen, looking like ↑/↓ did nothing. They negate it now, and the palette
+  also scrolls against its actual (window-capped) list height instead of the
+  uncapped `list_max_h`. Two command-palette tests cover the ↑/↓ move and its
+  scroll-into-view; the scroll test fails on the old sign.
+- The model picker had the same ↑/↓-doesn't-stick symptom for four reasons,
+  all now fixed. (1) Its open-time "pin the highlight to the active model"
+  re-ran on **every** render for the first 400 ms (the hover-suppression
+  window), so a ↓ pressed right after opening was silently snapped back; the
+  pin now runs only on a genuine open / catalog change. (2) Its deferred scroll
+  re-targeted the active model for up to 250 ms after open; it now follows the
+  current highlight. (3) pi re-reports the whole catalog on every `get_state`,
+  and `set_catalog` re-armed the pin and re-scrolled to the active model each
+  time — so any periodic sync undid an ↑/↓ while the popup was open. An
+  unchanged `set_catalog` is now a no-op. (4) The pin stayed armed until the
+  popup's *first* render, so a ↑/↓ arriving before that frame (or right after a
+  scope change / catalog refresh re-armed it) was undone by it; a deliberate
+  ↑/↓ now cancels the pin. Covered end to end as well: a test opens the real
+  `OrbitApp` with the real `bind_keys`, asserts the popup's filter actually
+  holds focus, and steps the highlight through several presses.
+- Picker rows no longer move the keyboard highlight on hover: the command
+  palette, workspace picker, and extension-dialog option rows used `on_hover` to
+  follow the pointer, and `on_hover` re-fires whenever hit-testing changes — so
+  scrolling a row under a stationary pointer hijacked the highlight. They use
+  `on_mouse_move` now, so only real pointer movement moves it.
+- Single-line inputs no longer wrap. Every `ComposerInput` capped at
+  `with_max_lines(1)` — the session-details name, the Git branch field, the
+  provider / model / plugin / skill filters, the usage searches, the extension
+  dialog, and the find bar — now also sets `with_wrap(false)`, so a long value is
+  clipped at the edge instead of wrapping into a second row and painting the
+  editor's vertical scrollbar. Non-wrapping text also scrolls horizontally to
+  follow the caret, so typing past the field's width still shows what you type
+  (clipped to the text area, so the code editor's gutter stays put).
+- The Git panel's tab strip is on the §5 button language: each tab is a
+  `button_frame(ButtonSize::Medium)` — the same 28px height, `Base08` padding,
+  `Base04` gap, `button::RADIUS` (4px), and Default label as the branch chip and
+  the panel's filter chips — so the tabs and the chips beside them read as one
+  system. The tab strip and branch row are `Base40` tall, and the whole panel's
+  spacing resolves through `DynamicSpacing` (one shared `tab_bar` for Changes /
+  History / Graph / Issues / Pulls).
+- The sidebar's New Task, Search, and Usage controls share one
+  `button_frame(ButtonSize::Large)`: the hand-rolled 28px Search / Usage rows
+  now match the New Task button's height, `Base08` padding, `button::RADIUS`
+  (4px), and Default label, while keeping their ghost treatment (no fill or
+  border, hover only) — one evenly sized stack.
+- The model selector's option rows keep the picker's two-line token height. A
+  capped list is a flex column, so without `flex_none` every row shrinks toward
+  the `picker_entry` minimum (31px) instead of `picker::two_line_entry_height`
+  (50px), leaving the 28px leading provider / thinking chip with almost no
+  vertical padding. The no-match empty row, its provider-header gap, and the
+  row's hover highlight are on the same tokens / `on_mouse_move` as the other
+  pickers.
+
+### Fixed
+
+- The model and thinking chip pickers keep keyboard focus when opened from
+  their composer chip. The composer box's own mouse-up handler (which focuses
+  the input) is an ancestor of the chip and ran after it in gpui's bubble
+  order, so ↑/↓/Enter/Escape went to the composer instead of the popup. The
+  composer box now leaves focus alone while any of its popovers is open, and a
+  click inside the model popup no longer bubbles out to it.
+- The top-bar provider-quota popover no longer clips its last provider card
+  when several accounts are connected: the card list scrolls inside the
+  popover's height cap instead of stretching past it. The list now carries its
+  own max height rather than living in a `flex_1` body — inside the deferred,
+  anchored popover the available height is zero, where a flexible child
+  collapses and the overflow is clipped.
+
+## [0.0.17] - 2026-09-25
+
+### Added
+
+- **Workflow modes** — plan, build, or answer instead of one undifferentiated
+  chat. A session is scoped **Plan**, **Build**, or **Ask** from the New Task
+  page or the composer chip, per session. Plan and Ask are read-only: the
+  bundled `orbit-workflow-extension` disables the write tools, gates `bash` to
+  a read-only allowlist, and injects mode guidance, re-arming live sessions
+  from `~/.orbit-pi/workflow.json` with no restart.
+- **AI review agent** — a read-only reviewer over the current change set or the
+  whole project, from the Review pane's sparkles menu or the command palette.
+  It runs on its own pi process scoped to Ask mode (so the chat session and
+  transcript are untouched), launched with `ORBIT_REVIEW=1` so the access guard
+  never blocks its read-only `git diff`. Findings parse from a fenced JSON
+  block into severity-chipped rows that scroll the diff to the offending file;
+  the answer's prose is kept when no findings parse.
+
+## [0.0.16] - 2026-09-24
+
+### Added
+
+- Add structured data, harden headers, and extend cache windows
+- Rebuild landing around story sections and refresh OG
+
+### Changed
+
+- Feat/UI refinement (#23)
+
 ## [0.0.15] - 2026-09-23
 
 ### Added
@@ -285,7 +1846,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In-transcript find (⌘F) and a full-window image lightbox.
 - Native macOS app bundle, Developer-ID signed and notarizable.
 
-[Unreleased]: https://github.com/imrj05/orbit/compare/v0.0.15...HEAD
+[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.18...HEAD
 [0.0.1]: https://github.com/imrj05/orbit/releases/tag/v0.0.1
 [0.0.2]: https://github.com/imrj05/orbit/releases/tag/v0.0.2
 [0.0.3]: https://github.com/imrj05/orbit/releases/tag/v0.0.3
@@ -301,3 +1862,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.13]: https://github.com/imrj05/orbit/releases/tag/v0.0.13
 [0.0.14]: https://github.com/imrj05/orbit/releases/tag/v0.0.14
 [0.0.15]: https://github.com/imrj05/orbit/releases/tag/v0.0.15
+[0.0.16]: https://github.com/imrj05/orbit/releases/tag/v0.0.16
+[0.0.17]: https://github.com/imrj05/orbit/releases/tag/v0.0.17
+[0.0.18]: https://github.com/imrj05/orbit/releases/tag/v0.0.18
+[0.0.19]: https://github.com/imrj05/orbit/releases/tag/v0.0.19
+[0.2.0]: https://github.com/imrj05/orbit/releases/tag/v0.2.0
+[0.2.1]: https://github.com/imrj05/orbit/releases/tag/v0.2.1
+[0.2.2]: https://github.com/imrj05/orbit/releases/tag/v0.2.2
+[0.2.3]: https://github.com/imrj05/orbit/releases/tag/v0.2.3
+[0.2.4]: https://github.com/imrj05/orbit/releases/tag/v0.2.4
+[0.2.5]: https://github.com/imrj05/orbit/releases/tag/v0.2.5
+[0.2.6]: https://github.com/imrj05/orbit/releases/tag/v0.2.6
+[0.2.7]: https://github.com/imrj05/orbit/releases/tag/v0.2.7
+[0.2.8]: https://github.com/imrj05/orbit/releases/tag/v0.2.8
+[0.2.9]: https://github.com/imrj05/orbit/releases/tag/v0.2.9
+[0.2.10]: https://github.com/imrj05/orbit/releases/tag/v0.2.10
+[0.2.11]: https://github.com/imrj05/orbit/releases/tag/v0.2.11
+[0.2.12]: https://github.com/imrj05/orbit/releases/tag/v0.2.12
+[0.2.13]: https://github.com/imrj05/orbit/releases/tag/v0.2.13
+[0.2.14]: https://github.com/imrj05/orbit/releases/tag/v0.2.14
+[0.2.15]: https://github.com/imrj05/orbit/releases/tag/v0.2.15
+[0.2.16]: https://github.com/imrj05/orbit/releases/tag/v0.2.16
+[0.2.17]: https://github.com/imrj05/orbit/releases/tag/v0.2.17
+[0.2.18]: https://github.com/imrj05/orbit/releases/tag/v0.2.18

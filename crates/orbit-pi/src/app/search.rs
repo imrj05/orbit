@@ -5,7 +5,8 @@
 //! document-wide render pass.
 
 use super::*;
-use crate::app::{press, BUTTON_GROUP};
+use crate::app::{icon_button_frame, picker_search_frame, press, BUTTON_GROUP};
+use crate::theme::tokens::{input, ButtonSize, StyledExt, TextSize};
 
 /// State for the open find bar. Dropping this closes the surface.
 pub(super) struct TranscriptSearch {
@@ -45,6 +46,7 @@ impl OrbitApp {
                 .with_key_context("Composer Search")
                 .with_element_id("transcript-search-input")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let handle = input.read(cx).focus_handle(cx);
         self.transcript_search = Some(TranscriptSearch {
@@ -96,7 +98,20 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Enter may be confirming an IME candidate in the find field; jumping
+        // to another hit on that keystroke moves the reader's place for a key
+        // the IME owns (issue #100).
+        if self.search_field_composing(cx) {
+            return;
+        }
         self.step_search(true, cx);
+    }
+
+    /// Whether the find field is mid-composition, so ⏎/⇧⏎ wait for the IME.
+    fn search_field_composing(&self, cx: &Context<Self>) -> bool {
+        self.transcript_search
+            .as_ref()
+            .is_some_and(|search| search.input.read(cx).is_composing())
     }
 
     pub(super) fn on_search_prev(
@@ -105,6 +120,9 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.search_field_composing(cx) {
+            return;
+        }
         self.step_search(false, cx);
     }
 
@@ -178,70 +196,74 @@ impl OrbitApp {
         };
         let nav_enabled = count > 0;
         Some(
-            div()
-                .id("transcript-search")
-                .debug_selector(|| "transcript-search".to_string())
-                .absolute()
-                .top(px(10.))
-                .right(px(16.))
-                .w(px(320.))
-                .occlude()
-                .rounded(px(10.))
-                .popover_surface(theme)
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(9.))
-                .h(px(34.))
-                .font_family(theme::ui_font_family())
-                .key_context("Search")
-                .on_action(cx.listener(Self::on_search_next))
-                .on_action(cx.listener(Self::on_search_prev))
-                .on_action(cx.listener(Self::on_search_close))
-                .child(icon("icons/search.svg", 13., theme.text_3))
-                .child(search.input.clone())
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_3)
-                        .child(label),
-                )
-                .child(search_nav_button(
-                    "search-prev",
-                    "icons/chevron-up.svg",
-                    !nav_enabled,
-                    theme,
-                    cx.listener(|this, _, _, cx| this.step_search(false, cx)),
-                ))
-                .child(search_nav_button(
-                    "search-next",
-                    "icons/chevron-down.svg",
-                    !nav_enabled,
-                    theme,
-                    cx.listener(|this, _, _, cx| this.step_search(true, cx)),
-                ))
-                .child(
-                    div()
-                        .id("search-close-btn")
-                        .size(px(20.))
-                        .flex_none()
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .text_color(theme.text_2)
-                        .hover(|s| s.bg(theme.overlay).text_color(theme.text))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.on_search_close(&crate::SearchClose, window, cx)
-                            }),
-                        )
-                        .child("×"),
-                )
-                .into_any_element(),
+            // A text field floating over the transcript, in the shared picker
+            // search row; `elevation_2` after it takes over the fill, radius,
+            // and hairline.
+            picker_search_frame(
+                div()
+                    .id("transcript-search")
+                    .debug_selector(|| "transcript-search".to_string())
+                    .absolute()
+                    .top(px(10.))
+                    .right(px(16.))
+                    .w(px(320.))
+                    .occlude(),
+                &theme,
+            )
+            .elevation_2(&theme)
+            .font_family(theme::ui_font_family())
+            .key_context("Search")
+            .on_action(cx.listener(Self::on_search_next))
+            .on_action(cx.listener(Self::on_search_prev))
+            .on_action(cx.listener(Self::on_search_close))
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(div().flex_1().min_w_0().child(search.input.clone()))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(label),
+            )
+            .child(search_nav_button(
+                "search-prev",
+                "icons/chevron-up.svg",
+                tr!("search.previous_match"),
+                !nav_enabled,
+                theme,
+                cx.listener(|this, _, _, cx| this.step_search(false, cx)),
+            ))
+            .child(search_nav_button(
+                "search-next",
+                "icons/chevron-down.svg",
+                tr!("search.next_match"),
+                !nav_enabled,
+                theme,
+                cx.listener(|this, _, _, cx| this.step_search(true, cx)),
+            ))
+            .child(
+                icon_button_frame(div().id("search-close-btn"), &theme, ButtonSize::Compact)
+                    .tip(tr!("common.close"))
+                    .cursor_pointer()
+                    .text_color(theme.text_secondary)
+                    .hover_state(&theme)
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.on_search_close(&crate::SearchClose, window, cx)
+                        }),
+                    )
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Compact.icon_size().px(&theme),
+                        theme.text_secondary,
+                    )),
+            )
+            .into_any_element(),
         )
     }
 }
@@ -249,25 +271,28 @@ impl OrbitApp {
 fn search_nav_button(
     id: &'static str,
     glyph: &'static str,
+    label: String,
     disabled: bool,
     theme: Theme,
     listener: impl Fn(&gpui::MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
+    icon_button_frame(div().id(id), &theme, ButtonSize::Compact)
         .group(BUTTON_GROUP)
-        .size(px(20.))
-        .flex_none()
-        .rounded_md()
-        .flex()
-        .items_center()
-        .justify_center()
+        .tip(label)
         .when(!disabled, |button| {
             press(button)
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.overlay))
+                .hover_state(&theme)
                 .on_mouse_up(MouseButton::Left, listener)
         })
-        .child(icon(glyph, 11., theme.text_2))
+        .child(icon(
+            glyph,
+            ButtonSize::Compact.icon_size().px(&theme),
+            if disabled {
+                theme.text_disabled
+            } else {
+                theme.text_secondary
+            },
+        ))
         .into_any_element()
 }

@@ -4,11 +4,22 @@ members = [
     "crates/orbit-pi",
     "crates/orbit-rpc",
 ]
+# Vendored gpui 0.2.2 with the backdrop-blur patch (see vendor/gpui/README.orbit.md).
+exclude = ["vendor/gpui"]
 
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/imrj05/orbit"
+
+# The backdrop-blur pass has no upstream equivalent in gpui 0.2.2: a quad that
+# carries `gpui::backdrop_blur_marker(sigma)` asks the Metal renderer to blur
+# what is already drawn behind it before painting, like CSS
+# `backdrop-filter: blur()`. The patch is confined to the macOS renderer, the
+# shader source and the marker in `scene.rs`; everything else is the published
+# crate.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
 
 [workspace.dependencies]
 anyhow = "1"

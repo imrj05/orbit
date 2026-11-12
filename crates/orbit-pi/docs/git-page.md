@@ -4,15 +4,27 @@ The Git page is a full main-area surface (`src/git_panel/`) that combines local
 Git work with the GitHub CLI. It opens from the session-details **Commit or
 push** row or the top-bar Git affordance; `escape` / **Back** returns.
 
+## Worktrees
+
+The page always operates on the **active workspace**, which may be a linked Git
+worktree (`repo/.wt/113`) rather than the main repository. Every Git command
+(`status`, `diff`, `branch`, `log`, `commit`, `push`, `pull`, staging, graph,
+stash) runs with that path as its cwd, so the Changes/History/Graph tabs show
+that worktree's branch and working tree. Worktree lifecycle — creation,
+removal, moving, locking, pruning — lives on the Worktrees page
+(`app/worktrees.rs`) and is not duplicated here; see
+[worktrees.md](./worktrees.md).
+
 ## Tabs
 
 | Tab | Source | What it does |
 |---|---|---|
-| **Changes** | `git status --porcelain` | Staged/unstaged lists with per-file stage/unstage and confirmed discard; Include-unstaged toggle; commit bar (branch menu, conventional-commit input, **Generate**); a collapsible **Stashes** section (stash all, pop, apply, drop). |
+| **Changes** | `git status --porcelain` | Staged/unstaged lists with per-file stage/unstage and confirmed discard; Include-unstaged toggle; commit bar (branch menu, conventional-commit input, **Generate**). |
 | **History** | `git log` | Commit rows with ref badges, author, relative time, paged. Clicking a row expands it in place: full body, author/committer facts, **Open on GitHub**, copy hash, and the changed files with a per-file actions menu. |
 | **Graph** | `git log --branches HEAD` (plus `--remotes --tags` with **All refs**) | Lane graph laid out by `git::layout_graph`, with the same expandable commit detail as History. |
-| **Issues** | `gh issue …` | Open/Closed/All, search, label filter/picker, **New issue**, list, and a detail view with the rendered Markdown body, comments, a comment composer, **Close/Reopen**, **Edit labels**, and **Open on GitHub**. |
-| **Pull requests** | `gh pr …` | Open/Closed/Merged/All, search, **New pull request** (title, body, base picker, draft), list with CI rollup and review-decision chips, and a detail view with description, checks, commits, changed files, comments, reviews, **Approve** / **Request changes**, **Merge** (method + delete-branch confirm), **Close/Reopen**, and **Checkout branch**. |
+| **Stashes** | `git stash list` | The stash stack newest first: **Stash changes**, then pop / apply / drop per entry. |
+| **Issues** | `gh issue …` | Open/Closed/All state tabs, search, label filter/picker, **New issue** (with **Generate**), a compact list, and a detail view with the rendered Markdown body, comments, a comment composer, **Close/Reopen**, **Edit labels**, and **Open on GitHub**. |
+| **Pull requests** | `gh pr …` | Open/Closed/Merged/All state tabs, search, **New pull request** (title, body, base picker, draft, **Generate**), a compact list, and a detail view with description, checks, commits, changed files, comments, reviews, **Approve** / **Request changes**, **Merge** (method + delete-branch confirm), **Close/Reopen**, and **Checkout branch**. |
 
 The Issues and Pull requests tabs only appear when `gh` is installed. A missing
 `gh` or a signed-out CLI renders an honest setup state instead of an empty tab.
@@ -24,8 +36,90 @@ The action cluster follows Git state: uncommitted changes → **Commit** /
 when there is no upstream); clean and behind → **Pull**; diverged → **Merge**;
 otherwise a quiet "Up to date". Push/pull never touch the message. A blank
 Commit message auto-generates through `commit_message.rs`
-(`pi -p --no-tools --no-session --no-extensions --no-skills --no-context-files`,
-falling back to a local `type(scope): …` heuristic).
+(`pi -p --no-tools --no-session --no-skills --no-context-files --no-approve`,
+falling back to a local `type(scope): …` heuristic that the failure banner
+reports).
+
+### Commit message context
+
+The generator describes *what the commit records*: with **Include unstaged
+changes** on it diffs the whole working tree against HEAD (and synthesizes a
+`/dev/null` diff for untracked files, which `git diff` never shows); otherwise
+it reads the index only. Each changed file is sent with an ORIGINAL CODE
+excerpt — line-numbered, windowed 24 lines around every hunk — plus its diff,
+and each regenerated attempt is told about the message you rejected so it does
+not repeat it.
+
+The prompt is sized from the selected model's context window (half the window,
+at ~3 bytes per token; 384 KiB when the provider reports none), split between
+diffs and source excerpts. Every changed file keeps at least 1 KiB of its diff,
+so a commit of a hundred-plus files still describes each one; a diff longer than
+its share keeps its first and last hunk. The model's fenced reply is used
+verbatim: no bullet or period normalization.
+
+`ORBIT_COMMIT_PROMPT_DUMP=/tmp/prompt.txt` writes the exact system and user
+messages the model sees, for comparing against another client's prompt.
+
+## Issue and pull-request draft generation
+
+The **New issue** and **New pull request** forms have a **Generate** button beside their
+heading. An optional **Notes** field steers the draft; leave it blank to infer the subject
+from the repository context. Generation reuses the commit-message pattern: a one-shot,
+tool-free `pi -p` call (`issue_message.rs`) that reads the current branch, the branch's
+commits (against the chosen base for a PR), and its changed-file stat — never writing to
+the working tree or the active session. The model is asked for a single fenced block with
+the title on the first line and a Markdown body below it.
+
+### Repository templates
+
+Both forms discover the repository's own templates (`gh_templates.rs`, mirroring GitHub's
+lookup): the `.github/ISSUE_TEMPLATE/` directory (Markdown templates with YAML front
+matter, and the newer YAML issue forms, `config.yml` skipped) plus the legacy
+single-file locations, and `.github/PULL_REQUEST_TEMPLATE.md` plus its variants. A form
+with exactly one template applies it automatically; with several, a **Template** chip
+opens a picker (including a **Blank** choice). Choosing a template prefills the title
+prefix (`bug: `) and the body skeleton, and **Create** passes the template's `labels:` to
+`gh`. An issue form is flattened into Markdown — each field's label becomes a heading,
+its description a guidance comment, dropdown/checkbox options rendered as comments and
+checkboxes — since Orbit edits plain Markdown rather than GitHub's dynamic form.
+
+The **Generate** prompt hands the model the selected template and asks it to fill every
+heading faithfully, preserving the template's checkboxes and sections. Without pi, the
+heuristic drops the notes (or the branch's commit subjects) into the template's first
+section.
+
+When pi is missing, unauthenticated, or times out, the button falls back to a local
+heuristic: the title comes from the first note line, else the latest commit subject, else
+the branch name read as words; the body lists the branch's commits and changed files under
+`## Summary` / `## What happened`. Either way the result lands in the editable title and
+body fields, and **Create** is still a separate, deliberate press.
+
+Issues and pull requests share a quiet three-line row: type, number, state glyph, relative
+time and external link; a single-line title; then repository and up to two label badges
+(with a `+N` overflow badge). Open items use primary title ink and closed items are
+de-emphasized.
+
+Every line of that row is a truncating run inside a flex row, with `flex_1 min_w_0` on the
+text itself. A percentage-width block as a direct child of the row's column is measured
+against an indefinite width: its run truncates at zero and paints nothing but the ellipsis.
+The row's column therefore stretches its children rather than aligning them to the start,
+and the row clips any run longer than its content box, so an over-long title stops inside the
+row's padding instead of under the pane divider.
+
+State tabs sit above one separate tool row — the search field, the repository-label picker
+and **New issue** / **New pull request**. Search submits from the glyph inside its own frame,
+so the field keeps the row's spare width instead of sharing it with a duplicate button; at
+narrow list widths the label picker drops to its glyph, and the create action to a plus with
+a tooltip, so nothing wraps away from reach.
+
+At 800px and wider a resizable list sits beside the detail; below that the detail replaces
+the list and its back arrow restores the list. The detail header keeps the item type,
+number, state, full wrapping title, author/timeline and actions above a separately scrolling
+reading column. Descriptions and discussions use full Markdown with hairline separation
+rather than nested cards. The PR header also carries branch flow, review/check state and
+diff totals; its reading column retains checks, commits, changed files, reviews, merge and
+comment/review controls. Empty descriptions and unselected detail panes have explicit
+states rather than blank surfaces.
 
 The branch chip opens a menu with **Merge branch…**, **Rebase onto…**, every
 local branch (checkout; delete uses safe `-d` first, then a confirmed `-D`),
@@ -74,7 +168,7 @@ chips (click an author name to filter by them), and **Clear**.
 
 ## Keyboard
 
-- `⌘1`…`⌘5` switch tabs while the page is open (a no-op elsewhere)
+- `⌘1`…`⌘6` switch tabs while the page is open (a no-op elsewhere)
 - `escape` dismisses a modal, then the branch/ref/file popovers, then leaves the
   page via the Back affordance
 
@@ -93,6 +187,11 @@ is dirty or a merge/rebase is in progress.
 
 - Commit/PR changed-file lists render at most `MAX_FILE_ROWS` (300) rows and
   summarize the rest.
+- Commit-message generation sizes its prompt from the model's context window:
+  half the window at ~3 bytes per token (384 KiB when the provider reports
+  none), split between diffs and source excerpts, capped at 2 MiB. Every file
+  keeps at least 1 KiB of diff; a set too large for even that still lists every
+  changed file and says how many have no excerpt.
 - Issue and PR lists are bounded at `gh`'s 50-result page and are not yet
   virtualized.
 - Not yet wired: `git blame`, opening a file/diff at a specific revision (the

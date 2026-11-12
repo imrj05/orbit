@@ -7,8 +7,10 @@
 //!
 //! Sources mirror the reference model: the working tree is compared via
 //! an isolated snapshot commit so untracked files and stage/unstage state are
-//! represented exactly, and `LastTurn` compares the turn's captured
-//! checkpoints rather than live Git state.
+//! represented exactly. `LastTurn` is not a Git range — the docked pane
+//! builds it from that turn's `edit` / `write` calls, then appends the files
+//! the turn's checkpoint range changed with no call naming them, so a `bash`
+//! fix or a formatter is never silently missing.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -21,15 +23,17 @@ const COLLAPSED_CONTEXT_THRESHOLD: usize = 1;
 pub const DEFAULT_EXPANSION_LINE_COUNT: usize = 100;
 /// A pathological generated patch must not turn one Review tab into an
 /// unbounded in-memory document.
-const MAX_RENDERED_DIFF_LINES: usize = 50_000;
+pub(crate) const MAX_RENDERED_DIFF_LINES: usize = 50_000;
 
 /// Which Git snapshot the Review panel is showing.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Source {
-    /// Files a single agent turn touched, from its captured checkpoints.
+    /// Files a single agent turn edited or wrote, from the conversation.
     LastTurn {
         turn_count: usize,
     },
+    /// Every turn's `edit` / `write` calls in this session, folded in order.
+    AllChanges,
     #[default]
     Uncommitted,
     Unstaged,
@@ -97,6 +101,16 @@ impl Gap {
 #[derive(Clone, Debug, PartialEq)]
 pub enum LineKind {
     FileHeader,
+    /// A group divider in a grouped diff list ("Staged" / "Changes"). Carries
+    /// the group's label, a leading icon, file count, and line deltas so the row
+    /// paints without reaching back into the snapshot.
+    SectionHeader {
+        label: String,
+        icon: Option<&'static str>,
+        count: usize,
+        additions: u64,
+        deletions: u64,
+    },
     /// Context collapsed between or around changed regions.
     Gap(Gap),
     HunkHeader,
@@ -130,6 +144,8 @@ pub struct Snapshot {
     /// File-header rows in paint order, retained for constant-time-ish sticky
     /// header lookup while the virtualized list scrolls.
     file_header_lines: Vec<usize>,
+    /// Section-header rows in paint order (empty unless the list is grouped).
+    section_header_lines: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +166,46 @@ impl Snapshot {
             self.file_header_lines[current_position],
             self.file_header_lines.get(next_position).copied(),
         ))
+    }
+
+    /// Whether the list is split into sections (the working tree grouped into
+    /// Staged and Changes).
+    pub fn is_grouped(&self) -> bool {
+        !self.section_header_lines.is_empty()
+    }
+
+    /// Return the section header at or before `line_index` and the one after
+    /// it, for the sticky group divider.
+    pub fn section_headers_around(&self, line_index: usize) -> Option<(usize, Option<usize>)> {
+        let next_position = self
+            .section_header_lines
+            .partition_point(|&header_index| header_index <= line_index);
+        let current_position = next_position.checked_sub(1)?;
+        Some((
+            self.section_header_lines[current_position],
+            self.section_header_lines.get(next_position).copied(),
+        ))
+    }
+
+    /// The widest scrolling row in monospace cells: code, metadata, and any
+    /// context still hidden in a gap. An unwrapped row multiplies this by one
+    /// glyph advance to size the pane's horizontal scroll range without
+    /// shaping every line. File headers are excluded: they are pinned to the
+    /// viewport, so their path never widens the scrollable content.
+    pub fn max_content_cells(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| match &line.kind {
+                LineKind::Gap(gap) => gap
+                    .hidden
+                    .iter()
+                    .map(|line| content_cells(&line.content))
+                    .max()
+                    .unwrap_or(0),
+                _ => content_cells(&line.content),
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Reveal retained context without touching Git or the filesystem.
@@ -252,9 +308,31 @@ impl Snapshot {
                     *header_index = header_index.saturating_add(inserted);
                 }
             }
+            for header_index in &mut self.section_header_lines {
+                if *header_index > line_index {
+                    *header_index = header_index.saturating_add(inserted);
+                }
+            }
         }
         Some(GapExpansion { replacement_count })
     }
+}
+
+/// Monospace cells a row's text occupies: tabs advance four cells and any
+/// non-ASCII glyph is assumed double-width. Deliberately an estimate — the
+/// caller only uses it to overshoot the width of an unwrapped row.
+fn content_cells(text: &str) -> usize {
+    text.chars()
+        .map(|ch| {
+            if ch == '\t' {
+                4
+            } else if ch.is_ascii() {
+                1
+            } else {
+                2
+            }
+        })
+        .sum()
 }
 
 fn push_remaining_gap(replacement: &mut Vec<Line>, file_index: usize, mut gap: Gap) {
@@ -284,6 +362,80 @@ pub fn parse_collected(
         snapshot.truncated = true;
     }
     snapshot
+}
+
+/// One section of a grouped snapshot: a label plus the captured Git output
+/// for it (e.g. the staged diff, then the unstaged diff).
+pub struct SectionInput<'a> {
+    pub label: String,
+    /// Glyph shown before the section's label (the stage / unstage icon).
+    pub icon: Option<&'static str>,
+    pub numstat: &'a str,
+    pub patch: &'a str,
+    pub complete_context: bool,
+}
+
+/// Parse independent captures into one snapshot whose list is split by a
+/// section header before each group. Files are ordered section by section, so
+/// a path changed in more than one stage appears once per section.
+pub fn parse_sections(source: Source, sections: &[SectionInput<'_>]) -> Snapshot {
+    let mut files: Vec<File> = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut truncated = false;
+    for section in sections {
+        let mut parsed = parse(
+            source,
+            section.numstat,
+            section.patch,
+            section.complete_context,
+        );
+        if !section.complete_context || parsed.truncated {
+            truncated = true;
+        }
+        if parsed.files.is_empty() {
+            continue;
+        }
+        let offset = files.len();
+        let count = parsed.files.len();
+        let additions: u64 = parsed.files.iter().map(|file| file.additions).sum();
+        let deletions: u64 = parsed.files.iter().map(|file| file.deletions).sum();
+        lines.push(Line {
+            file_index: offset,
+            old_line: None,
+            new_line: None,
+            kind: LineKind::SectionHeader {
+                label: section.label.clone(),
+                icon: section.icon,
+                count,
+                additions,
+                deletions,
+            },
+            content: section.label.clone(),
+            tokens: Vec::new(),
+        });
+        for line in parsed.lines {
+            lines.push(Line {
+                file_index: line.file_index + offset,
+                ..line
+            });
+        }
+        files.append(&mut parsed.files);
+    }
+    let (lines, capped) = cap_visible_lines(lines);
+    truncated |= capped;
+    let (file_header_lines, section_header_lines) = recompute_diff_lines(&mut files, &lines);
+    let additions = files.iter().map(|file| file.additions).sum();
+    let deletions = files.iter().map(|file| file.deletions).sum();
+    Snapshot {
+        source,
+        files,
+        lines,
+        additions,
+        deletions,
+        truncated,
+        file_header_lines,
+        section_header_lines,
+    }
 }
 
 fn parse(source: Source, numstat: &str, patch: &str, complete_context: bool) -> Snapshot {
@@ -489,7 +641,7 @@ fn parse(source: Source, numstat: &str, patch: &str, complete_context: bool) -> 
         lines
     };
     let (lines, truncated) = cap_visible_lines(lines);
-    let file_header_lines = recompute_diff_lines(&mut files, &lines);
+    let (file_header_lines, section_header_lines) = recompute_diff_lines(&mut files, &lines);
     let additions = files.iter().map(|file| file.additions).sum();
     let deletions = files.iter().map(|file| file.deletions).sum();
     Snapshot {
@@ -500,6 +652,7 @@ fn parse(source: Source, numstat: &str, patch: &str, complete_context: bool) -> 
         deletions,
         truncated,
         file_header_lines,
+        section_header_lines,
     }
 }
 
@@ -630,20 +783,25 @@ fn cap_visible_lines(lines: Vec<Line>) -> (Vec<Line>, bool) {
     (visible, truncated)
 }
 
-fn recompute_diff_lines(files: &mut [File], lines: &[Line]) -> Vec<usize> {
+fn recompute_diff_lines(files: &mut [File], lines: &[Line]) -> (Vec<usize>, Vec<usize>) {
     for file in files.iter_mut() {
         file.diff_line = None;
     }
     let mut file_header_lines = Vec::new();
+    let mut section_header_lines = Vec::new();
     for (line_index, line) in lines.iter().enumerate() {
-        if line.kind == LineKind::FileHeader {
-            if let Some(file) = files.get_mut(line.file_index) {
-                file.diff_line.get_or_insert(line_index);
-                file_header_lines.push(line_index);
+        match &line.kind {
+            LineKind::FileHeader => {
+                if let Some(file) = files.get_mut(line.file_index) {
+                    file.diff_line.get_or_insert(line_index);
+                    file_header_lines.push(line_index);
+                }
             }
+            LineKind::SectionHeader { .. } => section_header_lines.push(line_index),
+            _ => {}
         }
     }
-    file_header_lines
+    (file_header_lines, section_header_lines)
 }
 
 fn push_line(lines: &mut Vec<Line>, line: Line) -> bool {
@@ -868,6 +1026,73 @@ index 1111111..2222222 100644
                 && &snapshot.lines[3].content[token.range.clone()] == "let"
         }));
         assert_eq!((snapshot.additions, snapshot.deletions), (2, 1));
+    }
+
+    #[test]
+    fn grouped_sections_split_files_and_offset_the_second_group() {
+        let unstaged_patch = "\
+diff --git a/src/main.rs b/src/main.rs
+index 3333333..4444444 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1 +1 @@
+-old
++new
+";
+        let sections = [
+            SectionInput {
+                label: "Staged".to_string(),
+                icon: None,
+                numstat: "2\t1\tsrc/lib.rs\n",
+                patch: SAMPLE,
+                complete_context: true,
+            },
+            SectionInput {
+                label: "Changes".to_string(),
+                icon: None,
+                numstat: "1\t1\tsrc/main.rs\n",
+                patch: unstaged_patch,
+                complete_context: true,
+            },
+        ];
+        let snapshot = parse_sections(Source::Uncommitted, &sections);
+        assert!(snapshot.is_grouped());
+        assert_eq!(snapshot.files.len(), 2);
+        assert_eq!(snapshot.files[0].path, "src/lib.rs");
+        assert_eq!(snapshot.files[1].path, "src/main.rs");
+        assert!(matches!(
+            &snapshot.lines[0].kind,
+            LineKind::SectionHeader { label, count, .. } if label == "Staged" && *count == 1
+        ));
+        let second = snapshot
+            .lines
+            .iter()
+            .position(
+                |line| matches!(&line.kind, LineKind::SectionHeader { label, .. } if label == "Changes"),
+            )
+            .expect("second section header");
+        // The second group's header names the first file past the first group,
+        // and every line it owns carries the shifted index.
+        assert!(matches!(
+            &snapshot.lines[second].kind,
+            LineKind::SectionHeader { count, .. } if *count == 1
+        ));
+        assert_eq!(snapshot.lines[second].file_index, 1);
+        assert!(snapshot.lines[second + 1..]
+            .iter()
+            .all(|line| line.file_index == 1));
+        // The sticky divider lookup returns the current section and the next,
+        // so the list can pin the right one while scrolling.
+        assert_eq!(snapshot.section_headers_around(0), Some((0, Some(second))));
+        assert_eq!(
+            snapshot.section_headers_around(second),
+            Some((second, None))
+        );
+        assert_eq!(
+            snapshot.section_headers_around(second + 1),
+            Some((second, None))
+        );
+        assert_eq!((snapshot.additions, snapshot.deletions), (3, 2));
     }
 
     fn full_patch(total_lines: u32, changes: &[u32]) -> String {
@@ -1136,6 +1361,41 @@ index 1111111..2222222 100644
         let files = parse_numstat("-\t-\timg.png\n2\t1\tsrc/lib.rs\n");
         assert_eq!(files[0].status, FileStatus::Binary);
         assert_eq!(files[1].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn max_content_cells_includes_context_still_hidden_in_gaps() {
+        let hidden = "this context line is the longest row in the file and stays hidden;";
+        let mut patch = String::from(
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             index 1111111..2222222 100644\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,10 +1,10 @@\n",
+        );
+        for line in [hidden, "second();", "third();", "fourth();", "fifth();"] {
+            patch.push_str(&format!(" {line}\n"));
+        }
+        patch.push_str("-change();\n+changed();\n sixth();\n");
+        let mut snapshot = parse(Source::Uncommitted, "1\t1\tsrc/lib.rs\n", &patch, true);
+        let gap_index = snapshot
+            .lines
+            .iter()
+            .position(|line| matches!(line.kind, LineKind::Gap(_)))
+            .expect("the leading context leaves a gap");
+        assert_eq!(snapshot.max_content_cells(), content_cells(hidden));
+
+        // Revealing the gap moves the line out of the gap without changing
+        // how wide the widest row is.
+        snapshot.expand_gap(gap_index, ExpansionDirection::All);
+        assert_eq!(snapshot.max_content_cells(), content_cells(hidden));
+    }
+
+    #[test]
+    fn content_cells_counts_tabs_and_wide_glyphs() {
+        assert_eq!(content_cells("let x = 1;"), 10);
+        assert_eq!(content_cells("\tlet x = 1;"), 14);
+        assert_eq!(content_cells("你好"), 4);
     }
 
     fn file(path: &str) -> File {

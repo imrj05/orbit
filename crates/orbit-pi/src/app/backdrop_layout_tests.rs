@@ -1,165 +1,64 @@
 use super::*;
+use crate::theme::tokens::{Radius, TextSize};
 use crate::theme::ThemeId;
 use gpui::size;
 
-fn solid_image(width: u32, height: u32) -> std::sync::Arc<gpui::RenderImage> {
-    let buffer = image::RgbaImage::from_pixel(width, height, image::Rgba([120, 120, 120, 255]));
-    std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)]))
-}
-
-/// gpui's `ObjectFit::Cover` scales the image up and centers it, so the
-/// painted bounds overflow the element whenever the ratios differ (a 16:9
-/// image in a narrower main area). Without a clip on the wrapper, that
-/// overflow painted over the sessions sidebar. This documents the gpui
-/// behavior the wrapper's `overflow_hidden` guards against.
-#[test]
-fn cover_bounds_overflow_the_element_on_a_ratio_mismatch() {
-    let element = gpui::bounds(point(px(240.), px(0.)), size(px(1000.), px(700.)));
-    let painted = ObjectFit::Cover.get_bounds(
-        element,
-        size(gpui::DevicePixels(1600), gpui::DevicePixels(900)),
-    );
-    assert!(
-        painted.origin.x < element.origin.x,
-        "cover must overflow left (painted {:?} vs element {:?})",
-        painted.origin.x,
-        element.origin.x
-    );
-    assert!(painted.size.width > element.size.width);
-}
-
-/// The backdrop wrapper fills the main area exactly — it must never claim
-/// the sidebar's column, however the image inside it is fitted.
-#[gpui::test]
-fn backdrop_wrapper_stays_inside_the_main_area(cx: &mut gpui::TestAppContext) {
-    let cx = cx.add_empty_window();
-    let _ = cx.draw(point(px(0.), px(0.)), size(px(1240.), px(700.)), |_, _| {
-        div()
-            .size_full()
-            .flex()
-            .child(
-                div()
-                    .id("backdrop-test-sidebar")
-                    .debug_selector(|| "backdrop-test-sidebar".to_string())
-                    .flex_none()
-                    .w(px(240.))
-                    .h_full(),
-            )
-            .child(
-                div()
-                    .id("backdrop-test-main")
-                    .debug_selector(|| "backdrop-test-main".to_string())
-                    .flex_1()
-                    .h_full()
-                    .relative()
-                    .children(OrbitApp::backdrop_image(
-                        Some(solid_image(1600, 900)),
-                        crate::dither::Tuning::default(),
-                        Theme::for_id(ThemeId::Orbit),
-                    )),
-            )
-    });
-    let sidebar = cx.debug_bounds("backdrop-test-sidebar").expect("sidebar");
-    let main = cx.debug_bounds("backdrop-test-main").expect("main");
-    assert_eq!(sidebar.origin.x, px(0.));
-    assert_eq!(sidebar.size.width, px(240.));
-    assert_eq!(main.origin.x, px(240.), "main starts after the sidebar");
-    assert_eq!(main.size.width, px(1000.));
-}
-
-/// The bottom fade is how the picture drops into the page, and its height is
-/// exactly what the Settings → Appearance control writes. Pin the wiring:
-/// 0.22 of a 700 px column is 154 px, anchored to the bottom edge.
-#[gpui::test]
-fn backdrop_fade_tracks_the_tuning(cx: &mut gpui::TestAppContext) {
-    let cx = cx.add_empty_window();
-    let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(700.)), |_, _| {
-        div()
-            .size_full()
-            .relative()
-            .children(OrbitApp::backdrop_image(
-                Some(solid_image(1600, 900)),
-                crate::dither::Tuning {
-                    blur: 0.,
-                    cell: 4,
-                    fade: crate::dither::FADE_HEIGHTS[3],
-                },
-                Theme::for_id(ThemeId::Orbit),
-            ))
-    });
-    let fade = cx.debug_bounds("backdrop-fade").expect("fade painted");
-    assert_eq!(fade.origin.y, px(546.), "fade must sit on the bottom edge");
-    assert_eq!(fade.size.height, px(154.), "fade height follows the tuning");
-}
-
-/// "None" is the real off switch for the gradient, not a zero-height ghost
-/// layer — DESIGN.md allows exactly one backdrop gradient, and a user who
-/// turns it off should not pay for it.
-#[gpui::test]
-fn backdrop_fade_none_paints_no_gradient(cx: &mut gpui::TestAppContext) {
-    let cx = cx.add_empty_window();
-    let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(700.)), |_, _| {
-        div()
-            .size_full()
-            .relative()
-            .children(OrbitApp::backdrop_image(
-                Some(solid_image(1600, 900)),
-                crate::dither::Tuning {
-                    blur: 0.,
-                    cell: 4,
-                    fade: 0.,
-                },
-                Theme::for_id(ThemeId::Orbit),
-            ))
-    });
-    assert!(
-        cx.debug_bounds("backdrop-fade").is_none(),
-        "fade None must not paint a gradient layer"
-    );
-}
-
 /// The new-task backdrop must span the whole chat column below the top bar.
 /// It used to live inside the empty-state slot — the `flex_1` region *above*
-/// the composer column — so the image stopped at the composer's top edge and
-/// left the bottom of the window on a flat slab at every fade setting,
-/// including "None". This pins the layer to the column instead, so the
-/// floating composer and the status bar below it paint over the picture.
+/// the composer column — so the backdrop stopped at the composer's top edge
+/// and left the bottom of the window on a flat slab. This pins the layer to
+/// the column instead, so the floating composer and the status bar below it
+/// paint over the backdrop.
 #[gpui::test]
 fn new_task_backdrop_spans_the_composer_region(cx: &mut gpui::TestAppContext) {
     let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    struct Layout(gpui::Entity<OrbitApp>);
+    impl gpui::Render for Layout {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = Theme::for_id(ThemeId::Orbit);
+            let backdrop = self
+                .0
+                .update(cx, |app, _| app.new_task_backdrop(theme, 0., true, false));
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .relative()
+                .child(
+                    div()
+                        .id("test-top-bar")
+                        .debug_selector(|| "test-top-bar".to_string())
+                        .flex_none()
+                        .h(px(super::view::TOP_BAR_H))
+                        .w_full(),
+                )
+                .children(backdrop)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .id("test-composer")
+                                .debug_selector(|| "test-composer".to_string())
+                                .flex_none()
+                                .h(px(125.))
+                                .w_full(),
+                        ),
+                )
+        }
+    }
+    let view = cx.update(|_, cx| cx.new(|_| Layout(app)));
     let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(700.)), |_, _| {
-        let theme = Theme::for_id(ThemeId::Orbit);
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .relative()
-            .child(
-                div()
-                    .id("test-top-bar")
-                    .debug_selector(|| "test-top-bar".to_string())
-                    .flex_none()
-                    .h(px(super::view::TOP_BAR_H))
-                    .w_full(),
-            )
-            .children(OrbitApp::new_task_backdrop(theme, true))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .id("test-composer")
-                            .debug_selector(|| "test-composer".to_string())
-                            .flex_none()
-                            .h(px(125.))
-                            .w_full(),
-                    ),
-            )
+        view.clone()
     });
 
     let backdrop = cx
@@ -182,13 +81,87 @@ fn new_task_backdrop_spans_the_composer_region(cx: &mut gpui::TestAppContext) {
     );
 }
 
+/// The field's clock runs only while the new-task page is on screen, and never
+/// under Reduce Motion. Those are the two ways an animated backdrop goes wrong:
+/// repainting a page nobody is looking at, and ignoring the platform's motion
+/// preference.
+#[gpui::test]
+fn the_backdrop_clock_runs_only_on_the_new_task_page(cx: &mut gpui::TestAppContext) {
+    let app = cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    // Not on screen: the heartbeat must not even start the clock.
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.backdrop_live = false;
+            app.tick(cx);
+            assert!(
+                app.backdrop_clock.is_none(),
+                "an off-screen backdrop keeps no clock"
+            );
+            assert_eq!(app.backdrop_phase, 0., "and no phase");
+        })
+    });
+
+    // On screen: the phase follows wall-clock time.
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.backdrop_live = true;
+            app.tick(cx);
+            assert!(app.backdrop_clock.is_some(), "the clock starts");
+        })
+    });
+    std::thread::sleep(std::time::Duration::from_millis(25));
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.tick(cx);
+            assert!(
+                app.backdrop_phase > 0.,
+                "the phase advanced with time: {}",
+                app.backdrop_phase
+            );
+        })
+    });
+
+    // Reduce Motion freezes it on the frame it was showing.
+    let frozen = cx.update(|cx| app.read(cx).backdrop_phase);
+    cx.update(|cx| {
+        let mut theme = Theme::for_id(ThemeId::Orbit);
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        cx.set_global(theme);
+    });
+    std::thread::sleep(std::time::Duration::from_millis(25));
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.tick(cx);
+            assert_eq!(
+                app.backdrop_phase, frozen,
+                "Reduce Motion holds the field still"
+            );
+            assert!(app.backdrop_clock.is_none(), "and drops the clock");
+        })
+    });
+}
+
 /// The chat page deliberately has no backdrop.
-#[test]
-fn new_task_backdrop_is_absent_on_a_session() {
-    assert!(
-        OrbitApp::new_task_backdrop(Theme::for_id(ThemeId::Orbit), false).is_none(),
-        "a session page has no backdrop"
-    );
+#[gpui::test]
+fn new_task_backdrop_is_absent_on_a_session(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    cx.update(|_, cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        let app = cx.new(OrbitApp::new);
+        assert!(
+            app.update(cx, |app, _| app.new_task_backdrop(
+                Theme::for_id(ThemeId::Orbit),
+                0.,
+                false,
+                false
+            ))
+            .is_none(),
+            "a session page has no backdrop"
+        );
+    });
 }
 
 /// Regression: a provider card's name/id column must get a real width.
@@ -233,7 +206,7 @@ fn provider_name_column_has_a_real_width(cx: &mut gpui::TestAppContext) {
                                     div()
                                         .id("provider-name")
                                         .debug_selector(|| "provider-name".to_string())
-                                        .text_size(theme.ui_px(14.))
+                                        .text_size(TextSize::Default.px(&theme))
                                         .truncate()
                                         .child("Amazon Bedrock"),
                                 )
@@ -284,6 +257,46 @@ fn provider_name_column_has_a_real_width(cx: &mut gpui::TestAppContext) {
     );
 }
 
+/// Settings navigation must remain readable rather than shrinking its rows to
+/// fit a short window; the main column must still fit beside it.
+#[gpui::test]
+fn settings_navigation_keeps_control_size_in_short_windows(cx: &mut gpui::TestAppContext) {
+    use crate::theme::tokens::ButtonSize;
+
+    let theme = Theme::for_id(ThemeId::Orbit);
+    cx.update(|cx| cx.set_global(theme));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::General;
+        });
+    });
+
+    for width in [720., 1200.] {
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(width), px(460.)), |_, _| {
+            app.clone()
+        });
+        let first = cx
+            .debug_bounds("settings-nav-settings.general")
+            .expect("general navigation row");
+        let navigation = cx
+            .debug_bounds("settings-navigation")
+            .expect("scrolling navigation");
+        let content = cx
+            .debug_bounds("settings-content")
+            .expect("settings content");
+        let title = cx
+            .debug_bounds("settings-page-title")
+            .expect("settings page title");
+        assert_eq!(first.size.height, ButtonSize::Large.height(&theme));
+        assert!(navigation.size.height < px(15. * 32.));
+        assert!(content.right() <= px(width));
+        assert!(title.size.height >= theme.ui_px(20.));
+    }
+}
+
 /// Regression: the Agent tab's long card descriptions blew the settings
 /// content column past the window. A text element's min-content width is
 /// its full unwrapped line in gpui, so a `flex_1` column with default
@@ -301,10 +314,10 @@ fn settings_cards_stay_inside_the_content_column(cx: &mut gpui::TestAppContext) 
             let card = div()
                     .id("settings-card")
                     .debug_selector(|| "settings-card".to_string())
-                    .bg(theme.bg_composer)
+                    .bg(theme.surface_secondary)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded_lg()
+                    .rounded(Radius::XLarge.px(&theme))
                     .px(px(14.))
                     .py(px(12.))
                     .flex()
@@ -319,14 +332,14 @@ fn settings_cards_stay_inside_the_content_column(cx: &mut gpui::TestAppContext) 
                             .gap_1()
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(13.))
+                                    .text_size(TextSize::Default.px(&theme))
                                     .child("Follow-up messages"),
                             )
                             .child(
                                 div()
                                     .id("settings-card-desc")
                                     .debug_selector(|| "settings-card-desc".to_string())
-                                    .text_size(theme.ui_px(12.))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .child("Messages sent while the agent is running wait in the queue above the composer and are delivered once the current task finishes. All delivers the whole queue at once; One at a time delivers one per run."),
                             ),
                     )
@@ -427,17 +440,17 @@ fn provider_grid_columns_fit_inside_the_content_column(cx: &mut gpui::TestAppCon
                     .debug_selector(move || name.to_string())
                     .w_full()
                     .min_w_0()
-                    .bg(theme.bg_composer)
+                    .bg(theme.surface_secondary)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded_lg()
+                    .rounded(Radius::XLarge.px(&theme))
                     .p(px(14.))
                     .flex()
                     .flex_col()
                     .gap_2()
                     .child(
                         div()
-                            .text_size(theme.ui_px(14.))
+                            .text_size(TextSize::Default.px(&theme))
                             .child(format!("Provider {i}")),
                     )
                     .child(

@@ -37,6 +37,14 @@ pub struct ExternalApp {
 #[cfg(target_os = "macos")]
 const TERMY_BUNDLE_ID: &str = "com.lassevestergaard.termy";
 
+/// tmux ships no app bundle, so its menu row borrows Terminal.app's icon and
+/// window; [`open_path_in_app`] launches a session there instead of handing the
+/// terminal a folder.
+#[cfg(target_os = "macos")]
+const TMUX_APP_ID: &str = "tmux";
+
+/// The terminals run together after the file manager, and tmux closes them: it
+/// is the one entry that is not an app at all.
 #[cfg(target_os = "macos")]
 const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("vscode", "VS Code", &["com.microsoft.VSCode"]),
@@ -44,11 +52,21 @@ const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("zed", "Zed", &["dev.zed.Zed", "dev.zed.Zed-Preview"]),
     ("finder", "Finder", &["com.apple.finder"]),
     ("terminal", "Terminal", &["com.apple.Terminal"]),
+    ("rex", "Rex", &["com.superlogical.rex"]),
     ("termy", "Termy", &[TERMY_BUNDLE_ID]),
     ("iterm2", "iTerm2", &["com.googlecode.iterm2"]),
-    ("kitty", "Kitty", &["net.kovidgoyal.kitty"]),
     ("ghostty", "Ghostty", &["com.mitchellh.ghostty"]),
+    ("kitty", "Kitty", &["net.kovidgoyal.kitty"]),
+    ("alacritty", "Alacritty", &["org.alacritty"]),
+    ("wezterm", "WezTerm", &["com.github.wez.wezterm"]),
+    ("tabby", "Tabby", &["org.tabby"]),
+    ("hyper", "Hyper", &["co.zeit.hyper"]),
+    ("rio", "Rio", &["com.raphamorim.rio"]),
+    ("wave", "Wave", &["dev.commandline.waveterm"]),
     ("warp", "Warp", &["dev.warp.Warp-Stable", "dev.warp.Warp"]),
+    // Terminal.app is not installed *as tmux*: the bundle id only supplies the
+    // icon and the host window. Detection gates this row on the binary.
+    (TMUX_APP_ID, "tmux", &["com.apple.Terminal"]),
     ("xcode", "Xcode", &["com.apple.dt.Xcode"]),
     (
         "rider",
@@ -62,23 +80,94 @@ const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+/// Side of the square app-icon PNG the "open in" menu embeds, in pixels.
+///
+/// The menu draws app icons in an 18px slot (`open_in::APP_ICON`), so 2× the
+/// slot matches what a Retina window blits 1:1. That matters because gpui
+/// paints a raster image with a single bilinear pass and no mipmaps, so the
+/// source has to arrive already downscaled — see [`app_icon_png`].
 #[cfg(target_os = "macos")]
-fn app_icon_for_application_path(
-    application_path: &objc2_foundation::NSString,
-) -> Option<Arc<Image>> {
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
-    use objc2_foundation::{NSDictionary, NSSize};
+const APP_ICON_PX: usize = 36;
+
+/// Rasterize an app bundle's icon to a `px`×`px` PNG.
+///
+/// `NSWorkspace`'s image carries one bitmap representation per icon size — up
+/// to 2048×2048 — while `-setSize:` only changes the logical size and
+/// `-TIFFRepresentation` hands back the *largest* rep (a 1024×1024 bitmap for
+/// every app in the catalog). Encoding that unchanged is what the menu used to
+/// embed, and a single bilinear tap then had to squeeze it into a 14px slot on
+/// the GPU. Redrawing into a bitmap of exactly `px` pixels instead resamples
+/// once with AppKit's high-quality filter, off the renderer's hot path — and
+/// shrinks each embedded icon from ~1 MB to ~2 KB.
+#[cfg(target_os = "macos")]
+fn app_icon_png(application_path: &objc2_foundation::NSString, px: usize) -> Option<Vec<u8>> {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext,
+        NSImageInterpolation, NSWorkspace,
+    };
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize};
 
     let image = NSWorkspace::sharedWorkspace().iconForFile(application_path);
-    image.setSize(NSSize::new(32.0, 32.0));
-    let tiff = image.TIFFRepresentation()?;
-    let bitmap_rep = NSBitmapImageRep::imageRepWithData(&tiff)?;
-    let properties = NSDictionary::new();
-    let png_data = unsafe {
-        bitmap_rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+
+    let side = px as isize;
+    // SAFETY: `planes` is null so AppKit allocates the buffer, and the rest
+    // describes a standard 8-bit RGBA, non-planar bitmap.
+    let bitmap = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            side,
+            side,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
     }?;
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)?;
+    // AppKit's own resampler beats the renderer's bilinear tap on icon art.
+    context.setImageInterpolation(NSImageInterpolation::High);
+    context.setShouldAntialias(true);
+
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    image.drawInRect(NSRect::new(
+        NSPoint::ZERO,
+        NSSize::new(px as f64, px as f64),
+    ));
+    NSGraphicsContext::restoreGraphicsState_class();
+
+    let properties = NSDictionary::new();
+    // SAFETY: the properties dictionary is empty and `bitmap` is live.
+    let png_data = unsafe {
+        bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+    }?;
+    // SAFETY: `png_data` is a live `NSData`.
     let bytes = unsafe { png_data.as_bytes_unchecked() };
-    (!bytes.is_empty()).then(|| Arc::new(Image::from_bytes(gpui::ImageFormat::Png, bytes.to_vec())))
+    (!bytes.is_empty()).then(|| bytes.to_vec())
+}
+
+/// Whether the operating system asks for reduced motion.
+///
+/// macOS publishes it as `NSWorkspace.accessibilityDisplayShouldReduceMotion`;
+/// the other platforms expose no equivalent this build can read, so they answer
+/// false and the in-app setting is the only input there. The value is read at
+/// launch and again whenever a window becomes active — a user who changes the
+/// setting comes back to a window, which is exactly when it is re-checked.
+#[cfg(target_os = "macos")]
+pub fn os_reduce_motion() -> bool {
+    use objc2_app_kit::NSWorkspace;
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// See the macOS implementation: no equivalent read exists here.
+#[cfg(not(target_os = "macos"))]
+pub fn os_reduce_motion() -> bool {
+    false
 }
 
 /// Resolve which catalog apps are installed, with their icons.
@@ -91,15 +180,21 @@ pub fn detect_open_in_apps() -> Vec<ExternalApp> {
     OPEN_IN_CATALOG
         .iter()
         .filter_map(|&(id, label, bundle_ids)| {
+            // A bundle id alone cannot say whether tmux is installed, so the
+            // multiplexer row is gated on the binary itself.
+            if id == TMUX_APP_ID && tmux_path().is_none() {
+                return None;
+            }
             bundle_ids.iter().find_map(|&bundle_id| {
                 let application_url = workspace
                     .URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))?;
                 let application_path = application_url.path()?;
+                let bytes = app_icon_png(&application_path, APP_ICON_PX)?;
                 Some(ExternalApp {
                     id,
                     label,
                     target: bundle_id.to_string(),
-                    icon: app_icon_for_application_path(&application_path)?,
+                    icon: Arc::new(Image::from_bytes(gpui::ImageFormat::Png, bytes)),
                 })
             })
         })
@@ -119,13 +214,11 @@ mod windows_open_in {
 
     use gpui::Image;
     use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
-        DeleteObject, GetDIBits, GetObjectW, HBITMAP, HDC,
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
     };
-    use windows_sys::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGetFileInfoW};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DestroyIcon, GetIconInfo, HICON, ICONINFO,
-    };
+    use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 
     use super::ExternalApp;
 
@@ -423,10 +516,7 @@ mod windows_open_in {
         let image = image::RgbaImage::from_raw(width as u32, height as u32, rgba)?;
         let mut out = Vec::new();
         image
-            .write_to(
-                &mut std::io::Cursor::new(&mut out),
-                image::ImageFormat::Png,
-            )
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
             .ok()?;
         Some(out)
     }
@@ -488,10 +578,7 @@ mod windows_open_in {
         }
         let mut out = Vec::new();
         image
-            .write_to(
-                &mut std::io::Cursor::new(&mut out),
-                image::ImageFormat::Png,
-            )
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
             .ok()?;
         Some(out)
     }
@@ -507,6 +594,28 @@ pub fn detect_open_in_apps() -> Vec<ExternalApp> {
     Vec::new()
 }
 
+/// Rex Beta drops a folder handed to it while the app is starting: it comes up
+/// on its About window and the folder is never opened. A cold start therefore
+/// takes two steps — launch, then hand the folder over once it has settled.
+#[cfg(target_os = "macos")]
+const REX_BUNDLE_ID: &str = "com.superlogical.rex";
+
+/// How long Rex needs after it has finished launching before it accepts a
+/// folder open. It comes up on its About window before its client has
+/// connected to its server, so opening on the launch event alone is dropped.
+#[cfg(target_os = "macos")]
+const REX_LAUNCH_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long to wait for the launch to finish before giving up on the second
+/// step. Generous: a first launch behind Gatekeeper can take seconds, and
+/// waiting is better than handing the folder over too early.
+#[cfg(target_os = "macos")]
+const REX_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How often to re-check while waiting for the launch to finish.
+#[cfg(target_os = "macos")]
+const REX_LAUNCH_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// Open `path` in the application `app`, activating it. macOS resolves the
 /// bundle id through Launch Services, which delivers the open asynchronously;
 /// Windows starts the executable directly.
@@ -515,6 +624,13 @@ pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceOpenConfiguration};
     use objc2_foundation::{NSArray, NSString, NSURL};
 
+    // tmux has no window of its own and no folder-opening verb, so it runs in
+    // the system terminal instead of being handed the folder to open.
+    if app.id == TMUX_APP_ID {
+        open_tmux_session(path);
+        return;
+    }
+
     let bundle_id = app.target.as_str();
     let workspace = NSWorkspace::sharedWorkspace();
     let Some(application_url) =
@@ -522,6 +638,34 @@ pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
     else {
         return;
     };
+    // A folder handed to Rex as it launches is dropped, so a cold start is two
+    // opens: the app alone, then the folder once it has settled. Rex's About
+    // window still comes up; this only keeps the folder from being lost.
+    if bundle_id == REX_BUNDLE_ID && !is_app_running(bundle_id) {
+        workspace.openApplicationAtURL_configuration_completionHandler(
+            &application_url,
+            &NSWorkspaceOpenConfiguration::configuration(),
+            None,
+        );
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            // Wait for the launch to finish rather than sleeping blind: on a
+            // slow first launch a fixed wait can expire before the app is up,
+            // and the folder is dropped again — the failure this works around.
+            let deadline = std::time::Instant::now() + REX_LAUNCH_TIMEOUT;
+            while !is_app_ready(REX_BUNDLE_ID) && std::time::Instant::now() < deadline {
+                std::thread::sleep(REX_LAUNCH_POLL);
+            }
+            // Nothing to hand the folder to if Rex never came up; opening it
+            // here would repeat the launch-time drop.
+            if !is_app_running(REX_BUNDLE_ID) {
+                return;
+            }
+            std::thread::sleep(REX_LAUNCH_SETTLE);
+            open_folder_in_running_app(&path, REX_BUNDLE_ID);
+        });
+        return;
+    }
     let url = if bundle_id == TERMY_BUNDLE_ID {
         let Some(url) = NSURL::URLWithString(&NSString::from_str(&termy_open_url(path))) else {
             return;
@@ -538,12 +682,112 @@ pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
     );
 }
 
+/// Whether an instance of `bundle_id` is already running.
+#[cfg(target_os = "macos")]
+fn is_app_running(bundle_id: &str) -> bool {
+    running_app(bundle_id, false)
+}
+
+/// Whether an instance of `bundle_id` is running and has finished launching.
+#[cfg(target_os = "macos")]
+fn is_app_ready(bundle_id: &str) -> bool {
+    running_app(bundle_id, true)
+}
+
+/// Whether an instance of `bundle_id` is running, optionally only once it has
+/// finished launching: `isFinishedLaunching` separates a process Launch
+/// Services has registered from an app whose run loop is up.
+#[cfg(target_os = "macos")]
+fn running_app(bundle_id: &str, finished_launching: bool) -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .any(|app| {
+            app.bundleIdentifier()
+                .is_some_and(|id| id.to_string() == bundle_id)
+                && (!finished_launching || app.isFinishedLaunching())
+        })
+}
+
+/// Hand `path` to the installed app with `bundle_id`, used for the second step
+/// of a Rex cold start. Runs off the caller's thread, so it resolves the app
+/// again rather than sharing an `NSURL` across the thread boundary.
+#[cfg(target_os = "macos")]
+fn open_folder_in_running_app(path: &Path, bundle_id: &str) {
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceOpenConfiguration};
+    use objc2_foundation::{NSArray, NSString, NSURL};
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    let Some(application_url) =
+        workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))
+    else {
+        return;
+    };
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    workspace.openURLs_withApplicationAtURL_configuration_completionHandler(
+        &NSArray::from_retained_slice(&[url]),
+        &application_url,
+        &NSWorkspaceOpenConfiguration::configuration(),
+        None,
+    );
+}
+
 #[cfg(target_os = "macos")]
 fn termy_open_url(path: &Path) -> String {
     let mut url = url::Url::parse("termy://new").expect("static Termy URL should be valid");
     url.query_pairs_mut()
         .append_pair("dir", &path.to_string_lossy());
     url.into()
+}
+
+/// The installed `tmux` binary.
+///
+/// A GUI-launched app inherits launchd's bare `PATH`, which carries neither
+/// Homebrew nor MacPorts, so the probe lists the usual prefixes instead of
+/// trusting it. `PATH` is still consulted last, for a shell that exported a
+/// custom prefix.
+#[cfg(target_os = "macos")]
+fn tmux_path() -> Option<PathBuf> {
+    const PREFIXES: &[&str] = &[
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+        "/run/current-system/sw/bin",
+    ];
+    let known = PREFIXES
+        .iter()
+        .map(|prefix| Path::new(prefix).join("tmux"))
+        .find(|path| path.is_file());
+    known.or_else(|| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join("tmux"))
+            .find(|path| path.is_file())
+    })
+}
+
+/// Open a fresh tmux session rooted at `path` in the system terminal.
+///
+/// The session's first pane starts in the client's working directory, so the
+/// shell `cd`s there before `exec`ing tmux. The binary is named by absolute
+/// path: the terminal's own `PATH` is not guaranteed to have it either.
+#[cfg(target_os = "macos")]
+fn open_tmux_session(path: &Path) {
+    let Some(tmux) = tmux_path() else {
+        return;
+    };
+    let command = format!(
+        "cd {} && exec {} new-session",
+        shell_quote(path),
+        shell_quote(&tmux)
+    );
+    let _ = open_terminal_command(&command);
+}
+
+/// Quote `value` as one POSIX shell word, so a directory with spaces or a
+/// quote still reaches `cd` intact.
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &Path) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', r"'\''"))
 }
 
 #[cfg(windows)]
@@ -601,9 +845,7 @@ pub fn trash_path(path: &Path) -> std::io::Result<()> {
     let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
     NSFileManager::defaultManager()
         .trashItemAtURL_resultingItemURL_error(&url, None)
-        .map_err(|error| {
-            std::io::Error::other(error.localizedDescription().to_string())
-        })
+        .map_err(|error| std::io::Error::other(error.localizedDescription().to_string()))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -637,6 +879,17 @@ pub fn open_path_default(path: &Path) {
     }
     #[cfg(not(target_os = "windows"))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
+
+/// Orbit's own scratch folder, `<system temp>/orbit-pi`, created on demand.
+///
+/// Bug-report screenshots, update staging, and login helpers are written here
+/// so a producer never falls back to a relative path and the leftovers stay in
+/// one place on disk.
+pub fn scratch_dir() -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join("orbit-pi");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 /// The user's home directory — the root of both pi's store (`~/.pi`) and
@@ -675,52 +928,157 @@ pub fn home_dir_opt() -> Option<PathBuf> {
 /// Keybindings bind GPUI's `secondary` token (Cmd on macOS, Ctrl elsewhere),
 /// so UI hint chips must render the matching chord rather than a hardcoded
 /// `⌘`, which on Windows would advertise the Windows/Super key instead.
-#[cfg(target_os = "macos")]
+/// The app's canonical key chords, in the syntax `KeyBinding` parses:
+/// `secondary` resolves to Cmd on macOS and Ctrl elsewhere, so one table
+/// drives both platforms. Display strings come from [`label`], never from a
+/// hand-typed glyph, so a binding and its chip cannot drift apart.
 pub mod shortcuts {
-    pub const NEW_SESSION: &str = "⌘N";
-    pub const REFRESH: &str = "⌘R";
-    pub const TERMINAL: &str = "⌘J";
-    pub const SIDEBAR: &str = "⌘B";
-    pub const FOCUS_SESSIONS: &str = "⌘⇧B";
-    pub const PROJECT_PANEL: &str = "⌘⇧E";
-    pub const SETTINGS: &str = "⌘,";
-    pub const PALETTE: &str = "⌘P";
-    pub const FIND: &str = "⌘F";
-    pub const USAGE: &str = "⌘U";
-    pub const PREV_TURN: &str = "⌘↑";
-    pub const NEXT_TURN: &str = "⌘↓";
-    pub const COPY_LAST_RESPONSE: &str = "⌘⇧C";
-    pub const CHECK_UPDATES: &str = "⌘⇧U";
-    pub const QUIT: &str = "⌘Q";
-    pub const SEND: &str = "↵";
-    pub const STEER: &str = "⌘⇧↵";
-    pub const NEWLINE: &str = "⇧↵";
-    pub const ACCEPT: &str = "Tab";
-    pub const STOP: &str = "Esc";
-}
+    pub const NEW_SESSION: &str = "secondary-n";
+    pub const REFRESH: &str = "secondary-r";
+    pub const TERMINAL: &str = "secondary-j";
+    /// Terminal tabs, scoped to the `Terminal` key context.
+    ///
+    /// macOS keeps the editor convention: ⌘T opens a tab, ⌘W closes it (not the
+    /// window). Elsewhere `secondary` is Ctrl, and Ctrl+T / Ctrl+W belong to the
+    /// shell — readline's `transpose-chars` and `unix-word-rubout` — so the
+    /// shifted chords carry the tab actions instead.
+    #[cfg(target_os = "macos")]
+    pub const NEW_TERMINAL_TAB: &str = "secondary-t";
+    #[cfg(not(target_os = "macos"))]
+    pub const NEW_TERMINAL_TAB: &str = "secondary-shift-t";
+    #[cfg(target_os = "macos")]
+    pub const CLOSE_TERMINAL_TAB: &str = "secondary-w";
+    #[cfg(not(target_os = "macos"))]
+    pub const CLOSE_TERMINAL_TAB: &str = "secondary-shift-w";
+    /// Step between tabs with the bracket pair, the way macOS's own Terminal
+    /// does (Ctrl+Tab belongs to the shell).
+    ///
+    /// Both backends report shifted punctuation as the shifted symbol with
+    /// `shift` cleared, so the chord that matches a real key press is `}` /
+    /// `{`; `shift-]` / `shift-[` would never fire. [`label`] renders these
+    /// back as ⇧] / ⇧[.
+    pub const NEXT_TERMINAL_TAB: &str = "secondary-}";
+    pub const PREV_TERMINAL_TAB: &str = "secondary-{";
+    pub const SIDEBAR: &str = "secondary-b";
+    pub const FOCUS_SESSIONS: &str = "secondary-shift-b";
+    /// The session-number span; `⌘1…⌘9` bound by `commands::BINDINGS`.
+    pub const FIRST_SESSION_SLOT: &str = "secondary-1";
+    pub const LAST_SESSION_SLOT: &str = "secondary-9";
+    pub const PROJECT_PANEL: &str = "secondary-shift-e";
+    pub const SETTINGS: &str = "secondary-,";
+    pub const PALETTE: &str = "secondary-p";
+    pub const PALETTE_ALT: &str = "secondary-k";
+    pub const FIND: &str = "secondary-f";
+    /// Focus the sidebar's session search. `⌘F` searches the transcript, so the
+    /// sidebar gets the same chord shifted.
+    pub const SESSION_SEARCH: &str = "secondary-shift-f";
+    pub const USAGE: &str = "secondary-u";
+    pub const PREV_TURN: &str = "secondary-up";
+    pub const NEXT_TURN: &str = "secondary-down";
+    pub const COPY_LAST_RESPONSE: &str = "secondary-shift-c";
+    pub const CHECK_UPDATES: &str = "secondary-shift-u";
+    pub const QUIT: &str = "secondary-q";
+    pub const CHOOSE_MODEL: &str = "secondary-shift-m";
+    pub const CHOOSE_THINKING: &str = "secondary-shift-t";
+    pub const REVIEW_CHANGES: &str = "secondary-shift-r";
+    pub const OPEN_GIT: &str = "secondary-shift-g";
+    pub const SHORTCUT_HELP: &str = "secondary-/";
+    pub const SEND: &str = "enter";
+    pub const SEND_ALTERNATE: &str = "alt-enter";
+    pub const STEER: &str = "secondary-shift-enter";
+    pub const NEWLINE: &str = "shift-enter";
+    pub const ACCEPT: &str = "tab";
+    pub const STOP: &str = "escape";
 
-#[cfg(not(target_os = "macos"))]
-pub mod shortcuts {
-    pub const NEW_SESSION: &str = "Ctrl+N";
-    pub const REFRESH: &str = "Ctrl+R";
-    pub const TERMINAL: &str = "Ctrl+J";
-    pub const SIDEBAR: &str = "Ctrl+B";
-    pub const FOCUS_SESSIONS: &str = "Ctrl+Shift+B";
-    pub const PROJECT_PANEL: &str = "Ctrl+Shift+E";
-    pub const SETTINGS: &str = "Ctrl+,";
-    pub const PALETTE: &str = "Ctrl+P";
-    pub const FIND: &str = "Ctrl+F";
-    pub const USAGE: &str = "Ctrl+U";
-    pub const PREV_TURN: &str = "Ctrl+↑";
-    pub const NEXT_TURN: &str = "Ctrl+↓";
-    pub const COPY_LAST_RESPONSE: &str = "Ctrl+Shift+C";
-    pub const CHECK_UPDATES: &str = "Ctrl+Shift+U";
-    pub const QUIT: &str = "Ctrl+Q";
-    pub const SEND: &str = "Enter";
-    pub const STEER: &str = "Ctrl+Shift+Enter";
-    pub const NEWLINE: &str = "Shift+Enter";
-    pub const ACCEPT: &str = "Tab";
-    pub const STOP: &str = "Esc";
+    /// Render one canonical chord the way this platform labels it: macOS
+    /// glyphs (`⌘⇧B`) or explicit names (`Ctrl+Shift+B`).
+    ///
+    /// Only the chord vocabulary `KeyBinding` accepts is handled; an unknown
+    /// key falls back to its raw spelling so a label is never blank.
+    pub fn label(chord: &str) -> String {
+        #[cfg(target_os = "macos")]
+        {
+            let mut out = String::new();
+            for part in chord.split('-') {
+                match part {
+                    "secondary" | "cmd" | "super" | "win" => out.push('⌘'),
+                    "shift" => out.push('⇧'),
+                    "alt" => out.push('⌥'),
+                    "ctrl" | "control" => out.push('⌃'),
+                    "fn" => out.push_str("fn"),
+                    key => out.push_str(&key_label_mac(key)),
+                }
+            }
+            out
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut parts: Vec<String> = Vec::new();
+            for part in chord.split('-') {
+                match part {
+                    "secondary" | "cmd" | "super" | "win" | "ctrl" | "control" => {
+                        parts.push("Ctrl".to_string())
+                    }
+                    "shift" => parts.push("Shift".to_string()),
+                    "alt" => parts.push("Alt".to_string()),
+                    "fn" => parts.push("Fn".to_string()),
+                    key => parts.push(key_label_other(key)),
+                }
+            }
+            parts.join("+")
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn key_label_mac(key: &str) -> String {
+        match key {
+            "enter" => "↵".to_string(),
+            "escape" => "Esc".to_string(),
+            "tab" => "Tab".to_string(),
+            "space" => "Space".to_string(),
+            "up" => "↑".to_string(),
+            "down" => "↓".to_string(),
+            "left" => "←".to_string(),
+            "right" => "→".to_string(),
+            "pageup" => "⇞".to_string(),
+            "pagedown" => "⇟".to_string(),
+            "home" => "↖".to_string(),
+            "end" => "↘".to_string(),
+            "backspace" => "⌫".to_string(),
+            "delete" => "⌦".to_string(),
+            // The backends deliver shifted punctuation as the shifted symbol
+            // with `shift` cleared, so the bracket-pair chord is `}` / `{`;
+            // render the chord the keyboard actually asks for.
+            "{" => "⇧[".to_string(),
+            "}" => "⇧]".to_string(),
+            other if other.chars().count() == 1 => other.to_uppercase(),
+            other => other.to_string(),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn key_label_other(key: &str) -> String {
+        match key {
+            "enter" => "Enter".to_string(),
+            "escape" => "Esc".to_string(),
+            "tab" => "Tab".to_string(),
+            "space" => "Space".to_string(),
+            "up" => "↑".to_string(),
+            "down" => "↓".to_string(),
+            "left" => "←".to_string(),
+            "right" => "→".to_string(),
+            "pageup" => "PgUp".to_string(),
+            "pagedown" => "PgDn".to_string(),
+            "backspace" => "Backspace".to_string(),
+            "delete" => "Delete".to_string(),
+            // See [`key_label_mac`]: shifted punctuation arrives as the shifted
+            // symbol, so spell the chord the keyboard actually asks for.
+            "{" => "Shift+[".to_string(),
+            "}" => "Shift+]".to_string(),
+            other if other.chars().count() == 1 => other.to_uppercase(),
+            other => other.to_string(),
+        }
+    }
 }
 
 /// The catalog id of the platform's own file manager, preferred when the user
@@ -775,7 +1133,10 @@ impl OpenInPrefs {
             .into_iter()
             .flatten()
             .find_map(|id| apps.iter().find(|app| app.id == id))
-            .or_else(|| apps.iter().find(|app| app.id == DEFAULT_OPEN_IN_FILE_MANAGER))
+            .or_else(|| {
+                apps.iter()
+                    .find(|app| app.id == DEFAULT_OPEN_IN_FILE_MANAGER)
+            })
             .or_else(|| apps.first())
     }
 
@@ -810,7 +1171,9 @@ pub fn open_terminal_command(command: &str) -> Result<(), String> {
     // A `.command` file opened with `open` runs in Terminal.app without
     // requiring Automation (AppleScript) permission, and works even when a
     // non-default terminal is installed.
-    let path = std::env::temp_dir().join(format!("orbit-{}.command", std::process::id()));
+    let path = scratch_dir()
+        .map_err(|err| tr!("platform.login_script_failed", error = err))?
+        .join(format!("login-{}.command", std::process::id()));
     let script = format!("#!/bin/zsh\n{command}\n");
     std::fs::write(&path, script)
         .map_err(|err| tr!("platform.login_script_failed", error = err))?;
@@ -892,6 +1255,63 @@ pub fn open_url(url: &str) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|err| tr!("platform.browser_failed", error = err))
+}
+
+/// Start a second instance of this build without waiting for it. Used by the
+/// Settings → General → Reload app control: the caller tears down its child
+/// processes and quits once this returns, leaving the replacement as the one
+/// live workbench.
+///
+/// A bundled macOS app is opened through Launch Services (`open -n`) so the
+/// replacement is a proper app instance rather than a raw child. A bare binary
+/// (a dev `cargo run`/`bacon run`, a Linux install, or Windows) is spawned
+/// directly, preserving its environment and working directory.
+pub fn relaunch_current_app() -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = macos_app_bundle() {
+        let opened = std::process::Command::new("/usr/bin/open")
+            .arg("-n")
+            .arg(&bundle)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if opened {
+            return Ok(());
+        }
+        // Fall through to a direct spawn: `open` can fail outside a normal
+        // desktop session, where the binary is still launchable.
+    }
+
+    let executable = std::env::current_exe()?;
+    let mut command = std::process::Command::new(executable);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command.spawn().map(|_| ())
+}
+
+/// The `.app` bundle containing this executable, when it runs from a bundled
+/// macOS build rather than a bare `target/debug` binary.
+#[cfg(target_os = "macos")]
+fn macos_app_bundle() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let macos_dir = executable.parent()?;
+    let contents = macos_dir.parent()?;
+    let bundle = contents.parent()?;
+    if macos_dir.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
+        return None;
+    }
+    if bundle
+        .extension()
+        .is_none_or(|extension| extension != "app")
+    {
+        return None;
+    }
+    Some(bundle.to_path_buf())
 }
 
 /// Rename the running process so macOS labels the application menu with the
@@ -1211,9 +1631,9 @@ pub fn draws_window_controls() -> bool {
 /// `Window::prevent_default` on every press inside the window. A prevented
 /// press is treated as handled, which makes GPUI drop the window-control
 /// path entirely — no move loop, and no caption-button commands. So the press
-/// hands the move to the OS itself (`WM_NCLBUTTONDOWN` + `HTCAPTION`), which
-/// is the standard way a custom titlebar drags a Windows window. That message
-/// is posted rather than sent so the move loop does not nest inside the
+/// hands the move to the OS itself (`WM_SYSCOMMAND` with `SC_MOVE | HTCAPTION`),
+/// the same command `DefWindowProc` runs for a caption drag. That message is
+/// posted rather than sent so the move loop does not nest inside the
 /// mouse-down update — see `windows_chrome::start_drag` for why that matters.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn start_window_drag(window: &Window) {
@@ -1247,8 +1667,8 @@ mod windows_chrome {
 
     use super::WindowCommand;
 
-    const WM_NCLBUTTONDOWN: u32 = 0x00A1;
     const WM_SYSCOMMAND: u32 = 0x0112;
+    const SC_MOVE: usize = 0xF010;
     const HTCAPTION: usize = 2;
     const SC_MINIMIZE: usize = 0xF020;
     const SC_MAXIMIZE: usize = 0xF030;
@@ -1278,10 +1698,11 @@ mod windows_chrome {
             return;
         };
         // SAFETY: `hwnd` is the window's own handle for as long as `window`
-        // lives, and both calls are the documented sequence for starting a
-        // system move loop (`ReleaseCapture` drops the current capture so the
-        // window can take it; a non-client left-button-down with `HTCAPTION`
-        // is what the OS reads as "the user grabbed the titlebar").
+        // lives. `ReleaseCapture` drops the current capture so the window can
+        // take it, and `WM_SYSCOMMAND` with `SC_MOVE | HTCAPTION` is how
+        // `DefWindowProc` starts a caption drag — including the restore of a
+        // maximized window — so the system performs the move and the app never
+        // reimplements window management.
         //
         // Posted, not sent. `SendMessageW` runs the move loop *synchronously*,
         // i.e. still inside the mouse-down event this handler is called from.
@@ -1295,9 +1716,17 @@ mod windows_chrome {
         // it runs *after* the update has put the window back and its resize
         // callbacks can land. `PostMessageW` returns immediately; the move
         // loop owns the mouse until the user releases it.
+        //
+        // `WM_NCLBUTTONDOWN` with `HTCAPTION` deliberately is not used here:
+        // GPUI dispatches a synthetic `MouseDown` for that message, and when
+        // its coordinates land back in a header drag region the handler posts
+        // another one. A window that covers the screen origin — every window
+        // maximized on the primary display — never drains that queue and the
+        // app spins forever (issue #26). `WM_SYSCOMMAND` starts the same move
+        // loop without re-entering the app's input dispatch.
         unsafe {
             ReleaseCapture();
-            PostMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            PostMessageW(hwnd, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0);
         }
     }
 
@@ -1368,9 +1797,436 @@ pub fn titlebar_options() -> TitlebarOptions {
     }
 }
 
+/// Files copied by the native file manager, distinct from ordinary path text.
+pub fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+
+        let Some(items) = NSPasteboard::generalPasteboard().pasteboardItems() else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                // SAFETY: NSPasteboardTypeFileURL is a system-defined constant.
+                let value = item.stringForType(unsafe { NSPasteboardTypeFileURL })?;
+                macos_file_url_path(&value)
+            })
+            .collect()
+    }
+    #[cfg(windows)]
+    {
+        windows_clipboard_file_paths()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+fn windows_clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, OpenClipboard,
+    };
+    use windows_sys::Win32::UI::Shell::DragQueryFileW;
+
+    // CF_HDROP is the standard file-list clipboard format.
+    const CF_HDROP: u32 = 15;
+    // SAFETY: a null owner opens the clipboard for this thread.
+    if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return Vec::new();
+    }
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            // SAFETY: this guard is created only after OpenClipboard succeeds.
+            unsafe { CloseClipboard() };
+        }
+    }
+    let _guard = ClipboardGuard;
+    // SAFETY: the clipboard is open and the handle remains valid until closed.
+    let handle = unsafe { GetClipboardData(CF_HDROP) };
+    if handle.is_null() {
+        return Vec::new();
+    }
+    let count = unsafe { DragQueryFileW(handle, u32::MAX, std::ptr::null_mut(), 0) };
+    (0..count)
+        .filter_map(|index| {
+            // SAFETY: querying the length requires no output buffer.
+            let len = unsafe { DragQueryFileW(handle, index, std::ptr::null_mut(), 0) };
+            if len == 0 {
+                return None;
+            }
+            let mut buffer = vec![0u16; len as usize + 1];
+            // SAFETY: the buffer has room for the path and terminating NUL.
+            let written = unsafe { DragQueryFileW(handle, index, buffer.as_mut_ptr(), len + 1) };
+            (written == len).then(|| {
+                std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len as usize]))
+            })
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub fn clipboard_uri_list(text: &str) -> Option<Vec<std::path::PathBuf>> {
+    // GNOME Files publishes a file clipboard as `x-special/nautilus-clipboard`,
+    // a `copy`/`cut` verb, then the file URLs. Skipping only those header lines
+    // keeps the mixed-text guard: any other non-URL line still means "this is
+    // prose, not a file list".
+    const URI_LIST_HEADER: [&str; 3] = ["x-special/nautilus-clipboard", "copy", "cut"];
+    let mut paths = Vec::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with('#') {
+            continue;
+        }
+        if paths.is_empty() && URI_LIST_HEADER.contains(&line) {
+            continue;
+        }
+        let url = url::Url::parse(line).ok()?;
+        if url.scheme() != "file" {
+            return None;
+        }
+        paths.push(url.to_file_path().ok()?);
+    }
+    (!paths.is_empty()).then_some(paths)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_file_url_path(value: &objc2_foundation::NSString) -> Option<std::path::PathBuf> {
+    use objc2_foundation::NSURL;
+
+    let url = NSURL::URLWithString(value)?;
+    if !url.isFileURL() {
+        return None;
+    }
+    let path = url.filePathURL()?.path()?;
+    Some(std::path::PathBuf::from(path.to_string()))
+}
+
+/// PNG bytes of a picture on the system clipboard.
+///
+/// GPUI's clipboard read is what `ComposerInput::paste` tries first. It misses
+/// the formats screenshot tools actually publish: a `CF_DIB` bitmap on Windows,
+/// and a TIFF on macOS that never gets read once the pasteboard also holds a
+/// path or a caption. Both platforms come back as PNG so the composer can hand
+/// the bytes to the existing attachment path. Linux has no fallback.
+pub fn clipboard_image_png() -> Option<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        windows_clipboard_png()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_clipboard_png()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// Decode an already-encoded picture (PNG, JPEG, GIF, TIFF, BMP) and return
+/// PNG bytes. A buffer that is already a PNG is returned without its trailing
+/// padding: the clipboard reports the allocation size, which is larger than
+/// the file.
+pub(crate) fn raster_to_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    if let Some(png) = png_without_padding(bytes) {
+        return Some(png);
+    }
+    let decoded = image::load_from_memory(bytes).ok()?;
+    let mut png = Vec::new();
+    decoded
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
+/// The PNG file inside `bytes`, dropping anything after the `IEND` chunk.
+fn png_without_padding(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    // Signature, then chunks of length + type + data + CRC.
+    let mut index = 8usize;
+    while index + 8 <= bytes.len() {
+        let len = u32::from_be_bytes(bytes.get(index..index + 4)?.try_into().ok()?) as usize;
+        let kind = bytes.get(index + 4..index + 8)?;
+        let next = index.checked_add(12)?.checked_add(len)?;
+        if next > bytes.len() {
+            return None;
+        }
+        if kind == b"IEND" {
+            return Some(bytes[..next].to_vec());
+        }
+        index = next;
+    }
+    None
+}
+
+/// A device-independent bitmap (`CF_DIB` / `CF_DIBV5`, a BMP without its
+/// 14-byte file header) re-encoded as PNG.
+#[cfg(any(windows, test))]
+pub(crate) fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
+    raster_to_png(&dib_to_bmp(dib)?)
+}
+
+/// Prepend a `BITMAPFILEHEADER` so the `image` crate's BMP decoder can read a
+/// raw DIB. The pixel offset accounts for a palette and for the bitfield masks
+/// that follow a classic 40-byte header; V4/V5 headers already contain theirs.
+#[cfg(any(windows, test))]
+fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
+    if dib.len() < 40 {
+        return None;
+    }
+    let header_size = u32::from_le_bytes(dib.get(0..4)?.try_into().ok()?);
+    if header_size < 40 || dib.len() < header_size as usize {
+        return None;
+    }
+    let bit_count = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?);
+    let compression = u32::from_le_bytes(dib.get(16..20)?.try_into().ok()?);
+    // BI_RGB = 0, BI_BITFIELDS = 3, BI_ALPHABITFIELDS = 6. Only a 40-byte
+    // BITMAPINFOHEADER stores those masks after the header.
+    let mask_bytes = if header_size == 40 {
+        match compression {
+            3 => 12,
+            6 => 16,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+    let palette_bytes = if bit_count <= 8 {
+        let colors_used = u32::from_le_bytes(dib.get(32..36)?.try_into().ok()?);
+        let colors = if colors_used == 0 {
+            1u32 << bit_count
+        } else {
+            colors_used
+        };
+        colors.saturating_mul(4)
+    } else {
+        0
+    };
+    let pixel_offset = 14u32
+        .saturating_add(header_size)
+        .saturating_add(mask_bytes)
+        .saturating_add(palette_bytes);
+    let file_size = u32::try_from(dib.len()).ok()?.checked_add(14)?;
+    let mut bmp = Vec::with_capacity(file_size as usize);
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&file_size.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&pixel_offset.to_le_bytes());
+    bmp.extend_from_slice(dib);
+    Some(bmp)
+}
+
+/// Copy one clipboard format out and close the clipboard before decoding, so a
+/// slow PNG encode does not keep the clipboard locked.
+#[cfg(windows)]
+fn windows_clipboard_png() -> Option<Vec<u8>> {
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW,
+    };
+    // `CF_DIB` / `CF_DIBV5` live in windows-sys's Ole module. That feature pulls
+    // in COM, which this read does not need; the format ids are stable.
+    const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+
+    struct Guard;
+    impl Guard {
+        fn open() -> Option<Self> {
+            // SAFETY: a null owner attaches the clipboard to this thread.
+            // `HWND` is already `*mut c_void`, so the null is that pointer.
+            if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+                return None;
+            }
+            Some(Self)
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // SAFETY: `open` succeeded, so this thread owns the clipboard.
+            unsafe { CloseClipboard() };
+        }
+    }
+
+    // SAFETY: `format` is a clipboard format id, and the returned handle is
+    // only read while this thread still holds the clipboard open.
+    unsafe fn copy_format(format: u32) -> Option<Vec<u8>> {
+        let handle = unsafe { GetClipboardData(format) };
+        if handle.is_null() {
+            return None;
+        }
+        let ptr = unsafe { GlobalLock(handle) };
+        if ptr.is_null() {
+            return None;
+        }
+        let size = unsafe { GlobalSize(handle) };
+        let bytes = if size == 0 {
+            None
+        } else {
+            Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, size) }.to_vec())
+        };
+        unsafe { GlobalUnlock(handle) };
+        bytes
+    }
+
+    fn named(name: &str) -> Option<Vec<u8>> {
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: `wide` is a null-terminated UTF-16 string. Registering a
+        // format only looks up its id; it does not write clipboard data.
+        let format = unsafe { RegisterClipboardFormatW(wide.as_ptr()) };
+        if format == 0 {
+            return None;
+        }
+        unsafe { copy_format(format) }
+    }
+
+    enum Raw {
+        Raster(Vec<u8>),
+        Dib(Vec<u8>),
+    }
+
+    let raw = {
+        let _guard = Guard::open()?;
+        if let Some(bytes) = named("PNG").or_else(|| named("image/png")) {
+            Raw::Raster(bytes)
+        } else if let Some(bytes) = named("JFIF").or_else(|| named("image/jpeg")) {
+            Raw::Raster(bytes)
+        } else if let Some(bytes) = named("GIF").or_else(|| named("image/gif")) {
+            Raw::Raster(bytes)
+        } else if let Some(bytes) =
+            unsafe { copy_format(CF_DIBV5) }.or_else(|| unsafe { copy_format(CF_DIB) })
+        {
+            Raw::Dib(bytes)
+        } else {
+            return None;
+        }
+    };
+    match raw {
+        Raw::Raster(bytes) => raster_to_png(&bytes),
+        Raw::Dib(bytes) => dib_to_png(&bytes),
+    }
+}
+
+/// Screenshot (⌘⌃⇧4) publishes TIFF. A copied picture is usually PNG, sometimes
+/// JPEG or GIF. The same picture is often offered as several of these; the
+/// first one that decodes wins.
+#[cfg(target_os = "macos")]
+fn macos_clipboard_png() -> Option<Vec<u8>> {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    for uti in ["public.png", "public.jpeg", "public.gif", "public.tiff"] {
+        let kind = NSString::from_str(uti);
+        let Some(data) = pasteboard.dataForType(&kind) else {
+            continue;
+        };
+        // SAFETY: `data` is a live `NSData` returned by the pasteboard.
+        let bytes = unsafe { data.as_bytes_unchecked() };
+        if bytes.is_empty() {
+            continue;
+        }
+        if let Some(png) = raster_to_png(bytes) {
+            return Some(png);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn clipboard_uri_list_accepts_files_but_not_plain_paths_or_mixed_text() {
+        assert_eq!(
+            clipboard_uri_list("file:///tmp/a%20b.png\r\nfile:///tmp/notes.txt\r\n"),
+            Some(vec!["/tmp/a b.png".into(), "/tmp/notes.txt".into()])
+        );
+        // GNOME Files prefixes the URLs with its own two-line header.
+        assert_eq!(
+            clipboard_uri_list("x-special/nautilus-clipboard\ncopy\nfile:///tmp/a%20b.png\n"),
+            Some(vec!["/tmp/a b.png".into()])
+        );
+        assert_eq!(clipboard_uri_list("/tmp/notes.txt"), None);
+        assert_eq!(
+            clipboard_uri_list("file:///tmp/a\nhttps://example.com"),
+            None
+        );
+        // A header-less line of prose means text, not a file list.
+        assert_eq!(clipboard_uri_list("here is a file\nfile:///tmp/a"), None);
+        // And the header is only skipped ahead of the URLs.
+        assert_eq!(clipboard_uri_list("file:///tmp/a\ncopy"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finder_file_reference_url_resolves_to_real_path() {
+        use objc2_foundation::{NSString, NSURL};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let path_string = NSString::from_str(path.to_str().unwrap());
+        let url = NSURL::fileURLWithPath(&path_string);
+        let reference = url.fileReferenceURL().expect("file reference URL");
+        let value = reference.absoluteString().expect("URL string");
+        assert!(value.to_string().contains("/.file/id="));
+        assert_eq!(macos_file_url_path(&value), Some(path));
+    }
+
+    #[test]
+    fn chord_labels_use_the_platform_vocabulary() {
+        assert_eq!(
+            shortcuts::label("secondary-n"),
+            if cfg!(target_os = "macos") {
+                "⌘N"
+            } else {
+                "Ctrl+N"
+            }
+        );
+        assert_eq!(shortcuts::label("escape"), "Esc");
+        assert_eq!(shortcuts::label("tab"), "Tab");
+        assert_eq!(
+            shortcuts::label("secondary-up"),
+            if cfg!(target_os = "macos") {
+                "⌘↑"
+            } else {
+                "Ctrl+↑"
+            }
+        );
+        assert_eq!(
+            shortcuts::label("secondary-shift-enter"),
+            if cfg!(target_os = "macos") {
+                "⌘⇧↵"
+            } else {
+                "Ctrl+Shift+Enter"
+            }
+        );
+        // The tab-cycle chord is the shifted symbol the backends deliver, but
+        // the chip still advertises the shift chord it takes to type it.
+        assert_eq!(
+            shortcuts::label(shortcuts::NEXT_TERMINAL_TAB),
+            if cfg!(target_os = "macos") {
+                "⌘⇧]"
+            } else {
+                "Ctrl+Shift+]"
+            }
+        );
+        assert_eq!(
+            shortcuts::label(shortcuts::PREV_TERMINAL_TAB),
+            if cfg!(target_os = "macos") {
+                "⌘⇧["
+            } else {
+                "Ctrl+Shift+["
+            }
+        );
+    }
 
     fn open_in_test_apps() -> Vec<ExternalApp> {
         ["vscode", "rider", DEFAULT_OPEN_IN_FILE_MANAGER]
@@ -1393,6 +2249,78 @@ mod tests {
             .unwrap();
         assert_eq!(rider.1, "Rider");
         assert_eq!(rider.2, &["com.jetbrains.rider", "com.jetbrains.rider-EAP"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_catalog_offers_every_terminal() {
+        for (id, label) in [
+            ("terminal", "Terminal"),
+            ("rex", "Rex"),
+            ("termy", "Termy"),
+            ("iterm2", "iTerm2"),
+            ("ghostty", "Ghostty"),
+            ("kitty", "Kitty"),
+            ("alacritty", "Alacritty"),
+            ("wezterm", "WezTerm"),
+            ("tabby", "Tabby"),
+            ("hyper", "Hyper"),
+            ("rio", "Rio"),
+            ("wave", "Wave"),
+            ("warp", "Warp"),
+            (TMUX_APP_ID, "tmux"),
+        ] {
+            let entry = OPEN_IN_CATALOG
+                .iter()
+                .find(|entry| entry.0 == id)
+                .unwrap_or_else(|| panic!("{id} is missing from the catalog"));
+            assert_eq!(entry.1, label);
+            assert!(!entry.2.is_empty());
+        }
+    }
+
+    /// The tmux row borrows Terminal.app's icon, so it must never be the
+    /// bundle id that decides whether the row exists — the binary does.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_tmux_row_follows_the_binary_not_the_bundle() {
+        let entry = OPEN_IN_CATALOG
+            .iter()
+            .find(|entry| entry.0 == TMUX_APP_ID)
+            .unwrap();
+        assert_eq!(entry.2, &["com.apple.Terminal"]);
+        let offered = detect_open_in_apps()
+            .iter()
+            .any(|app| app.id == TMUX_APP_ID);
+        assert_eq!(offered, tmux_path().is_some());
+    }
+
+    /// Paths handed to a `.command` script reach `cd` as written, spaces and
+    /// quotes included.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_shell_quotes_awkward_directories() {
+        assert_eq!(shell_quote(Path::new("/a/b")), "'/a/b'");
+        assert_eq!(
+            shell_quote(Path::new("/a/Game with spaces")),
+            "'/a/Game with spaces'"
+        );
+        assert_eq!(shell_quote(Path::new("/a/it's here")), r"'/a/it'\''s here'");
+    }
+
+    /// The icon the menu embeds must be exactly the pixel size the 18px slot
+    /// blits 1:1 on a Retina window — not whatever representation AppKit
+    /// happens to hold.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_app_icon_is_rasterized_at_the_menu_pixel_size() {
+        use objc2_foundation::NSString;
+
+        let path = NSString::from_str("/System/Library/CoreServices/Finder.app");
+        let png = app_icon_png(&path, APP_ICON_PX).expect("Finder always yields an icon");
+        let icon = image::load_from_memory(&png).expect("the rasterizer emits a decodable PNG");
+        assert_eq!(icon.width(), APP_ICON_PX as u32);
+        assert_eq!(icon.height(), APP_ICON_PX as u32);
     }
 
     #[test]
@@ -1450,10 +2378,16 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(
-            prefs.preferred_app(Some(workspace), &without_rider).unwrap().id,
+            prefs
+                .preferred_app(Some(workspace), &without_rider)
+                .unwrap()
+                .id,
             "vscode"
         );
-        assert_eq!(prefs.preferred_app(Some(workspace), &apps).unwrap().id, "rider");
+        assert_eq!(
+            prefs.preferred_app(Some(workspace), &apps).unwrap().id,
+            "rider"
+        );
     }
 
     #[test]
@@ -1621,6 +2555,68 @@ mod tests {
             build: 17763,
         };
         assert!(unsupported_reason(floor).is_none());
+    }
+
+    /// A 32-bit screenshot is a DIB: a BMP with the 14-byte file header cut
+    /// off. Putting that header back must produce a PNG of the same size.
+    #[test]
+    fn dib_screenshot_bytes_become_a_png() {
+        let mut pixels = image::RgbaImage::new(2, 2);
+        pixels.put_pixel(0, 0, image::Rgba([10, 20, 30, 255]));
+        pixels.put_pixel(1, 1, image::Rgba([40, 50, 60, 255]));
+        let mut bmp = Vec::new();
+        image::DynamicImage::ImageRgba8(pixels)
+            .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+            .expect("encode a bmp");
+        assert!(bmp.starts_with(b"BM"));
+        assert!(bmp.len() > 14);
+        let png = dib_to_png(&bmp[14..]).expect("a dib decodes");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        // Clipboard `GlobalSize` rounds past the bitmap. The extra bytes must
+        // not make the DIB undecodable.
+        let mut padded = bmp[14..].to_vec();
+        padded.extend_from_slice(&[0u8; 64]);
+        assert!(dib_to_png(&padded).is_some());
+        let decoded = image::load_from_memory(&png).expect("png decodes");
+        assert_eq!((decoded.width(), decoded.height()), (2, 2));
+        let sample = decoded.to_rgba8().get_pixel(0, 0).0;
+        assert_eq!(&sample[..3], &[10, 20, 30]);
+    }
+
+    /// macOS screenshots land on the pasteboard as TIFF. The same re-encode
+    /// the paste path uses must turn those bytes into a PNG.
+    #[test]
+    fn tiff_screenshot_bytes_become_a_png() {
+        let mut pixels = image::RgbImage::new(2, 2);
+        pixels.put_pixel(0, 0, image::Rgb([7, 8, 9]));
+        pixels.put_pixel(1, 0, image::Rgb([1, 2, 3]));
+        let mut tiff = Vec::new();
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(
+                &mut std::io::Cursor::new(&mut tiff),
+                image::ImageFormat::Tiff,
+            )
+            .expect("encode a tiff");
+        let png = raster_to_png(&tiff).expect("a tiff decodes");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let decoded = image::load_from_memory(&png).expect("png decodes");
+        assert_eq!((decoded.width(), decoded.height()), (2, 2));
+        assert_eq!(&decoded.to_rgb8().get_pixel(0, 0).0, &[7, 8, 9]);
+    }
+
+    /// An already-encoded PNG is not decoded and written again. Clipboard
+    /// allocations are larger than the file, so bytes after `IEND` are dropped.
+    #[test]
+    fn png_clipboard_bytes_pass_through() {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(raster_to_png(&png).unwrap(), png);
+        let mut padded = png.clone();
+        padded.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(raster_to_png(&padded).unwrap(), png);
     }
 
     /// The probe answers with a real label on the machine running the tests.

@@ -46,6 +46,7 @@ mod tests {
             name: name.into(),
             provider: provider.into(),
             context_window: None,
+            thinking_levels: Vec::new(),
         }
     }
 

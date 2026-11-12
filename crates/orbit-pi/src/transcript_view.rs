@@ -4,7 +4,7 @@
 //! End-aligned neutral bubbles, assistant turns are Start-aligned prose. A
 //! ghost copy/timestamp footer reveals on row hover. Settled: **Worked for**
 //! fold → thinking/tool cards → answer → files → copy footer. Live: thinking
-//! + activity cards → answer → files → **Working for** — work stays in
+//! and activity cards → answer → files → **Working for** — work stays in
 //! sequence with the text as it arrives from the agent.
 //!
 //! Timestamps render on the footer when pi provides one (snapshot
@@ -15,7 +15,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     rc::Rc,
@@ -24,16 +24,18 @@ use std::{
 };
 
 use gpui::{
-    anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
-    CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
-    InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
+    canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
+    relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
+    DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
+    ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign,
+    TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
+
+mod color_swatches;
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -41,13 +43,32 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
-use crate::app::{PopoverSurface, BUTTON_GROUP};
+use crate::agent_call_display::AgentCallDisplay;
+use crate::app::{
+    anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
+    icon_button_frame, nerd_font_family, picker_entry, picker_surface, press, ControlExt, OrbitApp,
+    TipExt, BUTTON_GROUP,
+};
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
+use crate::motion::Hover;
 use crate::shimmer::ShimmerText;
+use crate::theme::tokens::RaisedExt;
+use crate::theme::tokens::{
+    button, context_menu, looping, panel, picker, popover, BufferLineHeight, ButtonSize,
+    DynamicSpacing, IconSize, Motion, Radius, StyledExt, TextSize, BORDER_WIDTH,
+};
 use crate::theme::{self, Theme, ThemeMode};
-use crate::transcript::{ChatMessage, Step, ToolCall, ToolFacts};
+use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
+
+fn frosted_transcript_fill(theme: Theme) -> Hsla {
+    if theme.glass_sigma().is_some() {
+        theme.card_fill(theme.surface_secondary)
+    } else {
+        theme.overlay
+    }
+}
 
 /// Opens the changed-files Review in the side pane (see `sidepane.rs`) —
 /// handed down from the app so the transcript's Review buttons can point
@@ -58,18 +79,32 @@ pub(crate) type ReviewOpener = Rc<dyn Fn(&mut Window, &mut App)>;
 /// from the app so an image tile can open a surface it doesn't own.
 pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
 
+/// Opens the rewind picker on the `usize`-th user turn. Handed down from the
+/// app so a message footer can offer a fork without owning session state.
+pub(crate) type RewindOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// Forks at the `usize`-th row's prompt and sends it again on the new branch.
+/// Handed down like [`RewindOpener`]; `None` draws no regenerate action.
+pub(crate) type RegenerateOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// Saves the exact response text selected by its footer.
+pub(crate) type ResponseExporter = Rc<dyn Fn(String, bool, usize, &mut Window, &mut App)>;
+
 /// The transcript content column's max width.
 /// Normal message content keeps this centered measure. Assistant tables
 /// break out to the transcript pane's width; their scroll viewport must not
 /// inherit this cap.
 const CONTENT_MAX_WIDTH: f32 = 960.0;
-/// Extra space before a follow-up user message.
-const FOLLOWUP_TURN_TOP_GAP: f32 = 32.0;
 /// User-bubble max width.
 const USER_BUBBLE_MAX_WIDTH: f32 = 540.0;
-/// Message-footer action button size.
-const FOOTER_BUTTON_SIZE: f32 = 27.0;
+/// Message-footer action button size; the footer row, its timestamp, and
+/// its usage metric share the button's height.
+const FOOTER_BUTTON: ButtonSize = ButtonSize::Medium;
 const COPY_FEEDBACK: Duration = Duration::from_secs(2);
+/// The copy affordance is quiet at rest and brightens while the pointer is
+/// over its code section. In is shorter than out so crossing the plane does
+/// not flicker; both are motion roles rather than typed durations — the fade in
+/// is `Interaction`, the fade out is `Layout`, which is exactly the spec's
+/// 120–160 and 160–220 bands.
+const COPY_REST_OPACITY: f32 = 0.45;
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
 const NAVIGATION_RAIL_WIDTH: f32 = 44.0;
 const NAVIGATION_RAIL_TICK_WIDTH: f32 = 32.0;
@@ -83,7 +118,6 @@ const NAVIGATION_RAIL_EMPHASIS_SCALE: [f32; 4] = [1.0, 0.68, 0.44, 0.25];
 const NAVIGATION_RAIL_MAX_HEIGHT: f32 = 0.8;
 const NAVIGATION_RAIL_MIN_MAIN_WIDTH: f32 = 1040.0;
 const CHANGED_FILES_PREVIEW_LIMIT: usize = 3;
-const CONTENT_GAP: f32 = 10.0;
 const NAVIGATION_RAIL_CONTENT_GAP: f32 = 12.0;
 const NAVIGATION_RAIL_PREVIEW_WIDTH: f32 = 320.0;
 const NAVIGATION_RAIL_PREVIEW_MAX_HEIGHT: f32 = 126.0;
@@ -116,7 +150,7 @@ const CODE_PREVIEW_LINES: usize = 24;
 /// Code-block copy feedback shares the detail-section feedback map; section
 /// `2` never collides with Arguments (`0`) / Output (`1`).
 const CODE_COPY_SECTION: u8 = 2;
-const CODE_COPY_BUTTON: f32 = 28.0;
+const CODE_COPY_BUTTON: ButtonSize = ButtonSize::Medium;
 /// Inline edit diff — an edit/write tool's `oldText`/`newText` shown as a
 /// compact diff. Row height and text size track the Review pane's diff.
 const EDIT_DIFF_TEXT_SIZE: f32 = 12.5;
@@ -132,12 +166,81 @@ const EDIT_DIFF_PAINT_LINES: usize = 400;
 
 type ExpandedActivities = Rc<RefCell<HashMap<(usize, usize), bool>>>;
 type ExpandedTools = Rc<RefCell<HashSet<(usize, usize)>>>;
+/// Which child's log is open on a delegation card, keyed `(message_ix, tool_ix)`.
+/// One child at a time, so a parallel run's card keeps a predictable height
+/// (§9.3). A closed card has no entry.
+type OpenChildLogs = Rc<RefCell<HashMap<(usize, usize), usize>>>;
 type CopiedSections = Rc<RefCell<HashMap<(usize, usize, u8), Instant>>>;
 /// Tool detail sections expanded past their collapsed preview, keyed
 /// `(message_ix, flat_tool_ix, section)`.
 type ExpandedSections = Rc<RefCell<HashSet<(usize, usize, u8)>>>;
+/// Per-section hover transition. A reversal starts from the current painted
+/// opacity, so entering and leaving the code plane never snaps.
+#[derive(Clone, Copy)]
+pub(crate) struct SectionHover {
+    from: f32,
+    to: f32,
+    started: Instant,
+    duration: Duration,
+    /// Changes on every retarget so the GPUI animation element restarts from
+    /// the value captured in `from`.
+    generation: u64,
+}
+
+impl Default for SectionHover {
+    fn default() -> Self {
+        Self {
+            from: COPY_REST_OPACITY,
+            to: COPY_REST_OPACITY,
+            started: Instant::now(),
+            // Settled: `opacity_at` treats a zero duration as "already there",
+            // which is also what Reduce Motion resolves a role to.
+            duration: Duration::ZERO,
+            generation: 0,
+        }
+    }
+}
+
+impl SectionHover {
+    fn opacity_at(&self, elapsed: Duration) -> f32 {
+        // A zero duration is the Reduce Motion answer: the transition is
+        // already at its target, so it must not divide by zero here.
+        let progress = if self.duration.is_zero() {
+            1.0
+        } else {
+            (elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0)
+        };
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+
+    /// Point the transition at the hovered or resting opacity. Returns true
+    /// when the target actually changed, so the caller knows to repaint.
+    ///
+    /// The durations come from the roles, so Reduce Motion resolves them to
+    /// zero and the fade collapses to the new opacity instead of animating.
+    fn retarget(&mut self, hovered: bool, theme: &Theme) -> bool {
+        let target = if hovered { 1.0 } else { COPY_REST_OPACITY };
+        if (self.to - target).abs() < f32::EPSILON {
+            return false;
+        }
+        let now = Instant::now();
+        self.from = self.opacity_at(now.saturating_duration_since(self.started));
+        self.to = target;
+        self.started = now;
+        self.duration = if hovered {
+            Motion::Interaction.duration(theme)
+        } else {
+            Motion::Layout.duration(theme)
+        };
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+}
+
+pub(crate) type HoveredSections = Rc<RefCell<HashMap<(usize, usize, u8), SectionHover>>>;
 /// Code blocks expanded past their collapsed preview, keyed
-/// `(message_ix, prose_salt, block_ix)`.
+/// `(message_ix, prose_namespace, block_ix)`.
 type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
 /// Persistent scroll handles for expandable "Thought" cards, keyed
 /// `(message_ix, step_ix)`. The handle lets the card read its own
@@ -161,14 +264,28 @@ pub(crate) struct TranscriptView {
     pub scroller: MessageScrollerState,
     pub streaming: Rc<Cell<Option<usize>>>,
     pub stream_started: Rc<Cell<Option<Instant>>>,
+    /// A prompt is out and nothing has streamed yet: the tail slot shows the
+    /// live row so the send is acknowledged before the first token.
+    pub awaiting_reply: Rc<Cell<bool>>,
+    /// When the current turn's provider request began (`turn_start`). The
+    /// live rate divides by this clock, the same basis as pi's settled
+    /// `durationMs`, so a bursty stream is not read as the generation.
+    pub turn_started: Rc<Cell<Option<Instant>>>,
     pub expanded_turns: Rc<RefCell<HashSet<usize>>>,
     pub expanded_files: Rc<RefCell<HashSet<usize>>>,
     pub expanded_activities: ExpandedActivities,
+    /// What an agent call the reader has not toggled should do (Settings →
+    /// Agent). See [`crate::agent_call_display`].
+    pub agent_calls: AgentCallDisplay,
     /// Per-tool detail-card open state, keyed `(message_ix, tool_ix)`.
     pub expanded_tools: ExpandedTools,
+    /// Which child's log a delegation card shows, keyed `(message_ix, tool_ix)`.
+    pub open_child_logs: OpenChildLogs,
     pub copied: Rc<RefCell<HashMap<usize, Instant>>>,
     /// Per detail-section copy feedback, keyed `(message_ix, tool_ix, section)`.
     pub copied_sections: CopiedSections,
+    /// Per detail-section hover transition, keyed `(message_ix, tool_ix, section)`.
+    pub hovered_sections: HoveredSections,
     /// Tool output sections expanded past their collapsed preview.
     pub expanded_sections: ExpandedSections,
     /// Code blocks expanded past their collapsed preview.
@@ -213,12 +330,22 @@ pub(crate) struct TranscriptView {
     /// Opens an attachment image in the full-window lightbox; `None` leaves
     /// the tiles non-interactive.
     pub image_opener: Option<ImageOpener>,
+    /// Opens the rewind picker from a user message's footer. The app always
+    /// supplies it; `None` (tests, previews) simply draws no rewind action.
+    pub rewind: Option<RewindOpener>,
+    /// Forks at an assistant response's prompt and sends it again.
+    pub regenerate: Option<RegenerateOpener>,
+    /// Opens the native save dialog for an assistant response.
+    pub export_response: Option<ResponseExporter>,
     /// Message indices matching the open find query; `None` when find is
     /// closed. Rows get a quiet wash.
     pub search_hits: Option<Rc<RefCell<HashSet<usize>>>>,
     /// The selected find hit (stronger wash + a ring); `None` when find is
     /// closed.
     pub search_active: Option<Rc<Cell<Option<usize>>>>,
+    /// User-turn row indices, cached in `Transcript` and shared here so the
+    /// rail's O(message-count) pass does not run every frame.
+    pub user_turns: Rc<Vec<usize>>,
 }
 
 // ── text selection ─────────────────────────────────────────────────────────
@@ -299,6 +426,7 @@ pub(crate) struct TextSelection {
     /// The press that started the drag, for link resolution on release.
     down: Option<(ElementId, usize)>,
     menu: Option<TextMenu>,
+    stream_fades: HashMap<ElementId, StreamFade>,
 }
 
 pub(crate) type TextSelectionState = Rc<RefCell<TextSelection>>;
@@ -315,6 +443,7 @@ impl TextSelection {
             moved: false,
             down: None,
             menu: None,
+            stream_fades: HashMap::new(),
         }
     }
 
@@ -392,13 +521,49 @@ impl TextSelection {
             block: index,
             offset,
         };
-        self.down = Some((key, offset));
+        // Gutter presses can start a selection, but must never activate the
+        // nearest text block's link (for example, when clicking a card).
+        let block = &self.blocks[index];
+        if block.bounds.contains(&position) {
+            if let Ok(actual_offset) = block.layout.index_for_position(position) {
+                self.down = Some((key, actual_offset));
+            }
+        }
         self.selection = Some(Selection {
             blocks,
             anchor: point,
             focus: point,
         });
         self.dragging = true;
+    }
+
+    fn select_word(&mut self, position: gpui::Point<Pixels>) {
+        let Some(index) = self
+            .blocks
+            .iter()
+            .position(|block| block.bounds.contains(&position))
+        else {
+            return;
+        };
+        let Ok(offset) = self.blocks[index].layout.index_for_position(position) else {
+            return;
+        };
+        let text = &self.blocks[index].text;
+        let range = crate::composer::word_range_at(text, byte_boundary(text, offset));
+        self.begin_selection(position);
+        if let Some(selection) = self.selection.as_mut() {
+            selection.anchor = SelectPoint {
+                block: index,
+                offset: range.start,
+            };
+            selection.focus = SelectPoint {
+                block: index,
+                offset: range.end,
+            };
+        }
+        self.dragging = false;
+        self.moved = true;
+        self.down = None;
     }
 
     fn extend_selection(&mut self, position: gpui::Point<Pixels>) {
@@ -426,17 +591,22 @@ impl TextSelection {
     }
 
     /// End a drag; a press that never moved resolves to the link under it.
-    fn finish_selection(&mut self) -> Option<String> {
+    fn finish_selection(&mut self, position: gpui::Point<Pixels>) -> Option<String> {
         self.dragging = false;
         if self.moved {
+            self.down = None;
             return None;
         }
         let (key, offset) = self.down.take()?;
         let block = self.blocks.iter().find(|block| block.key == key)?;
+        if !block.bounds.contains(&position) {
+            return None;
+        }
+        let release_offset = block.layout.index_for_position(position).ok()?;
         block
             .links
             .iter()
-            .find(|(range, _)| range.contains(&offset))
+            .find(|(range, _)| range.contains(&offset) && range.contains(&release_offset))
             .map(|(_, url)| url.clone())
     }
 
@@ -614,6 +784,7 @@ thread_local! {
 struct TextScope {
     state: TextSelectionState,
     message_ix: usize,
+    color_swatches: bool,
 }
 
 struct TextScopeGuard(Option<TextScope>);
@@ -643,6 +814,12 @@ struct SelectableText {
     /// Plain text this block contributes to the clipboard.
     plain: SharedString,
     links: Vec<(Range<usize>, String)>,
+    /// Byte ranges whose font glyph is blanked and replaced by a hugeicon
+    /// painted over the reserved space — the external-link arrow after a
+    /// bare URL in prose.
+    marks: Vec<Range<usize>>,
+    mark_color: Hsla,
+    mark_size: Pixels,
     scope: Option<TextScope>,
 }
 
@@ -659,9 +836,53 @@ impl SelectableText {
             text,
             plain,
             links,
+            marks: Vec::new(),
+            mark_color: Hsla::transparent_black(),
+            mark_size: px(0.),
             scope,
         }
     }
+
+    /// Paint the given byte ranges as hugeicon arrows in `color`; their font
+    /// glyphs must already be invisible (see [`hide_autolink_marks`]).
+    fn with_marks(mut self, marks: Vec<Range<usize>>, color: Hsla, size: Pixels) -> Self {
+        self.marks = marks;
+        self.mark_color = color;
+        self.mark_size = size;
+        self
+    }
+}
+
+/// Draw the hugeicon external-link arrow over the glyph space an autolink
+/// reserves. `range` covers just the arrow character: the runs keep its
+/// advance (so the mark stays part of the clickable link and the copied
+/// selection), while the icon centers on the box where the font glyph sat.
+fn paint_link_mark(
+    layout: &TextLayout,
+    range: &Range<usize>,
+    color: Hsla,
+    size: Pixels,
+    window: &mut Window,
+    cx: &App,
+) {
+    let Some(start) = layout.position_for_index(range.start) else {
+        return;
+    };
+    // A mark that wrapped alone still sits on its own line; the end position
+    // must share it for the box to be the arrow's, not a whole row's.
+    let center_x = match layout.position_for_index(range.end) {
+        Some(end) if end.y == start.y => (start.x + end.x) * 0.5,
+        _ => start.x + size * 0.5,
+    };
+    let top = start.y + (layout.line_height() - size) * 0.5;
+    let bounds = Bounds::new(point(center_x - size * 0.5, top), gpui::size(size, size));
+    let _ = window.paint_svg(
+        bounds,
+        "icons/arrow-up-right.svg".into(),
+        TransformationMatrix::unit(),
+        color,
+        cx,
+    );
 }
 
 impl Element for SelectableText {
@@ -714,6 +935,9 @@ impl Element for SelectableText {
     ) {
         self.text
             .paint(None, inspector_id, bounds, &mut (), &mut (), window, cx);
+        for mark in &self.marks {
+            paint_link_mark(layout, mark, self.mark_color, self.mark_size, window, cx);
+        }
         if let Some(scope) = self.scope.as_ref() {
             // The cursor rides this block's own hitbox: an I-beam over text,
             // a hand on links. A block's request wins only while the pointer
@@ -776,7 +1000,11 @@ fn register_text_selection(
                     if menu_open {
                         return;
                     }
-                    state.borrow_mut().begin_selection(event.position);
+                    if event.click_count >= 2 {
+                        state.borrow_mut().select_word(event.position);
+                    } else {
+                        state.borrow_mut().begin_selection(event.position);
+                    }
                     window.refresh();
                 }
                 MouseButton::Right => {
@@ -814,9 +1042,13 @@ fn register_text_selection(
             if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
                 return;
             }
-            let url = state.borrow_mut().finish_selection();
+            let url = state.borrow_mut().finish_selection(event.position);
             if let Some(url) = url {
-                cx.open_url(&url);
+                if let Some(value) = url.strip_prefix("orbit-color-copy:") {
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.to_owned()));
+                } else {
+                    cx.open_url(&url);
+                }
             }
             window.refresh();
         }
@@ -838,12 +1070,15 @@ fn register_text_selection(
 }
 
 /// The right-click menu: `Copy Selection` (disabled without one) and
-/// `Copy Message` (the clicked message's full text).
+/// `Copy Message` (the clicked message's full text). Wears the branch
+/// selector's picker shell, like every other dropdown in the app.
 fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme) -> AnyElement {
     let selected = state.borrow().selected_text();
     let copy_selection = selected.clone();
     let close = state.clone();
     let copy_selection_item = selection_menu_item(
+        "transcript-copy-selection",
+        "icons/copy.svg",
         tr!("transcript.copy_selection"),
         selected.is_some(),
         theme,
@@ -859,6 +1094,8 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
     let copy_message = menu.message_text.clone();
     let close = state.clone();
     let copy_message_item = selection_menu_item(
+        "transcript-copy-message",
+        "icons/chat.svg",
         tr!("transcript.copy_message"),
         true,
         theme,
@@ -870,48 +1107,58 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
         },
     );
     let dismiss = state.clone();
-    deferred(
-        anchored().position(menu.position).snap_to_window().child(
-            div()
-                .id("transcript-text-menu")
-                .min_w(px(190.))
-                .rounded(px(9.))
-                .popover_surface(theme)
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_down_out(move |_, window, _| {
-                    dismiss.borrow_mut().menu = None;
-                    window.refresh();
-                })
-                .child(copy_selection_item)
-                .child(copy_message_item),
-        ),
+    anchored_popover_at(
+        menu.position,
+        picker_surface(div().id("transcript-text-menu"), &theme)
+            .w(px(220.))
+            .py(picker::list_padding_y(&theme))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
+            .overflow_hidden()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down_out(move |_, window, _| {
+                dismiss.borrow_mut().menu = None;
+                window.refresh();
+            })
+            .child(copy_selection_item)
+            .child(copy_message_item),
+        "anchored_popover_at-in-1",
+        &theme,
     )
-    .into_any_element()
 }
 
 fn selection_menu_item(
+    id: &'static str,
+    icon_path: &'static str,
     label: String,
     enabled: bool,
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .px(px(10.))
-        .py(px(6.))
-        .text_size(theme.ui_px(12.))
-        .text_color(if enabled { theme.text } else { theme.text_3 })
-        .when(enabled, |item| {
-            item.cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    on_click(window, cx);
-                })
+    picker_entry(div().id(id), &theme)
+        .h(picker::entry_height(&theme))
+        .flex_none()
+        .text_color(if enabled {
+            theme.text_secondary
+        } else {
+            theme.text_muted
         })
-        .child(label)
+        .when(enabled, |item| {
+            item.cursor_pointer().hover_state(&theme).on_mouse_down(
+                MouseButton::Left,
+                move |_, window, cx| {
+                    on_click(window, cx);
+                },
+            )
+        })
+        .child(crate::app::icon(
+            icon_path,
+            context_menu::ICON.px(&theme),
+            theme.text_muted,
+        ))
+        .child(div().flex_1().min_w_0().truncate().child(label))
         .into_any_element()
 }
 
@@ -922,8 +1169,17 @@ struct RowPaint {
     ix: usize,
     row_count: usize,
     theme: Theme,
+    /// The Nerd Fonts family for devicons file glyphs, resolved once per
+    /// frame; `None` when no Nerd Font is available (extension badges fall
+    /// back).
+    nerd: Option<SharedString>,
+    /// What an agent call the reader has not toggled should do — the
+    /// Settings → Agent preference (issue #80).
+    agent_calls: AgentCallDisplay,
     live: bool,
     live_elapsed: Option<Duration>,
+    /// Live output rate for the streaming row (`None` until meaningful).
+    live_tps: Option<f64>,
     fold_open: bool,
     copied: bool,
     /// True for the last message when the tail summary owns the footer, so
@@ -934,7 +1190,9 @@ struct RowPaint {
     copied_at: Rc<RefCell<HashMap<usize, Instant>>>,
     scroller: MessageScrollerState,
     expanded_tools: ExpandedTools,
+    open_child_logs: OpenChildLogs,
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     expanded_blocks: ExpandedBlocks,
     thinking_scrolls: ThinkingScrolls,
@@ -942,6 +1200,11 @@ struct RowPaint {
     thinking_detached: ThinkingDetached,
     hovered_usage: Rc<Cell<Option<usize>>>,
     image_opener: Option<ImageOpener>,
+    /// The rewind action, present only on user rows.
+    rewind: Option<RewindOpener>,
+    /// The regenerate action, present only on assistant rows.
+    regenerate: Option<RegenerateOpener>,
+    export_response: Option<ResponseExporter>,
     search_hit: bool,
     search_active: bool,
     /// Tables alone can extend beyond the centered message column.
@@ -959,7 +1222,13 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let theme = *theme::get(cx);
     let messages = view.messages.clone();
     let text_selection = view.text_selection.clone();
-    text_selection.borrow_mut().begin_frame();
+    {
+        let mut selection = text_selection.borrow_mut();
+        selection.begin_frame();
+        if view.streaming.get().is_none() || theme.reduce_motion() {
+            selection.stream_fades.clear();
+        }
+    }
     // Clones the list closure cannot move: the panel's mouse handlers and
     // right-click menu need them after the list (and its rows) have captured
     // the originals.
@@ -968,12 +1237,19 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let menu_selection = text_selection.clone();
     let streaming = view.streaming.clone();
     let stream_started = view.stream_started.clone();
+    let awaiting_reply = view.awaiting_reply.clone();
+    let turn_started = view.turn_started.clone();
     let expanded_turns = view.expanded_turns.clone();
     let expanded_files = view.expanded_files.clone();
     let expanded_activities = view.expanded_activities.clone();
+    // Copy: the mode is a three-way enum, so every row carries its own copy
+    // instead of sharing a cell.
+    let agent_calls = view.agent_calls;
     let expanded_tools = view.expanded_tools.clone();
+    let open_child_logs = view.open_child_logs.clone();
     let copied = view.copied.clone();
     let copied_sections = view.copied_sections.clone();
+    let hovered_sections = view.hovered_sections.clone();
     let expanded_sections = view.expanded_sections.clone();
     let expanded_blocks = view.expanded_blocks.clone();
     let thinking_scrolls = view.thinking_scrolls.clone();
@@ -992,17 +1268,18 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let summary_usage = view.summary_usage.clone();
     let review_changes = view.review_changes.clone();
     let image_opener = view.image_opener.clone();
+    let rewind = view.rewind.clone();
+    let regenerate = view.regenerate.clone();
+    let export_response = view.export_response.clone();
     let search_hits = view.search_hits.clone();
     let search_active = view.search_active.clone();
 
-    let (user_turns, active_turn) = {
+    // `user_turns` is cached in `Transcript` (rebuilt only when the message
+    // list changes); only `active_turn` depends on the live scroll position
+    // and is recomputed per frame.
+    let user_turns = view.user_turns.clone();
+    let active_turn = {
         let messages = messages.borrow();
-        let user_turns: Vec<usize> = messages
-            .iter()
-            .enumerate()
-            .filter(|(_, message)| message.user)
-            .map(|(ix, _)| ix)
-            .collect();
         // While the reader sits at the live edge the indicator tracks the
         // streaming/latest turn; once they scroll away it follows the
         // viewport instead (fixes the tick staying pinned to the newest
@@ -1012,8 +1289,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
         } else {
             Some(scroller.first_visible_index())
         };
-        let active_turn = active_user_index(&messages, streaming.get(), viewport_hint);
-        (user_turns, active_turn)
+        active_user_index(&messages, streaming.get(), viewport_hint)
     };
     let show_rail = user_turns.len() >= 2
         && view.main_width >= px(NAVIGATION_RAIL_MIN_MAIN_WIDTH)
@@ -1042,30 +1318,63 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
         rail_hint_shown_at.set(Some(Instant::now()));
     }
 
-    // One prompt/response preview pair per user turn (rail hover cards).
-    let turn_snippets: Vec<(String, String)> = {
-        let messages = messages.borrow();
-        user_turns
-            .iter()
-            .map(|&ix| {
-                let prompt = snippet(&messages[ix].text(), 100);
-                let response = messages
-                    .get(ix + 1..)
-                    .unwrap_or(&[])
-                    .iter()
-                    .take_while(|message| !message.user)
-                    .find(|message| !message.text().trim().is_empty())
-                    .map(|message| snippet(&message.text(), 240))
-                    .unwrap_or_default();
-                (prompt, response)
-            })
-            .collect()
+    // The rail's hover card is the only consumer of the preview text, and it
+    // shows one turn at a time. Snapshot just the turn under the cursor: doing
+    // this for every turn materialized the whole conversation on every repaint
+    // and made long sessions crawl while a run streamed.
+    let hover_info: Option<(String, String)> = if show_rail {
+        hovered_turn.get().and_then(|ix| {
+            let messages = messages.borrow();
+            // The hovered index is persistent panel state and can outlive a
+            // transcript swap (session switch), so never index unguarded.
+            let prompt = snippet(&messages.get(ix)?.text(), 100);
+            let response = messages
+                .get(ix + 1..)
+                .unwrap_or(&[])
+                .iter()
+                .take_while(|message| !message.user)
+                .find(|message| message.has_text())
+                .map(|message| snippet(&message.text(), 240))
+                .unwrap_or_default();
+            Some((prompt, response))
+        })
+    } else {
+        None
     };
 
+    // Devicons resolve once per frame: every file row in the list shares the
+    // same Nerd Fonts family (or falls back to extension badges).
+    let nerd = nerd_font_family(cx);
     let list_el = list(view.scroller.list_state(), move |ix, _window, cx| {
         let live = streaming.get() == Some(ix);
+        // The card can appear while a turn is still streaming. Its Copy
+        // footer belongs to a settled answer, so a live turn keeps the
+        // message row's own footer.
+        let card_owns_footer =
+            summary_files.is_some() && streaming.get().is_none() && !awaiting_reply.get();
+        // The rate's clock: prefer the turn's request start (`turn_start`),
+        // the same basis as pi's `durationMs`; fall back to the stream start
+        // when an older pi build never emitted one.
+        let rate_clock = turn_started
+            .get()
+            .or_else(|| stream_started.get())
+            .map(|started| started.elapsed());
+        // The "Working for…" clock measures the whole turn, so it must not
+        // share the rate's clock: `turn_start` re-arms on every provider
+        // request inside an agentic turn (once per tool-call step), which
+        // restarted the timer mid-run (#59). `stream_started` is armed once
+        // per turn and matches the settled `worked_for` duration.
         let live_elapsed = if live {
             stream_started.get().map(|started| started.elapsed())
+        } else {
+            None
+        };
+        // Tokens/sec for the streaming row: the provider's cumulative
+        // output (or a chars/4 estimate) over the turn's request clock.
+        let live_tps = if live {
+            messages.borrow().get(ix).and_then(|message| {
+                streaming_tps(message, live_generation_clock(message, rate_clock))
+            })
         } else {
             None
         };
@@ -1079,13 +1388,38 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
         // changed-files summary — pinned after the last message, in the
         // same centered column as every other row.
         if ix >= row_count {
+            let theme = *theme::get(cx);
+            // The prompt is out; the answer has not started. Show the same live
+            // row the streaming turn will wear, so pressing Enter is answered by
+            // the transcript itself and not only by the composer's Stop button.
+            if awaiting_reply.get() && streaming.get().is_none() {
+                let elapsed = stream_started
+                    .get()
+                    .map(|started| started.elapsed())
+                    .unwrap_or_default();
+                return div()
+                    .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .px(DynamicSpacing::Base20.px(&theme))
+                    .pb(px(14.))
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(CONTENT_MAX_WIDTH))
+                            .min_w_0()
+                            .child(render_working_indicator(elapsed, None, None, theme)),
+                    )
+                    .into_any_element();
+            }
             let Some(files) = summary_files.as_ref() else {
                 return div().into_any_element();
             };
-            let theme = *theme::get(cx);
             let card = render_changed_files(
                 files,
                 theme,
+                nerd.as_ref(),
                 ix,
                 workspace.as_deref(),
                 expanded_files.borrow().contains(&ix),
@@ -1102,32 +1436,51 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             let copy_text = messages
                 .borrow()
                 .get(last_ix)
-                .filter(|message| !message.user)
+                .filter(|message| message.is_assistant())
                 .map(|message| message.text())
                 .unwrap_or_default();
             let copied_last = copied
                 .borrow()
                 .get(&last_ix)
                 .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+            // Regenerate belongs to a response; an interrupted run's tail is a
+            // user prompt with no answer to replace.
+            let summary_regenerate = messages
+                .borrow()
+                .get(last_ix)
+                .is_some_and(|message| message.is_assistant() && message.has_text())
+                .then(|| regenerate.clone())
+                .flatten();
             let stamp = summary_finished_at
                 .map(|millis| footer_time_stamp(summary_time_label(millis), theme));
-            let footer = div().mt(px(10.)).px(px(4.)).child(render_message_footer(
-                copy_text,
-                last_ix,
-                stamp,
-                summary_usage.clone(),
-                copied_last,
-                false,
-                theme,
-                copied.clone(),
-                hovered_usage.clone(),
-            ));
+            let summary_generation = messages
+                .borrow()
+                .get(last_ix)
+                .and_then(|message| message.generation_time());
+            let footer = div()
+                .mt(px(10.))
+                .px(DynamicSpacing::Base04.px(&theme))
+                .child(render_message_footer(
+                    copy_text,
+                    last_ix,
+                    stamp,
+                    summary_usage.clone(),
+                    summary_generation,
+                    copied_last,
+                    false,
+                    theme,
+                    copied.clone(),
+                    hovered_usage.clone(),
+                    rewind.clone(),
+                    summary_regenerate,
+                    export_response.clone(),
+                ));
             return div()
                 .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
                 .w_full()
                 .flex()
                 .justify_center()
-                .px(px(20.))
+                .px(DynamicSpacing::Base20.px(&theme))
                 .pb(px(22.))
                 .child(
                     div()
@@ -1137,42 +1490,53 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                         .flex()
                         .flex_col()
                         .child(card)
-                        .child(footer),
+                        .when(card_owns_footer, |column| column.child(footer)),
                 )
                 .into_any_element();
         }
-        render_row(RowPaint {
-            messages: messages.clone(),
-            text_selection: text_selection.clone(),
-            ix,
-            row_count,
-            theme: *theme::get(cx),
-            live,
-            live_elapsed,
-            fold_open,
-            copied: copied_now,
-            suppress_footer: suppress_message_footer(summary_files.is_some(), ix, row_count),
-            expanded_turns: expanded_turns.clone(),
-            expanded_activities: expanded_activities.clone(),
-            copied_at: copied.clone(),
-            scroller: scroller.clone(),
-            expanded_tools: expanded_tools.clone(),
-            copied_sections: copied_sections.clone(),
-            expanded_sections: expanded_sections.clone(),
-            expanded_blocks: expanded_blocks.clone(),
-            thinking_scrolls: thinking_scrolls.clone(),
-            collapsed_thoughts: collapsed_thoughts.clone(),
-            thinking_detached: thinking_detached.clone(),
-            hovered_usage: hovered_usage.clone(),
-            image_opener: image_opener.clone(),
-            search_hit: search_hits
-                .as_ref()
-                .is_some_and(|hits| hits.borrow().contains(&ix)),
-            search_active: search_active
-                .as_ref()
-                .is_some_and(|active| active.get() == Some(ix)),
-            table_breakout,
-        })
+        render_row(
+            RowPaint {
+                messages: messages.clone(),
+                text_selection: text_selection.clone(),
+                ix,
+                row_count,
+                theme: *theme::get(cx),
+                nerd: nerd.clone(),
+                agent_calls,
+                live,
+                live_elapsed,
+                live_tps,
+                fold_open,
+                copied: copied_now,
+                suppress_footer: suppress_message_footer(card_owns_footer, ix, row_count),
+                expanded_turns: expanded_turns.clone(),
+                expanded_activities: expanded_activities.clone(),
+                copied_at: copied.clone(),
+                scroller: scroller.clone(),
+                expanded_tools: expanded_tools.clone(),
+                open_child_logs: open_child_logs.clone(),
+                copied_sections: copied_sections.clone(),
+                hovered_sections: hovered_sections.clone(),
+                expanded_sections: expanded_sections.clone(),
+                expanded_blocks: expanded_blocks.clone(),
+                thinking_scrolls: thinking_scrolls.clone(),
+                collapsed_thoughts: collapsed_thoughts.clone(),
+                thinking_detached: thinking_detached.clone(),
+                hovered_usage: hovered_usage.clone(),
+                image_opener: image_opener.clone(),
+                rewind: rewind.clone(),
+                regenerate: regenerate.clone(),
+                export_response: export_response.clone(),
+                search_hit: search_hits
+                    .as_ref()
+                    .is_some_and(|hits| hits.borrow().contains(&ix)),
+                search_active: search_active
+                    .as_ref()
+                    .is_some_and(|active| active.get() == Some(ix)),
+                table_breakout,
+            },
+            cx,
+        )
         .into_any_element()
     })
     .w_full()
@@ -1213,8 +1577,8 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
         .child(events)
         .when(show_rail, |shell| {
             shell.child(render_navigation_rail(
-                turn_snippets,
-                user_turns,
+                hover_info,
+                user_turns.as_slice(),
                 active_turn,
                 hovered_turn.clone(),
                 view.scroller.clone(),
@@ -1240,8 +1604,8 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
 /// full-opacity tick while idle.
 #[allow(clippy::too_many_arguments)]
 fn render_navigation_rail(
-    snippets: Vec<(String, String)>,
-    user_turns: Vec<usize>,
+    hover_info: Option<(String, String)>,
+    user_turns: &[usize],
     active_turn: Option<usize>,
     hovered: Rc<Cell<Option<usize>>>,
     scroller: MessageScrollerState,
@@ -1285,15 +1649,18 @@ fn render_navigation_rail(
     let emphasized_turn = hovered.get();
     let emphasized_pos =
         emphasized_turn.and_then(|ix| user_turns.iter().position(|candidate| *candidate == ix));
-    let hover_info =
-        emphasized_pos.map(|pos| (pos, snippets[pos].0.clone(), snippets[pos].1.clone()));
+    // The card's position comes from the hovered tick; its text was snapshotted
+    // by the caller for that one turn only.
+    let hover_info = match (emphasized_pos, hover_info) {
+        (Some(pos), Some((prompt, response))) => Some((pos, prompt, response)),
+        _ => None,
+    };
 
-    let ticks: Vec<(usize, String, f32, Hsla)> = user_turns
+    let ticks: Vec<(usize, f32, Hsla)> = user_turns
         .iter()
         .copied()
-        .zip(snippets.iter().cloned())
         .enumerate()
-        .map(|(turn_pos, (user_ix, (prompt, _response)))| {
+        .map(|(turn_pos, user_ix)| {
             let distance = emphasized_pos.map(|pos| pos.abs_diff(turn_pos));
             let scale = distance
                 .and_then(|d| NAVIGATION_RAIL_EMPHASIS_SCALE.get(d))
@@ -1302,11 +1669,11 @@ fn render_navigation_rail(
             let prominent = emphasized_turn == Some(user_ix) || active_turn == Some(user_ix);
             let width = NAVIGATION_RAIL_TICK_WIDTH * scale;
             let color = if prominent {
-                theme.text
+                theme.text_primary
             } else {
-                theme.text_3.opacity(NAVIGATION_RAIL_INACTIVE_OPACITY)
+                theme.text_muted.opacity(NAVIGATION_RAIL_INACTIVE_OPACITY)
             };
-            (user_ix, prompt, width, color)
+            (user_ix, width, color)
         })
         .collect();
 
@@ -1331,67 +1698,63 @@ fn render_navigation_rail(
                 .track_scroll(&rail_scroll)
                 .flex()
                 .flex_col()
-                .children(
-                    ticks
-                        .into_iter()
-                        .map(move |(user_ix, _prompt, width, color)| {
-                            let scroller = scroller.clone();
-                            let hover_state = hovered.clone();
-                            let tick_hint_dismissed = tick_hint_dismissed.clone();
-                            let tick_hint_shown_at = tick_hint_shown_at.clone();
+                .children(ticks.into_iter().map(move |(user_ix, width, color)| {
+                    let scroller = scroller.clone();
+                    let hover_state = hovered.clone();
+                    let tick_hint_dismissed = tick_hint_dismissed.clone();
+                    let tick_hint_shown_at = tick_hint_shown_at.clone();
+                    div()
+                        .id(ElementId::NamedInteger("nav-tick".into(), user_ix as u64))
+                        .w(px(NAVIGATION_RAIL_WIDTH))
+                        .h(px(NAVIGATION_RAIL_TURN_HEIGHT))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .on_hover({
+                            let hover_state = hover_state.clone();
+                            move |hovering: &bool, _, cx| {
+                                // On leave, clear only when this tick
+                                // owns the hover state (moving between
+                                // ticks hands it to the next one).
+                                let next = if *hovering {
+                                    Some(user_ix)
+                                } else if hover_state.get() == Some(user_ix) {
+                                    None
+                                } else {
+                                    hover_state.get()
+                                };
+                                if hover_state.get() != next {
+                                    hover_state.set(next);
+                                    cx.refresh_windows();
+                                }
+                            }
+                        })
+                        .on_click({
+                            move |_, _, cx| {
+                                // Using the rail is the lesson — dismiss the
+                                // one-time hint (persists per install).
+                                crate::transcript::dismiss_rail_hint_state(
+                                    &tick_hint_dismissed,
+                                    &tick_hint_shown_at,
+                                );
+                                scroller.scroll_to_item(user_ix);
+                                cx.refresh_windows();
+                            }
+                        })
+                        .child(
                             div()
-                                .id(ElementId::NamedInteger("nav-tick".into(), user_ix as u64))
-                                .w(px(NAVIGATION_RAIL_WIDTH))
-                                .h(px(NAVIGATION_RAIL_TURN_HEIGHT))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .on_hover({
-                                    let hover_state = hover_state.clone();
-                                    move |hovering: &bool, _, cx| {
-                                        // On leave, clear only when this tick
-                                        // owns the hover state (moving between
-                                        // ticks hands it to the next one).
-                                        let next = if *hovering {
-                                            Some(user_ix)
-                                        } else if hover_state.get() == Some(user_ix) {
-                                            None
-                                        } else {
-                                            hover_state.get()
-                                        };
-                                        if hover_state.get() != next {
-                                            hover_state.set(next);
-                                            cx.refresh_windows();
-                                        }
-                                    }
-                                })
-                                .on_click({
-                                    move |_, _, cx| {
-                                        // Using the rail is the lesson — dismiss the
-                                        // one-time hint (persists per install).
-                                        crate::transcript::dismiss_rail_hint_state(
-                                            &tick_hint_dismissed,
-                                            &tick_hint_shown_at,
-                                        );
-                                        scroller.scroll_to_item(user_ix);
-                                        cx.refresh_windows();
-                                    }
-                                })
-                                .child(
-                                    div()
-                                        .id(ElementId::NamedInteger(
-                                            "nav-tick-bar".into(),
-                                            user_ix as u64,
-                                        ))
-                                        .h(px(NAVIGATION_RAIL_TICK_HEIGHT))
-                                        .w(px(width))
-                                        .rounded_full()
-                                        .bg(color)
-                                        .hover(|style| style.bg(theme.text)),
-                                )
-                        }),
-                ),
+                                .id(ElementId::NamedInteger(
+                                    "nav-tick-bar".into(),
+                                    user_ix as u64,
+                                ))
+                                .h(px(NAVIGATION_RAIL_TICK_HEIGHT))
+                                .w(px(width))
+                                .rounded_full()
+                                .bg(color)
+                                .hover_inverse(&theme),
+                        )
+                })),
         )
         .when(!at_top, |rail| rail.child(render_rail_fade(true, theme)))
         .when(!at_bottom, |rail| {
@@ -1451,6 +1814,9 @@ fn render_navigation_rail(
 /// Rail edge fade: a 20px gradient from the background so scrolling
 /// ticks dissolve instead of clipping.
 fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
+    // The page's own fill, for the same reason the transcript's bottom fade
+    // uses it: over a wallpaper an opaque palette stop would print a band.
+    let (clear, page) = crate::message_scroller::fade_stops(theme);
     let base = div()
         .absolute()
         .left_0()
@@ -1458,15 +1824,15 @@ fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
         .h(px(20.))
         .bg(linear_gradient(
             180.,
-            linear_color_stop(theme.bg_main.opacity(0.), 0.),
-            linear_color_stop(theme.bg_main, 1.),
+            linear_color_stop(clear, 0.),
+            linear_color_stop(page, 1.),
         ));
     if top {
         // Solid at the top edge, fading down: flip the stop order.
         base.top_0().bg(linear_gradient(
             180.,
-            linear_color_stop(theme.bg_main, 0.),
-            linear_color_stop(theme.bg_main.opacity(0.), 1.),
+            linear_color_stop(page, 0.),
+            linear_color_stop(clear, 1.),
         ))
     } else {
         base.bottom_0()
@@ -1491,21 +1857,17 @@ fn render_rail_preview(
         .w(px(NAVIGATION_RAIL_PREVIEW_WIDTH))
         .max_h(px(NAVIGATION_RAIL_PREVIEW_MAX_HEIGHT))
         .overflow_hidden()
-        .rounded(px(14.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.bg_raised)
-        .shadow(theme.card_shadow())
+        .elevation_2(&theme)
         .px(px(15.))
-        .py(px(12.))
+        .py(DynamicSpacing::Base12.px(&theme))
         .flex()
         .flex_col()
         .gap(px(7.))
         .child(
             div()
-                .text_size(theme.ui_px(10.5))
+                .text_size(TextSize::XSmall.px(&theme))
                 .line_height(theme.ui_px(14.))
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(tr!(
                     "transcript_view.turn_of_total_hint",
                     current = turn_number,
@@ -1516,10 +1878,10 @@ fn render_rail_preview(
             div()
                 .w_full()
                 .truncate()
-                .text_size(theme.ui_px(14.))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(20.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(prompt.to_string()),
         )
         .when(!response.is_empty(), |card| {
@@ -1529,9 +1891,9 @@ fn render_rail_preview(
                     .max_h(px(60.))
                     .overflow_hidden()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .line_height(theme.ui_px(20.))
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(response.to_string()),
             )
         })
@@ -1551,30 +1913,26 @@ fn render_rail_hint(
         .left(px(NAVIGATION_RAIL_WIDTH + NAVIGATION_RAIL_CONTENT_GAP))
         .top_0()
         .w(px(216.))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.bg_raised)
-        .shadow(theme.card_shadow())
+        .elevation_2(&theme)
         .px(px(13.))
         .py(px(10.))
         .flex()
         .flex_col()
-        .gap(px(3.))
+        .gap(DynamicSpacing::Base03.px(&theme))
         .cursor_pointer()
         .child(
             div()
-                .text_size(theme.ui_px(12.5))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(16.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(tr!("transcript_view.jump_between_turns")),
         )
         .child(
             div()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(16.))
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(tr!(
                     "transcript_view.click_a_line_or_press_to_revisit_any_prompt"
                 )),
@@ -1598,7 +1956,7 @@ fn snippet(text: &str, max_graphemes: usize) -> String {
     }
 }
 
-fn render_row(paint: RowPaint) -> AnyElement {
+fn render_row(paint: RowPaint, cx: &gpui::App) -> AnyElement {
     let messages = paint.messages.borrow();
     let Some(message) = messages.get(paint.ix) else {
         return div().into_any_element();
@@ -1609,13 +1967,16 @@ fn render_row(paint: RowPaint) -> AnyElement {
     let _scope = TextScopeGuard::enter(TextScope {
         state: paint.text_selection.clone(),
         message_ix: paint.ix,
+        color_swatches: !message.user && message.summary.is_none(),
     });
     let followup = starts_followup_turn(&messages, paint.ix);
     let first = paint.ix == 0;
     let last = paint.ix + 1 == paint.row_count;
 
-    let inner = if message.user {
-        render_user_bubble(message, &paint).into_any_element()
+    let inner = if let Some(summary) = message.summary.as_ref() {
+        render_summary_card(summary, &paint)
+    } else if message.user {
+        render_user_bubble(message, &paint, cx).into_any_element()
     } else {
         render_assistant(message, &paint).into_any_element()
     };
@@ -1628,11 +1989,13 @@ fn render_row(paint: RowPaint) -> AnyElement {
         .w_full()
         .flex()
         .justify_center()
-        .px(px(20.))
-        .py(px(8.))
-        .when(first, |row| row.pt(px(22.)))
-        .when(followup, |row| row.pt(px(FOLLOWUP_TURN_TOP_GAP)))
-        .when(last, |row| row.pb(px(22.)))
+        .px(DynamicSpacing::Base20.px(&paint.theme))
+        .py(DynamicSpacing::Base08.px(&paint.theme))
+        .when(first, |row| row.pt(DynamicSpacing::Base24.px(&paint.theme)))
+        .when(followup, |row| {
+            row.pt(DynamicSpacing::Base32.px(&paint.theme))
+        })
+        .when(last, |row| row.pb(DynamicSpacing::Base24.px(&paint.theme)))
         // In-transcript find: matched rows get a quiet wash; the selected
         // hit is stronger. Painted on the full-width row so it reads as a
         // band, like a browser's find.
@@ -1655,20 +2018,142 @@ fn render_row(paint: RowPaint) -> AnyElement {
         .into_any_element()
 }
 
+/// A context-boundary card: pi compacted the conversation, or summarized an
+/// abandoned branch on `/tree` navigation. Collapsed by default (a summary
+/// can be long); clicking the header toggles the markdown body — the same
+/// per-row disclosure set the turn fold uses.
+fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
+    let theme = paint.theme;
+    let ix = paint.ix;
+    let expanded = paint.fold_open;
+    let (icon, label) = if row.branch {
+        ("icons/branch.svg", tr!("transcript.branch_summary"))
+    } else {
+        ("icons/archive.svg", tr!("transcript.compaction"))
+    };
+    let detail = row
+        .tokens_before
+        .map(|tokens| {
+            tr!(
+                "transcript.compacted_from",
+                tokens = crate::context_meter::format_tokens(tokens)
+            )
+        })
+        .unwrap_or_default();
+    let has_detail = !detail.is_empty();
+
+    let header = div()
+        .id(ElementId::NamedInteger("summary-head".into(), ix as u64))
+        .h(DynamicSpacing::Base32.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        // Square hover fill over a rounded card otherwise; see the tool card.
+        .rounded_t(panel::RADIUS.px(&theme))
+        .when(!expanded, |header| {
+            header.rounded_b(panel::RADIUS.px(&theme))
+        })
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .on_click({
+            let expanded_turns = paint.expanded_turns.clone();
+            let scroller = paint.scroller.clone();
+            move |_, _, cx| {
+                toggle_index(&expanded_turns, ix);
+                scroller.remeasure_toggle(ix);
+                cx.refresh_windows();
+            }
+        })
+        .child(activity_badge(icon, theme.accent_text, theme))
+        .child(
+            div()
+                .flex_none()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_primary)
+                .child(label),
+        )
+        .when(has_detail, |header| {
+            header.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(detail),
+            )
+        })
+        .when(!has_detail, |header| header.child(div().flex_1()))
+        // The card's own caret: one glyph turning a quarter turn, keyed to the
+        // row so two summary cards never share a transition.
+        .child(disclosure_chevron(
+            format!("summary-caret-{ix}"),
+            expanded,
+            IconSize::XSmall.px(&theme),
+            theme.text_muted,
+            &theme,
+        ));
+
+    let mut card = div()
+        .id(ElementId::NamedInteger("summary-card".into(), ix as u64))
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .rounded(panel::RADIUS.px(&theme))
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        .bg(frosted_transcript_fill(theme))
+        .child(header);
+    if expanded {
+        card = card.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .border_t_1()
+                .border_color(theme.border)
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
+                .child(render_prose(
+                    &row.summary,
+                    ix,
+                    4096,
+                    theme,
+                    paint.copied_sections.clone(),
+                    paint.expanded_blocks.clone(),
+                    true,
+                    true,
+                    paint.scroller.clone(),
+                    Some(paint.table_breakout),
+                )),
+        );
+    }
+    card.into_any_element()
+}
+
 /// End-aligned user row: neutral raised bubble, persistent quiet
 /// footer below. Attached images render as a tile grid above the text
 /// bubble.
-fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement {
+fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -> impl IntoElement {
     let theme = paint.theme;
     let ix = paint.ix;
     let text = message.text();
+    // A prompt that carried files ends with the mention block the composer
+    // folded in. Render that block as file rows — the same tile the composer
+    // tray uses — while the typed prose stays prose. The split is read back
+    // from the text itself, so a session reloaded from pi shows exactly what
+    // the live send showed.
+    let (body, attached) = match OrbitApp::split_attached_files(&text) {
+        Some((body, paths)) => (body, paths),
+        None => (text.as_str(), Vec::new()),
+    };
     div()
         .w_full()
         .min_w_0()
         .flex()
         .flex_col()
         .items_end()
-        .gap(px(4.))
+        .gap(DynamicSpacing::Base04.px(&theme))
         // Attachment tiles (images queued with the prompt). Cover-cropped
         // squares; wrap when a message carries several.
         .when(!message.images.is_empty(), |column| {
@@ -1678,7 +2163,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                     .flex()
                     .flex_wrap()
                     .justify_end()
-                    .gap(px(6.))
+                    .gap(DynamicSpacing::Base06.px(&theme))
                     .children(message.images.iter().enumerate().map(|(image_ix, image)| {
                         let image = image.clone();
                         let opener = paint.image_opener.clone();
@@ -1688,14 +2173,13 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                                 (ix as u64) << 20 | image_ix as u64,
                             ))
                             .size(px(112.))
-                            .rounded(px(10.))
+                            .rounded(panel::RADIUS.px(&theme))
                             .border_1()
                             .border_color(theme.border)
                             .overflow_hidden()
-                            .bg(theme.bg_raised)
+                            .bg(theme.surface_elevated)
                             .when(opener.is_some(), |tile| {
-                                tile.cursor_pointer()
-                                    .hover(|s| s.border_color(theme.border_strong))
+                                tile.cursor_pointer().hover_border(&theme)
                             })
                             .child(
                                 img(ImageSource::Image(image.clone()))
@@ -1710,28 +2194,39 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                     })),
             )
         })
-        .when(!text.is_empty(), |column| {
+        .when(!body.trim().is_empty(), |column| {
             column.child(
-                div()
-                    .max_w(px(USER_BUBBLE_MAX_WIDTH))
-                    .rounded(px(12.))
-                    .bg(theme.bg_raised)
-                    .text_color(theme.text)
-                    .px(px(12.))
-                    .py(px(8.))
-                    .text_size(theme.ui_px(14.))
-                    .whitespace_normal()
-                    .child(render_prose(
-                        &text,
+                user_message_bubble(body, theme, Some(paint.table_breakout.column_width)).child(
+                    render_prose(
+                        body,
                         ix,
                         0,
                         theme,
                         paint.copied_sections.clone(),
                         paint.expanded_blocks.clone(),
                         true,
+                        true,
                         paint.scroller.clone(),
                         None,
-                    )),
+                    ),
+                ),
+            )
+        })
+        // The files the prompt referenced, in the order they were folded.
+        .when(!attached.is_empty(), |column| {
+            column.child(
+                div()
+                    .max_w(px(USER_BUBBLE_MAX_WIDTH))
+                    .flex()
+                    .flex_wrap()
+                    .justify_end()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .children(
+                        attached
+                            .iter()
+                            .enumerate()
+                            .map(|(file_ix, path)| user_file_chip(cx, path, ix, file_ix, theme)),
+                    ),
             )
         })
         .child(render_message_footer(
@@ -1742,12 +2237,123 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                 .and_then(format_time)
                 .map(|time| footer_time_stamp(time, theme)),
             message.usage(),
+            message.generation_time(),
             paint.copied,
             true,
             theme,
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
+            paint.rewind.clone(),
+            None,
+            None,
         ))
+}
+
+fn user_message_bubble(body: &str, theme: Theme, column_width: Option<Pixels>) -> gpui::Div {
+    div()
+        // A definite width ensures wrapped text is measured at the bubble's
+        // actual width, rather than the wider transcript column.
+        .when(
+            parse_blocks_cached(body)
+                .iter()
+                .any(|block| matches!(block, Block::Code(..) | Block::Table { .. })),
+            |bubble| match column_width {
+                Some(width) => bubble.w(width.min(px(USER_BUBBLE_MAX_WIDTH))),
+                None => bubble.w_full(),
+            },
+        )
+        .max_w(px(USER_BUBBLE_MAX_WIDTH))
+        .rounded(panel::RADIUS.px(&theme))
+        // The reader's own words keep the palette's surface over a wallpaper:
+        // a picture showing through the text they wrote is not a material, and
+        // the page behind the transcript already carries it.
+        .bg(theme.surface_elevated)
+        .text_color(theme.text_primary)
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .text_size(TextSize::Default.px(&theme))
+        .whitespace_normal()
+}
+
+/// One attached file under a sent user message: the same 20px file-type tile
+/// the composer tray uses, beside the path the agent was given. The path is
+/// real selectable text, not decoration — what a reader copies out of the chip
+/// is what pi received.
+fn user_file_chip(
+    cx: &gpui::App,
+    path: &str,
+    ix: usize,
+    file_ix: usize,
+    theme: Theme,
+) -> AnyElement {
+    let key = ElementId::NamedInteger("user-file".into(), (ix as u64) << 16 | file_ix as u64);
+    let scope = text_scope();
+    let range = scope
+        .as_ref()
+        .and_then(|scope| scope.state.borrow().range_for(&key, path));
+    let runs = highlight_runs(
+        vec![code_run(path.len(), theme.text_secondary, &ui_font())],
+        range,
+        selection_color(theme),
+    );
+    div()
+        .debug_selector(move || format!("user-file-{ix}-{file_ix}"))
+        .flex_none()
+        .h(ButtonSize::Medium.height(&theme))
+        // One line box tall, exactly like `button_frame`: a taller inherited
+        // line height centres the box but leaves the glyphs sitting low in it,
+        // which reads as the icon being too high beside the path.
+        .line_height(relative(1.))
+        // Symmetric inset: the icon and the path's trailing edge sit the same
+        // distance from the chip's borders, so the pair reads centred.
+        .px(DynamicSpacing::Base06.px(&theme))
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .rounded(button::radius(ButtonSize::Medium).px(&theme))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.card_fill(theme.surface_elevated))
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .debug_selector(move || format!("user-file-tile-{ix}-{file_ix}"))
+                .flex_none()
+                .child(file_icon_tile(cx, path, theme.ui_px(20.), theme)),
+        )
+        // A deep path is clipped, never allowed to push the bubble past its
+        // reading column; the full text still rides the selection and copy.
+        .child(
+            div()
+                .debug_selector(move || format!("user-file-text-{ix}-{file_ix}"))
+                .min_w_0()
+                .max_w(px(360.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(SelectableText::new(
+                    key,
+                    StyledText::new(path.to_string()).with_runs(runs),
+                    path.to_string().into(),
+                    Vec::new(),
+                    scope,
+                )),
+        )
+        .into_any_element()
+}
+
+/// Whether a turn's trailing work is pulled up above its answer.
+///
+/// A model that thinks again after writing leaves a lone thought below a
+/// finished answer — a "1 thought" pill stranded at the bottom, reading as if it
+/// came after the reply. When everything after the first answer text is thinking
+/// (no tool calls), that thought joins the reasoning above the answer, where the
+/// reader expects it. The test is the *kind* of work, not the count of text
+/// blocks: a thought has no side effects and no order to preserve.
+///
+/// Tool calls never hoist: they have effects, they interleave with what the agent
+/// says about them, and a turn that speaks and then runs commands must show those
+/// commands where they happened.
+pub(crate) fn hoists_trailing_thought(steps: &[Step], answer_start: Option<usize>) -> bool {
+    answer_start.is_none_or(|answer| steps[answer + 1..].iter().all(|step| step.tools.is_empty()))
 }
 
 fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement {
@@ -1763,7 +2369,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .flex()
         .flex_col()
         .items_start()
-        .gap(theme.space(CONTENT_GAP));
+        .gap(DynamicSpacing::Base08.px(&theme));
 
     // The turn fold precedes the run's first work (collapsed turns
     // hide the pre-answer work behind a single "Worked for" divider).
@@ -1790,6 +2396,20 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .steps
         .iter()
         .position(|step| !step.thinking.is_empty() || !step.tools.is_empty());
+    // A turn with ONE answer block hoists all of its work above that block:
+    // reasoning and tool calls are what produced the answer, and a model that
+    // thinks again after writing would otherwise leave a "1 thought" pill
+    // stranded under a finished answer. A turn that interleaves — text, work,
+    // more text — keeps each group where it happened, because hoisting would
+    // rewrite the order the work actually arrived in.
+    let hoist = hoists_trailing_thought(&message.steps, answer_start);
+    let group_at = work_start.map(|work| {
+        if hoist {
+            answer_start.map_or(work, |answer| answer.min(work))
+        } else {
+            work
+        }
+    });
     // First step index whose post-answer work is NOT yet absorbed into a
     // rendered activity group (see the in-sequence group block below).
     let mut covered_until = 0usize;
@@ -1797,27 +2417,32 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     for (step_ix, step) in message.steps.iter().enumerate() {
         // The group sits where the turn's first work happened, so any text
         // that preceded it stays above; the rest of the text follows below.
-        if Some(step_ix) == work_start {
-            let before_answer = answer_start.is_none_or(|answer| step_ix < answer);
+        if Some(step_ix) == group_at {
+            let before_answer =
+                work_start.is_some_and(|work| answer_start.is_some_and(|answer| work < answer));
             // Pre-answer work hides behind the turn fold; later work stays
             // visible as a collapsed, expandable group.
             let show_work = paint.live || paint.fold_open || !before_answer;
             if show_work {
-                // The group covers the work up to and including the step
-                // that produced the first answer text; work in later steps
-                // gets its own group further down, so tool calls stay in
-                // sequence with the text — live included: a turn that speaks
-                // and then works again must not hoist that work above the
-                // answer that preceded it.
-                let group_end = answer_start.map_or(message.steps.len(), |answer| answer + 1);
-                let group_live =
-                    activity_group_is_live(paint.live, group_end, &message.steps);
+                // A single-answer turn: the group covers every step, so a
+                // thought the model had after writing sits with the reasoning
+                // that produced the answer instead of below it.
+                // An interleaved turn: the group stops at the first answer
+                // block and later work gets its own group further down, so the
+                // order the work arrived in survives — hoisting there would
+                // rewrite history.
+                let group_end = if hoist {
+                    message.steps.len()
+                } else {
+                    answer_start.map_or(message.steps.len(), |answer| answer + 1)
+                };
+                let group_live = activity_group_is_live(paint.live, group_end, &message.steps);
                 let open = paint
                     .expanded_activities
                     .borrow()
                     .get(&(ix, 0))
                     .copied()
-                    .unwrap_or(group_live);
+                    .unwrap_or_else(|| paint.agent_calls.open_by_default(group_live));
                 let group_has_work = message.steps[..group_end]
                     .iter()
                     .any(|step| !step.thinking.is_empty() || !step.tools.is_empty());
@@ -1829,14 +2454,19 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         open,
                         group_live,
                         theme,
+                        paint.nerd.as_ref(),
+                        paint.agent_calls,
                         paint.expanded_activities.clone(),
                         paint.expanded_tools.clone(),
+                        paint.open_child_logs.clone(),
                         paint.copied_sections.clone(),
+                        paint.hovered_sections.clone(),
                         paint.expanded_sections.clone(),
                         paint.scroller.clone(),
                         paint.thinking_scrolls.clone(),
                         paint.collapsed_thoughts.clone(),
                         paint.thinking_detached.clone(),
+                        paint.image_opener.clone(),
                     ));
                 }
             }
@@ -1845,28 +2475,38 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         if !step.text.is_empty() {
             // Live rows never collapse code blocks — a growing block's tail
             // edge must stay visible while it streams.
-            content = content.child(div().w_full().min_w_0().pt(px(4.)).child(render_prose(
-                &step.text,
-                ix,
-                (step_ix as u64 + 1) * 4096,
-                theme,
-                paint.copied_sections.clone(),
-                paint.expanded_blocks.clone(),
-                !paint.live,
-                paint.scroller.clone(),
-                Some(paint.table_breakout),
-            )));
+            let prose = step.text.as_str();
+            content = content.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .pt(DynamicSpacing::Base04.px(&theme))
+                    .child(render_prose(
+                        prose,
+                        ix,
+                        (step_ix as u64 + 1) * 4096,
+                        theme,
+                        paint.copied_sections.clone(),
+                        paint.expanded_blocks.clone(),
+                        !paint.live,
+                        !paint.live,
+                        paint.scroller.clone(),
+                        Some(paint.table_breakout),
+                    )),
+            );
         }
 
-        // Work in a step that FOLLOWS answer text (the assistant spoke,
-        // then kept thinking/calling tools) renders as its own group here,
-        // in sequence, instead of being pulled up into the first group.
+        // Interleaved turns only: work in a step that FOLLOWS an earlier
+        // answer block renders as its own group here, in sequence, instead of
+        // being pulled up into the first group. A trailing *thought* is the
+        // one exception (`hoists_trailing_thought`).
         // The group absorbs every following work-only step, so a run of
         // tool calls between two text blocks is ONE group ("Ran 4
         // commands · 5 thoughts"), never a stack of per-step rows. While
         // live, the currently streaming work-only step is absorbed too,
         // so the group sits where the agent actually resumed working.
-        if answer_start.is_some_and(|answer| step_ix > answer)
+        if !hoist
+            && answer_start.is_some_and(|answer| step_ix > answer)
             && step_ix >= covered_until
             && (!step.thinking.is_empty() || !step.tools.is_empty())
         {
@@ -1882,14 +2522,13 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 group_end += 1;
             }
             covered_until = group_end;
-            let group_live =
-                activity_group_is_live(paint.live, group_end, &message.steps);
+            let group_live = activity_group_is_live(paint.live, group_end, &message.steps);
             let open = paint
                 .expanded_activities
                 .borrow()
                 .get(&(ix, step_ix))
                 .copied()
-                .unwrap_or(group_live);
+                .unwrap_or_else(|| paint.agent_calls.open_by_default(group_live));
             content = content.child(render_activity_group(
                 ix,
                 step_ix..group_end,
@@ -1897,14 +2536,19 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 open,
                 group_live,
                 theme,
+                paint.nerd.as_ref(),
+                paint.agent_calls,
                 paint.expanded_activities.clone(),
                 paint.expanded_tools.clone(),
+                paint.open_child_logs.clone(),
                 paint.copied_sections.clone(),
+                paint.hovered_sections.clone(),
                 paint.expanded_sections.clone(),
                 paint.scroller.clone(),
                 paint.thinking_scrolls.clone(),
                 paint.collapsed_thoughts.clone(),
                 paint.thinking_detached.clone(),
+                paint.image_opener.clone(),
             ));
         }
     }
@@ -1916,7 +2560,12 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     // model). pi carries the message in `errorMessage`; render it so a
     // failed turn is never an empty row.
     if let Some(error) = &message.error {
-        content = content.child(render_assistant_error(error, ix, theme));
+        // With text, the response footer already offers regenerate; without
+        // it, this card is the only place the failure can be retried.
+        let retry = (!paint.live && !message.has_text())
+            .then(|| paint.regenerate.clone())
+            .flatten();
+        content = content.child(render_assistant_error(error, ix, theme, retry));
     }
 
     // A cancelled turn keeps its partial content and says so, quietly —
@@ -1930,6 +2579,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         content = content.child(render_working_indicator(
             paint.live_elapsed.unwrap_or(Duration::ZERO),
             activity,
+            paint.live_tps,
             theme,
         ));
     }
@@ -1942,7 +2592,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .items_start()
         .child(content);
 
-    if !paint.live && !paint.suppress_footer && !message.text().is_empty() {
+    if !paint.live && !paint.suppress_footer && message.has_text() {
         row = row.child(render_message_footer(
             message.text(),
             ix,
@@ -1951,11 +2601,15 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 .and_then(format_time)
                 .map(|time| footer_time_stamp(time, theme)),
             message.usage(),
+            message.generation_time(),
             paint.copied,
             false,
             theme,
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
+            paint.rewind.clone(),
+            paint.regenerate.clone(),
+            paint.export_response.clone(),
         ));
     }
 
@@ -1965,21 +2619,58 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
 /// A settled assistant turn that failed: the provider/agent `errorMessage`
 /// pi carries on the message, as a red card. Mirrors the app-level error
 /// banner so the failure is visible in context too.
-fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
+///
+/// `retry` is the same fork-and-resend as the response footer's regenerate;
+/// it is supplied only when the turn has no text of its own, so the card never
+/// duplicates a footer action.
+fn render_assistant_error(
+    error: &str,
+    ix: usize,
+    theme: Theme,
+    retry: Option<RegenerateOpener>,
+) -> AnyElement {
+    let retry_button = retry.map(|opener| {
+        button_frame(
+            div().id(ElementId::NamedInteger("retry-response".into(), ix as u64)),
+            &theme,
+            ButtonSize::Default,
+        )
+        .debug_selector(move || format!("retry-response-{ix}"))
+        .flex_none()
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, &theme)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_secondary)
+        .hover_state(&theme)
+        .tip(tr!("transcript.retry_hint"))
+        .child(glyph(
+            "icons/refresh.svg",
+            ButtonSize::Default.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .child(tr!("transcript.retry"))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
     div()
         .w_full()
         .max_w_full()
         .min_w_0()
-        .bg(theme.crit.opacity(0.1))
+        .bg(theme.error.opacity(0.1))
         .border_1()
-        .border_color(theme.crit.opacity(0.45))
-        .rounded_lg()
-        .px(px(12.))
-        .py(px(9.))
+        .border_color(theme.error.opacity(0.45))
+        .rounded(panel::RADIUS.px(&theme))
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_start()
         .gap_2p5()
-        .child(glyph("icons/info.svg", 15., theme.crit))
+        .child(glyph(
+            "icons/info.svg",
+            IconSize::Medium.px(&theme),
+            theme.error,
+        ))
         .child(
             div()
                 .flex_1()
@@ -1989,15 +2680,15 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
                 .gap_0p5()
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(tr!("transcript_view.agent_error")),
                 )
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.5))
-                        .text_color(theme.text_2)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
                         .whitespace_normal()
                         .child({
                             let text: SharedString = error.to_string().into();
@@ -2007,7 +2698,7 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
                                 .as_ref()
                                 .and_then(|scope| scope.state.borrow().range_for(&key, &text));
                             let runs = highlight_runs(
-                                vec![code_run(text.len(), theme.text_2, &ui_font())],
+                                vec![code_run(text.len(), theme.text_secondary, &ui_font())],
                                 range,
                                 selection_color(theme),
                             );
@@ -2021,6 +2712,7 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
                         }),
                 ),
         )
+        .children(retry_button)
         .into_any_element()
 }
 
@@ -2029,14 +2721,19 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
 /// read · 1 thought", "Ran 2 commands · 3 file reads · 1 file edit".
 fn activity_title(steps: &[Step], live: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
-    let (mut commands, mut reads, mut edits, mut other, mut thoughts) =
-        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut delegations, mut commands, mut reads, mut edits, mut other, mut thoughts) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     for step in steps {
         for tool in &step.tools {
+            if crate::subagent::is_subagent_tool(&tool.name) {
+                delegations += 1;
+                continue;
+            }
             match tool.name.as_str() {
                 "bash" | "shell" | "terminal" | "exec" | "run" => commands += 1,
-                "read" | "view" | "grep" | "find" | "glob" | "search" | "list" | "ls"
-                | "tree" => reads += 1,
+                "read" | "view" | "grep" | "find" | "glob" | "search" | "list" | "ls" | "tree" => {
+                    reads += 1
+                }
                 "edit" | "write" => edits += 1,
                 _ => other += 1,
             }
@@ -2052,6 +2749,16 @@ fn activity_title(steps: &[Step], live: bool) -> String {
             tr!(other, count = count)
         }
     };
+    if delegations > 0 {
+        parts.insert(
+            0,
+            unit(
+                delegations,
+                "transcript_view.delegated_to_agents_one",
+                "transcript_view.delegated_to_agents_other",
+            ),
+        );
+    }
     if commands > 0 {
         parts.push(unit(
             commands,
@@ -2114,14 +2821,19 @@ fn render_activity_group(
     open: bool,
     live: bool,
     theme: Theme,
+    nerd: Option<&SharedString>,
+    agent_calls: AgentCallDisplay,
     expanded_activities: ExpandedActivities,
     expanded_tools: ExpandedTools,
+    open_child_logs: OpenChildLogs,
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     thinking_scrolls: ThinkingScrolls,
     collapsed_thoughts: CollapsedThoughts,
     thinking_detached: ThinkingDetached,
+    image_opener: Option<ImageOpener>,
 ) -> impl IntoElement {
     let steps = &all_steps[range.clone()];
     let title = activity_title(steps, live);
@@ -2144,13 +2856,13 @@ fn render_activity_group(
         .sum::<usize>()
         .saturating_sub(1);
     let key = (ix, range.start);
-    // State color for the glyph cluster: danger when anything failed, ember
+    // State color for the glyph cluster: danger when anything failed, accent
     // while the group streams. Settled clusters tint per work kind instead
     // (see `work_tint`).
     let cluster_state = if any_failed {
-        Some(theme.del_red)
+        Some(theme.error)
     } else if live {
-        Some(theme.accent)
+        Some(theme.accent_text)
     } else {
         None
     };
@@ -2160,94 +2872,87 @@ fn render_activity_group(
         .min_w_0()
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(DynamicSpacing::Base04.px(&theme))
         // Let the summary chip hug its content so it reads as a control
         // instead of a full-width band across the answer column.
         .items_start()
         .child(
-            div()
-                .id(ElementId::NamedInteger(
+            button_frame(
+                div().id(ElementId::NamedInteger(
                     "activity-toggle".into(),
                     ((ix as u64) << 20) | range.start as u64,
-                ))
-                .min_w_0()
-                .max_w_full()
-                .h(px(26.))
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                // Raised fill + hairline = DESIGN.md's chip treatment: the
-                // open state steps the border up for emphasis.
-                .pl(px(8.))
-                .pr(px(10.))
-                .bg(theme.bg_raised)
-                .border_1()
-                .border_color(if open {
-                    theme.border_strong
-                } else {
-                    theme.border
-                })
-                .rounded(px(8.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(12.5))
-                .line_height(theme.ui_px(16.))
-                .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
-                .child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .children(icons.iter().copied().map(|icon| {
-                            glyph(
-                                icon,
-                                11.,
-                                cluster_state.unwrap_or_else(|| work_tint(icon, theme)),
-                            )
-                        })),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
-                        .child(title),
-                )
-                .child(glyph(
-                    if open {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.,
-                    theme.text_3,
-                ))
-                .on_click({
-                    let expanded_activities = expanded_activities.clone();
-                    let scroller = scroller.clone();
-                    move |_, _, cx| {
-                        let mut map = expanded_activities.borrow_mut();
-                        let next = !map.get(&key).copied().unwrap_or(false);
-                        map.insert(key, next);
-                        scroller.remeasure_toggle(ix);
-                        cx.refresh_windows();
-                    }
-                }),
+                )),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .min_w_0()
+            .max_w_full()
+            // Raised fill + hairline = DESIGN.md's chip treatment: the
+            // open state steps the border up for emphasis.
+            .raised(theme.surface_elevated, &theme)
+            .border_1()
+            .border_color(if open {
+                theme.border_strong
+            } else {
+                theme.border
+            })
+            .cursor_pointer()
+            .hover_state(&theme)
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .children(icons.iter().copied().map(|icon| {
+                        // Settled work is monochrome ink; only run/fail state
+                        // takes a color (see `cluster_state`).
+                        glyph(
+                            icon,
+                            IconSize::XSmall.px(&theme),
+                            cluster_state.unwrap_or(theme.text_secondary),
+                        )
+                    })),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_secondary)
+                    .child(title),
+            )
+            .child(disclosure_chevron(
+                format!("activity-caret-{ix}-{}", key.1),
+                open,
+                IconSize::XSmall.px(&theme),
+                theme.text_muted,
+                &theme,
+            ))
+            .on_click({
+                let expanded_activities = expanded_activities.clone();
+                let scroller = scroller.clone();
+                move |_, _, cx| {
+                    let mut map = expanded_activities.borrow_mut();
+                    map.insert(key, !open);
+                    scroller.remeasure_toggle(ix);
+                    cx.refresh_windows();
+                }
+            }),
         );
 
     if open {
         let mut body = div()
             .w_full()
             .min_w_0()
-            .ml(px(6.))
-            .pl(px(12.))
+            .ml(DynamicSpacing::Base06.px(&theme))
+            .pl(DynamicSpacing::Base12.px(&theme))
             .pb(px(2.))
             .border_l_1()
             .border_color(theme.border)
             .flex()
             .flex_col()
-            .gap(px(8.));
+            .gap(DynamicSpacing::Base08.px(&theme));
         let mut tool_base = tool_base;
         for (step_ix, step) in steps.iter().enumerate() {
             if !step.thinking.is_empty() {
@@ -2259,11 +2964,8 @@ fn render_activity_group(
                 // The card also settles the moment its step moves on to
                 // answer text or a tool call — pi sends no `thinking_end`, so
                 // the turn's own end is too late to close it.
-                let thinking_live = thinking_is_live(
-                    live,
-                    range.start + step_ix + 1 == all_steps.len(),
-                    step,
-                );
+                let thinking_live =
+                    thinking_is_live(live, range.start + step_ix + 1 == all_steps.len(), step);
                 body = body.child(render_thinking_body(
                     &step.thinking,
                     thinking_live,
@@ -2283,17 +2985,26 @@ fn render_activity_group(
                 // earlier call is done and shows its check even while a
                 // later step streams.
                 let pulse = live && flat == last_tool;
+                // An explicit open wins; otherwise the reader's preference
+                // decides (a tool card has no run state of its own, so
+                // `follow_run` means closed — the pre-#80 behavior).
+                let explicit_open = expanded_tools.borrow().contains(&(ix, flat));
+                let tool_open = explicit_open || agent_calls.open_by_default(false);
                 render_activity_card(
                     tool,
                     pulse,
                     !pulse,
                     theme,
+                    nerd,
                     (ix, flat),
-                    expanded_tools.borrow().contains(&(ix, flat)),
+                    tool_open,
                     expanded_tools.clone(),
+                    open_child_logs.clone(),
                     copied_sections.clone(),
+                    hovered_sections.clone(),
                     expanded_sections.clone(),
                     scroller.clone(),
+                    image_opener.clone(),
                 )
             }));
             tool_base += step.tools.len();
@@ -2392,32 +3103,40 @@ fn render_thinking_body(
     let id = (key.0 as u64) << 16 | key.1 as u64;
     // The reasoning glyph: brand accent while the card streams (with a slow
     // opacity pulse, reduce-motion aware), muted once it settles.
-    let thought_icon: AnyElement = if live && !theme.ui.reduce_motion {
+    let thought_icon: AnyElement = if live && !theme.reduce_motion() {
         div()
             .flex_none()
-            .child(glyph("icons/tools/thinking.svg", 13., theme.accent))
+            .child(glyph(
+                "icons/tools/thinking.svg",
+                IconSize::Small.px(&theme),
+                theme.accent_text,
+            ))
             .with_animation(
                 ElementId::NamedInteger("thought-icon".into(), id),
-                Animation::new(Duration::from_millis(1600)).repeat(),
+                Animation::new(looping::PULSE).repeat(),
                 |el, delta| el.opacity(0.4 + 0.6 * (delta * std::f32::consts::TAU).sin().abs()),
             )
             .into_any_element()
     } else {
         glyph(
             "icons/tools/thinking.svg",
-            13.,
-            if live { theme.accent } else { theme.text_3 },
+            IconSize::Small.px(&theme),
+            if live {
+                theme.accent_text
+            } else {
+                theme.text_muted
+            },
         )
         .into_any_element()
     };
     let mut card = div()
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
-        .rounded(px(9.))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border_strong)
+        .border_color(theme.border)
         .bg(theme.overlay)
-        .px(px(12.))
-        .py(px(8.))
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
         .flex()
         .flex_col()
         .gap(px(5.))
@@ -2429,11 +3148,11 @@ fn render_thinking_body(
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .cursor_pointer()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(17.))
-                .hover(|style| style.text_color(theme.text))
+                .hover_ink(&theme)
                 .child(thought_icon)
                 .child(
                     div()
@@ -2446,7 +3165,7 @@ fn render_thinking_body(
                             div()
                                 .flex_none()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.accent)
+                                .text_color(theme.accent_text)
                                 .child(label),
                         )
                         .when_some(timing, |row, timing| {
@@ -2455,19 +3174,17 @@ fn render_thinking_body(
                                     .min_w_0()
                                     .truncate()
                                     .font_weight(FontWeight::NORMAL)
-                                    .text_color(theme.text_3)
+                                    .text_color(theme.text_muted)
                                     .child(timing),
                             )
                         }),
                 )
-                .child(glyph(
-                    if collapsed {
-                        "icons/chevron-right.svg"
-                    } else {
-                        "icons/chevron-down.svg"
-                    },
-                    11.,
-                    theme.text_3,
+                .child(disclosure_chevron(
+                    format!("thought-caret-{}-{}", key.0, key.1),
+                    collapsed,
+                    IconSize::XSmall.px(&theme),
+                    theme.text_muted,
+                    &theme,
                 ))
                 .on_click({
                     let collapsed_thoughts = collapsed_thoughts.clone();
@@ -2526,7 +3243,7 @@ fn render_thinking_body(
                 .font_family(theme::code_font_family())
                 .text_size(theme.code_px(12.))
                 .line_height(theme.code_px(18.))
-                .text_color(theme.tool_meta)
+                .text_color(theme.text_secondary)
                 .whitespace_normal()
                 .child({
                     let body_key = ElementId::NamedInteger(
@@ -2538,7 +3255,7 @@ fn render_thinking_body(
                         .as_ref()
                         .and_then(|scope| scope.state.borrow().range_for(&body_key, &detail));
                     let runs = highlight_runs(
-                        vec![code_run(detail.len(), theme.tool_meta, &mono_font())],
+                        vec![code_run(detail.len(), theme.text_secondary, &mono_font())],
                         range,
                         selection_color(theme),
                     );
@@ -2657,36 +3374,39 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(px(9.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.overlay)
+        .rounded(panel::RADIUS.px(&theme))
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        .bg(frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
     // ── header ──
     let mut header = div()
-        .h(px(32.))
-        .px(px(10.))
+        .h(DynamicSpacing::Base32.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_center()
-        .gap(px(8.))
-        .text_size(theme.ui_px(13.))
-        .line_height(theme.ui_px(17.))
-        .child(glyph("icons/task.svg", 13., theme.text_3))
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .text_size(TextSize::Default.px(&theme))
+        .line_height(BufferLineHeight::Standard.relative())
+        .child(glyph(
+            "icons/task.svg",
+            IconSize::Small.px(&theme),
+            theme.text_muted,
+        ))
         .child(
             div()
                 .flex_none()
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.accent)
+                .text_color(theme.accent_text)
                 .child(tr!("transcript_view.question")),
         );
     if questions.len() > 1 {
         header = header.child(
             div()
                 .flex_none()
-                .text_size(theme.ui_px(11.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .child(tr!("transcript.asked", count = questions.len())),
         );
     }
@@ -2696,15 +3416,15 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .flex_1()
                 .flex()
                 .justify_end()
-                .text_size(theme.ui_px(11.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .child(tr!("transcript_view.no_answer")),
         );
     } else if tool.failed {
         header = header.child(div().flex_1().flex().justify_end().child(glyph(
             "icons/stop.svg",
-            12.,
-            theme.del_red,
+            IconSize::XSmall.px(&theme),
+            theme.error,
         )));
     }
     card = card.child(header);
@@ -2712,20 +3432,26 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
     // ── body: one block per question ──
     let mut body = div().px(px(10.)).pb(px(10.)).flex().flex_col().gap(px(10.));
     for question in &questions {
-        let mut block = div().flex().flex_col().gap(px(4.));
-        let mut head = div().flex().items_center().gap(px(6.));
+        let mut block = div()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base04.px(&theme));
+        let mut head = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base06.px(&theme));
         if !question.header.trim().is_empty() {
             head = head.child(
                 div()
                     .flex_none()
-                    .px(px(6.))
+                    .px(DynamicSpacing::Base06.px(&theme))
                     .py(px(1.))
-                    .rounded(px(4.))
+                    .rounded(Radius::Small.px(&theme))
                     .bg(theme.overlay_strong)
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .line_height(theme.ui_px(14.))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(SharedString::from(question.header.clone())),
             );
         }
@@ -2734,10 +3460,10 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .min_w_0()
                 .flex_1()
                 .whitespace_normal()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(18.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(SharedString::from(question.question.clone())),
         );
         block = block.child(head);
@@ -2757,18 +3483,22 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(8.))
-                .py(px(4.))
-                .rounded(px(6.))
-                .when(chosen, |row| row.bg(theme.accent.opacity(0.10)));
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .px(DynamicSpacing::Base08.px(&theme))
+                .py(DynamicSpacing::Base04.px(&theme))
+                .rounded(Radius::Medium.px(&theme))
+                .when(chosen, |row| row.bg(theme.surface_selected));
             // A plain number keeps the list readable at a glance.
             row = row.child(
                 div()
                     .flex_none()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(17.))
-                    .text_color(if chosen { theme.accent } else { theme.text_3 })
+                    .text_color(if chosen {
+                        theme.accent_text
+                    } else {
+                        theme.text_muted
+                    })
                     .child(format!("{}.", ix + 1)),
             );
             row = row.child(
@@ -2776,13 +3506,21 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                     .min_w_0()
                     .flex_1()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(17.))
-                    .text_color(if chosen { theme.text } else { theme.text_2 })
+                    .text_color(if chosen {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    })
                     .child(SharedString::from(option.label.clone())),
             );
             if chosen {
-                row = row.child(glyph("icons/check.svg", 11., theme.accent));
+                row = row.child(glyph(
+                    "icons/check.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.accent_text,
+                ));
             }
             list = list.child(row);
         }
@@ -2793,17 +3531,17 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                     .min_w_0()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(6.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .px(DynamicSpacing::Base08.px(&theme))
+                    .py(DynamicSpacing::Base04.px(&theme))
+                    .rounded(Radius::Medium.px(&theme))
                     .bg(theme.accent.opacity(0.10))
                     .child(
                         div()
                             .flex_none()
-                            .text_size(theme.ui_px(12.))
+                            .text_size(TextSize::Small.px(&theme))
                             .line_height(theme.ui_px(17.))
-                            .text_color(theme.accent)
+                            .text_color(theme.accent_text)
                             .child("A."),
                     )
                     .child(
@@ -2811,9 +3549,9 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                             .min_w_0()
                             .flex_1()
                             .whitespace_normal()
-                            .text_size(theme.ui_px(12.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .line_height(theme.ui_px(17.))
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(SharedString::from(answer.to_string())),
                     ),
             );
@@ -2823,10 +3561,10 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         if waiting {
             block = block.child(
                 div()
-                    .px(px(8.))
-                    .text_size(theme.ui_px(11.))
+                    .px(DynamicSpacing::Base08.px(&theme))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(15.))
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(tr!("transcript_view.waiting_for_an_answer")),
             );
         }
@@ -2836,18 +3574,505 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
     card.into_any_element()
 }
 
+/// The collapsed header's middle slot for one child: what it is doing now, or
+/// the terminal state. Data (a tool preview) passes through untranslated; the
+/// status words are keys.
+fn subagent_status_label(child: &crate::subagent::SubagentChild) -> String {
+    use crate::subagent::{Phase, Status};
+    match child.phase {
+        Phase::Queued => tr!("transcript_view.subagent_waiting_slot"),
+        Phase::Spawning => tr!("transcript_view.subagent_starting"),
+        Phase::Refused => tr!("transcript_view.subagent_refused"),
+        _ => match child.status {
+            Status::Running => tr!("transcript_view.subagent_thinking"),
+            Status::Done => tr!("transcript_view.subagent_done"),
+            Status::Failed => tr!("transcript_view.subagent_failed"),
+            Status::Aborted => tr!("transcript_view.subagent_aborted"),
+        },
+    }
+}
+
+/// The delegation card: one row per child, the run's cost, the reason a run was
+/// refused or blocked, and — expanded — the steps a child actually took and the
+/// report it returned.
+///
+/// Nothing here is computed from the child's prose: the phase, counts and cost
+/// are the extension's `details` and pi's own usage (§9.4, D-V).
+#[allow(clippy::too_many_arguments)]
+fn render_subagent_card(
+    run: &crate::subagent::SubagentRun,
+    pulse: bool,
+    theme: Theme,
+    key: (usize, usize),
+    tool_open: bool,
+    expanded_tools: ExpandedTools,
+    open_child_logs: OpenChildLogs,
+    scroller: MessageScrollerState,
+) -> AnyElement {
+    use crate::subagent::Status;
+
+    // A closed card is a set of rows; an open one adds the log of exactly one
+    // child (§9.3). The click that opens the card picks the child, so `open`
+    // stays the card's own state and the selection only decides whose log it
+    // is. A single-child run has nothing to choose between: its log is the
+    // body the moment the card opens.
+    let open_child = subagent_open_child(
+        open_child_logs.borrow().get(&key).copied(),
+        run.children.len(),
+    );
+    let open = tool_open;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    let id = (key.0 as u64) << 16 | key.1 as u64;
+    let failed = run
+        .children
+        .iter()
+        .any(|child| matches!(child.status, Status::Failed));
+
+    let mut card = div()
+        .id(ElementId::NamedInteger("subagent-card".into(), id))
+        .debug_selector(move || format!("subagent-card-{}-{}", key.0, key.1))
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .rounded(panel::RADIUS.px(&theme))
+        .frosted_card(
+            &theme,
+            if failed { theme.error } else { theme.border },
+            panel::RADIUS.px(&theme),
+        )
+        .bg(frosted_transcript_fill(theme))
+        .flex()
+        .flex_col();
+
+    for (ix, child) in run.children.iter().enumerate() {
+        let mut row = div()
+            .id(ElementId::NamedInteger(
+                "subagent-row".into(),
+                id << 8 | ix as u64,
+            ))
+            .debug_selector(move || format!("subagent-row-{}-{}-{}", key.0, key.1, ix))
+            .when(ix == 0, |row| row.rounded_t(panel::RADIUS.px(&theme)))
+            .h(DynamicSpacing::Base32.px(&theme))
+            .px(DynamicSpacing::Base08.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .text_size(TextSize::Default.px(&theme))
+            .line_height(BufferLineHeight::Standard.relative())
+            .cursor_pointer()
+            // The open child's row is the index to the log below it, so it
+            // carries the selected fill (DESIGN.md §The State Contract).
+            .when(open_child == Some(ix), |row| row.bg(theme.surface_selected))
+            .hover_on_glass(&theme)
+            .on_click({
+                let expanded = expanded_tools.clone();
+                let open_children = open_child_logs.clone();
+                let scroller = scroller.clone();
+                move |_, _, cx| {
+                    // One click, two consequences: open that child's log, and open
+                    // the card that holds it. Clicking the open child closes both.
+                    let selected = open_children.borrow().get(&key).copied();
+                    let mut children = open_children.borrow_mut();
+                    let mut open = expanded.borrow_mut();
+                    if selected == Some(ix) {
+                        children.remove(&key);
+                        open.remove(&key);
+                    } else {
+                        children.insert(key, ix);
+                        open.insert(key);
+                    }
+                    drop(open);
+                    drop(children);
+                    scroller.remeasure_toggle(key.0);
+                    cx.refresh_windows();
+                }
+            });
+
+        let tone = if matches!(child.status, Status::Failed) {
+            theme.error
+        } else if child.is_live() && pulse {
+            theme.accent_text
+        } else if child.is_live() {
+            theme.text_secondary
+        } else {
+            theme.text_muted
+        };
+        let icon = match child.status {
+            Status::Failed => "icons/stop.svg",
+            Status::Done => "icons/check.svg",
+            Status::Aborted => "icons/circle-x.svg",
+            Status::Running => "icons/task.svg",
+        };
+        row = row
+            .child(glyph(icon, IconSize::Small.px(&theme), tone))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_primary)
+                    .child(SharedString::from(child.label().to_string())),
+            );
+        if let Some(capability) = child.capability_label() {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .px(DynamicSpacing::Base06.px(&theme))
+                    .py(px(1.))
+                    .rounded(Radius::Small.px(&theme))
+                    .bg(theme.overlay_strong)
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .line_height(theme.ui_px(14.))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(capability)),
+            );
+        }
+        let middle = child
+            .current
+            .clone()
+            .filter(|current| !current.trim().is_empty())
+            .unwrap_or_else(|| subagent_status_label(child));
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(theme.text_secondary)
+                .child(SharedString::from(middle)),
+        );
+        if child.tools > 0 {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(if child.tools == 1 {
+                        tr!("transcript_view.subagent_tools_one", count = 1)
+                    } else {
+                        tr!("transcript_view.subagent_tools_other", count = child.tools)
+                    }),
+            );
+        }
+        if let Some(elapsed) =
+            crate::subagent::format_elapsed(child.started_at, child.ended_at, now_ms)
+        {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(elapsed),
+            );
+        }
+        if let Some(model) = child.model.clone() {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .max_w(px(160.))
+                    .truncate()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(model)),
+            );
+        }
+        card = card.child(row);
+    }
+
+    // A run that never started says why, in the extension's own sentence.
+    if let Some(child) = run
+        .children
+        .iter()
+        .find(|child| matches!(child.phase, crate::subagent::Phase::Refused))
+    {
+        card = card.child(render_subagent_strip(
+            child.error.as_deref().unwrap_or(""),
+            None,
+            theme,
+        ));
+    } else if let Some(child) = run.children.iter().find(|child| !child.blocked.is_empty()) {
+        let call = &child.blocked[0];
+        let call = match &call.target {
+            Some(target) if !target.is_empty() => format!("{} {target}", call.tool),
+            _ => call.tool.clone(),
+        };
+        let mode = match child.workflow_mode.as_deref() {
+            Some("plan") => tr!("transcript_view.subagent_mode_plan"),
+            Some("ask") => tr!("transcript_view.subagent_mode_ask"),
+            _ => tr!("transcript_view.subagent_mode_build"),
+        };
+        card = card.child(render_subagent_strip(
+            &tr!(
+                "transcript_view.subagent_blocked_by",
+                mode = mode,
+                call = call
+            ),
+            None,
+            theme,
+        ));
+    } else if let Some(child) = run
+        .children
+        .iter()
+        .find(|child| matches!(child.status, Status::Failed))
+    {
+        if let Some(error) = child.error.as_deref() {
+            card = card.child(render_subagent_strip(
+                error,
+                child.stderr_tail.as_deref(),
+                theme,
+            ));
+        }
+    }
+
+    // Footer: the run's state and what it cost.
+    let mut footer = div()
+        .w_full()
+        .border_t_1()
+        .border_color(theme.border)
+        .when(!open, |footer| footer.rounded_b(panel::RADIUS.px(&theme)))
+        .h(DynamicSpacing::Base32.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .text_size(TextSize::Small.px(&theme))
+        .line_height(theme.ui_px(15.))
+        .text_color(theme.text_muted);
+    let state = if run.is_live() {
+        tr!(
+            "transcript_view.subagent_running_of",
+            running = run.running(),
+            total = run.children.len()
+        )
+    } else {
+        let done = run
+            .children
+            .iter()
+            .filter(|child| matches!(child.status, Status::Done))
+            .count();
+        if done == 1 {
+            tr!("transcript_view.subagent_done_one", count = 1)
+        } else {
+            tr!("transcript_view.subagent_done_other", count = done)
+        }
+    };
+    footer = footer.child(state);
+    if run.total_tools() > 0 {
+        footer = footer.child(div().flex_none().child(if run.total_tools() == 1 {
+            tr!("transcript_view.subagent_tools_one", count = 1)
+        } else {
+            tr!(
+                "transcript_view.subagent_tools_other",
+                count = run.total_tools()
+            )
+        }));
+    }
+    if matches!(run.mode, crate::subagent::Mode::Chain) && !run.children.is_empty() {
+        let step = run
+            .children
+            .iter()
+            .position(|child| child.is_live())
+            .map(|ix| ix + 1)
+            .unwrap_or(run.children.len());
+        footer = footer.child(tr!(
+            "transcript_view.subagent_step_of",
+            step = step,
+            total = run.children.len()
+        ));
+    }
+    footer = footer.child(div().flex_1());
+    if let Some(usage) = run.usage() {
+        let mut label = format!(
+            "↑{} ↓{}",
+            crate::context_meter::format_tokens(usage.input),
+            crate::context_meter::format_tokens(usage.output)
+        );
+        if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
+            label.push_str(" · ");
+            label.push_str(&crate::context_meter::format_cost(cost));
+        }
+        footer = footer.child(div().flex_none().child(SharedString::from(label)));
+    }
+    card = card.child(footer);
+
+    if open {
+        if let Some(ix) = open_child {
+            card = card.child(render_subagent_detail(run, ix, theme));
+        }
+    }
+
+    card.into_any_element()
+}
+
+/// A red-washed reason line: refused before spawn, blocked by the mode, or a
+/// failed child. One sentence — then, when the child wrote one, its own stderr
+/// tail in the mono face. The sentence is the claim; the tail is the evidence
+/// the extension already capped at 2 KiB, shown verbatim rather than restated.
+fn render_subagent_strip(message: &str, stderr: Option<&str>, theme: Theme) -> impl IntoElement {
+    let sentence = div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .child(glyph(
+            "icons/alert-circle.svg",
+            IconSize::XSmall.px(&theme),
+            theme.error,
+        ))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .whitespace_normal()
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(theme.ui_px(16.))
+                .text_color(theme.error)
+                .child(SharedString::from(message.to_string())),
+        );
+    let mut strip = div()
+        .w_full()
+        .border_t_1()
+        .border_color(theme.border)
+        .bg(theme.error.opacity(0.07))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base04.px(&theme))
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base04.px(&theme))
+        .flex_none()
+        .child(sentence);
+    if let Some(stderr) = stderr.map(str::trim).filter(|tail| !tail.is_empty()) {
+        strip = strip.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .whitespace_normal()
+                .font_family(theme::code_font_family())
+                .debug_selector(|| "subagent-strip-stderr".to_string())
+                .text_size(TextSize::XSmall.px(&theme))
+                .line_height(theme.ui_px(15.))
+                .text_color(theme.text_secondary)
+                .child(SharedString::from(stderr.to_string())),
+        );
+    }
+    strip
+}
+
+/// Which child's log a card shows. An explicit selection wins; a run with a
+/// single child has no choice to make; several children and no selection is an
+/// empty body, so the rows stay the whole claim (§9.3).
+fn subagent_open_child(selected: Option<usize>, children: usize) -> Option<usize> {
+    if children == 0 {
+        return None;
+    }
+    match selected {
+        Some(ix) if ix < children => Some(ix),
+        Some(_) => None,
+        None if children == 1 => Some(0),
+        None => None,
+    }
+}
+
+/// The expanded body: the open child's real steps, then the report it returned.
+fn render_subagent_detail(
+    run: &crate::subagent::SubagentRun,
+    child_ix: usize,
+    theme: Theme,
+) -> impl IntoElement {
+    let mut body = div()
+        .w_full()
+        .min_w_0()
+        .border_t_1()
+        .border_color(theme.border)
+        .rounded_b(panel::RADIUS.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base06.px(&theme))
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base06.px(&theme));
+    for child in run.children.get(child_ix).into_iter() {
+        if !child.steps.is_empty() {
+            body = body.child(
+                div()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!("transcript_view.subagent_steps")),
+            );
+            for step in &child.steps {
+                body = body.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .text_size(TextSize::Small.px(&theme))
+                        .line_height(theme.ui_px(16.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_family(theme::code_font_family())
+                                .text_size(theme.code_px(12.))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(step.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .text_color(theme.text_secondary)
+                                .child(SharedString::from(step.preview.clone())),
+                        ),
+                );
+            }
+            if child.steps_total > child.steps.len() as u64 {
+                body = body.child(
+                    div()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!(
+                            "transcript_view.subagent_earlier",
+                            count = child.steps_total - child.steps.len() as u64
+                        )),
+                );
+            }
+        }
+        if let Some(report) = child.report.as_deref() {
+            body = body.child(div().w_full().min_w_0().child(render_markdown_document(
+                &cap_chars(report, DETAIL_TEXT_CAP),
+                theme,
+            )));
+        } else if !child.is_live() && !matches!(child.phase, crate::subagent::Phase::Refused) {
+            body = body.child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!("transcript_view.subagent_no_closing_message")),
+            );
+        }
+    }
+    body
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_activity_card(
     tool: &ToolCall,
     pulse: bool,
     complete: bool,
     theme: Theme,
+    nerd: Option<&SharedString>,
     key: (usize, usize),
     tool_open: bool,
     expanded_tools: ExpandedTools,
+    open_child_logs: OpenChildLogs,
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
+    image_opener: Option<ImageOpener>,
 ) -> AnyElement {
     // A structured questionnaire gets its own card — the raw arguments JSON
     // and the generic "Command/Arguments" detail would bury the question.
@@ -2856,17 +4081,40 @@ fn render_activity_card(
     {
         return render_ask_card(tool, theme, key);
     }
-    let action = activity_action_label(&tool.name);
-    let detail = activity_preview(tool);
+    // A delegation gets its own card: the agent, its current step and the run's
+    // cost are the claims a "Task" row cannot make (§9).
+    if let Some(run) = crate::subagent::SubagentRun::from_tool(tool) {
+        return render_subagent_card(
+            &run,
+            pulse,
+            theme,
+            key,
+            tool_open,
+            expanded_tools.clone(),
+            open_child_logs.clone(),
+            scroller.clone(),
+        );
+    }
+    let mcp = mcp_tool_parts(&tool.name);
+    let action = match mcp {
+        Some((server, _)) => tr!("mcp.card_action", server = server),
+        None => activity_action_label(&tool.name),
+    };
+    let detail = match mcp {
+        Some((_, tool_name)) => tool_name.to_string(),
+        None => activity_preview(tool),
+    };
     let icon = activity_icon(&tool.name);
-    // The glyph tone: strong state color while the call runs or once it
-    // failed; otherwise the work kind's soft tint (see `work_tint`).
+    // The glyph tone: state color while the call runs or once it failed;
+    // settled work is monochrome ink. The glyph shape names the kind, so a
+    // per-kind hue was decoration that spent the accent budget and turned a
+    // long transcript into a field of tinted badges.
     let tone = if tool.failed {
-        theme.del_red
+        theme.error
     } else if pulse {
-        theme.accent
+        theme.accent_text
     } else {
-        work_tint(icon, theme)
+        theme.text_secondary
     };
     let is_command = tool_command(tool).is_some();
     let has_diff = tool.added > 0 || tool.removed > 0;
@@ -2879,7 +4127,18 @@ fn render_activity_card(
     // An edit/write tool carries its own change; the header copy button and
     // the expanded body both read from it.
     let diff = edit_diff(tool);
+    // File-content tools get their file's devicon in the header; the
+    // devicons palette follows the theme.
+    let file_path = file_preview_path(tool);
+    let dark = theme.mode == ThemeMode::Dark;
 
+    // gpui 0.2.2's `overflow_hidden` clips a rectangle, not the border radius
+    // (`Style::overflow_mask` builds the `ContentMask` from `bounds` alone), so
+    // a child background reaching the card's edge paints square corners over
+    // the rounded border. The first and last children carry the card's own
+    // radius instead.
+    let detail_shown = tool_open && has_detail;
+    let header_is_only_child = !detail_shown && !tool.failed;
     let mut card = div()
         .id(ElementId::NamedInteger(
             "activity-card".into(),
@@ -2889,27 +4148,47 @@ fn render_activity_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(px(9.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.overlay)
+        .rounded(panel::RADIUS.px(&theme))
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        .bg(frosted_transcript_fill(theme))
         .child(
             div()
-                .h(px(32.))
-                .px(px(10.))
+                .id(ElementId::NamedInteger(
+                    "activity-header".into(),
+                    (key.0 as u64) << 16 | key.1 as u64,
+                ))
+                .debug_selector(move || format!("tool-header-{}-{}", key.0, key.1))
+                .when(has_detail, |header| {
+                    let scroller = scroller.clone();
+                    header.on_click(move |_, _, cx| {
+                        let mut open = expanded_tools.borrow_mut();
+                        if !open.remove(&key) {
+                            open.insert(key);
+                        }
+                        drop(open);
+                        scroller.remeasure_toggle(key.0);
+                        cx.refresh_windows();
+                    })
+                })
+                .h(DynamicSpacing::Base32.px(&theme))
+                .px(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .text_size(theme.ui_px(13.))
-                .line_height(theme.ui_px(17.))
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .text_size(TextSize::Default.px(&theme))
+                .line_height(BufferLineHeight::Standard.relative())
+                .rounded_t(panel::RADIUS.px(&theme))
+                .when(header_is_only_child, |row| {
+                    row.rounded_b(panel::RADIUS.px(&theme))
+                })
                 .when(has_detail, |row| row.cursor_pointer())
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(&theme)
                 .child(activity_badge(icon, tone, theme))
                 .child(
                     div()
                         .flex_none()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(action),
                 )
                 .when(!detail.is_empty(), |row| {
@@ -2925,29 +4204,79 @@ fn render_activity_card(
                                 .overflow_hidden()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(DynamicSpacing::Base06.px(&theme))
                                 .font_family(theme::code_font_family())
                                 .text_size(theme.code_px(12.))
-                                .child(div().flex_none().text_color(theme.text_3).child("$"))
+                                .child(div().flex_none().text_color(theme.text_muted).child("$"))
                                 .child(
                                     div().min_w_0().overflow_hidden().whitespace_nowrap().child(
                                         syntax_styled(
                                             &detail,
                                             tokens.first().map(Vec::as_slice),
-                                            theme.tool_meta,
+                                            theme.text_secondary,
                                             theme,
                                         ),
                                     ),
                                 ),
                         )
-                    } else {
+                    } else if let Some(url) = tool_url(tool) {
+                        // A fetch tool's preview is the URL itself: a link
+                        // that opens the browser without toggling the card
+                        // (the row's own click expands the detail).
                         row.child(
                             div()
+                                .id(ElementId::NamedInteger(
+                                    "tool-link".into(),
+                                    (key.0 as u64) << 16 | key.1 as u64,
+                                ))
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
-                                .text_color(theme.tool_meta)
-                                .child(detail),
+                                .flex()
+                                .items_center()
+                                .gap(DynamicSpacing::Base04.px(&theme))
+                                .cursor_pointer()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.accent_text)
+                                        .underline()
+                                        .child(display_url(&url).to_string()),
+                                )
+                                .child(glyph(
+                                    "icons/arrow-up-right.svg",
+                                    IconSize::XSmall.px(&theme),
+                                    theme.accent_text,
+                                ))
+                                .on_click(move |_, _, cx| {
+                                    cx.open_url(&url);
+                                    cx.stop_propagation();
+                                }),
+                        )
+                    } else {
+                        let mut preview = div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base06.px(&theme));
+                        if let Some(path) = file_path {
+                            preview = preview.child(file_glyph(
+                                path,
+                                dark,
+                                nerd,
+                                IconSize::Small.px(&theme),
+                                file_badge(path, theme),
+                            ));
+                        }
+                        row.child(
+                            preview.child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(theme.text_secondary)
+                                    .child(detail),
+                            ),
                         )
                     }
                 })
@@ -2963,16 +4292,24 @@ fn render_activity_card(
                             "activity-spin".into(),
                             (key.0 as u64) << 16 | key.1 as u64,
                         ),
-                        12.,
-                        theme.accent,
+                        IconSize::XSmall.px(&theme),
+                        theme.accent_text,
                         theme,
                     ))
                 })
                 .when(tool.failed, |row| {
-                    row.child(glyph("icons/stop.svg", 12., theme.del_red))
+                    row.child(glyph(
+                        "icons/stop.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.error,
+                    ))
                 })
                 .when(complete && !tool.failed, |row| {
-                    row.child(glyph("icons/check.svg", 11., theme.text_3))
+                    row.child(glyph(
+                        "icons/check.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_muted,
+                    ))
                 })
                 .when_some(diff.clone(), |row, rows| {
                     let copied = copied_sections
@@ -2982,81 +4319,69 @@ fn render_activity_card(
                     let patch = edit_patch_text(&rows);
                     let copied_sections = copied_sections.clone();
                     row.child(
-                        div()
-                            .id(ElementId::NamedInteger(
+                        icon_button_frame(
+                            div().id(ElementId::NamedInteger(
                                 "copy-edit-diff".into(),
                                 (key.0 as u64) << 16 | key.1 as u64,
-                            ))
-                            .flex_none()
-                            .size(px(20.))
-                            .rounded(px(5.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme.overlay_strong))
-                            .child(glyph(
-                                if copied {
-                                    "icons/check.svg"
-                                } else {
-                                    "icons/copy.svg"
-                                },
-                                12.,
-                                if copied { theme.ok_green } else { theme.text_3 },
-                            ))
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()));
-                                copied_sections
-                                    .borrow_mut()
-                                    .insert((key.0, key.1, EDIT_DIFF_COPY_SECTION), Instant::now());
-                                cx.stop_propagation();
-                                cx.refresh_windows();
-                            }),
+                            )),
+                            &theme,
+                            ButtonSize::Compact,
+                        )
+                        .tip(tr!("transcript.copy_diff"))
+                        .cursor_pointer()
+                        .hover_on_glass(&theme)
+                        .child(glyph(
+                            if copied {
+                                "icons/check.svg"
+                            } else {
+                                "icons/copy.svg"
+                            },
+                            ButtonSize::Compact.icon_size().px(&theme),
+                            if copied {
+                                theme.success
+                            } else {
+                                theme.text_muted
+                            },
+                        ))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()));
+                            copied_sections
+                                .borrow_mut()
+                                .insert((key.0, key.1, EDIT_DIFF_COPY_SECTION), Instant::now());
+                            cx.stop_propagation();
+                            cx.refresh_windows();
+                        }),
                     )
                 })
-                .child(glyph(
-                    if has_detail && tool_open {
-                        "icons/chevron-down.svg"
-                    } else if has_detail {
-                        "icons/chevron-right.svg"
-                    } else {
-                        // Placeholder keeps the row height stable either way.
-                        "icons/chevron-right.svg"
-                    },
-                    12.,
+                // Always drawn, so the row height is stable either way; with no
+                // detail it is simply invisible.
+                .child(disclosure_chevron(
+                    format!("activity-card-caret-{}-{}", key.0, key.1),
+                    has_detail && tool_open,
+                    IconSize::XSmall.px(&theme),
                     if has_detail {
-                        theme.text_3
+                        theme.text_muted
                     } else {
-                        theme.text_3.opacity(0.)
+                        theme.text_muted.opacity(0.)
                     },
+                    &theme,
                 )),
         );
     // A failed run carries its first error line right on the card — the
     // fact a user scanning the turn needs, without opening the detail.
     if tool.failed {
-        card = card.child(render_tool_error_strip(tool, theme));
+        card = card.child(render_tool_error_strip(tool, !detail_shown, theme));
     }
-    card = card.when(has_detail, |row| {
-        let scroller = scroller.clone();
-        row.on_click(move |_, _, cx| {
-            let mut open = expanded_tools.borrow_mut();
-            if !open.remove(&key) {
-                open.insert(key);
-            }
-            drop(open);
-            scroller.remeasure_toggle(key.0);
-            cx.refresh_windows();
-        })
-    });
-
     if tool_open && has_detail {
         card = card.child(render_tool_detail(
             tool,
             key,
             copied_sections,
+            hovered_sections,
             expanded_sections,
             scroller.clone(),
             theme,
+            image_opener,
         ));
     }
     card.into_any_element()
@@ -3087,11 +4412,15 @@ fn truncation_chip(facts: &ToolFacts, theme: Theme) -> Option<AnyElement> {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(3.))
-            .text_size(theme.ui_px(11.))
+            .gap(DynamicSpacing::Base03.px(&theme))
+            .text_size(TextSize::Small.px(&theme))
             .line_height(theme.ui_px(15.))
-            .text_color(theme.warn)
-            .child(glyph("icons/tools/truncated.svg", 11., theme.warn))
+            .text_color(theme.warning)
+            .child(glyph(
+                "icons/tools/truncated.svg",
+                IconSize::XSmall.px(&theme),
+                theme.warning,
+            ))
             .child(label)
             .into_any_element(),
     )
@@ -3114,7 +4443,7 @@ fn first_error_line(value: &Value) -> Option<String> {
 /// One-line error strip on a failed tool card: red-washed, drawn stop
 /// glyph, and the actual error text (never invented — the fallback says
 /// when nothing was captured).
-fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
+fn render_tool_error_strip(tool: &ToolCall, round_bottom: bool, theme: Theme) -> impl IntoElement {
     let snippet = tool
         .output
         .as_ref()
@@ -3123,23 +4452,28 @@ fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
     div()
         .w_full()
         .border_t_1()
-        .border_color(theme.border_strong)
-        .bg(theme.del_red.opacity(0.07))
-        .px(px(8.))
-        .py(px(4.))
+        .border_color(theme.border)
+        .bg(theme.error.opacity(0.07))
+        .when(round_bottom, |s| s.rounded_b(panel::RADIUS.px(&theme)))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base04.px(&theme))
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .flex_none()
-        .child(glyph("icons/stop.svg", 11., theme.del_red))
+        .child(glyph(
+            "icons/stop.svg",
+            IconSize::XSmall.px(&theme),
+            theme.error,
+        ))
         .child(
             div()
                 .min_w_0()
                 .flex_1()
                 .truncate()
-                .text_size(theme.ui_px(11.))
-                .line_height(theme.ui_px(15.))
-                .text_color(theme.del_red)
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(BufferLineHeight::Standard.relative())
+                .text_color(theme.error)
                 .child(snippet),
         )
 }
@@ -3148,13 +4482,16 @@ fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
 /// Arguments (JSON) when the tool is not a shell command, then the Output.
 /// Each section carries its own copy button; tall sections collapse to a
 /// preview so a long log never buries the answer that follows it.
+#[allow(clippy::too_many_arguments)]
 fn render_tool_detail(
     tool: &ToolCall,
     key: (usize, usize),
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     theme: Theme,
+    image_opener: Option<ImageOpener>,
 ) -> impl IntoElement {
     // An edit/write tool shows its change as an inline diff — the arguments
     // JSON would just be the same text, unread. Everything else: a command
@@ -3179,7 +4516,19 @@ fn render_tool_detail(
             )
         }),
     };
-    let second = tool.output.as_ref().map(|output| {
+    let images = tool
+        .output
+        .as_ref()
+        .map(tool_result_images)
+        .unwrap_or_default();
+    let output = tool.output.as_ref().and_then(|output| {
+        if output.get("content").and_then(Value::as_array).is_some() {
+            crate::transcript::tool_result_output(output)
+        } else {
+            Some(output.clone())
+        }
+    });
+    let second = output.as_ref().map(|output| {
         (
             tr!("transcript.output"),
             display_value_capped(output, OUTPUT_TEXT_CAP),
@@ -3197,51 +4546,173 @@ fn render_tool_detail(
     .collect();
     let has_sections = !sections.is_empty();
 
-    let mut container = div()
-        .w_full()
-        .min_w_0()
-        .border_t_1()
-        .border_color(theme.border_strong)
-        .flex()
-        .flex_col();
+    let mut container = div().w_full().min_w_0().flex().flex_col();
     if let Some(rows) = diff.as_ref() {
-        container = container.child(render_edit_diff(
-            rows,
-            key,
-            expanded_sections.clone(),
-            scroller.clone(),
-            theme,
-        ));
-    }
-    if has_sections {
         container = container.child(
             div()
                 .w_full()
                 .min_w_0()
-                .px(px(10.))
-                .py(px(8.))
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .children(sections.into_iter().map(
-                    move |(section, label, content, lang, prompt)| {
-                        render_detail_section(
-                            key,
-                            section,
-                            &label,
-                            content,
-                            lang,
-                            prompt,
-                            copied_sections.clone(),
-                            expanded_sections.clone(),
-                            scroller.clone(),
-                            theme,
-                        )
-                    },
+                .border_t_1()
+                .border_color(theme.border)
+                // With no sections below it, the diff is the card's last
+                // child and carries its bottom radius.
+                .when(!has_sections && images.is_empty(), |d| {
+                    d.rounded_b(panel::RADIUS.px(&theme))
+                })
+                .child(render_edit_diff(
+                    rows,
+                    key,
+                    expanded_sections.clone(),
+                    scroller.clone(),
+                    theme,
                 )),
         );
     }
+    if has_sections {
+        // One recessed terminal surface holds every section, divided by a
+        // hairline: a command reads top-to-bottom — input, then output — the
+        // way a shell transcript does, instead of two blocks whose only
+        // boundary is a gap. The surface is a code plane (`code_bg`), the
+        // same treatment a markdown code block takes.
+        let mut surface = div()
+            .w_full()
+            .min_w_0()
+            .bg(theme.code_bg)
+            .flex()
+            .flex_col()
+            // The surface is always the card's last child, so it carries the
+            // card's bottom radius (gpui clips children to a rectangle).
+            .when(images.is_empty(), |s| s.rounded_b(panel::RADIUS.px(&theme)))
+            // Without a diff above it, the surface owns the rule that
+            // separates it from the card header.
+            .when(diff.is_none(), |s| {
+                s.border_t_1().border_color(theme.border)
+            });
+        for (section_ix, (section, label, content, lang, prompt)) in
+            sections.into_iter().enumerate()
+        {
+            if section_ix > 0 {
+                surface =
+                    surface.child(div().w_full().h(BORDER_WIDTH).flex_none().bg(theme.border));
+            }
+            surface = surface.child(render_detail_section(
+                key,
+                section,
+                &label,
+                content,
+                lang,
+                prompt,
+                copied_sections.clone(),
+                hovered_sections.clone(),
+                expanded_sections.clone(),
+                scroller.clone(),
+                theme,
+            ));
+        }
+        container = container.child(surface);
+    }
+    if !images.is_empty() {
+        container = container.child(
+            div()
+                .w_full()
+                .border_t_1()
+                .border_color(theme.border)
+                .rounded_b(panel::RADIUS.px(&theme))
+                .p(DynamicSpacing::Base08.px(&theme))
+                .flex()
+                .flex_wrap()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .children(images.into_iter().enumerate().map(|(image_ix, image)| {
+                    let opener = image_opener.clone();
+                    div()
+                        .id(ElementId::NamedInteger(
+                            "tool-image".into(),
+                            (key.0 as u64) << 32 | (key.1 as u64) << 16 | image_ix as u64,
+                        ))
+                        .debug_selector(move || {
+                            format!("tool-image-{}-{}-{image_ix}", key.0, key.1)
+                        })
+                        .size(px(180.))
+                        .when(opener.is_some(), |tile| tile.cursor_pointer())
+                        .child(
+                            img(ImageSource::Image(image.clone()))
+                                .size_full()
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .on_click(move |_, window, cx| {
+                            if let Some(opener) = &opener {
+                                opener(image.clone(), window, cx);
+                                cx.stop_propagation();
+                            }
+                        })
+                })),
+        );
+    }
     container
+}
+
+/// Decoded tool images, keyed by a hash of their content block. Bounded, and
+/// the oldest entry is dropped one at a time: one long session holds far more
+/// images than any single card shows, so clearing the whole map (as this once
+/// did) threw away images still on screen and re-decoded them every frame.
+#[derive(Default)]
+struct ToolImageCache {
+    images: HashMap<u64, Arc<Image>>,
+    order: VecDeque<u64>,
+}
+
+impl ToolImageCache {
+    const CAP: usize = 32;
+
+    fn get(&self, key: u64) -> Option<Arc<Image>> {
+        self.images.get(&key).cloned()
+    }
+
+    fn insert(&mut self, key: u64, image: Arc<Image>) {
+        if self.images.insert(key, image).is_some() {
+            return;
+        }
+        self.order.push_back(key);
+        if self.order.len() > Self::CAP {
+            if let Some(oldest) = self.order.pop_front() {
+                self.images.remove(&oldest);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static TOOL_IMAGE_CACHE: RefCell<ToolImageCache> = RefCell::new(ToolImageCache::default());
+}
+
+fn tool_result_images(output: &Value) -> Vec<Arc<Image>> {
+    let Some(blocks) = output.get("content").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|block| {
+            if block.get("type").and_then(Value::as_str) != Some("image") {
+                return None;
+            }
+            let mut hasher = DefaultHasher::new();
+            block.get("data")?.as_str()?.hash(&mut hasher);
+            block
+                .get("mimeType")
+                .or_else(|| block.get("mime_type"))?
+                .as_str()?
+                .hash(&mut hasher);
+            let key = hasher.finish();
+            TOOL_IMAGE_CACHE.with(|cache| {
+                if let Some(image) = cache.borrow().get(key) {
+                    return Some(image);
+                }
+                let image = crate::transcript::image_from_block(block)?;
+                cache.borrow_mut().insert(key, image.clone());
+                Some(image)
+            })
+        })
+        .collect()
 }
 
 /// A structured (non-string) value highlights as JSON; strings and scalars
@@ -3262,13 +4733,20 @@ fn render_detail_section(
     lang: Option<highlight::Lang>,
     prompt: bool,
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     theme: Theme,
 ) -> impl IntoElement {
+    let hover_key = (key.0, key.1, section);
+    let hover = hovered_sections
+        .borrow()
+        .get(&hover_key)
+        .copied()
+        .unwrap_or_default();
     let copied = copied_sections
         .borrow()
-        .get(&(key.0, key.1, section))
+        .get(&hover_key)
         .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
     let copy_content = content.clone();
     // Tall sections (a test run's log, a big edit's arguments) collapse to a
@@ -3288,65 +4766,197 @@ fn render_detail_section(
         &lines
     };
     let paint_clipped = expanded && lines.len() > OUTPUT_EXPANDED_PAINT_LINES;
+
+    // The copy affordance is quiet at rest and brightens while the pointer is
+    // over this section. Copy/Copied share a stable seed: a hover generation
+    // restarts the animation from the current painted opacity, and the
+    // confirmation swap forces both the icon and the floating label to full
+    // ink without moving the section label or the code.
+    let mut copy_hasher = DefaultHasher::new();
+    (hover_key, hover.generation, copied).hash(&mut copy_hasher);
+    let copy_seed = copy_hasher.finish() as usize;
+    // The role is named at the animation site rather than smuggled in as a
+    // duration: entering is an interaction, and leaving settles on the layout
+    // band. `scripts/check_motion.py` reads this as the role it is.
+    let copy_role = if hover.to > COPY_REST_OPACITY {
+        Motion::Interaction
+    } else {
+        Motion::Layout
+    };
+    let (icon_from, icon_to) = if copied {
+        (1.0, 1.0)
+    } else {
+        (hover.from, hover.to)
+    };
+    let label_range = |opacity: f32| {
+        if copied {
+            1.0
+        } else {
+            ((opacity - COPY_REST_OPACITY) / (1.0 - COPY_REST_OPACITY)).clamp(0.0, 1.0)
+        }
+    };
+    let (label_from, label_to) = (label_range(hover.from), label_range(hover.to));
+    // A role that resolves to zero is Reduce Motion's answer: paint the end
+    // state. `Animation::new(Duration::ZERO)` would divide 0 by 0 inside gpui
+    // and trip its delta assertion, so the animation element is never mounted.
+    // The copied confirmation is a swap, not a fade, so it never animates.
+    let animate_copy = !copied && !copy_role.duration(&theme).is_zero();
+    let copy_icon = div().flex_none().child(glyph(
+        if copied {
+            "icons/check.svg"
+        } else {
+            "icons/copy.svg"
+        },
+        ButtonSize::Default.icon_size().px(&theme),
+        if copied {
+            theme.success
+        } else {
+            theme.text_muted
+        },
+    ));
+    let copy_icon: AnyElement = if animate_copy {
+        copy_icon
+            .with_animation(
+                ElementId::NamedInteger("copy-section-icon".into(), copy_seed as u64),
+                Animation::new(copy_role.duration(&theme)),
+                move |icon, delta| icon.opacity(icon_from + (icon_to - icon_from) * delta),
+            )
+            .into_any_element()
+    } else {
+        copy_icon.opacity(icon_to).into_any_element()
+    };
+    let copy_label = div()
+        .flex_none()
+        .text_size(TextSize::XSmall.px(&theme))
+        .line_height(theme.ui_px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if copied {
+            theme.success
+        } else {
+            theme.text_muted
+        })
+        .child(if copied {
+            tr!("common.copied")
+        } else {
+            tr!("common.copy")
+        });
+    let copy_label: AnyElement = if animate_copy {
+        copy_label
+            .with_animation(
+                ElementId::NamedInteger("copy-section-label".into(), copy_seed as u64),
+                Animation::new(copy_role.duration(&theme)),
+                move |label, delta| label.opacity(label_from + (label_to - label_from) * delta),
+            )
+            .into_any_element()
+    } else {
+        copy_label.opacity(label_to).into_any_element()
+    };
+    let copied_wash = theme.success.opacity(0.10);
+    let copy_button = icon_button_frame(
+        div().id(ElementId::NamedInteger(
+            "copy-activity-section".into(),
+            ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
+        )),
+        &theme,
+        ButtonSize::Default,
+    )
+    .tip(if copied {
+        tr!("common.copied")
+    } else {
+        tr!("transcript.copy_section")
+    })
+    .cursor_pointer()
+    .when(copied, |button| button.bg(copied_wash))
+    .child(copy_icon)
+    .on_click(move |_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(copy_content.clone()));
+        copied_sections
+            .borrow_mut()
+            .insert((key.0, key.1, section), Instant::now());
+        cx.refresh_windows();
+    });
+    // The acknowledgement wash is the button's own state, so the hover fades
+    // the glass in at rest and holds the tint once copied; the press is the
+    // shared dim rather than a second fill that would fight the fade.
+    let hover = if copied {
+        Hover::fill(copied_wash, copied_wash)
+    } else {
+        Hover::wash_in(theme.overlay_strong)
+    };
+    let copy_button = crate::motion::hover(
+        press(copy_button),
+        format!("copy-section-{}-{}-{section}", key.0, key.1),
+        &theme,
+        hover,
+    );
+    let copy_control = div().relative().flex_none().child(copy_button).child(
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(ButtonSize::Default.height(&theme) + DynamicSpacing::Base06.px(&theme))
+            .flex()
+            .items_center()
+            .child(copy_label),
+    );
+    let hovered_sections_for_event = hovered_sections.clone();
+    let mut section_hasher = DefaultHasher::new();
+    hover_key.hash(&mut section_hasher);
+    let section_seed = section_hasher.finish();
     let card = div()
+        .id(ElementId::NamedInteger(
+            "tool-code-section".into(),
+            section_seed,
+        ))
+        // `theme` is captured rather than read from the app: the hover fires on
+        // a bare test context too, and a repaint after a theme change rebuilds
+        // this closure with the new value.
+        .on_hover(move |hovering, _, cx| {
+            let mut states = hovered_sections_for_event.borrow_mut();
+            let state = states.entry(hover_key).or_default();
+            if state.retarget(*hovering, &theme) {
+                drop(states);
+                cx.refresh_windows();
+            }
+        })
         .w_full()
         .min_w_0()
         .flex()
         .flex_col()
-        .gap(px(4.))
+        // The label row: a quiet heading on the terminal surface, with the
+        // copy control pinned right so every section's action shares one
+        // axis.
         .child(
             div()
-                .h(px(22.))
+                .w_full()
+                .min_w_0()
+                .h(ButtonSize::Default.height(&theme))
+                .px(DynamicSpacing::Base12.px(&theme))
                 .flex()
                 .items_center()
-                .justify_between()
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .font_weight(FontWeight::MEDIUM)
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(15.))
-                        .text_color(theme.text_2)
+                        .text_color(theme.text_muted)
                         .child(label.to_string()),
                 )
-                .child(
-                    div()
-                        .id(ElementId::NamedInteger(
-                            "copy-activity-section".into(),
-                            ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                        ))
-                        .flex_none()
-                        .size(px(24.))
-                        .rounded(px(6.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|style| style.bg(theme.overlay_strong))
-                        .child(glyph(
-                            if copied {
-                                "icons/check.svg"
-                            } else {
-                                "icons/copy.svg"
-                            },
-                            12.,
-                            if copied { theme.ok_green } else { theme.text_3 },
-                        ))
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copy_content.clone()));
-                            copied_sections
-                                .borrow_mut()
-                                .insert((key.0, key.1, section), Instant::now());
-                            cx.refresh_windows();
-                        }),
-                ),
+                .child(copy_control),
         )
         .child(
             div()
                 .w_full()
                 .min_w_0()
+                .px(DynamicSpacing::Base12.px(&theme))
+                .pb(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .items_start()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .when(prompt, |row| {
                     row.child(
                         div()
@@ -3354,7 +4964,7 @@ fn render_detail_section(
                             .font_family(theme::code_font_family())
                             .text_size(theme.term_px(13.))
                             .line_height(theme.term_px(20.))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child("$"),
                     )
                 })
@@ -3367,58 +4977,63 @@ fn render_detail_section(
         let toggle_label = if expanded {
             tr!("transcript.show_less")
         } else {
-            tr!("transcript.show_all_lines", total = total)
+            // The key's placeholder is `%{count}` — binding `total` left the
+            // literal `%{count}` printed in the fold label.
+            tr!("transcript.show_all_lines", count = total)
         };
         card.child(
-            div()
-                .id(ElementId::NamedInteger(
-                    "section-fold".into(),
-                    ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                ))
-                .w_full()
-                .h(px(22.))
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .hover(|style| style.text_color(theme.text))
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.,
-                    theme.text_3,
-                ))
-                .child(toggle_label)
-                .when(paint_clipped, |toggle| {
-                    toggle.child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme.text_3)
-                            .child(tr!(
-                                "transcript.showing_first_output",
-                                count = OUTPUT_EXPANDED_PAINT_LINES
-                            )),
-                    )
-                })
-                .on_click(move |_, _, cx| {
-                    let fold_key = (key.0, key.1, section);
-                    let mut open = expanded_sections.borrow_mut();
-                    if !open.remove(&fold_key) {
-                        open.insert(fold_key);
-                    }
-                    drop(open);
-                    scroller.remeasure_toggle(key.0);
-                    cx.refresh_windows();
-                }),
+            button_frame(
+                div()
+                    .id(ElementId::NamedInteger(
+                        "section-fold".into(),
+                        ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
+                    ))
+                    .debug_selector(move || {
+                        format!("tool-section-fold-{}-{}-{section}", key.0, key.1)
+                    }),
+                &theme,
+                ButtonSize::Default,
+            )
+            // Full width with its label at the start, so the paint-cap note
+            // can fill the rest of the row.
+            .w_full()
+            .justify_start()
+            .cursor_pointer()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_muted)
+            .hover_ink(&theme)
+            .child(disclosure_chevron(
+                format!("section-fold-caret-{}-{}-{section}", key.0, key.1),
+                expanded,
+                IconSize::XSmall.px(&theme),
+                theme.text_muted,
+                &theme,
+            ))
+            .child(toggle_label)
+            .when(paint_clipped, |toggle| {
+                toggle.child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme.text_muted)
+                        .child(tr!(
+                            "transcript.showing_first_output",
+                            count = OUTPUT_EXPANDED_PAINT_LINES
+                        )),
+                )
+            })
+            .on_click(move |_, _, cx| {
+                let fold_key = (key.0, key.1, section);
+                let mut open = expanded_sections.borrow_mut();
+                if !open.remove(&fold_key) {
+                    open.insert(fold_key);
+                }
+                drop(open);
+                scroller.remeasure_toggle(key.0);
+                cx.refresh_windows();
+            }),
         )
     } else {
         card
@@ -3606,46 +5221,16 @@ fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<DiffRow
     let new_lines = split_diff_lines(new);
     let old_tokens = lang.map(|lang| highlight::tokenize(lang, old));
     let new_tokens = lang.map(|lang| highlight::tokenize(lang, new));
-    let (n, m) = (old_lines.len(), new_lines.len());
-    let mut ops: Vec<(DiffRowKind, Option<usize>, Option<usize>)> = Vec::new();
-    if n.saturating_mul(m) > 250_000 {
-        ops.extend((0..n).map(|i| (DiffRowKind::Deletion, Some(i), None)));
-        ops.extend((0..m).map(|j| (DiffRowKind::Addition, None, Some(j))));
-    } else {
-        let mut lcs = vec![vec![0u32; m + 1]; n + 1];
-        for i in (0..n).rev() {
-            for j in (0..m).rev() {
-                lcs[i][j] = if old_lines[i] == new_lines[j] {
-                    lcs[i + 1][j + 1] + 1
-                } else {
-                    lcs[i + 1][j].max(lcs[i][j + 1])
-                };
-            }
-        }
-        let (mut i, mut j) = (0usize, 0usize);
-        while i < n && j < m {
-            if old_lines[i] == new_lines[j] {
-                ops.push((DiffRowKind::Context, Some(i), Some(j)));
-                i += 1;
-                j += 1;
-            } else if lcs[i + 1][j] >= lcs[i][j + 1] {
-                ops.push((DiffRowKind::Deletion, Some(i), None));
-                i += 1;
-            } else {
-                ops.push((DiffRowKind::Addition, None, Some(j)));
-                j += 1;
-            }
-        }
-        while i < n {
-            ops.push((DiffRowKind::Deletion, Some(i), None));
-            i += 1;
-        }
-        while j < m {
-            ops.push((DiffRowKind::Addition, None, Some(j)));
-            j += 1;
-        }
-    }
+    let ops = crate::turn_review::diff_line_ops(&old_lines, &new_lines);
     ops.into_iter()
+        .map(|(kind, old_ix, new_ix)| {
+            let kind = match kind {
+                crate::turn_review::DiffLineKind::Context => DiffRowKind::Context,
+                crate::turn_review::DiffLineKind::Addition => DiffRowKind::Addition,
+                crate::turn_review::DiffLineKind::Deletion => DiffRowKind::Deletion,
+            };
+            (kind, old_ix, new_ix)
+        })
         .map(|(kind, old_ix, new_ix)| {
             let (text, tokens) = match kind {
                 DiffRowKind::Deletion => (
@@ -3715,7 +5300,7 @@ fn render_edit_diff(
     let mut body = div()
         .w_full()
         .min_w_0()
-        .py(px(4.))
+        .py(DynamicSpacing::Base04.px(&theme))
         .flex()
         .flex_col()
         .children(
@@ -3728,62 +5313,60 @@ fn render_edit_diff(
         let label = if expanded {
             tr!("transcript.show_less")
         } else {
-            tr!("transcript.show_all_lines", total = total)
+            tr!("transcript.show_all_lines", count = total)
         };
         body = body.child(
-            div()
-                .id(ElementId::NamedInteger(
+            button_frame(
+                div().id(ElementId::NamedInteger(
                     "edit-diff-fold".into(),
                     ((key.0 as u64) << 16 | key.1 as u64) << 8 | EDIT_DIFF_COPY_SECTION as u64,
-                ))
-                .w_full()
-                .h(px(24.))
-                .px(px(14.))
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .hover(|style| style.text_color(theme.text))
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.,
-                    theme.text_3,
-                ))
-                .child(label)
-                .when(clipped, |toggle| {
-                    toggle.child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme.text_3)
-                            .child(tr!(
-                                "transcript.showing_first_diff",
-                                count = EDIT_DIFF_PAINT_LINES
-                            )),
-                    )
-                })
-                .on_click(move |_, _, cx| {
-                    let fold_key = (key.0, key.1, EDIT_DIFF_COPY_SECTION);
-                    let mut open = expanded_sections.borrow_mut();
-                    if !open.remove(&fold_key) {
-                        open.insert(fold_key);
-                    }
-                    drop(open);
-                    scroller.remeasure_toggle(key.0);
-                    // The fold is not a card toggle — don't collapse the card
-                    // out from under the click.
-                    cx.stop_propagation();
-                    cx.refresh_windows();
-                }),
+                )),
+                &theme,
+                ButtonSize::Default,
+            )
+            // Full width with its label at the start, so the paint-cap note
+            // can fill the rest of the row.
+            .w_full()
+            .justify_start()
+            .cursor_pointer()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_muted)
+            .hover_ink(&theme)
+            .child(disclosure_chevron(
+                format!("edit-diff-caret-{}-{}", key.0, key.1),
+                expanded,
+                IconSize::XSmall.px(&theme),
+                theme.text_muted,
+                &theme,
+            ))
+            .child(label)
+            .when(clipped, |toggle| {
+                toggle.child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme.text_muted)
+                        .child(tr!(
+                            "transcript.showing_first_diff",
+                            count = EDIT_DIFF_PAINT_LINES
+                        )),
+                )
+            })
+            .on_click(move |_, _, cx| {
+                let fold_key = (key.0, key.1, EDIT_DIFF_COPY_SECTION);
+                let mut open = expanded_sections.borrow_mut();
+                if !open.remove(&fold_key) {
+                    open.insert(fold_key);
+                }
+                drop(open);
+                scroller.remeasure_toggle(key.0);
+                // The fold is not a card toggle — don't collapse the card
+                // out from under the click.
+                cx.stop_propagation();
+                cx.refresh_windows();
+            }),
         );
     }
     body.into_any_element()
@@ -3810,20 +5393,20 @@ fn render_edit_diff_row(
     );
     let (body_bg, gutter_bg, edge, marker_color, marker) = match row.kind {
         DiffRowKind::Addition => (
-            Some(theme.add_green.opacity(diff_body_wash(theme))),
-            Some(theme.add_green.opacity(diff_gutter_wash(theme))),
-            Some(theme.add_green),
-            theme.add_green,
+            Some(theme.success.opacity(diff_body_wash(theme))),
+            Some(theme.success.opacity(diff_gutter_wash(theme))),
+            Some(theme.success),
+            theme.success,
             "+",
         ),
         DiffRowKind::Deletion => (
-            Some(theme.del_red.opacity(diff_body_wash(theme))),
-            Some(theme.del_red.opacity(diff_gutter_wash(theme))),
-            Some(theme.del_red),
-            theme.del_red,
+            Some(theme.error.opacity(diff_body_wash(theme))),
+            Some(theme.error.opacity(diff_gutter_wash(theme))),
+            Some(theme.error),
+            theme.error,
             "-",
         ),
-        _ => (None, None, None, theme.text_3, ""),
+        _ => (None, None, None, theme.text_muted, ""),
     };
     div()
         .w_full()
@@ -3849,7 +5432,7 @@ fn render_edit_diff_row(
             div()
                 .min_w_0()
                 .flex_1()
-                .pr(px(12.))
+                .pr(DynamicSpacing::Base12.px(&theme))
                 .overflow_hidden()
                 // A long line wraps to the next row instead of being clipped —
                 // the diff must stay readable at any pane width.
@@ -3918,13 +5501,13 @@ fn cap_chars(text: &str, max: usize) -> String {
 fn footer_time_stamp(text: String, theme: Theme) -> AnyElement {
     div()
         .flex_none()
-        .h(px(FOOTER_BUTTON_SIZE))
-        .px(px(4.))
+        .h(FOOTER_BUTTON.height(&theme))
+        .px(DynamicSpacing::Base04.px(&theme))
         .flex()
         .items_center()
-        .text_size(theme.ui_px(11.5))
-        .line_height(theme.ui_px(16.))
-        .text_color(theme.text_3)
+        .text_size(TextSize::Small.px(&theme))
+        .line_height(BufferLineHeight::Standard.relative())
+        .text_color(theme.text_muted)
         .child(text)
         .into_any_element()
 }
@@ -3938,55 +5521,156 @@ fn render_message_footer(
     ix: usize,
     stamp: Option<AnyElement>,
     usage: Option<MessageUsage>,
+    generation: Option<Duration>,
     copied: bool,
     align_right: bool,
     theme: Theme,
     copied_at: Rc<RefCell<HashMap<usize, Instant>>>,
     hovered_usage: Rc<Cell<Option<usize>>>,
+    rewind: Option<RewindOpener>,
+    regenerate: Option<RegenerateOpener>,
+    export_response: Option<ResponseExporter>,
 ) -> impl IntoElement {
-    let button = div()
-        .id(ElementId::NamedInteger("copy-response".into(), ix as u64))
-        .flex_none()
-        .size(px(FOOTER_BUTTON_SIZE))
-        .rounded(px(8.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.overlay_strong))
-        .child(glyph(
-            if copied {
-                "icons/check.svg"
-            } else {
-                "icons/copy.svg"
-            },
-            18.,
-            if copied { theme.ok_green } else { theme.text_3 },
-        ))
-        .on_click(move |_, _, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-            copied_at.borrow_mut().insert(ix, Instant::now());
-            cx.refresh_windows();
-        });
+    let response_text = copy_text.clone();
+    let button = icon_button_frame(
+        div().id(ElementId::NamedInteger("copy-response".into(), ix as u64)),
+        &theme,
+        FOOTER_BUTTON,
+    )
+    .tip(tr!("transcript.copy_message"))
+    .cursor_pointer()
+    .hover_on_glass(&theme)
+    .child(glyph(
+        if copied {
+            "icons/check.svg"
+        } else {
+            "icons/copy.svg"
+        },
+        FOOTER_BUTTON.icon_size().px(&theme),
+        if copied {
+            theme.success
+        } else {
+            theme.text_muted
+        },
+    ))
+    .on_click(move |_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+        copied_at.borrow_mut().insert(ix, Instant::now());
+        cx.refresh_windows();
+    });
     let mut footer = div()
-        .h(px(FOOTER_BUTTON_SIZE))
+        .h(FOOTER_BUTTON.height(&theme))
         .flex()
         .items_center()
-        .gap(px(1.))
+        .gap(DynamicSpacing::Base01.px(&theme))
         .when(align_right, |row| row.justify_end());
+    // Rewind sits before the copy action: both are quiet footer affordances,
+    // and the pointer path to rewind belongs where the message ends rather
+    // than behind a hover-only rail (DESIGN.md: never hide a state-changing
+    // action behind hover).
+    let rewind_button = rewind.map(|opener| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger("rewind-turn".into(), ix as u64)),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("rewind-turn-{ix}"))
+        .tip(if align_right {
+            tr!("transcript.rewind_to_here")
+        } else {
+            tr!("transcript.fork_conversation")
+        })
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            if align_right {
+                "icons/rotate-ccw.svg"
+            } else {
+                "icons/git-fork.svg"
+            },
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
+    // Regenerate is a response action and always says what it does: pi forks
+    // the conversation into a new session and sends the prompt again there.
+    let regenerate_button = regenerate.map(|opener| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger(
+                "regenerate-response".into(),
+                ix as u64,
+            )),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("regenerate-response-{ix}"))
+        .tip(tr!("transcript.regenerate"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/refresh.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
+    let pdf_text = response_text.clone();
+    let pdf_button = export_response.clone().map(|export| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger(
+                "export-response-pdf".into(),
+                ix as u64,
+            )),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("export-response-pdf-{ix}"))
+        .tip(tr!("transcript.export_response_pdf"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/file.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| export(pdf_text.clone(), true, ix, window, cx))
+    });
+    let export_button = export_response.map(|export| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger("export-response".into(), ix as u64)),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("export-response-{ix}"))
+        .tip(tr!("transcript.export_response_markdown"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/arrow-down.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| export(response_text.clone(), false, ix, window, cx))
+    });
     if align_right {
         // Right-aligned footer: timestamp first, then actions.
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
         }
-        footer = footer.child(button);
+        footer = footer.children(rewind_button).child(button);
     } else {
-        footer = footer.child(button);
+        footer = footer
+            .child(button)
+            .children(regenerate_button)
+            .children(export_button)
+            .children(pdf_button)
+            .children(rewind_button);
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
         }
     }
-    if let Some(metric) = usage_metric(usage, ix, theme, hovered_usage) {
+    if let Some(metric) = usage_metric(usage, generation, ix, theme, hovered_usage) {
         footer = footer.child(metric);
     }
     footer
@@ -3996,6 +5680,7 @@ fn render_message_footer(
 /// `None` when the turn has no reported usage, so the footer stays clean.
 fn usage_metric(
     usage: Option<MessageUsage>,
+    generation: Option<Duration>,
     ix: usize,
     theme: Theme,
     hovered_usage: Rc<Cell<Option<usize>>>,
@@ -4012,7 +5697,7 @@ fn usage_metric(
             if let Some(percent) = usage.cache_read_percent() {
                 label.push_str(&tr!(
                     "transcript_view.cached_share",
-                    percent = format!("{percent:.0}")
+                    percent = hit_percent_label(percent)
                 ));
             }
         }
@@ -4020,18 +5705,22 @@ fn usage_metric(
             label.push_str(" · ");
             label.push_str(&format_message_cost(cost));
         }
+        if let Some(tps) = generation_tps(&usage, generation) {
+            label.push_str(" · ");
+            label.push_str(&tr!("transcript_view.tps_value", rate = format_tps(tps)));
+        }
         label
     };
     let mut metric = div()
         .id(ElementId::NamedInteger("usage-metric".into(), ix as u64))
         .relative()
-        .ml(px(6.))
-        .h(px(FOOTER_BUTTON_SIZE))
+        .ml(DynamicSpacing::Base06.px(&theme))
+        .h(FOOTER_BUTTON.height(&theme))
         .flex()
         .items_center()
-        .text_size(theme.ui_px(11.5))
-        .line_height(theme.ui_px(16.))
-        .text_color(theme.text_3)
+        .text_size(TextSize::Small.px(&theme))
+        .line_height(BufferLineHeight::Standard.relative())
+        .text_color(theme.text_muted)
         .child(label)
         .on_hover(move |is_hovered, _, cx| {
             let next = if *is_hovered { Some(ix) } else { None };
@@ -4046,8 +5735,8 @@ fn usage_metric(
                 .absolute()
                 .bottom_full()
                 .left_0()
-                .mb(px(6.))
-                .child(deferred(usage_breakdown_card(&usage, theme))),
+                .mb(popover::MENU_OFFSET)
+                .child(deferred(usage_breakdown_card(&usage, generation, theme))),
         );
     }
     Some(metric.into_any_element())
@@ -4055,27 +5744,27 @@ fn usage_metric(
 
 /// Hover card: the full per-turn token/cache/cost breakdown behind the
 /// compact footer metric.
-fn usage_breakdown_card(usage: &MessageUsage, theme: Theme) -> AnyElement {
+fn usage_breakdown_card(
+    usage: &MessageUsage,
+    generation: Option<Duration>,
+    theme: Theme,
+) -> AnyElement {
     let cost = usage
         .cost
         .map(format_message_cost)
         .unwrap_or_else(|| "—".into());
     div()
         .w(px(224.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.card_shadow())
-        .px(px(12.))
-        .py(px(10.))
+        .elevation_2(&theme)
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .child(
             div()
-                .text_size(theme.ui_px(11.5))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .child(tr!("transcript_view.message_usage")),
         )
         .child(usage_metric_row(
@@ -4109,6 +5798,14 @@ fn usage_breakdown_card(usage: &MessageUsage, theme: Theme) -> AnyElement {
             format_tokens(usage.total),
             theme,
         ))
+        .children(generation_tps(usage, generation).map(|tps| {
+            usage_metric_row(
+                "icons/usage-output.svg",
+                tr!("transcript_view.rate"),
+                tr!("transcript_view.tps_value", rate = format_tps(tps)),
+                theme,
+            )
+        }))
         .child(usage_metric_row(
             "icons/usage-cost.svg",
             "Cost",
@@ -4129,21 +5826,25 @@ fn usage_metric_row(
         .w_full()
         .flex()
         .items_center()
-        .gap(px(7.))
-        .child(glyph(icon_path, 13., theme.text_3))
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .child(glyph(
+            icon_path,
+            IconSize::Small.px(&theme),
+            theme.text_muted,
+        ))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .whitespace_nowrap()
                 .child(label),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_primary)
                 .whitespace_nowrap()
                 .child(value),
         )
@@ -4184,7 +5885,7 @@ fn format_time(millis: i64) -> Option<String> {
         .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
 }
 
-fn glyph(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
+fn glyph(path: &'static str, size: impl Into<Pixels>, color: Hsla) -> impl IntoElement {
     // The shared icon carries the button hover ink-lift, so every control in
     // the transcript that opts into `BUTTON_GROUP` brightens its glyph.
     crate::app::icon(path, size, color)
@@ -4261,36 +5962,29 @@ fn render_turn_fold(
         .gap(px(10.))
         .child(div().h(px(1.)).flex_1().bg(theme.border))
         .child(
-            div()
-                .id(ElementId::NamedInteger("turn-fold".into(), ix as u64))
-                .group(BUTTON_GROUP)
-                .h(px(24.))
-                .px(px(2.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(13.5))
-                .line_height(theme.ui_px(18.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .hover(|style| style.text_color(theme.text_2))
-                .child(label)
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    11.5,
-                    theme.text_3,
-                ))
-                .on_click(move |_, _, cx| {
-                    toggle_index(&expanded_turns, ix);
-                    scroller.remeasure_toggle(ix);
-                    cx.refresh_windows();
-                }),
+            button_frame(
+                div().id(ElementId::NamedInteger("turn-fold".into(), ix as u64)),
+                &theme,
+                ButtonSize::Default,
+            )
+            .group(BUTTON_GROUP)
+            .cursor_pointer()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_muted)
+            .hover_ink_quiet(&theme)
+            .child(label)
+            .child(disclosure_chevron(
+                format!("turn-fold-caret-{ix}"),
+                expanded,
+                IconSize::XSmall.px(&theme),
+                theme.text_muted,
+                &theme,
+            ))
+            .on_click(move |_, _, cx| {
+                toggle_index(&expanded_turns, ix);
+                scroller.remeasure_toggle(ix);
+                cx.refresh_windows();
+            }),
         )
         .child(div().h(px(1.)).flex_1().bg(theme.border))
 }
@@ -4299,7 +5993,7 @@ fn working_wave_dots(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
     div()
         .flex()
         .items_center()
-        .gap(px(3.))
+        .gap(DynamicSpacing::Base03.px(&theme))
         .children((0..3).map(move |i| {
             let phase = ((elapsed_ms / 180) + i as u128 * 2) % 6;
             let on = phase < 3;
@@ -4310,33 +6004,28 @@ fn working_wave_dots(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
         }))
 }
 
-/// What the agent is doing right now, for the live indicator: "Running
-/// cargo test", "Reading src/auth.rs", "Thinking…". Derived from the live
-/// step's latest tool so the status names real work, never a bare spinner.
+/// Reasoning is named in the live indicator; tool details already appear in
+/// the activity group above and should not be repeated here.
 fn working_activity_label(step: &Step) -> Option<String> {
     if let Some(tool) = step.tools.last() {
-        let detail = activity_preview(tool);
-        let verb = match tool.name.as_str() {
-            "bash" | "shell" | "terminal" | "exec" | "run" => {
-                tr!("transcript_view.verb_running")
-            }
-            "read" | "view" => tr!("transcript_view.verb_reading"),
-            "grep" | "find" | "glob" | "search" => tr!("transcript_view.verb_searching"),
-            "edit" | "write" => tr!("transcript_view.verb_editing"),
-            other => {
-                let action = activity_action_label(other);
-                return Some(if detail.is_empty() {
-                    tr!("transcript_view.using_tool", action = action)
-                } else {
-                    format!("{action} {detail}")
-                });
-            }
-        };
-        return Some(if detail.is_empty() {
-            verb
-        } else {
-            format!("{verb} {detail}")
-        });
+        // While a child runs, the parent's own turn is blocked, so this line is
+        // the user's main signal: say what the child is doing (§9.5).
+        if let Some(run) = crate::subagent::SubagentRun::from_tool(tool) {
+            return match run.live_activity()? {
+                crate::subagent::Activity::Agent { agent, action } => Some(tr!(
+                    "transcript_view.subagent_working_one",
+                    agent = agent,
+                    action = action
+                        .map(str::to_string)
+                        .unwrap_or_else(|| tr!("transcript_view.subagent_thinking"))
+                )),
+                crate::subagent::Activity::Agents(count) => Some(tr!(
+                    "transcript_view.subagent_working_agents",
+                    count = count
+                )),
+            };
+        }
+        return None;
     }
     // Reasoning is only the current activity while the step has no answer
     // text yet; once the model is writing, the thinking phase is over.
@@ -4353,14 +6042,18 @@ fn render_stopped_marker(theme: Theme) -> impl IntoElement {
         .h(px(22.))
         .flex()
         .items_center()
-        .gap(px(8.))
-        .child(glyph("icons/stop.svg", 11., theme.text_3))
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(glyph(
+            "icons/stop.svg",
+            IconSize::XSmall.px(&theme),
+            theme.text_muted,
+        ))
         .child(
             div()
-                .text_size(theme.ui_px(13.5))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(18.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(tr!("transcript_view.stopped")),
         )
 }
@@ -4368,37 +6061,46 @@ fn render_stopped_marker(theme: Theme) -> impl IntoElement {
 fn render_working_indicator(
     elapsed: Duration,
     activity: Option<String>,
+    tps: Option<f64>,
     theme: Theme,
 ) -> impl IntoElement {
-    // Name the current activity when we know it; the elapsed time stays so
-    // a long-running command still reads as progress, not a hang.
-    let label = match activity {
-        Some(activity) => format!("{} · {}", activity, format_working_elapsed(elapsed)),
+    // Keep elapsed time visible during long-running work; the tool group
+    // above carries its details. Output rate rides alongside as `· 42 tok/s`.
+    let timing = match tps {
+        Some(tps) => tr!(
+            "transcript_view.working_for_with_rate",
+            duration = format_working_elapsed(elapsed),
+            rate = format_tps(tps)
+        ),
         None => tr!(
             "transcript_view.working_for",
             duration = format_working_elapsed(elapsed)
         ),
     };
+    let label = match activity {
+        Some(activity) => format!("{activity} · {timing}"),
+        None => timing,
+    };
     let label_size = theme.ui_px(13.5);
     let label_line = theme.ui_px(18.);
     // The live label carries the sidebar's running-session shimmer — the same
-    // ember band sweeping across the ink. Reduce-motion keeps the accent
+    // accent band sweeping across the ink. Reduce-motion keeps the accent
     // signal without the perpetual sweep.
-    let label_el: AnyElement = if theme.ui.reduce_motion {
+    let label_el: AnyElement = if theme.reduce_motion() {
         div()
             .min_w_0()
             .truncate()
             .text_size(label_size)
             .line_height(label_line)
             .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.accent)
+            .text_color(theme.accent_text)
             .child(label)
             .into_any_element()
     } else {
-        ShimmerText::new(label, theme.text_3, theme.accent)
+        ShimmerText::new(label, theme.text_muted, theme.accent)
             .with_animation(
                 ElementId::NamedInteger("working-shimmer".into(), 0),
-                Animation::new(Duration::from_millis(2000)).repeat(),
+                Animation::new(looping::SHIMMER).repeat(),
                 |mut text, delta| {
                     text.phase = delta;
                     text
@@ -4415,7 +6117,7 @@ fn render_working_indicator(
         .h(px(22.))
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(DynamicSpacing::Base08.px(&theme))
         .child(working_wave_dots(theme, elapsed.as_millis()))
         .child(
             div()
@@ -4452,9 +6154,164 @@ fn format_working_elapsed(duration: Duration) -> String {
     }
 }
 
+/// Output tokens a streaming row has produced so far: the provider's latest
+/// cumulative `usage.output` when it reports one, else a `chars/4` estimate
+/// over the live text (reasoning included — reasoning is a subset of the
+/// provider's output).
+fn streamed_output_tokens(message: &ChatMessage) -> u64 {
+    if let Some(usage) = message.usage() {
+        if usage.output > 0 {
+            return usage.output;
+        }
+    }
+    let chars: usize = message
+        .steps
+        .iter()
+        .map(|step| step.text.chars().count() + step.thinking.chars().count())
+        .sum();
+    (chars / 4) as u64
+}
+
+/// The denominator for a streaming turn's rate. Settled steps contribute
+/// pi's `durationMs` (or their client fallback); the step still streaming
+/// contributes the time since its own request began. The numerator
+/// ([`streamed_output_tokens`]) is turn-cumulative, so the clock must be too
+/// — otherwise a step after a tool call would divide the whole run's tokens
+/// by only its own elapsed time.
+fn live_generation_clock(
+    message: &ChatMessage,
+    streaming_elapsed: Option<Duration>,
+) -> Option<Duration> {
+    let last = message.steps.len().checked_sub(1)?;
+    let mut total = Duration::ZERO;
+    let mut any = false;
+    for (ix, step) in message.steps.iter().enumerate() {
+        let clock = if ix == last {
+            streaming_elapsed.or(step.generation_time)
+        } else {
+            step.duration.or(step.generation_time)
+        };
+        if let Some(clock) = clock {
+            total += clock;
+            any = true;
+        }
+    }
+    any.then_some(total)
+}
+
+/// Tokens per second for a streaming row, or `None` before a rate is
+/// meaningful (under a second of the turn elapsed, or no output yet). The
+/// caller passes the turn's request clock (`turn_start`) — the same basis as
+/// pi's settled `durationMs` — so the two figures agree.
+fn streaming_tps(message: &ChatMessage, elapsed: Option<Duration>) -> Option<f64> {
+    let elapsed = elapsed?;
+    let secs = elapsed.as_secs_f64();
+    if secs < 1.0 {
+        return None;
+    }
+    let tokens = streamed_output_tokens(message);
+    (tokens > 0).then(|| tokens as f64 / secs)
+}
+
+/// Settled output rate: output tokens over pi's measured call duration
+/// (its `durationMs`, or the client-measured fallback) — prefill plus
+/// decode. `None` when there is no measurable rate.
+fn generation_tps(usage: &MessageUsage, generation: Option<Duration>) -> Option<f64> {
+    let secs = generation?.as_secs_f64();
+    if secs < 1.0 || usage.output == 0 {
+        return None;
+    }
+    Some(usage.output as f64 / secs)
+}
+
+/// Compact rate label: whole numbers at 10+ (`42`), one decimal below
+/// (`7.4`).
+fn format_tps(tps: f64) -> String {
+    if !tps.is_finite() || tps <= 0.0 {
+        return "0".into();
+    }
+    if tps >= 10.0 {
+        format!("{tps:.0}")
+    } else {
+        format!("{tps:.1}")
+    }
+}
+
+/// The URL a fetch-style tool was invoked with. `None` for other tools.
+fn tool_url(tool: &ToolCall) -> Option<String> {
+    if !matches!(
+        tool.name.as_str(),
+        "web_fetch" | "webfetch" | "fetch" | "open_url" | "browse"
+    ) {
+        return None;
+    }
+    tool.args
+        .as_ref()?
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The query a web-search tool was invoked with. `None` for other tools.
+fn tool_search_query(tool: &ToolCall) -> Option<String> {
+    if !matches!(
+        tool.name.as_str(),
+        "web_search" | "websearch" | "search_web" | "browse"
+    ) {
+        return None;
+    }
+    tool.args
+        .as_ref()?
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// A URL as it reads in a card header: scheme and a leading `www.` dropped.
+fn display_url(url: &str) -> &str {
+    let url = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    url.strip_prefix("www.").unwrap_or(url)
+}
+
+/// File-content tools whose header preview is one file path — the tools
+/// that get the file's devicon.
+fn file_preview_path(tool: &ToolCall) -> Option<&str> {
+    match tool.name.as_str() {
+        "read" | "view" | "edit" | "write" => tool.path.as_deref(),
+        _ => None,
+    }
+}
+
 fn activity_preview(tool: &ToolCall) -> String {
     if let Some(path) = &tool.path {
         return path.clone();
+    }
+    // A fetch tool's arguments JSON would show `{"url":"…"}` and a search
+    // tool's `{"query":"…"}`; the URL/query itself is the fact to show.
+    if let Some(url) = tool_url(tool) {
+        return display_url(&url).to_string();
+    }
+    if let Some(query) = tool_search_query(tool) {
+        return query;
+    }
+    // The codemode tool takes a JavaScript source string; show its first
+    // non-empty line like a command preview instead of the raw JSON args.
+    if tool.name == "codemode" {
+        if let Some(code) = tool
+            .args
+            .as_ref()
+            .and_then(|args| args.get("code"))
+            .and_then(Value::as_str)
+        {
+            let first = code
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("");
+            return snippet(first.trim(), 72);
+        }
     }
     // A command tool's pi summary is the raw JSON arguments; show the shell
     // command itself in the header instead of `{"command":"…"}`.
@@ -4486,19 +6343,19 @@ fn render_line_delta(added: u64, removed: u64, theme: Theme, size: f32) -> impl 
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .text_size(theme.ui_px(size))
         .line_height(theme.ui_px(size + 3.))
         .child(
             div()
                 .flex_none()
-                .text_color(theme.add_green)
+                .text_color(theme.success)
                 .child(format!("+{added}")),
         )
         .child(
             div()
                 .flex_none()
-                .text_color(theme.del_red)
+                .text_color(theme.error)
                 .child(format!("-{removed}")),
         )
 }
@@ -4509,9 +6366,15 @@ fn render_line_delta(added: u64, removed: u64, theme: Theme, size: f32) -> impl 
 // `border-l-2` blockquotes, mono inline-code chips, rounded pre blocks,
 // and clickable underlined links.
 
-/// Flattened inline runs: the body text, one [`TextRun`] per styled span,
-/// and the link `(byte range, url)` pairs.
-type InlineRuns = (SharedString, Vec<TextRun>, Vec<(Range<usize>, String)>);
+/// Flattened inline runs: `(text, runs, links, autolink marks)`. Each link
+/// is a `(byte range, url)` pair into the body; each mark is the byte range
+/// of an autolink's arrow glyph.
+type InlineRuns = (
+    SharedString,
+    Vec<TextRun>,
+    Vec<(Range<usize>, String)>,
+    Vec<Range<usize>>,
+);
 
 /// One styled inline span produced by [`parse_inline`].
 #[derive(Clone, Default)]
@@ -4522,6 +6385,9 @@ struct InlineSpan {
     strikethrough: bool,
     code: bool,
     link: Option<String>,
+    /// A bare URL the parser recognized, as opposed to a `[label](url)`
+    /// link. Autolinks get an external-link mark in the rendered text.
+    autolink: bool,
 }
 
 fn flush_span(spans: &mut Vec<InlineSpan>, current: &mut InlineSpan) {
@@ -4530,8 +6396,48 @@ fn flush_span(spans: &mut Vec<InlineSpan>, current: &mut InlineSpan) {
     }
 }
 
+/// The end index (exclusive) of a bare `http://` or `https://` URL starting
+/// at `start`, or `None` when the text there is not a URL. The scan stops at
+/// whitespace, `<`, and `>`; trailing sentence punctuation, emphasis markers,
+/// and closing brackets with no opener inside the URL are left for the prose.
+fn autolink_end(chars: &[char], start: usize) -> Option<usize> {
+    let tail = &chars[start..];
+    if !tail.starts_with(&['h', 't', 't', 'p', 's', ':', '/', '/'])
+        && !tail.starts_with(&['h', 't', 't', 'p', ':', '/', '/'])
+    {
+        return None;
+    }
+    let mut end = start;
+    while end < chars.len() && !chars[end].is_whitespace() && chars[end] != '<' && chars[end] != '>'
+    {
+        end += 1;
+    }
+    while end > start {
+        let last = chars[end - 1];
+        let trim = matches!(
+            last,
+            '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' | '*' | '_' | '~'
+        ) || (matches!(last, ')' | ']' | '}') && {
+            let opener = match last {
+                ')' => '(',
+                ']' => '[',
+                _ => '{',
+            };
+            let opens = chars[start..end].iter().filter(|&&c| c == opener).count();
+            let closes = chars[start..end].iter().filter(|&&c| c == last).count();
+            closes > opens
+        });
+        if !trim {
+            break;
+        }
+        end -= 1;
+    }
+    (end > start).then_some(end)
+}
+
 /// Parse GFM inline syntax: `` `code` ``, `**bold**`, `*italic*`, `_italic_`,
-/// `~~strike~~`, `[links](url)`. `\*`-style escapes render literally.
+/// `~~strike~~`, `[links](url)`, and bare `http(s)://` URLs. `\*`-style
+/// escapes render literally.
 fn parse_inline(text: &str) -> Vec<InlineSpan> {
     let mut spans: Vec<InlineSpan> = Vec::new();
     let mut current = InlineSpan::default();
@@ -4634,6 +6540,23 @@ fn parse_inline(text: &str) -> Vec<InlineSpan> {
                     i += 1;
                 }
             }
+            'h' => {
+                // A bare URL is a link even without `[label](url)` syntax.
+                if let Some(end) = autolink_end(&chars, i) {
+                    // Capture the surrounding style before the flush resets
+                    // it, so a URL inside `**bold**` stays bold.
+                    let mut span = current.clone();
+                    flush_span(&mut spans, &mut current);
+                    span.text = chars[i..end].iter().collect();
+                    span.link = Some(span.text.clone());
+                    span.autolink = true;
+                    spans.push(span);
+                    i = end;
+                } else {
+                    current.text.push(ch);
+                    i += 1;
+                }
+            }
             other => {
                 current.text.push(other);
                 i += 1;
@@ -4655,12 +6578,21 @@ fn inline_runs(
     let mut body = String::new();
     let mut runs: Vec<TextRun> = Vec::new();
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
+    let mut marks: Vec<Range<usize>> = Vec::new();
     for span in spans {
         if span.text.is_empty() {
             continue;
         }
         let start = body.len();
         body.push_str(&span.text);
+        // A bare URL wears an external-link mark so it reads as a link at a
+        // glance: a gap, then the arrow the mark run carries. The whole mark
+        // rides the link run, so clicking it opens the URL too. The arrow
+        // gets its own run so the transcript can blank the font glyph and
+        // paint the hugeicon arrow over it.
+        if span.autolink {
+            body.push(' ');
+        }
         let len = body.len() - start;
         let mut font = ui_font();
         if span.code {
@@ -4679,14 +6611,16 @@ fn inline_runs(
                 FontStyle::Normal
             };
         }
-        // Inline code and links both take the accent so they read as
-        // interactive/technical at a glance; body text keeps its base color.
-        let color = if span.code || span.link.is_some() {
-            theme.accent
+        // Only links take the accent — they are the interactive token. Inline
+        // code keeps the body ink and is marked by the mono face and its wash
+        // instead; tinting it too made a code-heavy answer a field of accent
+        // (violating DESIGN.md's One Accent Rule) and blurred it into links.
+        let color = if span.link.is_some() {
+            theme.accent_text
         } else {
             base_color
         };
-        runs.push(TextRun {
+        let run = TextRun {
             len,
             font,
             color,
@@ -4700,13 +6634,138 @@ fn inline_runs(
                 thickness: px(1.),
                 color: None,
             }),
-        });
+        };
+        if span.autolink {
+            let mark_start = body.len();
+            body.push_str(AUTOLINK_ARROW);
+            marks.push(mark_start..body.len());
+            runs.push(run.clone());
+            runs.push(TextRun {
+                len: body.len() - mark_start,
+                ..run
+            });
+        } else {
+            runs.push(run);
+        }
         if let Some(url) = &span.link {
             links.push((start..body.len(), url.clone()));
         }
     }
-    (body.into(), runs, links)
+    (body.into(), runs, links, marks)
 }
+
+/// Highlight colour literals in place. Text and byte offsets never change,
+/// so wrapping, selection, streaming and links keep their original layout.
+fn highlight_color_values(
+    body: &str,
+    runs: Vec<TextRun>,
+    mut links: Vec<(Range<usize>, String)>,
+    live: bool,
+    theme: Theme,
+) -> (Vec<TextRun>, Vec<(Range<usize>, String)>) {
+    let found: Vec<_> = color_swatches::find(body, live)
+        .into_iter()
+        .filter(|m| {
+            !links
+                .iter()
+                .any(|(r, _)| r.start < m.range.end && m.range.start < r.end)
+        })
+        .collect();
+    for m in &found {
+        links.push((
+            m.range.clone(),
+            format!("orbit-color-copy:{}", &body[m.range.clone()]),
+        ));
+    }
+    let mut output = Vec::new();
+    let mut offset = 0;
+    for run in runs {
+        let end = offset + run.len;
+        let mut pos = offset;
+        for m in &found {
+            let start = m.range.start.max(offset);
+            let stop = m.range.end.min(end);
+            if start >= stop {
+                continue;
+            }
+            if pos < start {
+                output.push(TextRun {
+                    len: start - pos,
+                    ..run.clone()
+                });
+            }
+            let surface: gpui::Rgba = run.background_color.unwrap_or(theme.background).into();
+            let [r, g, b, a] = m.rgba;
+            let alpha = f32::from(a) / 255.;
+            let mix = |v: u8, base: f32| f32::from(v) / 255. * alpha + base * (1. - alpha);
+            let color = gpui::Rgba {
+                r: mix(r, surface.r),
+                g: mix(g, surface.g),
+                b: mix(b, surface.b),
+                a: 1.,
+            };
+            let linear = |v: f32| {
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let luminance =
+                0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b);
+            let foreground = if luminance > 0.179 {
+                gpui::rgb(0x000000)
+            } else {
+                gpui::rgb(0xffffff)
+            };
+            output.push(TextRun {
+                len: stop - start,
+                background_color: Some(color.into()),
+                color: foreground.into(),
+                ..run.clone()
+            });
+            pos = stop;
+        }
+        if pos < end {
+            output.push(TextRun {
+                len: end - pos,
+                ..run
+            });
+        }
+        offset = end;
+    }
+    (output, links)
+}
+
+/// Blank the font glyphs the autolink mark runs carry; [`paint_link_mark`]
+/// draws the hugeicon arrow over that space instead. The run stays in the
+/// text, so the click target and copied selection still cover the mark.
+fn hide_autolink_marks(runs: Vec<TextRun>, marks: &[Range<usize>]) -> Vec<TextRun> {
+    if marks.is_empty() {
+        return runs;
+    }
+    let mut offset = 0usize;
+    runs.into_iter()
+        .map(|mut run| {
+            let start = offset;
+            offset += run.len;
+            if marks
+                .iter()
+                .any(|mark| mark.start < offset && mark.end > start)
+            {
+                run.color = Hsla::transparent_black();
+                run.underline = None;
+            }
+            run
+        })
+        .collect()
+}
+
+/// The north-east arrow a bare URL reserves after its gap. Kept as plain
+/// Unicode in the text — the copied selection stays readable, unlike a
+/// private-use glyph — while the transcript blanks the font's glyph and
+/// paints the hugeicon arrow over it.
+const AUTOLINK_ARROW: &str = "\u{2197}";
 
 /// The window's default UI face (Zed's IBM Plex Sans), explicit for
 /// [`TextRun`] construction.
@@ -4717,6 +6776,77 @@ fn ui_font() -> Font {
         fallbacks: None,
         weight: FontWeight::NORMAL,
         style: FontStyle::Normal,
+    }
+}
+
+/// Paint only newly appended text with a short fade; the actual text and its
+/// layout are never delayed. Existing text remains fully readable.
+#[derive(Default)]
+struct StreamFade {
+    text: String,
+    chunks: Vec<(Range<usize>, Instant)>,
+    initialized: bool,
+}
+
+impl StreamFade {
+    fn apply(&mut self, text: &str, runs: Vec<TextRun>, now: Instant) -> Vec<TextRun> {
+        const FADE: Duration = Duration::from_millis(140);
+        if self.text != text {
+            let prefix = self
+                .text
+                .chars()
+                .zip(text.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(ch, _)| ch.len_utf8())
+                .sum::<usize>();
+            self.chunks.retain_mut(|(range, _)| {
+                range.end = range.end.min(prefix);
+                range.start < range.end
+            });
+            if self.initialized && prefix < text.len() {
+                self.chunks.push((prefix..text.len(), now));
+            }
+            self.text.clear();
+            self.text.push_str(text);
+            self.initialized = true;
+        }
+        self.chunks
+            .retain(|(_, start)| now.saturating_duration_since(*start) < FADE);
+        if self.chunks.is_empty() {
+            return runs;
+        }
+        let mut output = Vec::new();
+        let mut offset = 0;
+        for run in runs {
+            let end = offset + run.len;
+            let mut pos = offset;
+            while pos < end {
+                let chunk = self.chunks.iter().find(|(range, _)| range.contains(&pos));
+                let next = if let Some((range, _)) = chunk {
+                    end.min(range.end)
+                } else {
+                    self.chunks
+                        .iter()
+                        .map(|(range, _)| range.start)
+                        .filter(|start| *start > pos)
+                        .min()
+                        .unwrap_or(end)
+                        .min(end)
+                };
+                let mut part = run.clone();
+                part.len = next - pos;
+                if let Some((_, start)) = chunk {
+                    let t = (now.saturating_duration_since(*start).as_secs_f32()
+                        / FADE.as_secs_f32())
+                    .min(1.0);
+                    part.color.a *= 0.55 + 0.45 * (1.0 - (1.0 - t).powi(2));
+                }
+                output.push(part);
+                pos = next;
+            }
+            offset = end;
+        }
+        output
     }
 }
 
@@ -4735,8 +6865,27 @@ fn paragraph_text(
     key: ElementId,
     theme: Theme,
 ) -> impl IntoElement {
+    paragraph_text_live(text, size, line_height, weight, color, key, theme, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paragraph_text_live(
+    text: &str,
+    size: f32,
+    line_height: f32,
+    weight: FontWeight,
+    color: Hsla,
+    key: ElementId,
+    theme: Theme,
+    live: bool,
+) -> impl IntoElement {
     let spans = parse_inline(text);
-    let (body, runs, links) = inline_runs(&spans, weight, color, theme);
+    let (body, runs, links, marks) = inline_runs(&spans, weight, color, theme);
+    let (runs, links) = if text_scope().is_some_and(|scope| scope.color_swatches) {
+        highlight_color_values(body.as_ref(), runs, links, live, theme)
+    } else {
+        (runs, links)
+    };
     let wrapper = div()
         .w_full()
         .min_w_0()
@@ -4745,17 +6894,40 @@ fn paragraph_text(
         .line_height(theme.ui_px(line_height))
         .text_color(color);
     if let Some(scope) = text_scope() {
+        // The font's arrow would pick a fallback/emoji face; the hugeicon
+        // paints crisper and on-theme (see `paint_link_mark`).
+        let mut runs = hide_autolink_marks(runs, &marks);
+        if live && !theme.reduce_motion() {
+            let mut state = scope.state.borrow_mut();
+            let fade = state.stream_fades.entry(key.clone()).or_default();
+            runs = fade.apply(body.as_ref(), runs, Instant::now());
+        }
         let range = scope.state.borrow().range_for(&key, body.as_ref());
-        let runs = highlight_runs(runs, range, selection_color(theme));
+        let mut runs = highlight_runs(runs, range.clone(), theme.selection);
+        // The colour literal may have black or white ink of its own. A text
+        // selection must use the selection palette, not that literal's ink.
+        if let Some(range) = range {
+            let mut offset = 0;
+            for run in &mut runs {
+                let end = offset + run.len;
+                if offset < range.end && end > range.start {
+                    run.color = theme.selection_fg;
+                }
+                offset = end;
+            }
+        }
         let plain = body.clone();
         wrapper
-            .child(SelectableText::new(
-                key,
-                StyledText::new(body).with_runs(runs),
-                plain,
-                links,
-                Some(scope),
-            ))
+            .child(
+                SelectableText::new(
+                    key,
+                    StyledText::new(body).with_runs(runs),
+                    plain,
+                    links,
+                    Some(scope),
+                )
+                .with_marks(marks, theme.accent_text, IconSize::Small.px(&theme)),
+            )
             .into_any_element()
     } else {
         let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
@@ -4774,10 +6946,13 @@ fn paragraph_text(
     }
 }
 
-fn md_id(ix: usize, salt: u64, block_ix: usize, sub: usize) -> ElementId {
+fn md_id(ix: usize, id_namespace: u64, block_ix: usize, sub: usize) -> ElementId {
     ElementId::NamedInteger(
         "md".into(),
-        ((ix as u64) << 40) | ((salt & 0xffff) << 24) | ((block_ix as u64) << 8) | sub as u64,
+        ((ix as u64) << 40)
+            | ((id_namespace & 0xffff) << 24)
+            | ((block_ix as u64) << 8)
+            | sub as u64,
     )
 }
 
@@ -4858,10 +7033,10 @@ impl AlertKind {
 
     fn color(self, theme: Theme) -> Hsla {
         match self {
-            Self::Note | Self::Important => theme.accent,
-            Self::Tip => theme.ok_green,
-            Self::Warning => theme.warn,
-            Self::Caution => theme.crit,
+            Self::Note | Self::Important => theme.accent_text,
+            Self::Tip => theme.success,
+            Self::Warning => theme.warning,
+            Self::Caution => theme.error,
         }
     }
 }
@@ -4929,17 +7104,57 @@ fn image_line(trimmed: &str) -> Option<(String, String)> {
             .and_then(|rest| rest.split('>').next())
             .unwrap_or_else(|| raw.split_whitespace().next().unwrap_or(""));
         if !url.is_empty() {
-            return Some((alt, url.to_string()));
+            return Some((alt, normalize_image_url(url)));
         }
         return None;
     }
     if t.starts_with("<img") {
         let src = html_attr(t, "src")?;
         if !src.is_empty() {
-            return Some((html_attr(t, "alt").unwrap_or_default(), src));
+            return Some((
+                html_attr(t, "alt").unwrap_or_default(),
+                normalize_image_url(&src),
+            ));
         }
     }
     None
+}
+
+/// Rewrite GitHub's signed `private-user-images` CDN URL to the durable
+/// `user-attachments` URL for the same asset.
+///
+/// A screenshot pasted into a comment is stored as
+/// `private-user-images.githubusercontent.com/<user>/<asset>-<uuid>.<ext>?jwt=…`.
+/// That JWT expires within minutes, and GitHub re-signs the URL only when it
+/// renders the page itself — so the stored URL 404s for Orbit and the reply
+/// shows the alt-text fallback. The durable URL is the same asset and never
+/// expires: it is the form the issue/PR body itself uses.
+fn normalize_image_url(url: &str) -> String {
+    const SIGNED_HOST: &str = "https://private-user-images.githubusercontent.com/";
+    let Some(rest) = url.strip_prefix(SIGNED_HOST) else {
+        return url.to_string();
+    };
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    let file = path.rsplit('/').next().unwrap_or(path);
+    // `<asset id>-<uuid>.<ext>`: the UUID half names the durable asset.
+    let Some((_, stem)) = file.split_once('-') else {
+        return url.to_string();
+    };
+    let uuid = stem.rsplit_once('.').map_or(stem, |(stem, _)| stem);
+    if !is_uuid(uuid) {
+        return url.to_string();
+    }
+    format!("https://github.com/user-attachments/assets/{uuid}")
+}
+
+/// `8-4-4-4-12` hex, the shape of GitHub's asset IDs.
+fn is_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(ix, byte)| match ix {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
 
 /// Read `name="value"` (single or double quoted) from a tag's source text.
@@ -5285,11 +7500,12 @@ struct TableBreakout {
 fn render_prose(
     text: &str,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     theme: Theme,
     copied_sections: CopiedSections,
     expanded_blocks: ExpandedBlocks,
     collapsible: bool,
+    settled: bool,
     scroller: MessageScrollerState,
     table_breakout: Option<TableBreakout>,
 ) -> impl IntoElement + use<> {
@@ -5334,12 +7550,13 @@ fn render_prose(
                     .child(render_block(
                         block,
                         ix,
-                        salt,
+                        id_namespace,
                         block_ix,
                         theme,
                         copied_sections.clone(),
                         expanded_blocks.clone(),
                         collapsible,
+                        settled,
                         scroller.clone(),
                     ))
             })
@@ -5364,6 +7581,7 @@ pub(crate) fn render_markdown_document(text: &str, theme: Theme) -> impl IntoEle
         copied,
         expanded,
         false,
+        true,
         MessageScrollerState::new(1),
         None,
     )
@@ -5395,32 +7613,34 @@ fn block_gap(prev: &Block, next: &Block) -> f32 {
 fn render_block(
     block: &Block,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
     copied_sections: CopiedSections,
     expanded_blocks: ExpandedBlocks,
     collapsible: bool,
+    settled: bool,
     scroller: MessageScrollerState,
 ) -> AnyElement {
     match block {
-        Block::Paragraph(lines) => paragraph_text(
+        Block::Paragraph(lines) => paragraph_text_live(
             &lines.join(" "),
             14.,
             26.,
             FontWeight::NORMAL,
             theme.assistant_text,
-            md_id(ix, salt, block_ix, 0),
+            md_id(ix, id_namespace, block_ix, 0),
             theme,
+            !settled,
         )
         .into_any_element(),
         Block::Heading(level, text) => {
             let (size, line_height, color) = match level {
-                1 => (20., 30., theme.text),
-                2 => (18., 28., theme.text),
-                3 => (16., 26., theme.text),
-                4 => (15., 24., theme.text),
-                _ => (14., 24., theme.text_2),
+                1 => (20., 30., theme.text_primary),
+                2 => (18., 28., theme.text_primary),
+                3 => (16., 26., theme.text_primary),
+                4 => (15., 24., theme.text_primary),
+                _ => (14., 24., theme.text_secondary),
             };
             paragraph_text(
                 text,
@@ -5428,7 +7648,7 @@ fn render_block(
                 line_height,
                 FontWeight::SEMIBOLD,
                 color,
-                md_id(ix, salt, block_ix, 0),
+                md_id(ix, id_namespace, block_ix, 0),
                 theme,
             )
             .into_any_element()
@@ -5437,40 +7657,44 @@ fn render_block(
             language.as_deref(),
             lines,
             ix,
-            salt,
+            id_namespace,
             block_ix,
             theme,
             copied_sections,
             expanded_blocks,
             collapsible,
+            settled,
             scroller,
         )
         .into_any_element(),
         Block::Rule => div().w_full().h(px(1.)).bg(theme.border).into_any_element(),
         Block::Alert(kind, lines) => {
-            render_alert(*kind, lines, ix, salt, block_ix, theme).into_any_element()
+            render_alert(*kind, lines, ix, id_namespace, block_ix, theme).into_any_element()
         }
         Block::Quote(lines) => div()
             .w_full()
             .min_w_0()
             .border_l_2()
-            .border_color(theme.text_3)
+            .border_color(theme.text_muted)
             .bg(theme.overlay)
-            .rounded_r(px(8.))
+            .rounded_r(Radius::Large.px(&theme))
             .pl(px(14.))
-            .pr(px(12.))
-            .py(px(8.))
+            .pr(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(DynamicSpacing::Base04.px(&theme))
             .children(lines.iter().enumerate().map(move |(sub, line)| {
-                paragraph_text(
+                render_container_line(
                     line,
+                    ix,
+                    id_namespace,
+                    block_ix,
+                    sub,
                     14.,
                     26.,
                     FontWeight::NORMAL,
-                    theme.text_2,
-                    md_id(ix, salt, block_ix, sub),
+                    theme.text_secondary,
                     theme,
                 )
             }))
@@ -5480,21 +7704,20 @@ fn render_block(
             .min_w_0()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .children(
-                items
-                    .iter()
-                    .enumerate()
-                    .map(move |(sub, item)| render_list_item(item, ix, salt, block_ix, sub, theme)),
-            )
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .children(items.iter().enumerate().map(move |(sub, item)| {
+                render_list_item(item, ix, id_namespace, block_ix, sub, theme)
+            }))
             .into_any_element(),
         Block::Table {
             header,
             rows,
             aligns,
-        } => render_table(header, rows, aligns, ix, salt, block_ix, theme).into_any_element(),
+        } => {
+            render_table(header, rows, aligns, ix, id_namespace, block_ix, theme).into_any_element()
+        }
         Block::Image { alt, url } => {
-            render_markdown_image(alt, url, ix, salt, block_ix, theme).into_any_element()
+            render_markdown_image(alt, url, ix, id_namespace, block_ix, 0, theme).into_any_element()
         }
     }
 }
@@ -5507,8 +7730,9 @@ fn render_markdown_image(
     alt: &str,
     url: &str,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
+    sub: usize,
     theme: Theme,
 ) -> impl IntoElement {
     let url = url.to_string();
@@ -5516,18 +7740,18 @@ fn render_markdown_image(
     let fallback_alt = alt.to_string();
     div().w_full().min_w_0().flex().child(
         img(url)
-            .id(md_id(ix, salt, block_ix, 0))
+            .id(md_id(ix, id_namespace, block_ix, sub))
             // `min_w_0` is load-bearing: a replaced element's automatic minimum
             // width is its intrinsic width, so without it `max_w_full` loses
             // and a large screenshot overflows the column and the rail.
             .min_w_0()
             .max_w_full()
-            // Height 0 lets taffy derive the box from the image's aspect ratio
-            // once it decodes, so the image scales to the column instead of
-            // keeping its intrinsic height and leaving a tall empty band (gpui
-            // seeds `size.height` with the intrinsic value otherwise).
-            .h(px(0.))
-            .rounded(px(8.))
+            // Leave the height auto so gpui derives it from the decoded image
+            // and taffy re-derives it from the aspect ratio once
+            // `max_w_full` clamps the width. A definite height (including 0)
+            // makes gpui compute the width *from* it instead — 0 × ratio —
+            // and the loaded image collapses to nothing.
+            .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border)
             .object_fit(ObjectFit::Contain)
@@ -5546,14 +7770,14 @@ fn markdown_image_fallback(alt: &str, theme: Theme) -> AnyElement {
         alt.to_string()
     };
     div()
-        .px(theme.space(10.))
-        .py(theme.space(8.))
-        .rounded(px(8.))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
-        .text_size(theme.ui_px(12.))
-        .text_color(theme.text_3)
+        .text_size(TextSize::Small.px(&theme))
+        .text_color(theme.text_muted)
         .child(label)
         .into_any_element()
 }
@@ -5565,7 +7789,7 @@ fn render_alert(
     kind: AlertKind,
     lines: &[String],
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
 ) -> impl IntoElement {
@@ -5573,22 +7797,22 @@ fn render_alert(
     div()
         .w_full()
         .min_w_0()
-        .rounded(px(10.))
+        .rounded(panel::RADIUS.px(&theme))
         .bg(color.opacity(0.08))
-        .px(px(12.))
+        .px(DynamicSpacing::Base12.px(&theme))
         .py(px(10.))
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .child(glyph(kind.icon(), 14., color))
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(glyph(kind.icon(), IconSize::Small.px(&theme), color))
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(color)
@@ -5596,16 +7820,51 @@ fn render_alert(
                 ),
         )
         .children(lines.iter().enumerate().map(move |(sub, line)| {
-            paragraph_text(
+            render_container_line(
                 line,
+                ix,
+                id_namespace,
+                block_ix,
+                sub,
                 14.,
                 26.,
                 FontWeight::NORMAL,
                 theme.assistant_text,
-                md_id(ix, salt, block_ix, sub),
                 theme,
             )
         }))
+}
+
+/// Render one line inside a quote or alert. A standalone image line (GitHub
+/// quotes a bug report whose screenshot was pasted as a raw `<img>` tag) paints
+/// as an image instead of showing the tag as text.
+#[allow(clippy::too_many_arguments)]
+fn render_container_line(
+    line: &str,
+    ix: usize,
+    id_namespace: u64,
+    block_ix: usize,
+    sub: usize,
+    size: f32,
+    line_height: f32,
+    weight: FontWeight,
+    color: Hsla,
+    theme: Theme,
+) -> AnyElement {
+    if let Some((alt, url)) = image_line(line) {
+        return render_markdown_image(&alt, &url, ix, id_namespace, block_ix, sub, theme)
+            .into_any_element();
+    }
+    paragraph_text(
+        line,
+        size,
+        line_height,
+        weight,
+        color,
+        md_id(ix, id_namespace, block_ix, sub),
+        theme,
+    )
+    .into_any_element()
 }
 
 /// `ml-5` bullet / numbered item with a hanging indent on wrap. GFM task
@@ -5613,7 +7872,7 @@ fn render_alert(
 fn render_list_item(
     item: &ListItem,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     sub: usize,
     theme: Theme,
@@ -5627,12 +7886,12 @@ fn render_list_item(
                 "•".to_string()
             };
             div()
-                .text_size(theme.ui_px(14.))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(26.))
                 .text_color(if item.ordered {
-                    theme.text
+                    theme.text_primary
                 } else {
-                    theme.text_3
+                    theme.text_muted
                 })
                 .child(text)
                 .into_any_element()
@@ -5640,7 +7899,7 @@ fn render_list_item(
     };
     // Completed tasks recede but stay above the 4.5:1 body-contrast floor.
     let text_color = if item.checked == Some(true) {
-        theme.text_2
+        theme.text_secondary
     } else {
         theme.assistant_text
     };
@@ -5659,34 +7918,39 @@ fn render_list_item(
                 .justify_start()
                 .child(marker),
         )
-        .child(div().min_w_0().flex_1().child(paragraph_text(
+        .child(div().min_w_0().flex_1().child(render_container_line(
             &item.text,
+            ix,
+            id_namespace,
+            block_ix,
+            sub,
             14.,
             26.,
             FontWeight::NORMAL,
             text_color,
-            md_id(ix, salt, block_ix, sub),
             theme,
         )))
         .into_any_element()
 }
 
 /// GFM task-list checkbox: accent-filled check when done, hairline empty box
-/// when open. The `send_fg` check color stays legible on the accent in both
+/// when open. The `action_fg` check color stays legible on the fill in both
 /// appearances.
 fn task_checkbox(checked: bool, theme: Theme) -> AnyElement {
     let size = 14.0;
     let mut box_ = div()
         .flex_none()
         .size(px(size))
-        .rounded(px(4.))
+        .rounded(Radius::Small.px(&theme))
         .flex()
         .items_center()
         .justify_center();
     if checked {
-        box_ = box_
-            .bg(theme.accent)
-            .child(glyph("icons/check.svg", 10., theme.send_fg));
+        box_ = box_.bg(theme.accent).child(glyph(
+            "icons/check.svg",
+            IconSize::Indicator.px(&theme),
+            theme.accent_fg,
+        ));
     } else {
         box_ = box_.border_1().border_color(theme.border_strong);
     }
@@ -5712,67 +7976,62 @@ fn render_code_block(
     language: Option<&str>,
     lines: &[String],
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
     copied_sections: CopiedSections,
     expanded_blocks: ExpandedBlocks,
     collapsible: bool,
+    settled: bool,
     scroller: MessageScrollerState,
-) -> impl IntoElement {
+) -> AnyElement {
     let code = lines.join("\n");
+    // A mermaid fence Orbit can lay out becomes a diagram (D2); one it cannot
+    // — another diagram type, or a statement outside the supported subset —
+    // keeps the source block below, so a fence never reads as a broken preview.
+    // Only once the text settles: a half-streamed fence is not a graph yet, and
+    // laying one out per heartbeat would trade a frame for a flicker.
+    let diagram = if settled {
+        mermaid_diagram(language, &code)
+    } else {
+        None
+    };
+    if let Some(diagram) = diagram {
+        return render_mermaid_block(
+            diagram,
+            lines,
+            ix,
+            id_namespace,
+            block_ix,
+            theme,
+            copied_sections,
+            expanded_blocks,
+            scroller,
+        );
+    }
     let tokens = language
         .and_then(highlight::lang_for_tag)
         .map(|lang| highlight::tokenize_cached(lang, &code));
     let label = code_block_label(language);
-    // Block identity within the message: the prose salt scopes the index to
+    // Block identity within the message: the prose id_namespace scopes the index to
     // the step/user run it was parsed from, so two steps' third blocks
     // never share copy feedback, element state, or fold state.
-    let block_key = salt as usize + block_ix;
-    let copied = copied_sections
-        .borrow()
-        .get(&(ix, block_key, CODE_COPY_SECTION))
-        .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-    let copy_button = div()
-        .id(ElementId::NamedInteger(
-            "copy-code".into(),
-            (ix as u64) << 32 | block_key as u64,
-        ))
-        .flex_none()
-        .size(px(CODE_COPY_BUTTON))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.overlay_strong))
-        .child(glyph(
-            if copied {
-                "icons/check.svg"
-            } else {
-                "icons/copy.svg"
-            },
-            14.,
-            if copied { theme.ok_green } else { theme.text_3 },
-        ))
-        .on_click(move |_, _, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
-            copied_sections
-                .borrow_mut()
-                .insert((ix, block_key, CODE_COPY_SECTION), Instant::now());
-            cx.refresh_windows();
-        });
+    let block_key = id_namespace as usize + block_ix;
+    let copy_button = code_copy_button(ix, block_key, &code, &copied_sections, theme);
     // Title strip: the language name and the copy affordance in one row, so
     // context and action sit in the same place on every code block.
     let header = div()
         .w_full()
         .min_w_0()
         .h(px(34.))
-        .px(px(12.))
+        .px(DynamicSpacing::Base12.px(&theme))
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(DynamicSpacing::Base08.px(&theme))
         .bg(theme.overlay)
+        // The title strip is the card's first child; gpui clips children to a
+        // rectangle, so the strip carries the card's top radius itself.
+        .rounded_t(panel::RADIUS.px(&theme))
         .border_b_1()
         .border_color(theme.border)
         .child(
@@ -5780,10 +8039,10 @@ fn render_code_block(
                 .min_w_0()
                 .flex_1()
                 .truncate()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(15.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(label),
         )
         .child(copy_button);
@@ -5791,7 +8050,10 @@ fn render_code_block(
     // Long settled blocks fold to a prefix preview; the fold state is keyed
     // by (message, prose run, block) so steps never collide.
     let folded = collapsible && lines.len() > CODE_COLLAPSE_LINES;
-    let expanded = folded && expanded_blocks.borrow().contains(&(ix, salt, block_ix));
+    let expanded = folded
+        && expanded_blocks
+            .borrow()
+            .contains(&(ix, id_namespace, block_ix));
     let visible = if folded && !expanded {
         &lines[..CODE_PREVIEW_LINES]
     } else {
@@ -5801,52 +8063,20 @@ fn render_code_block(
     let mut card = div()
         .w_full()
         .min_w_0()
-        .rounded(px(12.))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.code_bg)
         .overflow_hidden()
         .child(header)
-        .child(
-            div()
-                .id(ElementId::NamedInteger(
-                    "code-scroll".into(),
-                    (ix as u64) << 32 | block_key as u64,
-                ))
-                .w_full()
-                .min_w_0()
-                .flex()
-                .items_start()
-                .overflow_x_scroll()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_none()
-                        .px(px(16.))
-                        .pt(px(8.))
-                        .pb(px(12.))
-                        .font_family(theme::code_font_family())
-                        .text_size(theme.code_px(13.))
-                        .line_height(theme.code_px(21.))
-                        .text_color(theme.code_text)
-                        .children(visible.iter().enumerate().map(|(line_ix, line)| {
-                            let line_id = ElementId::NamedInteger(
-                                "code-line".into(),
-                                code_line_id(ix, salt, block_ix, line_ix),
-                            );
-                            code_line(
-                                line,
-                                tokens
-                                    .as_deref()
-                                    .and_then(|lines| lines.get(line_ix))
-                                    .map(Vec::as_slice),
-                                line_id,
-                                theme,
-                            )
-                        })),
-                ),
-        );
+        .child(code_lines_body(
+            visible,
+            tokens.as_deref(),
+            ix,
+            id_namespace,
+            block_ix,
+            theme,
+        ));
 
     if folded {
         let hidden = lines.len() - CODE_PREVIEW_LINES;
@@ -5863,30 +8093,28 @@ fn render_code_block(
                 ))
                 .w_full()
                 .h(px(30.))
-                .px(px(12.))
+                .px(DynamicSpacing::Base12.px(&theme))
                 .border_t_1()
                 .border_color(theme.border)
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .cursor_pointer()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2)
-                .hover(|style| style.bg(theme.overlay).text_color(theme.text))
+                .text_color(theme.text_secondary)
+                .hover_state(&theme)
                 .child(label)
                 .child(div().flex_1())
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    11.,
-                    theme.text_3,
+                .child(disclosure_chevron(
+                    format!("code-caret-{ix}-{block_ix}"),
+                    expanded,
+                    IconSize::XSmall.px(&theme),
+                    theme.text_muted,
+                    &theme,
                 ))
                 .on_click(move |_, _, cx| {
-                    let key = (ix, salt, block_ix);
+                    let key = (ix, id_namespace, block_ix);
                     let mut open = expanded_blocks.borrow_mut();
                     if !open.remove(&key) {
                         open.insert(key);
@@ -5898,7 +8126,252 @@ fn render_code_block(
         );
     }
 
-    card
+    card.into_any_element()
+}
+
+/// The copy affordance shared by code blocks and diagrams: copies `code` and
+/// flashes a check for [`COPY_FEEDBACK`], keyed by block so two blocks never
+/// share the flash.
+fn code_copy_button(
+    ix: usize,
+    block_key: usize,
+    code: &str,
+    copied_sections: &CopiedSections,
+    theme: Theme,
+) -> AnyElement {
+    let code = code.to_string();
+    let copied_sections = copied_sections.clone();
+    let copied = copied_sections
+        .borrow()
+        .get(&(ix, block_key, CODE_COPY_SECTION))
+        .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+    icon_button_frame(
+        div().id(ElementId::NamedInteger(
+            "copy-code".into(),
+            (ix as u64) << 32 | block_key as u64,
+        )),
+        &theme,
+        CODE_COPY_BUTTON,
+    )
+    .tip(tr!("transcript.copy_code"))
+    .cursor_pointer()
+    .hover_on_glass(&theme)
+    .child(glyph(
+        if copied {
+            "icons/check.svg"
+        } else {
+            "icons/copy.svg"
+        },
+        CODE_COPY_BUTTON.icon_size().px(&theme),
+        if copied {
+            theme.success
+        } else {
+            theme.text_muted
+        },
+    ))
+    .on_click(move |_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+        copied_sections
+            .borrow_mut()
+            .insert((ix, block_key, CODE_COPY_SECTION), Instant::now());
+        cx.refresh_windows();
+    })
+    .into_any_element()
+}
+
+/// One code block's body: syntax-highlighted monospace lines that scroll
+/// horizontally rather than wrapping or clipping. Shared by the code block
+/// and a diagram's source disclosure.
+fn code_lines_body(
+    lines: &[String],
+    tokens: Option<&Vec<Vec<Token>>>,
+    ix: usize,
+    id_namespace: u64,
+    block_ix: usize,
+    theme: Theme,
+) -> impl IntoElement {
+    let block_key = id_namespace as usize + block_ix;
+    div()
+        .id(ElementId::NamedInteger(
+            "code-scroll".into(),
+            (ix as u64) << 32 | block_key as u64,
+        ))
+        .debug_selector(move || format!("code-scroll-{ix}-{block_key}"))
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_start()
+        .overflow_x_scroll()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .px(DynamicSpacing::Base16.px(&theme))
+                .pt(DynamicSpacing::Base08.px(&theme))
+                .pb(DynamicSpacing::Base12.px(&theme))
+                .font_family(theme::code_font_family())
+                .text_size(theme.code_px(13.))
+                .line_height(theme.code_px(21.))
+                .text_color(theme.code_text)
+                .children(lines.iter().enumerate().map(|(line_ix, line)| {
+                    let line_id = ElementId::NamedInteger(
+                        "code-line".into(),
+                        code_line_id(ix, id_namespace, block_ix, line_ix),
+                    );
+                    code_line(
+                        line,
+                        tokens
+                            .and_then(|lines| lines.get(line_ix))
+                            .map(Vec::as_slice),
+                        line_id,
+                        theme,
+                    )
+                })),
+        )
+}
+
+/// The laid-out diagram for a fence, or `None` when it is not a mermaid fence
+/// this build can draw.
+fn mermaid_diagram(language: Option<&str>, code: &str) -> Option<Rc<crate::mermaid::Flowchart>> {
+    match language {
+        Some(tag) if tag.eq_ignore_ascii_case("mermaid") => crate::mermaid::diagram(code),
+        _ => None,
+    }
+}
+
+/// A rendered mermaid fence: the diagram on the code block's card, with the
+/// source one click away.
+///
+/// The diagram is the fast path — reading a flow at a glance — but the source
+/// stays a real code block, selectable and copyable, because that is what a
+/// reader takes to their editor. The disclosure reuses the code fold's state:
+/// the two never coexist for one block, so one key covers both.
+#[allow(clippy::too_many_arguments)]
+fn render_mermaid_block(
+    diagram: Rc<crate::mermaid::Flowchart>,
+    lines: &[String],
+    ix: usize,
+    id_namespace: u64,
+    block_ix: usize,
+    theme: Theme,
+    copied_sections: CopiedSections,
+    expanded_blocks: ExpandedBlocks,
+    scroller: MessageScrollerState,
+) -> AnyElement {
+    let code = lines.join("\n");
+    let block_key = id_namespace as usize + block_ix;
+    let showing_source = expanded_blocks
+        .borrow()
+        .contains(&(ix, id_namespace, block_ix));
+    let copy_button = code_copy_button(ix, block_key, &code, &copied_sections, theme);
+
+    let header = div()
+        .w_full()
+        .min_w_0()
+        .h(px(34.))
+        .px(DynamicSpacing::Base12.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .bg(theme.overlay)
+        .rounded_t(panel::RADIUS.px(&theme))
+        .border_b_1()
+        .border_color(theme.border)
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(theme.ui_px(15.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_muted)
+                .child(tr!("transcript_view.mermaid_diagram")),
+        )
+        .child(copy_button);
+
+    let body: AnyElement = if showing_source {
+        let tokens =
+            highlight::lang_for_tag("mermaid").map(|lang| highlight::tokenize_cached(lang, &code));
+        code_lines_body(lines, tokens.as_deref(), ix, id_namespace, block_ix, theme)
+            .into_any_element()
+    } else {
+        div()
+            .id(ElementId::NamedInteger(
+                "diagram-scroll".into(),
+                (ix as u64) << 32 | block_key as u64,
+            ))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_start()
+            .overflow_x_scroll()
+            .child(
+                div()
+                    .flex_none()
+                    .p(DynamicSpacing::Base16.px(&theme))
+                    .child(crate::mermaid::render_diagram(&diagram, theme)),
+            )
+            .into_any_element()
+    };
+
+    let toggle_label = if showing_source {
+        tr!("transcript.show_less")
+    } else {
+        tr!("transcript_view.show_source")
+    };
+    let toggle = div()
+        .id(ElementId::NamedInteger(
+            "diagram-source".into(),
+            (ix as u64) << 32 | block_key as u64,
+        ))
+        .w_full()
+        .min_w_0()
+        .h(px(30.))
+        .px(DynamicSpacing::Base12.px(&theme))
+        .border_t_1()
+        .border_color(theme.border)
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .cursor_pointer()
+        .text_size(TextSize::Small.px(&theme))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_secondary)
+        .hover_state(&theme)
+        .child(toggle_label)
+        .child(div().flex_1())
+        .child(disclosure_chevron(
+            format!("mermaid-caret-{ix}-{block_ix}"),
+            showing_source,
+            IconSize::XSmall.px(&theme),
+            theme.text_muted,
+            &theme,
+        ))
+        .on_click(move |_, _, cx| {
+            let key = (ix, id_namespace, block_ix);
+            let mut open = expanded_blocks.borrow_mut();
+            if !open.remove(&key) {
+                open.insert(key);
+            }
+            drop(open);
+            scroller.remeasure_toggle(ix);
+            cx.refresh_windows();
+        });
+
+    div()
+        .w_full()
+        .min_w_0()
+        .rounded(panel::RADIUS.px(&theme))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.code_bg)
+        .overflow_hidden()
+        .child(header)
+        .child(body)
+        .child(toggle)
+        .into_any_element()
 }
 
 /// Display label for a code block's title strip: a friendly language name
@@ -5906,8 +8379,10 @@ fn render_code_block(
 /// `Plain text` for a bare fence.
 fn code_block_label(language: Option<&str>) -> String {
     match language {
-        // D2: no native diagram renderer. A mermaid fence stays a copyable
-        // code block — the label says so instead of pretending to preview.
+        // D2: this is the *fallback* label. A mermaid fence that lays out is
+        // drawn by `render_mermaid_block` and never reaches here; one that does
+        // not keeps its source, and the label says so instead of pretending to
+        // preview.
         Some(tag) if tag.eq_ignore_ascii_case("mermaid") => {
             tr!("transcript_view.mermaid_source")
         }
@@ -5999,8 +8474,11 @@ fn syntax_runs(
 }
 
 /// Element id for one line inside a code block.
-fn code_line_id(ix: usize, salt: u64, block_ix: usize, line_ix: usize) -> u64 {
-    ((ix as u64) << 40) | ((salt & 0xff_ffff) << 16) | ((block_ix as u64) << 10) | line_ix as u64
+fn code_line_id(ix: usize, id_namespace: u64, block_ix: usize, line_ix: usize) -> u64 {
+    ((ix as u64) << 40)
+        | ((id_namespace & 0xff_ffff) << 16)
+        | ((block_ix as u64) << 10)
+        | line_ix as u64
 }
 
 fn code_run(len: usize, color: Hsla, font: &Font) -> TextRun {
@@ -6053,7 +8531,7 @@ fn render_table(
     rows: &[Vec<String>],
     aligns: &[TableAlign],
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
 ) -> AnyElement {
@@ -6068,14 +8546,14 @@ fn render_table(
                      strong: bool,
                      align: TableAlign,
                      sub: usize,
-                     salt: u64,
+                     id_namespace: u64,
                      theme: Theme| {
         div()
             .flex_none()
             .w(px(widths[col]))
             .min_w_0()
-            .px(px(12.))
-            .py(px(8.))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
             .text_align(align.text_align())
             .child(paragraph_text(
                 text,
@@ -6093,7 +8571,7 @@ fn render_table(
                 ElementId::NamedInteger(
                     "md-table".into(),
                     ((ix as u64) << 40)
-                        | ((salt & 0xffff) << 24)
+                        | ((id_namespace & 0xffff) << 24)
                         | ((block_ix as u64) << 16)
                         | (sub as u64 & 0xffff),
                 ),
@@ -6121,7 +8599,7 @@ fn render_table(
                     true,
                     align_at(col),
                     col,
-                    salt,
+                    id_namespace,
                     theme,
                 )
             })),
@@ -6141,7 +8619,7 @@ fn render_table(
                         false,
                         align_at(col),
                         64 + (row_ix * 64) + col,
-                        salt,
+                        id_namespace,
                         theme,
                     )
                 })),
@@ -6152,14 +8630,16 @@ fn render_table(
         .max_w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(px(12.))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .child(
             div()
                 .id(ElementId::NamedInteger(
                     "table-scroll".into(),
-                    ((ix as u64) << 40) | ((salt & 0xffff) << 24) | ((block_ix as u64) << 8),
+                    ((ix as u64) << 40)
+                        | ((id_namespace & 0xffff) << 24)
+                        | ((block_ix as u64) << 8),
                 ))
                 .w_full()
                 .min_w_0()
@@ -6222,6 +8702,7 @@ fn workspace_relative_path(path: &str, workspace: Option<&Path>) -> String {
 pub(crate) fn render_changed_files(
     files: &[(String, u64, u64)],
     theme: Theme,
+    nerd: Option<&SharedString>,
     message_ix: usize,
     workspace: Option<&Path>,
     expanded: bool,
@@ -6246,7 +8727,7 @@ pub(crate) fn render_changed_files(
         .flex()
         .flex_col()
         .border_t_1()
-        .border_color(theme.tool_border);
+        .border_color(theme.border_subtle);
     for (path, added, removed) in files.iter().take(visible) {
         let label = workspace_relative_path(path, workspace);
         rows = rows.child(
@@ -6255,29 +8736,36 @@ pub(crate) fn render_changed_files(
                 .px(px(14.))
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(file_glyph(
+                    path,
+                    theme.mode == ThemeMode::Dark,
+                    nerd,
+                    IconSize::Small.px(&theme),
+                    file_badge(path, theme),
+                ))
                 .child(
                     div()
                         .min_w_0()
                         .flex_1()
                         .truncate()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(16.))
-                        .text_color(theme.text_2)
+                        .text_color(theme.text_secondary)
                         .child(label),
                 )
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme.ui_px(10.5))
-                        .text_color(theme.add_green)
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.success)
                         .child(format!("+{added}")),
                 )
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme.ui_px(10.5))
-                        .text_color(theme.del_red)
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.error)
                         .child(format!("-{removed}")),
                 ),
         );
@@ -6286,28 +8774,28 @@ pub(crate) fn render_changed_files(
     // Review affordance: opens the changed-files diff in the right side
     // pane's Review tab (no external editor hop).
     let review = review_changes.map(|review| {
-        div()
-            .id(ElementId::NamedInteger(
+        button_frame(
+            div().id(ElementId::NamedInteger(
                 "review-changes".into(),
                 message_ix as u64,
-            ))
-            .h(px(28.))
-            .px(px(10.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .cursor_pointer()
-            .text_size(theme.ui_px(11.5))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_2)
-            .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
-            .child(glyph("icons/file-diff.svg", 12., theme.text_3))
-            .child(tr!("transcript_view.review"))
-            .on_click(move |_, window, cx| review(window, cx))
+            )),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, &theme)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_secondary)
+        .hover_state(&theme)
+        .child(glyph(
+            "icons/file-diff.svg",
+            ButtonSize::Medium.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .child(tr!("transcript_view.review"))
+        .on_click(move |_, window, cx| review(window, cx))
     });
 
     let mut header = div()
@@ -6321,14 +8809,18 @@ pub(crate) fn render_changed_files(
             div()
                 .size(px(28.))
                 .flex_none()
-                .rounded(px(8.))
-                .bg(theme.bg_raised)
+                .rounded(Radius::Large.px(&theme))
+                .bg(theme.surface_elevated)
                 .border_1()
                 .border_color(theme.border)
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(glyph("icons/file-diff.svg", 14., theme.text_2)),
+                .child(glyph(
+                    "icons/file-diff.svg",
+                    IconSize::Small.px(&theme),
+                    theme.text_secondary,
+                )),
         )
         .child(
             div()
@@ -6339,29 +8831,25 @@ pub(crate) fn render_changed_files(
                 .child(
                     div()
                         .truncate()
-                        .text_size(theme.ui_px(13.))
+                        .text_size(TextSize::Default.px(&theme))
                         .line_height(theme.ui_px(17.))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(title),
                 )
                 .child(
                     div()
                         .mt(px(2.))
                         .flex()
-                        .gap(px(6.))
-                        .text_size(theme.ui_px(11.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(14.))
                         .child(
                             div()
-                                .text_color(theme.add_green)
+                                .text_color(theme.success)
                                 .child(format!("+{additions}")),
                         )
-                        .child(
-                            div()
-                                .text_color(theme.del_red)
-                                .child(format!("-{deletions}")),
-                        ),
+                        .child(div().text_color(theme.error).child(format!("-{deletions}"))),
                 ),
         );
     if let Some(review) = review {
@@ -6371,10 +8859,9 @@ pub(crate) fn render_changed_files(
     let mut card = div()
         .w_full()
         .min_w_0()
-        .rounded(px(12.))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.bg_main)
+        .rounded(panel::RADIUS.px(&theme))
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        .bg(theme.card_fill(theme.background))
         .overflow_hidden()
         .child(header)
         .child(rows);
@@ -6400,12 +8887,12 @@ pub(crate) fn render_changed_files(
             .border_color(theme.border)
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .cursor_pointer()
-            .text_size(theme.ui_px(11.5))
+            .text_size(TextSize::Small.px(&theme))
             .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_2)
-            .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
+            .text_color(theme.text_secondary)
+            .hover_state(&theme)
             .child(label);
         if clipped {
             toggle = toggle.child(
@@ -6414,8 +8901,8 @@ pub(crate) fn render_changed_files(
                     .flex_1()
                     .truncate()
                     .font_weight(FontWeight::NORMAL)
-                    .text_size(theme.ui_px(11.5))
-                    .text_color(theme.text_3)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
                     .child(tr!(
                         "transcript_view.showing_first_of",
                         limit = EXPANDED_PREVIEW_LIMIT,
@@ -6426,14 +8913,12 @@ pub(crate) fn render_changed_files(
         card = card.child(
             toggle
                 .child(div().flex_1())
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    11.,
-                    theme.text_3,
+                .child(disclosure_chevron(
+                    format!("files-caret-{message_ix}"),
+                    expanded,
+                    IconSize::XSmall.px(&theme),
+                    theme.text_muted,
+                    &theme,
                 ))
                 .on_click(move |_, _, cx| {
                     toggle_index(&expanded_files, message_ix);
@@ -6473,8 +8958,9 @@ pub(crate) fn activity_icon(name: &str) -> &'static str {
         "skill" => "icons/tools/skill.svg",
         "ask" | "ask_user" | "question" | "elicit" => "icons/tools/ask.svg",
         "todo" | "todo_write" | "plan" | "update_plan" => "icons/tools/todo.svg",
-        "notebook" | "eval" | "execute_code" => "icons/tools/code.svg",
-        name if name.starts_with("mcp") => "icons/tools/mcp.svg",
+        "notebook" | "eval" | "execute_code" | "codemode" => "icons/tools/code.svg",
+        "tool_search" => "icons/tools/search.svg",
+        name if name.starts_with("mcp") || name.contains("mcp_resource") => "icons/tools/mcp.svg",
         _ => "icons/tools/tool.svg",
     }
 }
@@ -6518,46 +9004,6 @@ fn activity_icon_rank(icon: &'static str) -> usize {
     }
 }
 
-/// Rotate the accent's hue by `offset` turns while keeping the palette's
-/// tuned chroma and lightness — the same mechanism `Theme::mention_file`
-/// uses for the `@file` complement. Chroma-less palettes (Ashwood, Mono;
-/// `accent.s < 0.15`) return `None` so the caller falls back to ink and
-/// separates kinds by tone instead of hue.
-fn accent_shifted(accent: Hsla, offset: f32) -> Option<Hsla> {
-    if accent.s < 0.15 {
-        return None;
-    }
-    let mut color = accent;
-    color.h = (color.h + offset).fract();
-    color.s = color.s.max(0.5);
-    Some(color)
-}
-
-/// The soft category tint for a work kind, keyed by its glyph path. These
-/// tints are content, not chrome — they describe what the agent did, the
-/// same exemption the composer's `/command` / `@file` tokens already take —
-/// so they sit outside the One Accent budget. State (run/fail) still wins:
-/// callers override with `theme.accent` / `theme.del_red` when it applies.
-///
-/// With the ember accent (h ≈ 0.04): run reads amber, explore reads the
-/// complement (cool), mutate reads green, web reads violet; the reasoning
-/// bulb keeps the accent itself. Unknown kinds and chroma-less palettes
-/// stay neutral ink.
-fn work_tint(icon: &'static str, theme: Theme) -> Hsla {
-    let shifted = |offset: f32| accent_shifted(theme.accent, offset).unwrap_or(theme.text_2);
-    match icon {
-        "icons/tools/bash.svg" => shifted(0.07),
-        "icons/tools/read.svg"
-        | "icons/tools/search.svg"
-        | "icons/tools/find.svg"
-        | "icons/tools/list.svg" => shifted(0.50),
-        "icons/tools/edit.svg" | "icons/tools/write.svg" => shifted(0.32),
-        "icons/tools/web.svg" | "icons/tools/fetch.svg" => shifted(0.62),
-        "icons/tools/thinking.svg" => theme.accent,
-        _ => theme.text_2,
-    }
-}
-
 /// A tool glyph in its category badge: a 22px rounded square washed at a low
 /// alpha of the tone, the glyph at full strength. The wash lifts the icon out
 /// of the prose column so a tool row reads as a control at a glance, in every
@@ -6571,12 +9017,26 @@ fn activity_badge(icon: &'static str, tone: Hsla, theme: Theme) -> impl IntoElem
     div()
         .flex_none()
         .size(px(22.))
-        .rounded(px(6.))
+        .rounded(Radius::Medium.px(&theme))
         .bg(tone.opacity(wash))
         .flex()
         .items_center()
         .justify_center()
-        .child(glyph(icon, 13., tone))
+        .child(glyph(icon, IconSize::Small.px(&theme), tone))
+}
+
+/// Split a Pi MCP tool name (`mcp__<server>__<tool>`) into `(server, tool)`
+/// for the card header. Pi sanitizes both halves to `[A-Za-z0-9_-]` and joins
+/// them with `__`; a server name that itself contains `__` would split early,
+/// which is the one lossy case — the full name still reaches the model and the
+/// expanded args.
+pub(crate) fn mcp_tool_parts(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.split_once("__")?;
+    if server.is_empty() || tool.is_empty() {
+        return None;
+    }
+    Some((server, tool))
 }
 
 /// Human label for a tool card header. Known pi tools get a short, scannable
@@ -6597,7 +9057,10 @@ fn activity_action_label(name: &str) -> String {
         "skill" => Some("Skill"),
         "ask" | "ask_user" | "question" | "elicit" => Some("Ask"),
         "todo" | "todo_write" | "plan" | "update_plan" => Some("Plan"),
-        "notebook" | "eval" | "execute_code" => Some("Run code"),
+        "notebook" | "eval" | "execute_code" | "codemode" => Some("Run code"),
+        "tool_search" => Some("Find tools"),
+        "list_mcp_resources" | "list_mcp_resource_templates" => Some("List resources"),
+        "read_mcp_resource" => Some("Read resource"),
         _ => None,
     };
     if let Some(label) = known {
@@ -6623,19 +9086,19 @@ pub(crate) fn active_user_index(
     }
     // The reader scrolled away from the live edge: the active tick is the
     // turn the viewport is reading — the newest user turn at or above the
-    // first visible row — not the latest turn in the transcript.
-    if streaming.is_none() {
-        if let Some(first_visible) = viewport_hint {
-            let clamped = first_visible.min(messages.len() - 1);
-            if let Some(ix) = messages[..clamped + 1]
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, message)| message.user)
-                .map(|(ix, _)| ix)
-            {
-                return Some(ix);
-            }
+    // first visible row — not the latest turn in the transcript. This holds
+    // while a run streams too: scrolling up to read history must move the
+    // rail, and clicking a tick must be able to leave the streaming turn.
+    if let Some(first_visible) = viewport_hint {
+        let clamped = first_visible.min(messages.len() - 1);
+        if let Some(ix) = messages[..clamped + 1]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, message)| message.user)
+            .map(|(ix, _)| ix)
+        {
+            return Some(ix);
         }
     }
     let end = streaming
@@ -6656,6 +9119,89 @@ fn starts_followup_turn(messages: &[ChatMessage], ix: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frosted_transcript_fill_uses_guarded_surface_only_for_active_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            for (active, glass) in [(false, false), (false, true), (true, false), (true, true)] {
+                let theme = base.with_wallpaper(theme::SurfaceTreatment {
+                    active,
+                    glass,
+                    card_alpha: 0.8,
+                    ..theme::SurfaceTreatment::OPAQUE
+                });
+                let expected = if active && glass {
+                    theme.card_fill(theme.surface_secondary)
+                } else {
+                    theme.overlay
+                };
+                assert_eq!(frosted_transcript_fill(theme), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_fade_only_affects_new_text_and_finishes() {
+        let mut fade = StreamFade::default();
+        let start = Instant::now();
+        let run = |len| TextRun {
+            len,
+            font: ui_font(),
+            color: gpui::hsla(0., 0., 0., 1.),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        fade.apply("Hi", vec![run(2)], start);
+        let appended = fade.apply("Hi é", vec![run(5)], start);
+        assert_eq!(appended.iter().map(|r| r.len).collect::<Vec<_>>(), [2, 3]);
+        assert_eq!(appended[0].color.a, 1.);
+        assert!((appended[1].color.a - 0.55).abs() < 0.001);
+        let finished = fade.apply("Hi é", vec![run(5)], start + Duration::from_millis(140));
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].color.a, 1.);
+    }
+
+    #[test]
+    fn copy_hover_retargets_from_the_visible_opacity() {
+        let theme = Theme::dark();
+        let half = Motion::Interaction.duration(&theme) / 2;
+        let mut hover = SectionHover::default();
+        assert!(hover.retarget(true, &theme));
+        // Repeating the same target must not restart the transition.
+        assert!(!hover.retarget(true, &theme));
+        assert!((hover.opacity_at(Duration::ZERO) - COPY_REST_OPACITY).abs() < 0.001);
+        let mid = hover.opacity_at(half);
+        assert!(mid > COPY_REST_OPACITY && mid < 1.0);
+        // Make the transition half-elapsed, then reverse it. The new target
+        // must begin at the value that was already on screen.
+        hover.started = Instant::now() - half;
+        assert!(hover.retarget(false, &theme));
+        assert!((hover.opacity_at(Duration::ZERO) - mid).abs() < 0.001);
+    }
+
+    /// Reduce Motion collapses the fade instead of animating it — the leak this
+    /// fade used to have, because it read the role's `nominal()` duration.
+    #[test]
+    fn copy_hover_collapses_under_reduce_motion() {
+        let mut theme = Theme::dark();
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        let mut hover = SectionHover::default();
+        assert!(hover.retarget(true, &theme));
+        assert_eq!(hover.duration, Duration::ZERO);
+        assert_eq!(hover.opacity_at(Duration::ZERO), 1.0);
+        assert!(hover.retarget(false, &theme));
+        assert_eq!(hover.opacity_at(Duration::ZERO), COPY_REST_OPACITY);
+    }
+
+    #[test]
+    fn streaming_fade_handles_replaced_unicode_text() {
+        let mut fade = StreamFade::default();
+        let start = Instant::now();
+        fade.apply("éclair", Vec::new(), start);
+        fade.apply("ê", Vec::new(), start);
+        assert_eq!(fade.chunks[0].0, 0.."ê".len());
+    }
 
     #[test]
     fn fold_label_falls_back_without_elapsed() {
@@ -6743,6 +9289,34 @@ mod tests {
     }
 
     #[test]
+    fn activity_title_counts_delegations_instead_of_other_tools() {
+        // A delegation is not "Ran 1 tool": the turn delegated work, and the
+        // children's own calls are not the parent's (§9.6).
+        let tool = |name: &str| ToolCall {
+            name: name.to_string(),
+            summary: String::new(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: None,
+            output: None,
+            failed: false,
+            facts: Default::default(),
+            details: None,
+        };
+        let steps = vec![Step {
+            thinking: "plan".into(),
+            tools: vec![tool("subagent"), tool("subagent"), tool("bash")],
+            ..Step::default()
+        }];
+        assert_eq!(
+            activity_title(&steps, false),
+            "Delegated to 2 agents · Ran 1 command · 1 thought"
+        );
+    }
+
+    #[test]
     fn activity_title_aggregates_every_step() {
         let tool = |name: &str| ToolCall {
             name: name.to_string(),
@@ -6755,6 +9329,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         // Two steps' worth of work lands on one summary line — counts span
         // every step instead of one "Ran …" row per step.
@@ -6798,6 +9373,7 @@ mod tests {
                     output: None,
                     failed: false,
                     facts: Default::default(),
+                    details: None,
                 })
                 .collect(),
             ..Step::default()
@@ -6829,32 +9405,6 @@ mod tests {
     }
 
     #[test]
-    fn accent_shifted_rotates_hue_and_keeps_the_palettes_chroma() {
-        let ember = gpui::hsla(0.04, 0.45, 0.62, 1.0);
-        let shifted = accent_shifted(ember, 0.5).unwrap();
-        assert!((shifted.h - 0.54).abs() < 1e-6);
-        assert!((shifted.s - 0.5).abs() < 1e-6);
-        assert!((shifted.l - 0.62).abs() < 1e-6);
-        // Chroma-less palettes (Ashwood, Mono) drop the hue so kinds
-        // separate by tone instead — callers paint ink.
-        assert_eq!(accent_shifted(gpui::hsla(0.0, 0.0, 0.5, 1.0), 0.5), None);
-        // Wrapping past 1.0 is modulo, not clamping.
-        assert!((accent_shifted(gpui::hsla(0.9, 0.6, 0.5, 1.0), 0.3).unwrap().h - 0.2).abs() < 1e-6);
-    }
-
-    #[test]
-    fn work_tint_uses_ink_for_unknown_kinds_and_low_chroma_palettes() {
-        // Chroma-less palette (accent.s < 0.15): every kind falls back to ink.
-        let theme = Theme {
-            accent: gpui::hsla(0.0, 0.0, 0.5, 1.0),
-            ..Theme::default()
-        };
-        assert_eq!(work_tint("icons/tools/bash.svg", theme), theme.text_2);
-        assert_eq!(work_tint("icons/tools/edit.svg", theme), theme.text_2);
-        assert_eq!(work_tint("icons/tools/tool.svg", theme), theme.text_2);
-    }
-
-    #[test]
     fn duration_format_matches_spoken_forms() {
         assert_eq!(format_duration(Duration::from_secs(1)), "1 second");
         assert_eq!(format_duration(Duration::from_secs(12)), "12 seconds");
@@ -6882,6 +9432,148 @@ mod tests {
         assert_eq!(format_working_elapsed(Duration::from_secs(341)), "5m 41s");
         assert_eq!(format_working_elapsed(Duration::from_secs(3_600)), "1h");
         assert_eq!(format_working_elapsed(Duration::from_secs(3_721)), "1h 2m");
+    }
+
+    #[test]
+    fn streaming_tps_prefers_reported_output_and_guards_early() {
+        let message = |output: u64, text: &str| ChatMessage {
+            user: false,
+            summary: None,
+            steps: vec![Step {
+                text: text.into(),
+                usage: (output > 0).then_some(MessageUsage {
+                    input: 0,
+                    output,
+                    cache_read: 0,
+                    cache_write: 0,
+                    total: output,
+                    cost: None,
+                }),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+
+        // Provider-reported output wins over the char estimate.
+        let reported = message(80, "short");
+        assert_eq!(streamed_output_tokens(&reported), 80);
+        assert_eq!(
+            streaming_tps(&reported, Some(Duration::from_secs(2))),
+            Some(40.0)
+        );
+        // Under a second, and with no clock, there is no rate yet.
+        assert_eq!(
+            streaming_tps(&reported, Some(Duration::from_millis(800))),
+            None
+        );
+        assert_eq!(streaming_tps(&reported, None), None);
+
+        // Without provider usage the estimate is chars/4: 40 chars -> 10
+        // tokens over 2s -> 5.0.
+        let estimated = message(0, &"a".repeat(40));
+        assert_eq!(streamed_output_tokens(&estimated), 10);
+        assert_eq!(
+            streaming_tps(&estimated, Some(Duration::from_secs(2))),
+            Some(5.0)
+        );
+
+        // No text and no usage: no rate.
+        let empty = message(0, "");
+        assert_eq!(streaming_tps(&empty, Some(Duration::from_secs(2))), None);
+    }
+
+    /// A streaming turn's clock sums the settled steps' durations plus the
+    /// live step's elapsed time, so a step that follows a tool call is not
+    /// measured against the whole run's token count.
+    #[test]
+    fn live_generation_clock_spans_settled_and_streaming_steps() {
+        let step = |duration: Option<Duration>, generation_time: Option<Duration>| Step {
+            duration,
+            generation_time,
+            ..Step::default()
+        };
+        let message = |steps: Vec<Step>| ChatMessage {
+            user: false,
+            summary: None,
+            steps,
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+
+        // A single streaming step uses just its own request clock.
+        let one = message(vec![step(None, None)]);
+        assert_eq!(
+            live_generation_clock(&one, Some(Duration::from_secs(5))),
+            Some(Duration::from_secs(5))
+        );
+
+        // A settled step's pi duration plus the live step's elapsed time.
+        let two = message(vec![
+            step(Some(Duration::from_secs(3)), None),
+            step(None, None),
+        ]);
+        assert_eq!(
+            live_generation_clock(&two, Some(Duration::from_secs(2))),
+            Some(Duration::from_secs(5))
+        );
+
+        // Without a live clock, the step's client measurement is the fallback.
+        let fallback = message(vec![step(None, Some(Duration::from_secs(4)))]);
+        assert_eq!(
+            live_generation_clock(&fallback, None),
+            Some(Duration::from_secs(4))
+        );
+
+        // No steps: no clock at all.
+        assert_eq!(
+            live_generation_clock(&message(Vec::new()), Some(Duration::from_secs(1))),
+            None
+        );
+    }
+
+    #[test]
+    fn format_tps_reads_compactly() {
+        assert_eq!(format_tps(42.4), "42");
+        assert_eq!(format_tps(7.44), "7.4");
+        assert_eq!(format_tps(0.0), "0");
+        assert_eq!(format_tps(f64::NAN), "0");
+    }
+
+    #[test]
+    fn generation_tps_uses_output_over_active_decode_time() {
+        let usage = MessageUsage {
+            input: 100,
+            output: 90,
+            cache_read: 0,
+            cache_write: 0,
+            total: 190,
+            cost: None,
+        };
+        assert_eq!(
+            generation_tps(&usage, Some(Duration::from_secs(3))),
+            Some(30.0)
+        );
+        // No clock, under a second, or no output: not a rate yet.
+        assert_eq!(generation_tps(&usage, None), None);
+        assert_eq!(
+            generation_tps(&usage, Some(Duration::from_millis(900))),
+            None
+        );
+        let no_output = MessageUsage {
+            output: 0,
+            ..usage.clone()
+        };
+        assert_eq!(
+            generation_tps(&no_output, Some(Duration::from_secs(3))),
+            None
+        );
     }
 
     #[test]
@@ -6973,6 +9665,10 @@ mod tests {
         assert_eq!(activity_icon("glob"), "icons/tools/find.svg");
         assert_eq!(activity_icon("mcp"), "icons/tools/mcp.svg");
         assert_eq!(activity_icon("mcp__filesystem"), "icons/tools/mcp.svg");
+        assert_eq!(activity_icon("codemode"), "icons/tools/code.svg");
+        assert_eq!(activity_icon("tool_search"), "icons/tools/search.svg");
+        assert_eq!(activity_icon("read_mcp_resource"), "icons/tools/mcp.svg");
+        assert_eq!(activity_icon("list_mcp_resources"), "icons/tools/mcp.svg");
         // An unknown tool keeps a real mark instead of a blank slot.
         assert_eq!(activity_icon("frobnicate"), "icons/tools/tool.svg");
     }
@@ -6983,9 +9679,29 @@ mod tests {
         assert_eq!(activity_action_label("read"), "Read");
         assert_eq!(activity_action_label("glob"), "Find files");
         assert_eq!(activity_action_label("mcp__github"), "MCP");
+        assert_eq!(activity_action_label("codemode"), "Run code");
+        assert_eq!(activity_action_label("tool_search"), "Find tools");
+        assert_eq!(activity_action_label("read_mcp_resource"), "Read resource");
         // Unknown tools still get a readable, never-blank label.
         assert_eq!(activity_action_label("frobnicate"), "Frobnicate");
         assert_eq!(activity_action_label(""), "Tool");
+    }
+
+    #[test]
+    fn mcp_tool_names_split_into_server_and_tool() {
+        assert_eq!(
+            mcp_tool_parts("mcp__github__search_repositories"),
+            Some(("github", "search_repositories"))
+        );
+        assert_eq!(
+            mcp_tool_parts("mcp__my_server__get_issue"),
+            Some(("my_server", "get_issue"))
+        );
+        // Non-MCP names and malformed shapes never produce a fake split.
+        assert_eq!(mcp_tool_parts("bash"), None);
+        assert_eq!(mcp_tool_parts("mcp__github"), None);
+        assert_eq!(mcp_tool_parts("mcp____tool"), None);
+        assert_eq!(mcp_tool_parts("mcp__server__"), None);
     }
 
     #[test]
@@ -7026,6 +9742,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         assert_eq!(tool_command(&bash).as_deref(), Some("ls -la"));
         // The header preview shows the command, not the raw JSON summary.
@@ -7036,6 +9753,104 @@ mod tests {
             ..bash.clone()
         };
         assert_eq!(tool_command(&edit), None);
+    }
+
+    #[test]
+    fn codemode_previews_the_first_script_line() {
+        let codemode = ToolCall {
+            name: "codemode".into(),
+            summary: r#"{"code":"..."}"#.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({
+                "code": "\n\nconst repos = await tools.search_repositories({ q: \"rust gpui\" });\nreturn repos;"
+            })),
+            output: None,
+            failed: false,
+            facts: Default::default(),
+            details: None,
+        };
+        assert_eq!(
+            activity_preview(&codemode),
+            "const repos = await tools.search_repositories({ q: \"rust gpui\" });"
+        );
+    }
+
+    #[test]
+    fn fetch_tools_preview_the_url_not_json() {
+        let fetch = ToolCall {
+            name: "web_fetch".into(),
+            summary: r#"{"url":"https://example.com/docs/start"}"#.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({ "url": "https://example.com/docs/start" })),
+            output: None,
+            failed: false,
+            facts: Default::default(),
+            details: None,
+        };
+        assert_eq!(
+            tool_url(&fetch).as_deref(),
+            Some("https://example.com/docs/start")
+        );
+        // The header drops the scheme so the host leads the line.
+        assert_eq!(activity_preview(&fetch), "example.com/docs/start");
+        assert_eq!(display_url("http://www.example.com/x"), "example.com/x");
+        assert_eq!(display_url("https://example.com"), "example.com");
+        assert_eq!(display_url("example.com"), "example.com");
+
+        let search = ToolCall {
+            name: "web_search".into(),
+            summary: r#"{"query":"rust async book"}"#.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({ "query": "rust async book" })),
+            output: None,
+            failed: false,
+            facts: Default::default(),
+            details: None,
+        };
+        assert_eq!(
+            tool_search_query(&search).as_deref(),
+            Some("rust async book")
+        );
+        assert_eq!(activity_preview(&search), "rust async book");
+        // Other tools never fabricate a link or a query.
+        assert_eq!(tool_url(&search), None);
+        assert_eq!(tool_search_query(&fetch), None);
+    }
+
+    #[test]
+    fn only_file_tools_get_the_file_glyph() {
+        let read = ToolCall {
+            name: "read".into(),
+            summary: String::new(),
+            path: Some("src/main.rs".into()),
+            added: 0,
+            removed: 0,
+            id: None,
+            args: None,
+            output: None,
+            failed: false,
+            facts: Default::default(),
+            details: None,
+        };
+        assert_eq!(file_preview_path(&read), Some("src/main.rs"));
+        // The preview still shows the path (unchanged behavior).
+        assert_eq!(activity_preview(&read), "src/main.rs");
+        // A search tool's `path` is a scope, not the thing it read; it keeps
+        // its generic icon instead of a file glyph.
+        let grep = ToolCall {
+            name: "grep".into(),
+            ..read.clone()
+        };
+        assert_eq!(file_preview_path(&grep), None);
     }
 
     #[test]
@@ -7052,6 +9867,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         assert_eq!(
             activity_preview(&tool),
@@ -7100,6 +9916,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         let rows = build_edit_diff(&tool).expect("diff");
         assert_eq!(rows.len(), 2);
@@ -7127,6 +9944,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         let rows = build_edit_diff(&tool).expect("diff");
         assert_eq!(rows.len(), 2);
@@ -7168,6 +9986,7 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "a".into(),
                     ..Step::default()
@@ -7180,6 +9999,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "b".into(),
                     ..Step::default()
@@ -7192,6 +10012,7 @@ mod tests {
             },
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "c".into(),
                     ..Step::default()
@@ -7204,6 +10025,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "d".into(),
                     ..Step::default()
@@ -7225,6 +10047,7 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "a".into(),
                     ..Step::default()
@@ -7237,6 +10060,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "b".into(),
                     ..Step::default()
@@ -7249,6 +10073,7 @@ mod tests {
             },
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "c".into(),
                     ..Step::default()
@@ -7261,6 +10086,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "d".into(),
                     ..Step::default()
@@ -7282,6 +10108,11 @@ mod tests {
         assert_eq!(active_user_index(&messages, None, Some(3)), Some(2));
         // Out-of-range hint clamps to the last row.
         assert_eq!(active_user_index(&messages, None, Some(99)), Some(2));
+        // The viewport wins while a run streams too: clicking a rail tick to
+        // read an earlier turn must leave the streaming turn's tick behind.
+        assert_eq!(active_user_index(&messages, Some(3), Some(0)), Some(0));
+        assert_eq!(active_user_index(&messages, Some(3), Some(1)), Some(0));
+        assert_eq!(active_user_index(&messages, Some(3), Some(2)), Some(2));
     }
 
     #[test]
@@ -7330,9 +10161,10 @@ mod tests {
 
     #[test]
     fn mermaid_fences_stay_copyable_code_blocks() {
-        // D2: diagrams are never faked. A mermaid fence parses as an ordinary
-        // code block (so it is copyable) and its label is honest about the
-        // missing preview.
+        // D2 revised: a mermaid fence is still parsed as a code block — the
+        // renderer upgrades it to a diagram only when it can lay one out, and
+        // the source stays one click away. The fallback label is honest about
+        // the case where it cannot.
         let blocks = parse_blocks("```mermaid\ngraph TD; A-->B;\n```");
         assert!(matches!(&blocks[0], Block::Code(Some(lang), lines)
                 if lang == "mermaid" && lines == &["graph TD; A-->B;".to_string()]));
@@ -7340,6 +10172,157 @@ mod tests {
             code_block_label(Some("Mermaid")),
             "Mermaid · source (preview unavailable)"
         );
+    }
+
+    #[gpui::test]
+    fn a_mermaid_fence_paints_a_diagram(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+
+        struct DiagramDocView;
+        impl gpui::Render for DiagramDocView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div().w(px(360.)).child(render_markdown_document(
+                    "```mermaid\ngraph TD\n  A[Ask] --> B{Ready?}\n  B -->|yes| C[Ship]\n  B -->|no| A\n```",
+                    theme::Theme::for_id(theme::ThemeId::Orbit),
+                ))
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| DiagramDocView));
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(420.), px(420.)),
+            move |_, _| view.clone(),
+        );
+        cx.run_until_parked();
+
+        // The drawing gets real bounds: a fallback source block would paint
+        // no diagram at all, and a zero-height element would mean layout
+        // never reached the canvas.
+        let bounds = cx
+            .debug_bounds("mermaid-diagram")
+            .expect("the diagram is painted");
+        assert!(
+            bounds.size.width > px(100.),
+            "width {:?}",
+            bounds.size.width
+        );
+        assert!(
+            bounds.size.height > px(100.),
+            "height {:?}",
+            bounds.size.height
+        );
+    }
+
+    #[gpui::test]
+    fn user_message_code_block_stays_inside_bubble(cx: &mut gpui::TestAppContext) {
+        struct UserMessageView;
+        impl gpui::Render for UserMessageView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let theme = theme::Theme::for_id(theme::ThemeId::Orbit);
+                let text = "can you remove the\n\n### macOS — Gatekeeper warning\n\nIf macOS blocks the app, run once in Terminal after installing:\n\n```bash\nxattr -cr /Applications/Vox.app\n```\n\nfrom changelog now its signed app";
+                div().w_full().flex().flex_col().items_end().child(
+                    user_message_bubble(text, theme, None)
+                        .debug_selector(|| "test-bubble".into())
+                        .child(render_prose(
+                            text,
+                            0,
+                            0,
+                            theme,
+                            Rc::new(RefCell::new(HashMap::new())),
+                            Rc::new(RefCell::new(HashSet::new())),
+                            true,
+                            true,
+                            MessageScrollerState::new(1),
+                            None,
+                        )),
+                )
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let view = cx.update(|_, cx| cx.new(|_| UserMessageView));
+        for width in [320., 700.] {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(600.)),
+                |_, _| view.clone(),
+            );
+            let bubble = cx.debug_bounds("test-bubble").expect("message bubble");
+            let code = cx.debug_bounds("code-scroll-0-3").expect("code block");
+            assert!(
+                code.origin.x >= bubble.origin.x && code.right() <= bubble.right(),
+                "code {code:?} exceeds bubble {bubble:?}"
+            );
+            assert!(bubble.size.width <= px(width));
+        }
+    }
+
+    #[gpui::test]
+    fn a_streaming_fence_keeps_its_source_block(cx: &mut gpui::TestAppContext) {
+        // "Once generation is complete": a half-streamed fence is not a graph
+        // yet, and laying one out per heartbeat would trade a frame for a
+        // flicker. The same fence upgrades as soon as the row settles.
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let settled = Rc::new(Cell::new(false));
+
+        struct StreamingView(Rc<Cell<bool>>);
+        impl gpui::Render for StreamingView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let theme = theme::Theme::for_id(theme::ThemeId::Orbit);
+                div().w(px(360.)).child(render_code_block(
+                    Some("mermaid"),
+                    &["graph TD".to_string(), "  A --> B".to_string()],
+                    0,
+                    0,
+                    0,
+                    theme,
+                    Rc::new(RefCell::new(HashMap::new())),
+                    Rc::new(RefCell::new(HashSet::new())),
+                    false,
+                    self.0.get(),
+                    MessageScrollerState::new(1),
+                ))
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| StreamingView(settled.clone())));
+        let paint = |cx: &mut gpui::VisualTestContext| {
+            let view = view.clone();
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(420.), px(420.)),
+                move |_, _| view.clone(),
+            );
+            cx.run_until_parked();
+        };
+        paint(cx);
+        assert!(
+            cx.debug_bounds("mermaid-diagram").is_none(),
+            "a live row keeps the source block until it settles"
+        );
+
+        settled.set(true);
+        paint(cx);
+        assert!(
+            cx.debug_bounds("mermaid-diagram").is_some(),
+            "the settled row draws the diagram"
+        );
+    }
+
+    #[test]
+    fn mermaid_fences_upgrade_only_when_a_diagram_lays_out() {
+        // The fence tag picks the renderer, not the body: a mermaid fence
+        // Orbit cannot draw keeps its source block, and no other fence ever
+        // becomes a diagram.
+        assert!(mermaid_diagram(Some("mermaid"), "graph TD\n A --> B").is_some());
+        assert!(mermaid_diagram(Some("Mermaid"), "flowchart LR\n A --> B").is_some());
+        assert!(mermaid_diagram(Some("mermaid"), "pie title Pets").is_none());
+        assert!(mermaid_diagram(Some("rust"), "graph TD\n A --> B").is_none());
+        assert!(mermaid_diagram(None, "graph TD\n A --> B").is_none());
     }
 
     #[test]
@@ -7390,12 +10373,76 @@ mod tests {
     }
 
     #[test]
+    fn parse_blocks_handles_github_pasted_image_tags() {
+        // GitHub stores a pasted screenshot as a raw `<img>` whose attributes
+        // are ordered `alt width height src`, without a self-closing slash.
+        let tag = "<img alt=\"Image\" width=\"1450\" height=\"932\" src=\"https://private-user-images.githubusercontent.com/1/2-a.png?jwt=eyJ0eXAi.eyJpc3Mi.OiJnaXRodWI\">";
+        let blocks = parse_blocks(&format!(
+            "### What happened?\n\n{tag}\n\n### Steps\n\n1. Open\n"
+        ));
+        assert!(
+            matches!(&blocks[1], Block::Image { alt, url }
+                if alt == "Image"
+                    && url.starts_with("https://private-user-images.githubusercontent.com/1/2-a.png?jwt=")),
+            "expected an image block at index 1"
+        );
+    }
+
+    #[test]
     fn image_markdown_inside_prose_is_not_split() {
         // A line that only *contains* an image stays prose; only a standalone
         // image line becomes a block, so sentences are never cut in half.
         let blocks = parse_blocks("see ![inline](https://example.com/x.png) here");
         assert!(matches!(&blocks[0], Block::Paragraph(lines)
                 if lines.join(" ") == "see ![inline](https://example.com/x.png) here"));
+    }
+
+    #[test]
+    fn quoted_image_lines_are_recognized() {
+        // A quoted bug report keeps its `<img>` on a `> ` line; the block stays
+        // a Quote, but the line inside it must still parse as an image.
+        let blocks = parse_blocks(
+            "> ### What happened?\n> <img alt=\"Image\" width=\"1450\" height=\"932\" src=\"https://private-user-images.githubusercontent.com/1/2-a.png?jwt=eyJ0eXAi.eyJpc3Mi.OiJnaXRodWI\">\n> \n> ### Steps\n> 1. Open\n",
+        );
+        let Block::Quote(lines) = &blocks[0] else {
+            panic!("expected the blockquote to stay a Quote");
+        };
+        assert!(image_line(&lines[1]).is_some());
+        assert_eq!(
+            image_line(&lines[1]).unwrap().1,
+            "https://private-user-images.githubusercontent.com/1/2-a.png?jwt=eyJ0eXAi.eyJpc3Mi.OiJnaXRodWI"
+        );
+    }
+
+    #[test]
+    fn signed_cdn_urls_rewrite_to_the_durable_asset_url() {
+        // A screenshot pasted into a reply is stored as a signed
+        // `private-user-images` URL whose JWT expires within minutes; the same
+        // asset is served forever from `github.com/user-attachments/assets/…`.
+        let signed = "https://private-user-images.githubusercontent.com/74659438/656345150-69f721c8-e025-44cd-8242-4e87eef54f7e.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.expired";
+        assert_eq!(
+            normalize_image_url(signed),
+            "https://github.com/user-attachments/assets/69f721c8-e025-44cd-8242-4e87eef54f7e"
+        );
+        // The durable form and other hosts are left exactly as written.
+        assert_eq!(
+            normalize_image_url(
+                "https://github.com/user-attachments/assets/69f721c8-e025-44cd-8242-4e87eef54f7e"
+            ),
+            "https://github.com/user-attachments/assets/69f721c8-e025-44cd-8242-4e87eef54f7e"
+        );
+        assert_eq!(
+            normalize_image_url("https://user-images.githubusercontent.com/1/2-a.png"),
+            "https://user-images.githubusercontent.com/1/2-a.png"
+        );
+        // A signed path without the asset-id–UUID shape stays untouched rather
+        // than guessing at a URL that may not exist.
+        assert_eq!(
+            normalize_image_url(
+                "https://private-user-images.githubusercontent.com/1/2-a.png?jwt=x"
+            ),
+            "https://private-user-images.githubusercontent.com/1/2-a.png?jwt=x"
+        );
     }
 
     #[test]
@@ -7464,13 +10511,256 @@ mod tests {
     fn inline_runs_pairs_link_ranges_with_urls() {
         let theme = Theme::dark();
         let spans = parse_inline("see [docs](https://pi.dev) now");
-        let (body, runs, links) = inline_runs(&spans, FontWeight::NORMAL, theme.text, theme);
+        let (body, runs, links, marks) =
+            inline_runs(&spans, FontWeight::NORMAL, theme.text_primary, theme);
         assert_eq!(body.as_ref(), "see docs now");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].1, "https://pi.dev");
         assert_eq!(&body[links[0].0.clone()], "docs");
+        assert!(marks.is_empty());
         // Underline style rides on the link run.
         assert!(runs.iter().any(|run| run.underline.is_some()));
+    }
+
+    #[test]
+    fn color_highlights_preserve_text_links_and_correct_background() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let spans =
+                parse_inline("🎨 `#F4711D` and [#fff](https://example.com) then rgb(244 113 29)");
+            let (body, runs, links, _) =
+                inline_runs(&spans, FontWeight::NORMAL, theme.text_primary, theme);
+            let (runs, links) = highlight_color_values(&body, runs, links, false, theme);
+            assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), body.len());
+            assert_eq!(&body[links[0].0.clone()], "#fff");
+            assert_eq!(links[0].1, "https://example.com");
+            let mut offset = 0;
+            let mut highlighted = Vec::new();
+            for run in &runs {
+                let range = offset..offset + run.len;
+                if let Some(bg) = run.background_color {
+                    if &body[range.clone()] == "#F4711D" {
+                        let actual: gpui::Rgba = bg.into();
+                        assert!((actual.r - 244. / 255.).abs() < 0.01);
+                        assert!((actual.g - 113. / 255.).abs() < 0.01);
+                        assert!((actual.b - 29. / 255.).abs() < 0.01);
+                        highlighted.push(range);
+                    }
+                }
+                offset += run.len;
+            }
+            assert_eq!(highlighted.len(), 1);
+            assert!(links
+                .iter()
+                .any(|(range, target)| &body[range.clone()] == "#F4711D"
+                    && target == "orbit-color-copy:#F4711D"));
+        }
+    }
+
+    #[test]
+    fn bare_urls_autolink_and_trim_trailing_punctuation() {
+        let spans = parse_inline("see https://pi.dev/docs. and http://a.b/(x) now");
+        let links: Vec<&str> = spans.iter().filter_map(|s| s.link.as_deref()).collect();
+        assert_eq!(links, vec!["https://pi.dev/docs", "http://a.b/(x)"]);
+        let autolinks: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.autolink)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(autolinks, vec!["https://pi.dev/docs", "http://a.b/(x)"]);
+        // A closing bracket with no opener inside the URL is prose.
+        let spans = parse_inline("(see https://x.dev/a)");
+        assert_eq!(
+            spans
+                .iter()
+                .filter_map(|s| s.link.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["https://x.dev/a"]
+        );
+        // Angle brackets stay prose; the URL itself is the link.
+        let spans = parse_inline("<https://x.dev>");
+        assert_eq!(
+            spans
+                .iter()
+                .filter_map(|s| s.link.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["https://x.dev"]
+        );
+        // Markdown links are not autolinks, and code spans stay literal.
+        let spans = parse_inline("[docs](https://pi.dev)");
+        assert!(spans.iter().all(|s| !s.autolink));
+        let spans = parse_inline("`https://pi.dev`");
+        assert!(spans.iter().all(|s| s.link.is_none()));
+    }
+
+    #[test]
+    fn autolink_range_covers_the_rendered_url() {
+        let theme = Theme::dark();
+        let spans = parse_inline("go https://pi.dev/x now");
+        let (body, runs, links, marks) =
+            inline_runs(&spans, FontWeight::NORMAL, theme.text_primary, theme);
+        assert_eq!(body.as_ref(), "go https://pi.dev/x \u{2197} now");
+        assert_eq!(links.len(), 1);
+        // The range covers the URL and its external-link mark.
+        assert_eq!(&body[links[0].0.clone()], "https://pi.dev/x \u{2197}");
+        // The mark is its own run, so the transcript can blank the font
+        // glyph and paint the hugeicon arrow over the space.
+        assert_eq!(marks.len(), 1);
+        assert_eq!(&body[marks[0].clone()], "\u{2197}");
+        let hidden = hide_autolink_marks(runs, &marks);
+        assert!(hidden.iter().any(|run| run.color.a == 0.0));
+    }
+
+    struct SwatchParagraphView {
+        selection: TextSelectionState,
+    }
+
+    impl gpui::Render for SwatchParagraphView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            self.selection.borrow_mut().begin_frame();
+            let _scope = TextScopeGuard::enter(TextScope {
+                state: self.selection.clone(),
+                message_ix: 0,
+                color_swatches: true,
+            });
+            let theme = Theme::dark();
+            div().w_full().child(paragraph_text(
+                "Accent #F4711D.",
+                14.,
+                26.,
+                FontWeight::NORMAL,
+                theme.assistant_text,
+                ElementId::Name("swatch-test".into()),
+                theme,
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn color_highlight_has_unmodified_text_and_click_target(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SwatchParagraphView {
+                selection: selection.clone(),
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(200.)),
+            |_, _| view.clone(),
+        );
+        let position = {
+            let state = selection.borrow();
+            let block = &state.blocks[0];
+            assert_eq!(block.text.as_ref(), "Accent #F4711D.");
+            let value = &block.links[0].0;
+            assert_eq!(&block.text[value.clone()], "#F4711D");
+            let start = block.layout.position_for_index(value.start).unwrap();
+            let end = block.layout.position_for_index(value.start + 1).unwrap();
+            assert!(end.x > start.x);
+            point(
+                (start.x + end.x) * 0.5,
+                start.y + block.layout.line_height() * 0.5,
+            )
+        };
+        let mut state = selection.borrow_mut();
+        state.begin_selection(position);
+        assert_eq!(
+            state.finish_selection(position).as_deref(),
+            Some("orbit-color-copy:#F4711D")
+        );
+    }
+
+    struct AutolinkParagraphView {
+        selection: TextSelectionState,
+    }
+
+    impl gpui::Render for AutolinkParagraphView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            self.selection.borrow_mut().begin_frame();
+            let _scope = TextScopeGuard::enter(TextScope {
+                state: self.selection.clone(),
+                message_ix: 0,
+                color_swatches: true,
+            });
+            let theme = theme::Theme::for_id(theme::ThemeId::Orbit);
+            div().w_full().child(paragraph_text(
+                "PR created: https://github.com/imrj05/orbit/pull/36",
+                14.,
+                26.,
+                FontWeight::NORMAL,
+                theme.assistant_text,
+                ElementId::Name("autolink-paragraph".into()),
+                theme,
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn autolink_mark_paints_the_hugeicon_over_its_glyph(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| AutolinkParagraphView {
+                selection: selection.clone(),
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(200.)),
+            |_, _| view.clone(),
+        );
+        let state = selection.borrow();
+        assert_eq!(state.blocks.len(), 1);
+        let block = &state.blocks[0];
+        // The mark stays in the copied text and inside the link target...
+        let arrow = block.text.find('\u{2197}').expect("mark in the copy text");
+        assert!(block.links[0].0.contains(&arrow));
+        // ...and keeps a box on the line, which is where the hugeicon draws.
+        let start = block.layout.position_for_index(arrow).expect("mark box");
+        let end = block
+            .layout
+            .position_for_index(arrow + '\u{2197}'.len_utf8())
+            .expect("mark box end");
+        assert!(end.x > start.x, "the mark reserves room for the icon");
+    }
+
+    #[gpui::test]
+    fn clicks_below_link_do_not_open_it(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| AutolinkParagraphView {
+                selection: selection.clone(),
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(200.)),
+            |_, _| view.clone(),
+        );
+        let (link_position, card_position) = {
+            let state = selection.borrow();
+            let block = &state.blocks[0];
+            let start = block.links[0].0.start;
+            let first = block.layout.position_for_index(start).unwrap();
+            let next = block.layout.position_for_index(start + 1).unwrap();
+            let x = (first.x + next.x) * 0.5;
+            (
+                point(x, first.y + block.layout.line_height() * 0.5),
+                point(x, block.bounds.bottom() + px(5.)),
+            )
+        };
+        let mut state = selection.borrow_mut();
+        state.begin_selection(card_position);
+        assert_eq!(state.finish_selection(card_position), None);
+        state.begin_selection(link_position);
+        assert_eq!(
+            state.finish_selection(link_position).as_deref(),
+            Some("https://github.com/imrj05/orbit/pull/36")
+        );
+        state.begin_selection(link_position);
+        assert_eq!(state.finish_selection(card_position), None);
     }
 
     #[test]
@@ -7478,6 +10768,7 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "a".into(),
                     ..Step::default()
@@ -7490,6 +10781,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "b".into(),
                     ..Step::default()
@@ -7502,6 +10794,7 @@ mod tests {
             },
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "c".into(),
                     ..Step::default()
@@ -7519,7 +10812,7 @@ mod tests {
     }
 
     #[test]
-    fn working_indicator_names_the_live_tool() {
+    fn working_indicator_does_not_repeat_tool_details() {
         let bash = ToolCall {
             name: "bash".into(),
             summary: r#"{"command":"cargo test"}"#.into(),
@@ -7531,15 +10824,13 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         let step = Step {
             tools: vec![bash],
             ..Step::default()
         };
-        assert_eq!(
-            working_activity_label(&step).as_deref(),
-            Some("Running cargo test")
-        );
+        assert_eq!(working_activity_label(&step), None);
 
         let read = ToolCall {
             name: "read".into(),
@@ -7552,15 +10843,13 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         let step = Step {
             tools: vec![read],
             ..Step::default()
         };
-        assert_eq!(
-            working_activity_label(&step).as_deref(),
-            Some("Reading src/auth.rs")
-        );
+        assert_eq!(working_activity_label(&step), None);
 
         // Thinking-only work reads as thinking; an empty step yields no
         // label so the caller falls back to the generic working form.
@@ -7756,6 +11045,7 @@ mod tests {
         Rc::new(RefCell::new(vec![
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "Alpha bravo charlie delta echo foxtrot golf hotel india juliet \
                            kilo lima mike november oscar papa quebec romeo sierra tango \
@@ -7771,6 +11061,7 @@ mod tests {
             },
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "Second paragraph in a follow-up turn.".into(),
                     ..Step::default()
@@ -7789,18 +11080,33 @@ mod tests {
         messages: Rc<RefCell<Vec<ChatMessage>>>,
         scroller: MessageScrollerState,
     ) -> TranscriptView {
+        let user_turns = Rc::new(
+            messages
+                .borrow()
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.user)
+                .map(|(ix, _)| ix)
+                .collect::<Vec<usize>>(),
+        );
         TranscriptView {
             scroller,
             messages,
+            user_turns,
             text_selection: state,
             streaming: Rc::new(Cell::new(None)),
             stream_started: Rc::new(Cell::new(None)),
+            awaiting_reply: Rc::new(Cell::new(false)),
+            turn_started: Rc::new(Cell::new(None)),
             expanded_turns: Rc::new(RefCell::new(HashSet::new())),
             expanded_files: Rc::new(RefCell::new(HashSet::new())),
+            agent_calls: crate::agent_call_display::AgentCallDisplay::FollowRun,
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
             expanded_tools: Rc::new(RefCell::new(HashSet::new())),
+            open_child_logs: Rc::new(RefCell::new(HashMap::new())),
             copied: Rc::new(RefCell::new(HashMap::new())),
             copied_sections: Rc::new(RefCell::new(HashMap::new())),
+            hovered_sections: Rc::new(RefCell::new(HashMap::new())),
             expanded_sections: Rc::new(RefCell::new(HashSet::new())),
             expanded_blocks: Rc::new(RefCell::new(HashSet::new())),
             thinking_scrolls: Rc::new(RefCell::new(HashMap::new())),
@@ -7820,9 +11126,678 @@ mod tests {
             summary_usage: None,
             review_changes: None,
             image_opener: None,
+            rewind: None,
+            regenerate: None,
+            export_response: None,
             search_hits: None,
             search_active: None,
         }
+    }
+
+    struct ActivityCardTestView {
+        open: ExpandedTools,
+        sections: ExpandedSections,
+        scroller: MessageScrollerState,
+        output: Option<Value>,
+        image_opener: Option<ImageOpener>,
+    }
+
+    impl gpui::Render for ActivityCardTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let tool = ToolCall {
+                name: "read".into(),
+                summary: "example.txt".into(),
+                path: Some("example.txt".into()),
+                added: 0,
+                removed: 0,
+                id: None,
+                args: None,
+                output: self.output.clone().or_else(|| {
+                    Some(Value::String(
+                        (0..40).map(|i| format!("line {i}\n")).collect(),
+                    ))
+                }),
+                failed: false,
+                facts: ToolFacts::default(),
+                details: None,
+            };
+            render_activity_card(
+                &tool,
+                false,
+                true,
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+                None,
+                (0, 0),
+                self.open.borrow().contains(&(0, 0)),
+                self.open.clone(),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+                self.sections.clone(),
+                self.scroller.clone(),
+                self.image_opener.clone(),
+            )
+        }
+    }
+
+    struct SubagentCardTestView {
+        open: ExpandedTools,
+        open_children: OpenChildLogs,
+        scroller: MessageScrollerState,
+        status: &'static str,
+        phase: &'static str,
+    }
+
+    impl gpui::Render for SubagentCardTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let details = serde_json::json!({
+                "orbit": "subagent/1",
+                "mode": "parallel",
+                "children": [
+                    {
+                        "agent": "scout",
+                        "status": self.status,
+                        "phase": self.phase,
+                        "current": "grep /auth/ in src/",
+                        "capability": "read",
+                        "workflowMode": "build",
+                        "model": "anthropic/claude-haiku-4-5",
+                        "tools": 12,
+                        "toolCounts": {"read": 4, "grep": 7, "bash": 1},
+                        "steps": [{"kind": "tool", "name": "grep", "preview": "auth in src/"}],
+                        "stepsTotal": 13,
+                        "report": "Auth lives in `src/auth.rs`.",
+                        "error": null,
+                        "usage": {"input": 3100, "output": 812, "cost": 0.0123},
+                        "startedAt": 1_000,
+                        "endedAt": if self.status == "running" { 0 } else { 34_000 }
+                    },
+                    {
+                        "agent": "worker",
+                        "status": "failed",
+                        "phase": "refused",
+                        "capability": "exec",
+                        "workflowMode": "plan",
+                        "error": "worker runs commands; this session is Plan · Full access",
+                        "blocked": [{"tool": "edit", "target": "src/auth.rs", "reason": "Blocked: Plan mode"}],
+                        "usage": {"input": 0, "output": 0}
+                    }
+                ]
+            });
+            let mut tool = ToolCall {
+                name: "subagent".into(),
+                summary: String::new(),
+                path: None,
+                added: 0,
+                removed: 0,
+                id: None,
+                args: None,
+                output: None,
+                failed: self.status == "failed",
+                facts: ToolFacts::default(),
+                details: None,
+            };
+            tool.details = Some(details);
+            let run = crate::subagent::SubagentRun::from_tool(&tool).expect("details parse");
+            render_subagent_card(
+                &run,
+                self.status == "running",
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+                (0, 0),
+                self.open.borrow().contains(&(0, 0)),
+                self.open.clone(),
+                self.open_children.clone(),
+                self.scroller.clone(),
+            )
+        }
+    }
+
+    /// §9.3: one child's log at a time. A single-child run has nothing to
+    /// choose between, so its log is the card's body the moment it opens; a
+    /// parallel run stays at the rows until the reader picks a child.
+    #[test]
+    fn only_one_child_log_is_open_at_a_time() {
+        assert_eq!(subagent_open_child(None, 0), None);
+        assert_eq!(subagent_open_child(None, 1), Some(0));
+        assert_eq!(subagent_open_child(None, 3), None);
+        assert_eq!(subagent_open_child(Some(2), 3), Some(2));
+        // A selection left over from a shorter run cannot paint a stranger's
+        // log, and it does not panic on the missing index.
+        assert_eq!(subagent_open_child(Some(1), 1), None);
+    }
+
+    /// Clicking a child row is the whole third zoom level (§9.3): it opens that
+    /// child's log and the card that holds it, a second click closes both, and
+    /// picking the other child swaps the body instead of adding a second one.
+    #[gpui::test]
+    fn clicking_a_child_row_opens_that_childs_log(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let open = Rc::new(RefCell::new(HashSet::new()));
+        let open_children = Rc::new(RefCell::new(HashMap::new()));
+        let (view, cx) = cx.add_window_view(|_, _| SubagentCardTestView {
+            open: open.clone(),
+            open_children: open_children.clone(),
+            scroller: MessageScrollerState::new(1),
+            status: "done",
+            phase: "settled",
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(600.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        let click = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = cx.debug_bounds(selector).expect(selector).center();
+            cx.simulate_mouse_move(at, None, gpui::Modifiers::none());
+            draw(cx);
+            cx.simulate_click(at, gpui::Modifiers::none());
+            draw(cx);
+        };
+
+        click(cx, "subagent-row-0-0-1");
+        assert_eq!(open_children.borrow().get(&(0, 0)), Some(&1));
+        assert!(
+            open.borrow().contains(&(0, 0)),
+            "the card opens with the log"
+        );
+
+        // The other child replaces it; one log at a time.
+        click(cx, "subagent-row-0-0-0");
+        assert_eq!(open_children.borrow().get(&(0, 0)), Some(&0));
+        assert!(open.borrow().contains(&(0, 0)));
+
+        // Clicking the open row closes the card.
+        click(cx, "subagent-row-0-0-0");
+        assert_eq!(open_children.borrow().get(&(0, 0)), None);
+        assert!(!open.borrow().contains(&(0, 0)));
+    }
+
+    /// The delegation card paints in every state and at both zoom levels: the
+    /// rows while it runs, the reason a child was refused, and the expanded
+    /// steps + report. Layout is asserted by drawing, not by restating it.
+    #[gpui::test]
+    fn subagent_cards_render_collapsed_and_expanded(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        for (status, phase) in [
+            ("running", "tool"),
+            ("done", "settled"),
+            ("failed", "refused"),
+        ] {
+            for open in [false, true] {
+                let view = cx.update(|_, cx| {
+                    cx.new(|_| SubagentCardTestView {
+                        open: Rc::new(RefCell::new(if open {
+                            HashSet::from([(0, 0)])
+                        } else {
+                            HashSet::new()
+                        })),
+                        // A parallel run shows one child's log at a time; the
+                        // drawing test opens the first child with the card.
+                        open_children: Rc::new(RefCell::new(if open {
+                            HashMap::from([((0, 0), 0)])
+                        } else {
+                            HashMap::new()
+                        })),
+                        scroller: MessageScrollerState::new(1),
+                        status,
+                        phase,
+                    })
+                });
+                cx.draw(
+                    point(px(0.), px(0.)),
+                    gpui::size(px(900.), px(600.)),
+                    |_, _| view.clone(),
+                );
+            }
+        }
+    }
+
+    /// A failed child's reason line carries the child's own stderr beneath the
+    /// sentence, and paints no second block when there is no tail to show.
+    #[gpui::test]
+    fn a_failed_child_shows_its_stderr_under_the_reason(cx: &mut gpui::TestAppContext) {
+        struct StderrCardTestView {
+            stderr: &'static str,
+        }
+
+        impl gpui::Render for StderrCardTestView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let details = serde_json::json!({
+                    "orbit": "subagent/1",
+                    "mode": "single",
+                    "children": [{
+                        "agent": "scout",
+                        "status": "failed",
+                        "phase": "settled",
+                        "error": "child exited 1",
+                        "stderrTail": self.stderr,
+                        "usage": {"input": 0, "output": 0}
+                    }]
+                });
+                let tool = ToolCall {
+                    name: "subagent".into(),
+                    summary: String::new(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: None,
+                    args: None,
+                    output: None,
+                    failed: true,
+                    facts: ToolFacts::default(),
+                    details: Some(details),
+                };
+                let run = crate::subagent::SubagentRun::from_tool(&tool).expect("details parse");
+                render_subagent_card(
+                    &run,
+                    false,
+                    theme::Theme::for_id(theme::ThemeId::Orbit),
+                    (0, 0),
+                    false,
+                    Rc::new(RefCell::new(HashSet::new())),
+                    Rc::new(RefCell::new(HashMap::new())),
+                    MessageScrollerState::new(1),
+                )
+            }
+        }
+
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        for (stderr, painted) in [
+            ("Error: Failed to load extension \"/x\"", true),
+            ("", false),
+        ] {
+            let (view, cx) = cx.add_window_view(|_, _| StderrCardTestView { stderr });
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(600.)),
+                |_, _| view.clone(),
+            );
+            assert_eq!(
+                cx.debug_bounds("subagent-strip-stderr").is_some(),
+                painted,
+                "stderr tail {stderr:?}"
+            );
+        }
+    }
+
+    /// Both prompt and response footers expose the fork picker. The response
+    /// footer also saves the exact response, not whichever happens to be last.
+    #[gpui::test]
+    fn response_footer_offers_fork_and_exports_its_own_text(cx: &mut gpui::TestAppContext) {
+        struct RowsView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+            exported: Rc<RefCell<Vec<(String, bool)>>>,
+            forked: Rc<RefCell<Vec<usize>>>,
+            regenerated: Rc<RefCell<Vec<usize>>>,
+        }
+
+        impl gpui::Render for RowsView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                let forked = self.forked.clone();
+                view.rewind = Some(Rc::new(move |row, _, _| forked.borrow_mut().push(row)));
+                let regenerated = self.regenerated.clone();
+                view.regenerate =
+                    Some(Rc::new(move |row, _, _| regenerated.borrow_mut().push(row)));
+                view.viewport_height = px(300.);
+                let exported = self.exported.clone();
+                view.export_response = Some(Rc::new(move |text, pdf, _, _, _| {
+                    exported.borrow_mut().push((text, pdf))
+                }));
+                render_transcript(view, cx)
+            }
+        }
+
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let message = |user: bool, text: &str| ChatMessage {
+            user,
+            summary: None,
+            steps: vec![Step {
+                text: text.into(),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        let messages = Rc::new(RefCell::new(vec![
+            message(true, "first prompt"),
+            message(false, "first answer"),
+        ]));
+        let exported = Rc::new(RefCell::new(Vec::new()));
+        let forked = Rc::new(RefCell::new(Vec::new()));
+        let regenerated = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view(|_, _| RowsView {
+            messages,
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            exported: exported.clone(),
+            forked: forked.clone(),
+            regenerated: regenerated.clone(),
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        assert!(
+            cx.debug_bounds("rewind-turn-0").is_some(),
+            "the user message's footer offers a rewind"
+        );
+        assert!(
+            cx.debug_bounds("rewind-turn-1").is_some(),
+            "the assistant response offers the fork picker"
+        );
+        let button = cx
+            .debug_bounds("export-response-1")
+            .expect("response export button");
+        let position = button.center();
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(position, gpui::Modifiers::none());
+        assert_eq!(
+            &*exported.borrow(),
+            &[("first answer".to_string(), false)],
+            "button bounds: {button:?}"
+        );
+        let pdf = cx.debug_bounds("export-response-pdf-1").unwrap().center();
+        cx.simulate_mouse_move(pdf, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(pdf, gpui::Modifiers::none());
+        assert_eq!(exported.borrow()[1], ("first answer".to_string(), true));
+        let fork = cx.debug_bounds("rewind-turn-1").unwrap().center();
+        cx.simulate_mouse_move(fork, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(fork, gpui::Modifiers::none());
+        assert_eq!(&*forked.borrow(), &[1]);
+        assert!(
+            cx.debug_bounds("regenerate-response-0").is_none(),
+            "a user message has no regenerate action"
+        );
+        let regenerate = cx
+            .debug_bounds("regenerate-response-1")
+            .expect("the response offers regenerate")
+            .center();
+        cx.simulate_mouse_move(regenerate, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(regenerate, gpui::Modifiers::none());
+        assert_eq!(&*regenerated.borrow(), &[1]);
+    }
+
+    /// A failed turn without text has no footer, so its error card carries the
+    /// retry. A failed turn with text uses the footer's regenerate instead, so
+    /// the two affordances never sit on top of each other.
+    #[gpui::test]
+    fn an_error_only_response_retries_from_its_error_card(cx: &mut gpui::TestAppContext) {
+        struct ErrorView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+            retried: Rc<RefCell<Vec<usize>>>,
+        }
+
+        impl gpui::Render for ErrorView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                let retried = self.retried.clone();
+                view.regenerate = Some(Rc::new(move |row, _, _| retried.borrow_mut().push(row)));
+                view.viewport_height = px(300.);
+                render_transcript(view, cx)
+            }
+        }
+
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let messages = Rc::new(RefCell::new(vec![
+            ChatMessage {
+                user: true,
+                summary: None,
+                steps: vec![Step {
+                    text: "first prompt".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: None,
+                aborted: false,
+            },
+            ChatMessage {
+                user: false,
+                summary: None,
+                steps: Vec::new(),
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: Some("provider overloaded".into()),
+                aborted: false,
+            },
+        ]));
+        let retried = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view(|_, _| ErrorView {
+            messages: messages.clone(),
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            retried: retried.clone(),
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(300.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        assert!(
+            cx.debug_bounds("regenerate-response-1").is_none(),
+            "an error-only turn has no response footer"
+        );
+        let retry = cx
+            .debug_bounds("retry-response-1")
+            .expect("the error card offers retry")
+            .center();
+        cx.simulate_mouse_move(retry, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_click(retry, gpui::Modifiers::none());
+        assert_eq!(&*retried.borrow(), &[1]);
+
+        // The same failed turn with text moves the action into the footer, so
+        // the card does not duplicate it. A fresh view keeps the assertion
+        // independent of the previous frame's painted tree.
+        let with_text = vec![
+            ChatMessage {
+                user: true,
+                summary: None,
+                steps: vec![Step {
+                    text: "first prompt".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: None,
+                aborted: false,
+            },
+            ChatMessage {
+                user: false,
+                summary: None,
+                steps: vec![Step {
+                    text: "partial answer".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: Some("provider overloaded".into()),
+                aborted: false,
+            },
+        ];
+        let (text_view, text_cx) = cx.add_window_view(|_, _| ErrorView {
+            messages: Rc::new(RefCell::new(with_text)),
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            retried: Rc::new(RefCell::new(Vec::new())),
+        });
+        let _ = text_cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| text_view.clone(),
+        );
+        assert!(
+            text_cx.debug_bounds("retry-response-1").is_none(),
+            "the card does not duplicate the footer action"
+        );
+        assert!(
+            text_cx.debug_bounds("regenerate-response-1").is_some(),
+            "the footer offers regenerate for a response with text"
+        );
+    }
+
+    #[gpui::test]
+    fn activity_details_do_not_toggle_the_card(cx: &mut gpui::TestAppContext) {
+        let open = Rc::new(RefCell::new(HashSet::from([(0, 0)])));
+        let sections = Rc::new(RefCell::new(HashSet::new()));
+        let (view, cx) = cx.add_window_view(|_, _| ActivityCardTestView {
+            open: open.clone(),
+            sections: sections.clone(),
+            scroller: MessageScrollerState::new(1),
+            output: None,
+            image_opener: None,
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(600.), px(1200.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        let header = cx.debug_bounds("tool-header-0-0").unwrap();
+        let body = point(header.left() + px(30.), header.bottom() + px(55.));
+        cx.simulate_mouse_move(body, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_down(body, MouseButton::Left, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_up(body, MouseButton::Left, gpui::Modifiers::none());
+        assert!(
+            open.borrow().contains(&(0, 0)),
+            "clicking text must not close the card"
+        );
+        draw(cx);
+        let fold = cx.debug_bounds("tool-section-fold-0-0-1").unwrap();
+        let position = point(fold.left() + px(20.), fold.top() + px(10.));
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+        assert!(
+            sections.borrow().contains(&(0, 0, 1)),
+            "show more expands the output"
+        );
+        assert!(
+            open.borrow().contains(&(0, 0)),
+            "show more must not close the card"
+        );
+        draw(cx);
+        let header = cx.debug_bounds("tool-header-0-0").unwrap();
+        let position = point(header.left() + px(25.), header.top() + px(10.));
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+        assert!(
+            !open.borrow().contains(&(0, 0)),
+            "the header still closes the card"
+        );
+    }
+
+    #[gpui::test]
+    fn clicking_tool_image_uses_attachment_opener(cx: &mut gpui::TestAppContext) {
+        use base64::Engine as _;
+
+        let opened = Rc::new(Cell::new(0));
+        let count = opened.clone();
+        let open = Rc::new(RefCell::new(HashSet::from([(0, 0)])));
+        let card_open = open.clone();
+        let (view, cx) = cx.add_window_view(|_, _| ActivityCardTestView {
+            open,
+            sections: Rc::new(RefCell::new(HashSet::new())),
+            scroller: MessageScrollerState::new(1),
+            output: Some(serde_json::json!({"content": [{
+                "type": "image", "mimeType": "image/png",
+                "data": base64::engine::general_purpose::STANDARD.encode(fixture_png())
+            }]})),
+            image_opener: Some(Rc::new(move |_, _, _| count.set(count.get() + 1))),
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(600.)),
+            |_, _| view.clone(),
+        );
+        let bounds = cx.debug_bounds("tool-image-0-0-0").expect("tool image");
+        let position = point(bounds.left() + px(30.), bounds.top() + px(30.));
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        cx.simulate_click(position, gpui::Modifiers::none());
+        assert_eq!(opened.get(), 1);
+        assert!(card_open.borrow().contains(&(0, 0)));
+    }
+
+    #[test]
+    fn tool_result_images_reuse_their_decoded_form_and_stay_bounded() {
+        use base64::Engine as _;
+
+        let output = |byte: u8| {
+            serde_json::json!({"content": [{
+                "type": "image", "mimeType": "image/png",
+                "data": base64::engine::general_purpose::STANDARD.encode([byte; 8])
+            }]})
+        };
+        let first = tool_result_images(&output(0));
+        assert!(Arc::ptr_eq(&first[0], &tool_result_images(&output(0))[0]));
+        // Far more images than one card holds: the cache evicts one at a time
+        // rather than clearing, so the newest stays warm and the map is capped.
+        let last = ToolImageCache::CAP as u8 + 8;
+        for byte in 1..=last {
+            tool_result_images(&output(byte));
+        }
+        TOOL_IMAGE_CACHE.with(|cache| assert!(cache.borrow().images.len() <= ToolImageCache::CAP));
+        assert!(Arc::ptr_eq(
+            &tool_result_images(&output(last))[0],
+            &tool_result_images(&output(last))[0]
+        ));
     }
 
     struct TableTestView {
@@ -7837,6 +11812,7 @@ mod tests {
             let _scope = TextScopeGuard::enter(TextScope {
                 state: self.selection.clone(),
                 message_ix: 0,
+                color_swatches: true,
             });
             div().w_full().child(render_table(
                 &self.header,
@@ -7975,6 +11951,99 @@ mod tests {
         );
     }
 
+    /// A prompt sent with attached files ends with the mention block the
+    /// composer folded in. It renders as file chips — the same 20px tile the
+    /// composer tray uses — instead of leaving a raw `@/path` line inside the
+    /// bubble, and because the block is read back out of the message text a
+    /// reloaded session shows the same chips.
+    #[gpui::test]
+    fn attached_files_render_as_chips_in_the_sent_message(cx: &mut gpui::TestAppContext) {
+        struct BubbleView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+        }
+
+        impl gpui::Render for BubbleView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                render_transcript(view, cx)
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages: Rc<RefCell<Vec<ChatMessage>>> = Rc::new(RefCell::new(vec![ChatMessage {
+            user: true,
+            summary: None,
+            steps: vec![Step {
+                text: "check the install process\n\n@/Users/someone/Downloads/APP-Install.md"
+                    .into(),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        }]));
+        let scroller = MessageScrollerState::new(1);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| BubbleView {
+                messages,
+                state,
+                scroller,
+            })
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            |_, _| view.clone(),
+        );
+
+        let chip = cx
+            .debug_bounds("user-file-0-0")
+            .expect("the folded mention block renders as a file chip");
+        let tile = cx.debug_bounds("user-file-tile-0-0").expect("file tile");
+        let text = cx.debug_bounds("user-file-text-0-0").expect("path text");
+
+        // The icon and the path share one centreline: a taller inherited line
+        // height used to centre the text's box while its glyphs sat low, making
+        // the tile read as sitting too high.
+        assert_eq!(
+            (tile.origin.y + tile.size.height / 2.).round(),
+            (text.origin.y + text.size.height / 2.).round(),
+            "the file tile and the path are vertically centred on each other"
+        );
+        assert_eq!(
+            (chip.origin.y + chip.size.height / 2.).round(),
+            (tile.origin.y + tile.size.height / 2.).round(),
+            "the tile is centred in the chip"
+        );
+        assert_eq!(tile.size, gpui::size(px(20.), px(20.)), "one tile size");
+        // Equal insets: the icon and the end of the path sit the same distance
+        // from the chip's left and right borders.
+        let left_inset = tile.origin.x - chip.origin.x;
+        let right_inset = (chip.origin.x + chip.size.width) - (text.origin.x + text.size.width);
+        assert!(
+            (left_inset - right_inset).abs() <= px(0.5),
+            "icon inset {left_inset:?} must match the path's {right_inset:?}"
+        );
+        // One 16px line box — the same `line_height(1.)` every button and chip
+        // uses — not the taller default whose extra leading leaves the glyphs
+        // sitting low in the box while the tile stays centred.
+        assert!(
+            text.size.height <= px(16.),
+            "the path renders in one button-height line box, got {:?}",
+            text.size.height
+        );
+    }
+
     /// The entity wrapper `list()` requires (it reads `window.current_view`).
     struct SelectTestView {
         messages: Rc<RefCell<Vec<ChatMessage>>>,
@@ -8008,6 +12077,246 @@ mod tests {
                 view.streaming.set(Some(0));
             }
             render_transcript(view, cx)
+        }
+    }
+
+    #[gpui::test]
+    fn long_user_markdown_does_not_overlap_the_reply(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        {
+            let mut messages = messages.borrow_mut();
+            messages.swap(0, 1);
+            messages[1].steps[0].text = "Assistant response begins here.".into();
+        }
+        let scroller = MessageScrollerState::new(2);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller: scroller.clone(),
+                main_width: px(700.),
+                open_work: false,
+                live: false,
+            })
+        });
+        for code in [false, true] {
+            let fence = if code {
+                format!(
+                    "```css\n{}\n```\n\n",
+                    "--text-primary: #f1f1f4;\n".repeat(15)
+                )
+            } else {
+                String::new()
+            };
+            messages.borrow_mut()[0].steps[0].text = format!(
+                "# Palette\n\n{}\n\n{fence}## Rules\n\n1. First rule.\n2. Second rule.\n\nLast user paragraph.",
+                "Long description with enough text to wrap onto several lines. ".repeat(20),
+            );
+            for width in [700., 450.] {
+                scroller.reset(2);
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.main_width = px(width);
+                        cx.notify();
+                    })
+                });
+                cx.draw(
+                    point(px(0.), px(0.)),
+                    gpui::size(px(width), px(900.)),
+                    |_, _| view.clone(),
+                );
+                let selection = state.borrow();
+                let last_user = selection
+                    .blocks
+                    .iter()
+                    .find(|block| block.text.as_ref() == "Last user paragraph.")
+                    .expect("last user paragraph");
+                let reply = selection
+                    .blocks
+                    .iter()
+                    .find(|block| block.text.as_ref() == "Assistant response begins here.")
+                    .expect("reply paragraph");
+                assert!(
+                    last_user.bounds.bottom() <= reply.bounds.top(),
+                    "code={code}, width={width}: user {:?} overlaps reply {:?}",
+                    last_user.bounds,
+                    reply.bounds
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn first_message_remains_above_reply_after_resizing(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        {
+            let mut messages = messages.borrow_mut();
+            messages.swap(0, 1);
+            messages[0].steps[0].text = format!(
+                "# Color System\n\nUse these colors consistently across all UI elements:\n\n{}\n\n## CSS Variables\n\n```css\n:root {{\n{}\n}}\n```\n\n## Rules\n\n1. Never mix colors outside this system.\n2. Maintain WCAG AA contrast for all text on backgrounds.\n3. Use semantic colors only for their intended purpose.\n4. Primary is for main actions.\n5. Use surface for elevated containers, background for the page.",
+                "- **primary**: #5E6AD2 — Main brand color — CTAs, active states, key UI elements\n".repeat(13),
+                "  --text-primary: #F1F1F4;\n".repeat(14),
+            );
+            messages[1].steps[0].text = "Assistant response begins here.".into();
+        }
+        let scroller = MessageScrollerState::new(2);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages,
+                state: state.clone(),
+                scroller,
+                main_width: px(1000.),
+                open_work: false,
+                live: false,
+            })
+        });
+        for width in [1000., 700., 1000.] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.main_width = px(width);
+                    cx.notify();
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1000.)),
+                |_, _| view.clone(),
+            );
+            let selection = state.borrow();
+            let last_user = selection
+                .blocks
+                .iter()
+                .filter(|block| block.message_ix == 0)
+                .map(|block| block.bounds.bottom())
+                .max()
+                .expect("user text");
+            let first_reply = selection
+                .blocks
+                .iter()
+                .filter(|block| block.message_ix == 1)
+                .map(|block| block.bounds.top())
+                .min()
+                .expect("reply text");
+            assert!(
+                last_user <= first_reply,
+                "width={width}: user ends at {last_user:?}, reply starts at {first_reply:?}"
+            );
+        }
+    }
+
+    /// A prompt whose first token has not arrived yet paints the live row at
+    /// the tail of the transcript. The regression this guards is the send being
+    /// acknowledged by nothing at all until pi produced its first event.
+    #[gpui::test]
+    fn the_pending_reply_row_paints_before_any_token(cx: &mut gpui::TestAppContext) {
+        struct PendingReplyView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+        }
+
+        impl gpui::Render for PendingReplyView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                // The state `submit_as` arms: the prompt is out, the clock runs.
+                view.awaiting_reply.set(true);
+                view.stream_started.set(Some(Instant::now()));
+                render_transcript(view, cx)
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages: Rc<RefCell<Vec<ChatMessage>>> = Rc::new(RefCell::new(vec![ChatMessage {
+            user: true,
+            summary: None,
+            steps: vec![Step {
+                text: "run the tests".into(),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        }]));
+        // One message row + the pending tail slot, which is what
+        // `Transcript::expect_reply` makes the scroller hold.
+        let scroller = MessageScrollerState::new(2);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| PendingReplyView {
+                messages,
+                state,
+                scroller,
+            })
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            |_, _| view.clone(),
+        );
+
+        let bounds = cx
+            .debug_bounds("working-indicator")
+            .expect("the live row is painted while the reply is pending");
+        assert!(bounds.size.width > px(0.), "the indicator carries a label");
+    }
+
+    /// The compaction / branch-summary boundary cards must paint — collapsed
+    /// and expanded — with pi's summary content, never a blank row.
+    #[gpui::test]
+    fn summary_cards_render_collapsed_and_expanded(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let boundary = |branch: bool, summary: &str, tokens: Option<u64>| ChatMessage {
+            user: false,
+            summary: Some(SummaryRow {
+                branch,
+                summary: summary.to_string(),
+                tokens_before: tokens,
+            }),
+            steps: vec![Step::default()],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        let messages: Rc<RefCell<Vec<ChatMessage>>> = Rc::new(RefCell::new(vec![
+            boundary(false, "## Goal\n\nShip the fix.", Some(150_700)),
+            boundary(true, "Explored approach A.", None),
+        ]));
+        // Collapsed paints the header alone; `open_work` expands row 0 (the
+        // disclosure state summaries share with the turn fold).
+        for open in [false, true] {
+            let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+            let scroller = MessageScrollerState::new(messages.borrow().len());
+            let view = cx.update(|_, cx| {
+                cx.new(|_| SelectTestView {
+                    messages: messages.clone(),
+                    state,
+                    scroller,
+                    main_width: px(900.),
+                    open_work: open,
+                    live: false,
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(800.)),
+                |_, _| view.clone(),
+            );
         }
     }
 
@@ -8216,6 +12525,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         messages.borrow_mut()[0].steps = vec![
             Step { text: prose.clone(), thinking: "First thought\nChecking references".into(), tools: vec![tool.clone()], ..Step::default() },
@@ -8344,6 +12654,7 @@ mod tests {
                     output: None,
                     failed: false,
                     facts: Default::default(),
+                    details: None,
                 }],
                 ..Step::default()
             });
@@ -8364,9 +12675,14 @@ mod tests {
                     |_, _| view.clone(),
                 );
                 let indicator = cx.debug_bounds("working-indicator").unwrap();
+                // The row's `pb` is `DynamicSpacing::Base24`; only that final
+                // padding belongs below the indicator, never per-row
+                // accumulation.
+                let row_bottom_pad =
+                    DynamicSpacing::Base24.px(&theme::Theme::for_id(theme::ThemeId::Orbit));
                 assert_eq!(
                     height - indicator.bottom(),
-                    px(22.),
+                    row_bottom_pad,
                     "only the final row padding belongs below the indicator: {count} tools at {width}px"
                 );
                 if count >= 6 {
@@ -8408,12 +12724,116 @@ mod tests {
         );
     }
 
+    /// The rule is a judgement about *what kind* of work trails, not just how
+    /// much: a thought after the answer hoists, tool calls never do.
+    #[test]
+    fn only_a_trailing_thought_hoists_above_the_answer() {
+        fn step(text: &str, thinking: &str, tools: usize) -> Step {
+            let mut step = Step {
+                text: text.into(),
+                thinking: thinking.into(),
+                ..Default::default()
+            };
+            for _ in 0..tools {
+                step.tools.push(crate::transcript::ToolCall {
+                    name: "read".into(),
+                    summary: String::new(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: None,
+                    args: None,
+                    output: None,
+                    failed: false,
+                    facts: Default::default(),
+                    details: None,
+                });
+            }
+            step
+        }
+
+        // Answer, then a trailing thought: hoist.
+        let trailing_thought = [step("answer", "", 0), step("", "hmm", 0)];
+        assert!(hoists_trailing_thought(&trailing_thought, Some(0)));
+
+        // Answer, then tool calls: never hoist — those effects happened after
+        // the sentence that announced them.
+        let trailing_tools = [step("answer", "", 0), step("", "hmm", 2)];
+        assert!(!hoists_trailing_thought(&trailing_tools, Some(0)));
+
+        // Work between two text blocks reads in the order it was spoken.
+        let interleaved = [
+            step("first", "", 0),
+            step("", "hmm", 2),
+            step("second", "", 0),
+        ];
+        assert!(!hoists_trailing_thought(&interleaved, Some(0)));
+
+        // Two text blocks with only thinking after them still hoist: a thought
+        // has no effects and no order to preserve, so it belongs with the
+        // reasoning above the answer rather than stranded at the bottom.
+        let two_texts = [
+            step("first", "", 0),
+            step("second", "", 0),
+            step("", "hmm", 0),
+        ];
+        assert!(hoists_trailing_thought(&two_texts, Some(0)));
+
+        // No answer at all: everything hoists into one group at the top.
+        let work_only = [step("", "hmm", 1)];
+        assert!(hoists_trailing_thought(&work_only, None));
+    }
+
+    #[gpui::test]
+    fn transcript_double_click_selects_a_word(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller: scroller.clone(),
+                main_width: px(900.),
+                open_work: false,
+                live: false,
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            |_, _| view.clone(),
+        );
+        let position = {
+            let state = state.borrow();
+            let block = state
+                .blocks
+                .iter()
+                .find(|block| block.text.contains("Alpha bravo"))
+                .unwrap();
+            let start = block.text.find("bravo").unwrap();
+            let a = block.layout.position_for_index(start + 1).unwrap();
+            point(a.x, a.y + block.layout.line_height() * 0.5)
+        };
+        cx.simulate_event(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: gpui::Modifiers::none(),
+            first_mouse: false,
+        });
+        assert_eq!(state.borrow().selected_text().as_deref(), Some("bravo"));
+        assert!(!state.borrow().dragging);
+    }
+
     /// The panel's selection plumbing end-to-end: a simulated drag from the
     /// assistant paragraph into the user prompt must produce a cross-block
     /// selection (this caught a panel hitbox that never filled its bounds).
     #[gpui::test]
     fn transcript_drag_selects_across_paragraphs(cx: &mut gpui::TestAppContext) {
-        let mut cx = cx.add_empty_window();
+        let cx = cx.add_empty_window();
         cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
         let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
         let messages = test_messages();
@@ -8442,7 +12862,7 @@ mod tests {
                 move |_, _| view.clone(),
             );
         };
-        paint(&mut cx);
+        paint(cx);
 
         let blocks = state.borrow();
         assert!(
@@ -8457,9 +12877,9 @@ mod tests {
         let start = point(first.left() + px(2.), first.top() + px(8.));
         let end = point(last.left() + px(60.), last.top() + px(8.));
         cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
-        paint(&mut cx);
+        paint(cx);
         cx.simulate_mouse_move(end, Some(MouseButton::Left), gpui::Modifiers::none());
-        paint(&mut cx);
+        paint(cx);
         cx.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::none());
 
         let selected = state.borrow().selected_text();
@@ -8471,6 +12891,313 @@ mod tests {
         assert!(
             selected.contains("zulu") && selected.contains("Second"),
             "unexpected selection text: {selected:?}"
+        );
+    }
+
+    /// Serves a fixed 200×100 PNG for any image request so the markdown
+    /// image pipeline (parse → fetch → decode → layout) can run headless,
+    /// recording every URI the renderer asked for.
+    #[derive(Default)]
+    struct PngHttpClient {
+        requested: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    /// A 200×100 gray PNG, encoded per request so no fixture file is needed.
+    fn fixture_png() -> Vec<u8> {
+        let pixels = image::RgbaImage::from_pixel(200, 100, image::Rgba([120, 120, 120, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode the fixture png");
+        bytes.into_inner()
+    }
+
+    impl gpui::http_client::HttpClient for PngHttpClient {
+        fn type_name(&self) -> &'static str {
+            "PngHttpClient"
+        }
+
+        fn user_agent(&self) -> Option<&gpui::http_client::http::HeaderValue> {
+            None
+        }
+
+        fn proxy(&self) -> Option<&gpui::http_client::Url> {
+            None
+        }
+
+        fn send(
+            &self,
+            request: gpui::http_client::Request<gpui::http_client::AsyncBody>,
+        ) -> futures::future::BoxFuture<
+            'static,
+            anyhow::Result<gpui::http_client::Response<gpui::http_client::AsyncBody>>,
+        > {
+            self.requested
+                .lock()
+                .expect("request log is not poisoned")
+                .push(request.uri().to_string());
+            let png = fixture_png();
+            Box::pin(async move {
+                Ok(gpui::http_client::Response::builder()
+                    .status(200)
+                    .header("content-type", "image/png")
+                    .body(gpui::http_client::AsyncBody::from(png))
+                    .expect("build the fixture response"))
+            })
+        }
+    }
+
+    /// A standalone markdown image (the `<img>` tag GitHub stores for a
+    /// pasted issue screenshot) must lay out at the reading column's width
+    /// with its aspect ratio kept. The element used to force a definite
+    /// `height: 0`, from which gpui derives a 0px width — the image decoded
+    /// and then painted 0×0, so issue bodies appeared to have no screenshot
+    /// at all.
+    #[gpui::test]
+    fn markdown_image_lays_out_in_the_reading_column(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let requested = Arc::new(std::sync::Mutex::new(Vec::new()));
+        cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.set_http_client(Arc::new(PngHttpClient {
+                requested: requested.clone(),
+            }));
+        });
+
+        struct ImageDocView;
+        impl gpui::Render for ImageDocView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div()
+                    .id("image-doc")
+                    .w(px(100.))
+                    .debug_selector(|| "image-doc".to_string())
+                    .child(render_markdown_document(
+                        "<img width=\"1450\" height=\"932\" alt=\"Image\" src=\"https://example.com/shot.png\" />",
+                        theme::Theme::for_id(theme::ThemeId::Orbit),
+                    ))
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| ImageDocView));
+        let paint = |cx: &mut gpui::VisualTestContext| {
+            let view = view.clone();
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(300.), px(300.)),
+                move |_, _| view.clone(),
+            );
+        };
+        paint(cx);
+        cx.run_until_parked();
+        paint(cx);
+        cx.run_until_parked();
+        paint(cx);
+
+        assert!(
+            requested
+                .lock()
+                .expect("request log is not poisoned")
+                .iter()
+                .any(|uri| uri == "https://example.com/shot.png"),
+            "the document's image must be fetched"
+        );
+        let host = cx
+            .debug_bounds("image-doc")
+            .expect("the document is visible");
+        // The 200×100 fixture scales to the 100px column as 100×50; a
+        // definite zero height instead collapses the box to 0×0.
+        assert_eq!(
+            host.size.height,
+            px(50.),
+            "the image must keep its ratio at column width"
+        );
+    }
+
+    /// A reply that quotes a pasted screenshot stores a signed
+    /// `private-user-images` URL whose JWT expires within minutes, so fetching
+    /// it 404s and the reply shows only the alt-text fallback. The renderer
+    /// must fetch the durable `user-attachments` URL for the same asset.
+    #[gpui::test]
+    fn quoted_reply_image_uses_the_durable_asset_url(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let requested = Arc::new(std::sync::Mutex::new(Vec::new()));
+        cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.set_http_client(Arc::new(PngHttpClient {
+                requested: requested.clone(),
+            }));
+        });
+
+        struct ReplyDocView;
+        impl gpui::Render for ReplyDocView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div().id("reply-doc").w(px(240.)).child(render_markdown_document(
+                    "> ### What happened?\n> <img alt=\"Image\" width=\"1450\" height=\"932\" src=\"https://private-user-images.githubusercontent.com/74659438/656345150-69f721c8-e025-44cd-8242-4e87eef54f7e.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.expired\">\n> ### Steps to reproduce\n> 1. Open OrbitPI on windows\n",
+                    theme::Theme::for_id(theme::ThemeId::Orbit),
+                ))
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| ReplyDocView));
+        let paint = |cx: &mut gpui::VisualTestContext| {
+            let view = view.clone();
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(300.), px(300.)),
+                move |_, _| view.clone(),
+            );
+        };
+        paint(cx);
+        cx.run_until_parked();
+        paint(cx);
+        cx.run_until_parked();
+        paint(cx);
+
+        let requested = requested.lock().expect("request log is not poisoned");
+        assert!(
+            requested.iter().any(|uri| {
+                uri
+                == "https://github.com/user-attachments/assets/69f721c8-e025-44cd-8242-4e87eef54f7e"
+            }),
+            "the reply must fetch the durable asset URL, got {requested:?}"
+        );
+        assert!(
+            !requested
+                .iter()
+                .any(|uri| uri.starts_with("https://private-user-images")),
+            "the expired signed URL must never be fetched: {requested:?}"
+        );
+    }
+
+    /// Issue #80: an agent call the reader never touched must obey Settings →
+    /// Agent instead of snapping shut when the run settles. `follow_run` is the
+    /// old behavior (open while live, closed once settled); the fixed modes
+    /// ignore the run state, and an explicit toggle still wins over both.
+    #[gpui::test]
+    fn agent_call_display_sets_the_untouched_default(cx: &mut gpui::TestAppContext) {
+        use crate::agent_call_display::AgentCallDisplay;
+
+        struct CallsView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+            mode: AgentCallDisplay,
+            live: bool,
+            explicit_open: bool,
+            fold_open: bool,
+        }
+
+        impl gpui::Render for CallsView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                view.agent_calls = self.mode;
+                if self.explicit_open {
+                    view.expanded_activities.borrow_mut().insert((0, 0), true);
+                }
+                if self.fold_open {
+                    view.expanded_turns.borrow_mut().insert(0);
+                }
+                if self.live {
+                    view.streaming.set(Some(0));
+                }
+                render_transcript(view, cx)
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+
+        // One turn that has worked but not yet spoken, so the group has work
+        // to fold. No answer text: that is what makes a group "live" — the
+        // run is still inside it.
+        let fixture = || {
+            let messages: Rc<RefCell<Vec<ChatMessage>>> =
+                Rc::new(RefCell::new(vec![ChatMessage {
+                    user: false,
+                    summary: None,
+                    steps: vec![Step {
+                        text: String::new(),
+                        tools: vec![ToolCall {
+                            name: "read_file".into(),
+                            summary: "src/main.rs".into(),
+                            path: Some("src/main.rs".into()),
+                            added: 0,
+                            removed: 0,
+                            id: None,
+                            args: Some(serde_json::json!({"path": "src/main.rs"})),
+                            output: Some("fn main() {}".into()),
+                            failed: false,
+                            facts: Default::default(),
+                            details: None,
+                        }],
+                        ..Step::default()
+                    }],
+                    images: Vec::new(),
+                    elapsed: None,
+                    finished_at: None,
+                    error: None,
+                    aborted: false,
+                }]));
+            let scroller = MessageScrollerState::new(1);
+            (messages, scroller)
+        };
+
+        // `true` means the activity group painted its body — the only way a
+        // tool card inside it exists at all. `fold_open` opens the settled
+        // turn fold, which is what makes pre-answer work visible once a run
+        // has finished.
+        let group_open = |cx: &mut gpui::VisualTestContext,
+                          mode: AgentCallDisplay,
+                          live: bool,
+                          fold_open: bool,
+                          explicit_open: bool| {
+            let (messages, scroller) = fixture();
+            let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+            let view = cx.update(|_, cx| {
+                cx.new(|_| CallsView {
+                    messages,
+                    state,
+                    scroller,
+                    mode,
+                    live,
+                    explicit_open,
+                    fold_open,
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(1200.)),
+                |_, _| view.clone(),
+            );
+            cx.debug_bounds("tool-card-0-0").is_some()
+        };
+
+        // FollowRun keeps the pre-#80 behavior: open while live, shut after.
+        assert!(
+            group_open(cx, AgentCallDisplay::FollowRun, true, false, false),
+            "follow_run opens a live group"
+        );
+        assert!(
+            !group_open(cx, AgentCallDisplay::FollowRun, false, true, false),
+            "follow_run closes a settled group inside an open fold"
+        );
+        // The fixed modes ignore the run state entirely.
+        assert!(
+            group_open(cx, AgentCallDisplay::Expanded, false, true, false),
+            "always expanded keeps a settled group open"
+        );
+        assert!(
+            !group_open(cx, AgentCallDisplay::Collapsed, true, false, false),
+            "always collapsed keeps even a live group closed"
+        );
+        // An explicit toggle wins over both fixed modes.
+        assert!(
+            group_open(cx, AgentCallDisplay::Collapsed, false, true, true),
+            "an explicitly opened group stays open under always collapsed"
         );
     }
 }

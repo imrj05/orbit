@@ -20,6 +20,7 @@
 import {
   configureQuotaAuth,
   OLLAMA_SESSION_KEY,
+  ollamaCloudKey,
   quotaAdapters,
   quotaReports,
   quotaStoredAuth,
@@ -116,6 +117,21 @@ export default async function activate(pi) {
     if (stored[OLLAMA_SESSION_KEY] != null) {
       const hasOllama = out.some((id) => id === "ollama" || id === "ollama-cloud");
       if (!hasOllama) out.push(registered.has("ollama-cloud") ? "ollama-cloud" : "ollama");
+    }
+    // The two Ollama ids reach the same account, and the adapter reads a key
+    // stored under the sibling id as a fallback — so keep the sibling in the
+    // snapshot too, or a key saved on one card would meter nothing on the
+    // other. The local placeholder is never a cloud key, and the third-party
+    // id is only worth adding when pi actually registers it.
+    if (ollamaCloudKey(stored["ollama-cloud"]) && !out.includes("ollama")) {
+      out.push("ollama");
+    }
+    if (
+      ollamaCloudKey(stored["ollama"]) &&
+      registered.has("ollama-cloud") &&
+      !out.includes("ollama-cloud")
+    ) {
+      out.push("ollama-cloud");
     }
     return out;
   }

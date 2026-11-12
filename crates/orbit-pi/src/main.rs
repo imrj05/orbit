@@ -37,69 +37,103 @@ macro_rules! tr_cow {
 }
 
 mod access;
+mod agent_call_display;
 mod app;
 mod app_icon;
+mod archive;
 mod ask;
 mod assets;
+mod attachments;
 mod auth;
 mod auto_title;
+mod backdrop;
 mod branch_picker;
+mod bug_report;
 mod bundled_extensions;
 mod checkpoint;
 mod command_palette;
+mod commands;
 mod commit_message;
+mod commit_model;
 mod composer;
+mod composer_send;
 mod context_meter;
 mod custom_ui;
 mod dialog;
-mod dither;
+mod diff_view;
 mod explorer;
+mod export_prefs;
 mod favorites;
 mod gh;
+mod gh_templates;
 mod git;
+mod git_accounts;
 mod git_ops;
 mod git_panel;
 mod highlight;
 mod http;
 mod i18n;
+mod issue_message;
 mod layout;
+mod main_window;
+mod mcp;
 mod mentions;
+mod mermaid;
 mod message_scroller;
 mod model_selector;
 mod model_selector_match;
+mod motion;
 mod notifications;
 mod onboarding;
+mod pi_install;
 mod pi_update;
 mod pins;
 mod platform;
+// Frame-time sampling for the render baseline. Debug builds only: a release
+// binary must not carry a frame hook or a recorder.
+#[cfg(debug_assertions)]
+mod perf;
+mod permissions;
 mod plugins;
 mod providers;
 mod quota;
+mod quota_hidden;
+mod recent_models;
+mod repository_clone;
 mod review;
+mod rewind;
+mod rewind_picker;
 mod rpc_patches;
+mod session_defaults;
+mod session_retention;
 mod sessions;
 mod shimmer;
 mod sidepane;
 mod skills;
+mod subagent;
+mod subagent_file;
+mod subagents;
 mod terminal;
 mod theme;
 mod toast;
 mod transcript;
 mod transcript_view;
+mod turn_review;
 mod updater;
 mod usage;
+mod wallpaper;
+mod wallpaper_fx;
 mod watch;
 mod widgets;
+mod workflow;
+mod working_folder;
 mod workspace_logo;
+mod workspace_mark;
 mod workspace_picker;
+mod worktree;
+mod worktree_setup;
 
-use std::time::Duration;
-
-use app::OrbitApp;
-use gpui::{
-    actions, prelude::*, px, size, App, Application, AsyncWindowContext, Bounds, Entity, Focusable,
-    KeyBinding, Menu, MenuItem, SystemMenuType, Timer, WindowBounds, WindowOptions,
-};
+use gpui::{actions, App, Application, KeyBinding, Menu, MenuItem, SystemMenuType};
 
 // Composer-scoped actions (bound in the `Composer` key context).
 actions!(
@@ -154,7 +188,12 @@ actions!(
         NextTurn,
         CheckForUpdates,
         SteerRun,
+        SendAlternate,
         ToggleSearch,
+        /// Record frame times while the user drives the app. The binding is
+        /// debug-only; the action type is not, so the root can always register a
+        /// handler and the handler body is what compiles away.
+        RecordFrameTimes,
         SearchNext,
         SearchPrev,
         SearchClose,
@@ -162,14 +201,23 @@ actions!(
         ToggleProjectPanel,
         ToggleSidebar,
         FocusSessions,
+        FocusSessionSearch,
+        NextSession,
+        PrevSession,
+        ReviewChanges,
+        OpenGit,
+        OpenWorktrees,
+        OpenShortcutHelp,
         CloseFiles,
         CloseFileTab,
         SaveFile,
         GitTabChanges,
         GitTabHistory,
         GitTabGraph,
+        GitTabStashes,
         GitTabIssues,
-        GitTabPulls
+        GitTabPulls,
+        GitCommitSubmit
     ]
 );
 
@@ -184,8 +232,24 @@ actions!(
         PickerSelectPrev
     ]
 );
+// New-task folder chip: native button activation while its focus handle owns
+// the keyboard. Scoped so Enter cannot fall through to the composer's Submit.
+actions!(new_task_keys, [OpenWorkspacePicker]);
 // Terminal-panel actions (bound to the `Terminal` context on the grid).
-actions!(terminal_keys, [TerminalEscape]);
+// `TerminalTab` exists so Tab reaches the shell's completion instead of the
+// global focus-traversal binding. The rest are the panel's tab commands: they
+// are scoped to `Terminal` and their chords avoid the shell's own editing keys.
+actions!(
+    terminal_keys,
+    [
+        TerminalEscape,
+        TerminalTab,
+        NewTerminalTab,
+        CloseTerminalTab,
+        NextTerminalTab,
+        PrevTerminalTab
+    ]
+);
 
 // Custom-UI surface action (bound to the `CustomUi` context on the surface's
 // focus handle) so Escape reaches the component instead of aborting the run.
@@ -207,6 +271,36 @@ actions!(
         AccessMenuPrev,
         AccessMenuConfirm,
         AccessMenuClose
+    ]
+);
+
+// Work-in picker actions (bound to the `WorkInMenu` context, which rides on
+// the open popup's focus handle).
+actions!(
+    work_in_menu_keys,
+    [
+        WorkInMenuNext,
+        WorkInMenuPrev,
+        WorkInMenuConfirm,
+        WorkInMenuClose,
+        WorkInMenuDetails
+    ]
+);
+
+actions!(
+    clone_dialog_keys,
+    [CloneDialogNext, CloneDialogPrev, CloneDialogActivate]
+);
+
+// Workflow-mode picker actions (bound to the `WorkflowMenu` context, which
+// rides on the open popup's focus handle).
+actions!(
+    workflow_menu_keys,
+    [
+        WorkflowMenuNext,
+        WorkflowMenuPrev,
+        WorkflowMenuConfirm,
+        WorkflowMenuClose
     ]
 );
 
@@ -239,7 +333,16 @@ actions!(update_dialog_keys, [UpdateDialogClose]);
 // the prompt's text field, which also carries `Composer`). Registered after the
 // Composer bindings so Enter confirms the name instead of submitting the
 // composer and Escape cancels instead of aborting the run.
-actions!(explorer_entry_keys, [ExplorerEntryConfirm, ExplorerEntryCancel]);
+actions!(
+    explorer_entry_keys,
+    [ExplorerEntryConfirm, ExplorerEntryCancel]
+);
+
+// Queue-bar inline edit actions (bound to the `QueueEdit` context on the row's
+// text field, which also carries `Composer`). Registered after the Composer
+// bindings so Enter saves the edited message instead of submitting the
+// composer, and Escape closes the field instead of aborting the run.
+actions!(queue_edit_keys, [QueueEditConfirm, QueueEditCancel]);
 
 // Sessions-sidebar keyboard navigation (bound to the `Sidebar` context, which
 // rides the sidebar's focus handle while it is keyboard-focused). Arrow keys
@@ -257,10 +360,62 @@ actions!(
     ]
 );
 
-fn bind_keys(cx: &mut App) {
+// Review-pane tree navigation (bound to the `ReviewDiffTree` context on the
+// pane's tree column). Rows move with the arrows; `n`/`p` jump files, `]`/`[`
+// jump hunks in the diff, `e`/`c` expand or collapse every file, and Escape
+// hands focus back to the composer.
+actions!(
+    review_keys,
+    [
+        ReviewTreeNext,
+        ReviewTreePrev,
+        ReviewTreeToggle,
+        ReviewFileNext,
+        ReviewFilePrev,
+        ReviewHunkNext,
+        ReviewHunkPrev,
+        ReviewExpandAll,
+        ReviewCollapseAll,
+        ReviewClose
+    ]
+);
+
+// Focus traversal: Tab / Shift-Tab walk the focusable surfaces. Contexts
+// that own Tab for their own purpose (the terminal, the composer's
+// autocomplete) re-bind it at their depth or fall through in their handler.
+actions!(focus_keys, [FocusNext, FocusPrev]);
+
+/// ⌘1–⌘9: open the Nth session in the sidebar's visible order. A payload
+/// action because the slot is part of the keystroke, not the command.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = orbit_keys, no_json)]
+pub struct OpenSessionSlot {
+    pub slot: usize,
+}
+
+pub(crate) fn bind_keys(cx: &mut App) {
+    // The app-command keymap comes from the command registry
+    // (`commands::BINDINGS`), so a chord and the chip that advertises it can
+    // never drift apart. Text-entry and modal keymaps below stay literal:
+    // they are conventions, not commands.
+    cx.bind_keys(commands::key_bindings());
+    // ⌘⌥P starts or stops a frame-time capture (`src/perf.rs`). Debug builds
+    // only, and deliberately outside the command registry: it is a developer
+    // tool, not a user command, so it must not appear in the palette or help.
+    // Two chords, on purpose: `alt` participates in macOS character composition
+    // (⌥P types "π"), and a chord that never fires is indistinguishable from a
+    // sampler that never ran. `⌘⇧P` carries no such ambiguity.
+    #[cfg(debug_assertions)]
     cx.bind_keys([
-        KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("escape", AbortRun, None),
+        KeyBinding::new("secondary-alt-p", RecordFrameTimes, None),
+        KeyBinding::new("secondary-shift-p", RecordFrameTimes, None),
+    ]);
+    cx.bind_keys([
+        // Focus traversal: every surface with a focus handle is reachable
+        // without the mouse. The composer's `Tab` (autocomplete accept) and
+        // the terminal's re-bind below take precedence at their depth.
+        KeyBinding::new("tab", FocusNext, None),
+        KeyBinding::new("shift-tab", FocusPrev, None),
         // Composer keys only apply while the input is focused.
         KeyBinding::new("backspace", Backspace, Some("Composer")),
         KeyBinding::new("delete", Delete, Some("Composer")),
@@ -285,14 +440,14 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-v", Paste, Some("Composer")),
         KeyBinding::new("secondary-c", Copy, Some("Composer")),
         KeyBinding::new("secondary-x", Cut, Some("Composer")),
-        KeyBinding::new("cmd-z", Undo, Some("Composer")),
-        KeyBinding::new("cmd-shift-z", Redo, Some("Composer")),
+        KeyBinding::new("secondary-z", Undo, Some("Composer")),
+        KeyBinding::new("secondary-shift-z", Redo, Some("Composer")),
         KeyBinding::new("enter", Submit, Some("Composer")),
         KeyBinding::new("secondary-enter", Submit, Some("Composer")),
-        // Steer: inject the composer text into the running turn instead of
-        // queuing a follow-up. With no run in flight it behaves like submit.
-        KeyBinding::new("secondary-shift-enter", SteerRun, Some("Composer")),
-        KeyBinding::new("alt-enter", SteerRun, Some("Composer")),
+        // Only the main chat input owns these sends, never a dialog or picker.
+        // Alt+Enter uses the other mode; the explicit steering chord stays fixed.
+        KeyBinding::new("secondary-shift-enter", SteerRun, Some("ChatComposer")),
+        KeyBinding::new("alt-enter", SendAlternate, Some("ChatComposer")),
         // Tab accepts the highlighted `/`-command or `@`-file entry while
         // the autocomplete menu is open (Enter is the second way in).
         KeyBinding::new("tab", AutocompleteAccept, Some("Composer")),
@@ -301,74 +456,39 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", Down, Some("Composer")),
         // The Explorer's code editor reuses the composer's text actions but
         // keeps its own context: Enter inserts a newline (it must not submit a
-        // chat message), and cmd-s writes the file.
+        // chat message), and the primary modifier + S writes the file.
         KeyBinding::new("backspace", Backspace, Some("Editor")),
         KeyBinding::new("delete", Delete, Some("Editor")),
         KeyBinding::new("left", Left, Some("Editor")),
         KeyBinding::new("right", Right, Some("Editor")),
         KeyBinding::new("shift-left", SelectLeft, Some("Editor")),
         KeyBinding::new("shift-right", SelectRight, Some("Editor")),
-        KeyBinding::new("cmd-left", LineLeft, Some("Editor")),
-        KeyBinding::new("cmd-right", LineRight, Some("Editor")),
-        KeyBinding::new("cmd-shift-left", SelectLineLeft, Some("Editor")),
-        KeyBinding::new("cmd-shift-right", SelectLineRight, Some("Editor")),
+        KeyBinding::new("secondary-left", LineLeft, Some("Editor")),
+        KeyBinding::new("secondary-right", LineRight, Some("Editor")),
+        KeyBinding::new("secondary-shift-left", SelectLineLeft, Some("Editor")),
+        KeyBinding::new("secondary-shift-right", SelectLineRight, Some("Editor")),
         KeyBinding::new("alt-left", WordLeft, Some("Editor")),
         KeyBinding::new("alt-right", WordRight, Some("Editor")),
         KeyBinding::new("alt-shift-left", SelectWordLeft, Some("Editor")),
         KeyBinding::new("alt-shift-right", SelectWordRight, Some("Editor")),
-        KeyBinding::new("cmd-a", SelectAll, Some("Editor")),
+        KeyBinding::new("secondary-a", SelectAll, Some("Editor")),
         KeyBinding::new("home", Home, Some("Editor")),
         KeyBinding::new("end", End, Some("Editor")),
-        KeyBinding::new("cmd-v", Paste, Some("Editor")),
-        KeyBinding::new("cmd-c", Copy, Some("Editor")),
-        KeyBinding::new("cmd-x", Cut, Some("Editor")),
-        KeyBinding::new("cmd-z", Undo, Some("Editor")),
-        KeyBinding::new("cmd-shift-z", Redo, Some("Editor")),
+        KeyBinding::new("secondary-v", Paste, Some("Editor")),
+        KeyBinding::new("secondary-c", Copy, Some("Editor")),
+        KeyBinding::new("secondary-x", Cut, Some("Editor")),
+        KeyBinding::new("secondary-z", Undo, Some("Editor")),
+        KeyBinding::new("secondary-shift-z", Redo, Some("Editor")),
         KeyBinding::new("up", Up, Some("Editor")),
         KeyBinding::new("down", Down, Some("Editor")),
         KeyBinding::new("enter", Newline, Some("Editor")),
         KeyBinding::new("shift-enter", Newline, Some("Editor")),
-        KeyBinding::new("cmd-s", SaveFile, Some("Editor")),
-        KeyBinding::new("secondary-n", NewSession, None),
-        KeyBinding::new("secondary-r", RefreshSessions, None),
-        KeyBinding::new("secondary-,", OpenSettings, None),
-        // The Usage page is a destination: the primary modifier + U matches
-        // the sidebar row.
-        KeyBinding::new("secondary-u", ToggleUsage, None),
-        // Git page tabs: cmd-1..cmd-5 switch tabs while the page is open; the
-        // handler is a no-op elsewhere, so they never surprise a chat session.
-        KeyBinding::new("cmd-1", GitTabChanges, None),
-        KeyBinding::new("cmd-2", GitTabHistory, None),
-        KeyBinding::new("cmd-3", GitTabGraph, None),
-        KeyBinding::new("cmd-4", GitTabIssues, None),
-        KeyBinding::new("cmd-5", GitTabPulls, None),
-        // Bottom terminal panel: the primary modifier + J is the workbench
-        // convention for the panel toggle (and stays live while the shell has
-        // focus, since app actions are not scoped to a key context).
-        KeyBinding::new("secondary-j", ToggleTerminal, None),
-        // Sessions sidebar: the primary modifier + B is the workbench
-        // convention for the left panel toggle.
-        KeyBinding::new("secondary-b", ToggleSidebar, None),
-        // Left project panel (Explorer): the primary modifier + Shift + E,
-        // the workbench convention (secondary resolves to Cmd on macOS and
-        // Ctrl elsewhere, matching the label the UI shows).
-        KeyBinding::new("secondary-shift-e", ToggleProjectPanel, None),
-        // On the Files surface, cmd-w closes the active file tab (the whole
-        // surface when it was the last tab); cmd-shift-w closes the surface.
-        KeyBinding::new("cmd-w", CloseFileTab, Some("Files")),
-        KeyBinding::new("cmd-shift-w", CloseFiles, Some("Files")),
-        KeyBinding::new("secondary-p", ToggleCommandPalette, None),
-        // The palette does quick-open work as well (sessions are its top
-        // hits), so the Raycast convention opens the same surface.
-        KeyBinding::new("secondary-k", ToggleCommandPalette, None),
-        KeyBinding::new("secondary-period", AbortRun, None),
-        // Transcript accelerators (work regardless of focus):
-        // copy the newest response; jump between user turns like the rail.
-        KeyBinding::new("secondary-shift-c", CopyLastResponse, None),
-        KeyBinding::new("secondary-up", PrevTurn, None),
-        KeyBinding::new("secondary-down", NextTurn, None),
-        // Check for Updates (the app menu has no native home in Orbit yet).
-        KeyBinding::new("secondary-shift-u", CheckForUpdates, None),
+        KeyBinding::new("secondary-s", SaveFile, Some("Editor")),
+        // On the Files surface, the primary modifier + W closes the active
+        // file tab (the whole surface when it was the last tab); the shifted
+        // chord closes the surface.
+        KeyBinding::new("secondary-w", CloseFileTab, Some("Files")),
+        KeyBinding::new("secondary-shift-w", CloseFiles, Some("Files")),
         // Model picker keys — the `Picker` context rides on the popup's
         // filter input, i.e. the *same* dispatch node as `Composer`, so these
         // bindings sit at the same depth as the composer ones. gpui breaks
@@ -379,6 +499,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", PickerConfirm, Some("Picker")),
         KeyBinding::new("up", PickerSelectPrev, Some("Picker")),
         KeyBinding::new("down", PickerSelectNext, Some("Picker")),
+        // New-task folder trigger — Enter and Space open its picker while the
+        // chip, rather than the composer, owns focus.
+        KeyBinding::new("enter", OpenWorkspacePicker, Some("NewTaskFolder")),
+        KeyBinding::new("space", OpenWorkspacePicker, Some("NewTaskFolder")),
         // Add-menu keys — the `AddMenu` context rides on the menu's own
         // focus handle (deeper than the global escape/enter bindings, so
         // these win while the menu is open).
@@ -392,6 +516,21 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", AccessMenuConfirm, Some("AccessMenu")),
         KeyBinding::new("up", AccessMenuPrev, Some("AccessMenu")),
         KeyBinding::new("down", AccessMenuNext, Some("AccessMenu")),
+        // Work-in picker keys — same shape again.
+        KeyBinding::new("escape", WorkInMenuClose, Some("WorkInMenu")),
+        KeyBinding::new("space", WorkInMenuDetails, Some("WorkInMenu")),
+        KeyBinding::new("enter", WorkInMenuConfirm, Some("WorkInMenu")),
+        KeyBinding::new("up", WorkInMenuPrev, Some("WorkInMenu")),
+        KeyBinding::new("down", WorkInMenuNext, Some("WorkInMenu")),
+        KeyBinding::new("tab", CloneDialogNext, Some("CloneDialog")),
+        KeyBinding::new("shift-tab", CloneDialogPrev, Some("CloneDialog")),
+        KeyBinding::new("enter", CloneDialogActivate, Some("CloneDialog")),
+        KeyBinding::new("space", CloneDialogActivate, Some("CloneDialogButton")),
+        // Workflow-mode picker keys — same shape again.
+        KeyBinding::new("escape", WorkflowMenuClose, Some("WorkflowMenu")),
+        KeyBinding::new("enter", WorkflowMenuConfirm, Some("WorkflowMenu")),
+        KeyBinding::new("up", WorkflowMenuPrev, Some("WorkflowMenu")),
+        KeyBinding::new("down", WorkflowMenuNext, Some("WorkflowMenu")),
         // Inline approval bar keys. Registered after the composer bindings so
         // Enter confirms the highlighted action instead of submitting, and
         // Escape dismisses (denies) instead of aborting the run.
@@ -427,7 +566,6 @@ fn bind_keys(cx: &mut App) {
         // so editing keys stay live; these bindings are registered after the
         // composer ones and win the same-depth tie, keeping Enter from
         // submitting the real composer while the bar is open.
-        KeyBinding::new("secondary-f", ToggleSearch, None),
         KeyBinding::new("enter", SearchNext, Some("Search")),
         KeyBinding::new("shift-enter", SearchPrev, Some("Search")),
         KeyBinding::new("escape", SearchClose, Some("Search")),
@@ -437,6 +575,18 @@ fn bind_keys(cx: &mut App) {
         // an equal-depth tie by registration order, so this wins while the
         // grid owns focus.
         KeyBinding::new("escape", TerminalEscape, Some("Terminal")),
+        // Tab belongs to the shell (completion, `menu-complete`), so the
+        // `Terminal` context swallows the global focus-traversal binding. The
+        // grid's own key handler already forwarded the bytes to the PTY.
+        // Ctrl+Tab is swallowed too: the shell may use it, and the grid
+        // already sent the bytes.
+        KeyBinding::new("tab", TerminalTab, Some("Terminal")),
+        KeyBinding::new("shift-tab", TerminalTab, Some("Terminal")),
+        KeyBinding::new("ctrl-tab", TerminalTab, Some("Terminal")),
+        KeyBinding::new("ctrl-shift-tab", TerminalTab, Some("Terminal")),
+        // Terminal tab open/close/cycle come from the command registry
+        // (`commands::BINDINGS`), which scopes them to `Terminal`. Their chords
+        // live in `platform::shortcuts` because they differ per platform.
         // Custom-UI surface: Escape must reach the component (which cancels
         // itself), but the global `escape`-to-`AbortRun` binding is always
         // enabled, so the `CustomUi` context re-binds it and forwards ESC.
@@ -446,13 +596,24 @@ fn bind_keys(cx: &mut App) {
         // same-depth tie against `Submit`/`AbortRun` (registered later).
         KeyBinding::new("enter", ExplorerEntryConfirm, Some("ExplorerEntry")),
         KeyBinding::new("escape", ExplorerEntryCancel, Some("ExplorerEntry")),
+        // Queue-bar inline edit. The same shape: the field carries `Composer
+        // QueueEdit`, so caret/clipboard keys stay live while Enter saves the
+        // message and Escape closes the field (issue #79).
+        KeyBinding::new("enter", QueueEditConfirm, Some("QueueEdit")),
+        KeyBinding::new("escape", QueueEditCancel, Some("QueueEdit")),
+        // Git commit message. The field carries `Composer GitCommitMessage`,
+        // so caret/clipboard keys stay live; Enter inserts a newline (a commit
+        // message is edited, not sent) and the primary modifier + Enter
+        // commits. Registered after the Composer and Picker bindings, so these
+        // win the same-depth tie against `Submit`/`PickerConfirm`.
+        KeyBinding::new("enter", Newline, Some("GitCommitMessage")),
+        KeyBinding::new("secondary-enter", GitCommitSubmit, Some("GitCommitMessage")),
         // Sessions sidebar: focus it with the primary modifier + Shift + B,
         // then navigate the row list with the arrows (Zed/VS Code convention).
         // The `Sidebar` context rides the sidebar's own focus handle, so these
         // only win while it is focused and never collide with the composer's
         // caret keys. Escape is registered here (after the global abort) so it
         // returns focus to the composer instead of aborting the run.
-        KeyBinding::new("secondary-shift-b", FocusSessions, None),
         KeyBinding::new("up", SidebarPrev, Some("Sidebar")),
         KeyBinding::new("down", SidebarNext, Some("Sidebar")),
         KeyBinding::new("home", SidebarHome, Some("Sidebar")),
@@ -543,6 +704,9 @@ fn main() {
     if let Some(client) = http::avatar_client() {
         application = application.with_http_client(client);
     }
+    // The Dock's reopen request — a windowless app is asked to show one
+    // again — is answered from `main_window` alongside the window itself.
+    main_window::install_reopen_handler(&mut application);
     application.run(|cx: &mut App| {
         // Rename the process before the menu bar is built so macOS labels the
         // application menu "Orbit" instead of the executable (`orbit-pi`).
@@ -560,75 +724,35 @@ fn main() {
         // dormant. The launch check runs on its own thread.
         let updater = updater::Updater::init();
         cx.set_global(updater::UpdaterState(updater));
-        // Bundle Zed's UI/mono faces plus the curated font catalog so every
-        // picker choice resolves to a real face without OS dependencies.
+        // Register bundled faces before the font pickers enumerate GPUI families.
         assets::register_zed_fonts(cx).expect("failed to register Zed fonts");
+        assets::register_symbol_fonts(cx).expect("failed to register the symbols font");
         assets::register_bundled_fonts(cx).expect("failed to register bundled fonts");
         app_icon::set_dock_icon();
 
-        // Open maximized: full width of the screen, filling the visible
-        // frame. The computed bounds are the
-        // restore size macOS returns to when the window is un-zoomed,
-        // sized relative to the display so it always fits even on
-        // small/scaled screens.
-        let (w, h) = match cx.primary_display().map(|d| d.bounds().size) {
-            Some(s) => (
-                (f32::from(s.width) * 0.85).min(1440.),
-                (f32::from(s.height) * 0.9).min(920.),
-            ),
-            None => (1240., 840.),
-        };
-        let restore_bounds = Bounds::centered(None, size(px(w), px(h)), cx);
-        let _window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Maximized(restore_bounds)),
-                    // Keep the window usable when shrunk: sidebar (min
-                    // 200px) + a readable transcript + the composer.
-                    window_min_size: Some(size(px(960.), px(640.))),
-                    titlebar: Some(platform::titlebar_options()),
-                    app_id: Some("dev.orbit.pi".into()),
-                    focus: true,
-                    ..Default::default()
-                },
-                |window, cx| {
-                    theme::watch_system_appearance(window, cx);
-                    let app: Entity<OrbitApp> = cx.new(OrbitApp::new);
-
-                    // Focus the composer so typing works immediately; track
-                    // window focus so background notifications know whether
-                    // the user is already looking at the transcript.
-                    app.update(cx, |app, cx| {
-                        app.watch_window_activation(window, cx);
-                        let handle = app.input.read(cx).focus_handle(cx);
-                        window.focus(&handle);
-                    });
-
-                    // Heartbeat: drain pi events into the UI.
-                    let heartbeat = app.clone();
-                    window
-                        .spawn(cx, async move |cx: &mut AsyncWindowContext| loop {
-                            Timer::after(Duration::from_millis(90)).await;
-                            heartbeat
-                                .update(cx, |app: &mut OrbitApp, cx| app.tick(cx))
-                                .ok();
-                        })
-                        .detach();
-
-                    // Detect installed editors/terminals for the header
-                    // "open in" control (off-thread; icons load once).
-                    app.update(cx, |app, cx| app.detect_open_in_apps(cx));
-
-                    app
-                },
-            )
-            .unwrap();
+        // `main_window` owns the one window and the shell it renders; the
+        // reopen handler registered above re-opens it from the Dock.
+        main_window::open(cx);
 
         // If this launch replaced an older build, tell the waiting helper the
         // new window is up so it can commit the swap instead of rolling back.
         updater::signal_relaunch_ready();
 
-        cx.activate(true);
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // `Quit` is an app-level action, but a fork in flight belongs to the
+        // app entity: route the request through it so the quit can wait for
+        // pi's reply instead of leaving a branch this run never adopted.
+        cx.on_action(|_: &Quit, cx| {
+            let parked = cx
+                .try_global::<main_window::Shell>()
+                .and_then(|shell| shell.0.borrow().clone());
+            match parked {
+                Some(app) => {
+                    app.update(cx, |app, cx| {
+                        app.request_quit(crate::app::QuitRequest::User, cx)
+                    });
+                }
+                None => cx.quit(),
+            }
+        });
     });
 }

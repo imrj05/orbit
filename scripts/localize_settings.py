@@ -85,7 +85,8 @@ def main(apply):
             if f.endswith(".rs") and not f.endswith("_tests.rs"):
                 files.append(os.path.join(dp, f))
     for path in files:
-        src = open(path, encoding="utf-8").read()
+        with open(path, encoding="utf-8") as source:
+            src = source.read()
         cut = len(src)
         for marker in ("\n#[cfg(test)]", "\nmod tests {"):
             ix = src.find(marker)
@@ -106,7 +107,6 @@ def main(apply):
 
         changed = True
         cursor = 0
-        out = ""
         while changed:
             found = None
             for name in CALLS:
@@ -119,7 +119,6 @@ def main(apply):
             body = head[start + len(next(n for n in CALLS if head.startswith(n + "(", start))) + 1 : end]
             # Rewrite top-level args in place within `body`.
             pieces = []
-            last = 0
             for a, b in split_args(body):
                 arg = body[a:b]
                 stripped = arg.strip()
@@ -145,7 +144,8 @@ def main(apply):
             else:
                 cursor = start + 1
         if apply and head != src[:cut]:
-            open(path, "w", encoding="utf-8").write(head + src[cut:])
+            with open(path, "w", encoding="utf-8") as output:
+                output.write(head + src[cut:])
 
     for k in sorted(keys):
         print(f"{k}\t{keys[k]}")

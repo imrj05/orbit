@@ -185,7 +185,10 @@ mod tests {
         fs::write(&original, "a\n").unwrap();
         fs::write(root.join("b.rs"), "b\n").unwrap();
 
-        assert_eq!(rename(&original, "b.rs").unwrap_err().key, "explorer.err_exists");
+        assert_eq!(
+            rename(&original, "b.rs").unwrap_err().key,
+            "explorer.err_exists"
+        );
         // Renaming to the same name is a no-op, not a collision.
         assert_eq!(rename(&original, "a.rs").unwrap(), original);
         assert_eq!(fs::read_to_string(root.join("b.rs")).unwrap(), "b\n");

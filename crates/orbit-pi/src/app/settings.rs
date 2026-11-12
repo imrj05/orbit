@@ -1,6 +1,33 @@
 use super::helpers::*;
 use super::*;
+use crate::motion::Hover;
 use crate::quota::note_should_render;
+use crate::theme::tokens::{
+    button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
+    DynamicSpacing, HeadlineSize, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+};
+use crate::theme::MotionPreference;
+use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
+
+// Font registration completes at startup, before settings can render. Cache the
+// snapshot for this process rather than enumerating platform fonts each frame.
+fn font_family_options(cx: &App, current: &str) -> Vec<String> {
+    static AVAILABLE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    font_options_with_current(
+        AVAILABLE.get_or_init(|| cx.text_system().all_font_names()),
+        current,
+    )
+}
+
+fn font_options_with_current(available: &[String], current: &str) -> Vec<String> {
+    let mut options = available.to_vec();
+    if !current.is_empty() && !options.iter().any(|family| family == current) {
+        options.push(current.to_owned());
+    }
+    options.sort();
+    options.dedup();
+    options
+}
 
 /// A Plugins-page button action, dispatched through one entry point.
 #[derive(Clone)]
@@ -15,8 +42,8 @@ pub(super) enum PluginAction {
 }
 
 /// Toolbar vs. card button geometry. Settings' pinned toolbars size their
-/// controls to the 30px row used by Providers and Models; card actions stay
-/// compact at 28px.
+/// controls to `ButtonSize::Large`, the row Providers and Models use; card
+/// actions stay compact at `ButtonSize::Medium`.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum PluginButtonSize {
     Compact,
@@ -26,6 +53,556 @@ pub(super) enum PluginButtonSize {
 /// How long the Plugins Refresh button turns after a click, so a synchronous
 /// reload still reads as a deliberate action.
 const PLUGIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
+
+/// The settings select chip's size. Its dropdown is offset by this height
+/// plus `popover::MENU_OFFSET`, so the two must move together.
+const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Large;
+
+/// Wallpaper slider geometry: the painted track width, rail height, handle
+/// diameter, and the row they are centered in. The drag math reads the same
+/// width/handle pair, so the handle always lands under the pointer rather
+/// than a few pixels off it.
+const SLIDER_TRACK_W: f32 = 184.;
+const SLIDER_TRACK_H: f32 = 6.;
+const SLIDER_KNOB: f32 = 16.;
+const SLIDER_ROW_H: f32 = 24.;
+
+/// The continuous wallpaper controls. They share one painted slider and one
+/// pointer handler; only the range and the field they write differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WallpaperSlider {
+    ImageOpacity,
+    Blur,
+    Dim,
+    CardOpacity,
+    EffectIntensity,
+    EffectScale,
+}
+
+impl WallpaperSlider {
+    fn range(self) -> (f32, f32) {
+        match self {
+            Self::ImageOpacity => crate::wallpaper::IMAGE_OPACITY_RANGE,
+            Self::Blur => crate::wallpaper::BLUR_RANGE,
+            Self::Dim => crate::wallpaper::DIM_RANGE,
+            Self::CardOpacity => crate::wallpaper::CARD_OPACITY_RANGE,
+            Self::EffectIntensity => crate::wallpaper::EFFECT_INTENSITY_RANGE,
+            Self::EffectScale => crate::wallpaper::EFFECT_SCALE_RANGE,
+        }
+    }
+
+    fn value(self, settings: &crate::wallpaper::WallpaperSettings) -> f32 {
+        match self {
+            Self::ImageOpacity => settings.image_opacity,
+            Self::Blur => settings.blur,
+            Self::Dim => settings.dim,
+            Self::CardOpacity => settings.card_opacity,
+            Self::EffectIntensity => settings.effect_intensity,
+            Self::EffectScale => settings.effect_scale,
+        }
+    }
+
+    fn set(self, settings: &mut crate::wallpaper::WallpaperSettings, value: f32) {
+        match self {
+            Self::ImageOpacity => settings.image_opacity = value,
+            Self::Blur => settings.blur = value,
+            Self::Dim => settings.dim = value,
+            Self::CardOpacity => settings.card_opacity = value,
+            Self::EffectIntensity => settings.effect_intensity = value,
+            Self::EffectScale => {
+                settings.effect_scale = if settings.effect == crate::wallpaper_fx::Effect::Dither {
+                    value.round().max(1.0)
+                } else {
+                    value
+                };
+            }
+        }
+    }
+
+    fn ids(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::ImageOpacity => (
+                "wallpaper-opacity-slider",
+                "wallpaper-opacity-fill",
+                "wallpaper-opacity-knob",
+            ),
+            Self::Blur => (
+                "wallpaper-blur-slider",
+                "wallpaper-blur-fill",
+                "wallpaper-blur-knob",
+            ),
+            Self::Dim => (
+                "wallpaper-dim-slider",
+                "wallpaper-dim-fill",
+                "wallpaper-dim-knob",
+            ),
+            Self::CardOpacity => (
+                "wallpaper-card-slider",
+                "wallpaper-card-fill",
+                "wallpaper-card-knob",
+            ),
+            Self::EffectIntensity => (
+                "wallpaper-intensity-slider",
+                "wallpaper-intensity-fill",
+                "wallpaper-intensity-knob",
+            ),
+            Self::EffectScale => (
+                "wallpaper-scale-slider",
+                "wallpaper-scale-fill",
+                "wallpaper-scale-knob",
+            ),
+        }
+    }
+}
+
+/// The settings nav in display order: section, nav icon, and label key.
+/// Grouped so the app's own preferences lead (General / Appearance /
+/// Shortcuts), the agent and its resources follow (Runtime / Agent /
+/// Providers / Models), the extensions pi loads close the list (Skills /
+/// Plugins / MCP), and About and Report a bug sit alone at the end.
+const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
+    (
+        SettingsSection::General,
+        "icons/settings.svg",
+        "settings.general",
+    ),
+    (
+        SettingsSection::Appearance,
+        "icons/contrast.svg",
+        "settings.appearance",
+    ),
+    (
+        SettingsSection::Shortcuts,
+        "icons/keyboard.svg",
+        "settings.shortcuts",
+    ),
+    (
+        SettingsSection::Privacy,
+        "icons/lock.svg",
+        "settings.privacy",
+    ),
+    (
+        SettingsSection::Runtime,
+        "icons/server-stack.svg",
+        "settings.runtime",
+    ),
+    (SettingsSection::Agent, "icons/spark.svg", "settings.agent"),
+    (
+        SettingsSection::Worktrees,
+        "icons/branch.svg",
+        "worktree.settings.title",
+    ),
+    (
+        SettingsSection::GitAccounts,
+        "icons/branch.svg",
+        "git_accounts.title",
+    ),
+    (
+        SettingsSection::Providers,
+        "icons/cloud.svg",
+        "settings.providers",
+    ),
+    (
+        SettingsSection::Models,
+        "icons/tag-01.svg",
+        "settings.models",
+    ),
+    (
+        SettingsSection::Skills,
+        "icons/magic-wand.svg",
+        "settings.skills",
+    ),
+    (
+        SettingsSection::Subagents,
+        "icons/task.svg",
+        "settings.subagents",
+    ),
+    (
+        SettingsSection::Permissions,
+        "icons/lock.svg",
+        "settings.permissions",
+    ),
+    (
+        SettingsSection::Plugins,
+        "icons/extensions.svg",
+        "settings.plugins",
+    ),
+    (SettingsSection::Mcp, "icons/tools/mcp.svg", "settings.mcp"),
+    (SettingsSection::About, "icons/info.svg", "settings.about"),
+    (
+        SettingsSection::ReportBug,
+        "icons/github.svg",
+        "settings.report_bug",
+    ),
+];
+
+/// Every searchable setting, flattened: section, label key, and the extra
+/// terms a query can match. The label is translated when rendered; the
+/// keywords are the synonyms people type that the label does not spell out.
+/// It lives beside the nav so a new section has one obvious place to
+/// register its searchable rows.
+const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
+    (
+        SettingsSection::GitAccounts,
+        "git_accounts.title",
+        "git github account identity ssh credential authentication sign-in status cli update version release",
+    ),
+    // General
+    (
+        SettingsSection::General,
+        "settings.pi_agent",
+        "pi agent process stdio connection child spawn",
+    ),
+    (
+        SettingsSection::General,
+        "settings.local_by_default",
+        "local data store sessions disk offline",
+    ),
+    (
+        SettingsSection::General,
+        "settings.workspace",
+        "workspace directory folder path project",
+    ),
+    (
+        SettingsSection::General,
+        "updater_ui.automatic_updates",
+        "updates update automatic release",
+    ),
+    (
+        SettingsSection::General,
+        "updater_ui.check_for_updates",
+        "updates update check release version",
+    ),
+    (
+        SettingsSection::General,
+        "settings.reload_app",
+        "reload restart app application process pi refresh",
+    ),
+    (
+        SettingsSection::General,
+        "settings.desktop_notifications",
+        "notifications banner desktop system",
+    ),
+    (
+        SettingsSection::General,
+        "settings.in_app_toasts",
+        "notifications toast in-app",
+    ),
+    (
+        SettingsSection::General,
+        "settings.notification_sound",
+        "notifications sound alert audio",
+    ),
+    (
+        SettingsSection::General,
+        "settings.include_reasoning_and_tools",
+        "export exports markdown pdf transcript save reasoning thinking tool calls output",
+    ),
+    // Runtime
+    (
+        SettingsSection::Runtime,
+        "settings.status",
+        "runtime process status start stop restart",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.process_id",
+        "runtime process id pid",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.binary",
+        "runtime binary executable pi",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.uptime",
+        "runtime uptime elapsed",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.transport",
+        "runtime transport stdio",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.last_error",
+        "runtime error stderr last",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.parked_processes",
+        "runtime background parked sessions",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.recent_stderr",
+        "runtime stderr log output console",
+    ),
+    // Agent
+    (
+        SettingsSection::Agent,
+        "settings.enter_while_running",
+        "enter send submit queue steer behavior",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.follow_up_messages",
+        "follow-up queue messages behavior",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.auto_compaction",
+        "compaction compact context auto",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.auto_retry",
+        "retry auto error transient",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.auto_session_titles",
+        "titles session name auto",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.title_model",
+        "title model session names",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.default_model",
+        "default model session new",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.default_thinking",
+        "thinking level default session reasoning",
+    ),
+    // Worktrees
+    (
+        SettingsSection::Worktrees,
+        "worktree.settings.directory",
+        "worktree worktrees directory location .wt folder path git branch",
+    ),
+    (
+        SettingsSection::Worktrees,
+        "worktree.settings.setup_script",
+        "worktree worktrees setup script install bootstrap hook",
+    ),
+    (
+        SettingsSection::Worktrees,
+        "worktree.settings.run_setup_auto",
+        "worktree worktrees setup script automatic auto run",
+    ),
+    (
+        SettingsSection::Worktrees,
+        "worktree.settings.open_after_create",
+        "worktree worktrees open after create switch workspace",
+    ),
+    // Appearance
+    (
+        SettingsSection::Appearance,
+        "settings.appearance",
+        "appearance mode light dark system theme",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.design_system",
+        "design system classic operational minimalism visual language",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.theme",
+        "theme palette color light dark editor",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.wallpaper",
+        "wallpaper background image photo desktop hero full window",
+    ),
+    (
+        SettingsSection::Appearance,
+        "wallpaper.effect",
+        "wallpaper effect dither ascii halftone scanlines artwork",
+    ),
+    (
+        SettingsSection::Appearance,
+        "wallpaper.card_opacity",
+        "wallpaper card opacity translucent surface",
+    ),
+    (
+        SettingsSection::Appearance,
+        "wallpaper.glass",
+        "wallpaper glass frost blur frosted backdrop pane panel translucent",
+    ),
+    (
+        SettingsSection::Appearance,
+        "wallpaper.derive_accent",
+        "wallpaper accent tint color extract",
+    ),
+    (
+        SettingsSection::Appearance,
+        "language.title",
+        "language locale translation interface",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.interface_font",
+        "font interface ui typeface",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.code_font",
+        "font code mono typeface",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.ui_font_size",
+        "font size ui text scale",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.terminal_size",
+        "font size terminal",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.editor_size",
+        "font size editor",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.spacing_density",
+        "spacing density compact comfortable",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.corner_rounding",
+        "corner rounding radius rounded shape",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.show_sidebar",
+        "sidebar show layout navigation",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.reduce_motion",
+        "motion animation reduce layout system full",
+    ),
+    // Resources and extensions
+    (
+        SettingsSection::Skills,
+        "settings.skills",
+        "skills skill.md instructions agent",
+    ),
+    (
+        SettingsSection::Subagents,
+        "settings.subagents",
+        "subagents agents delegate child task scout worker reviewer",
+    ),
+    (
+        SettingsSection::Permissions,
+        "settings.permissions",
+        "permissions rules allow deny ask approve guard bash command tool access scope subagent",
+    ),
+    (
+        SettingsSection::Plugins,
+        "settings.plugins",
+        "plugins packages extensions install npm git",
+    ),
+    (
+        SettingsSection::Mcp,
+        "settings.mcp",
+        "mcp model context protocol servers tools",
+    ),
+    (
+        SettingsSection::Models,
+        "settings.models",
+        "models catalog favorites providers",
+    ),
+    (
+        SettingsSection::Providers,
+        "settings.providers",
+        "providers api key auth credentials",
+    ),
+    (
+        SettingsSection::Shortcuts,
+        "settings.shortcuts",
+        "shortcuts keyboard keys chords",
+    ),
+    (
+        SettingsSection::Privacy,
+        "settings.privacy",
+        "privacy session retention cleanup local data",
+    ),
+    (
+        SettingsSection::About,
+        "settings.about",
+        "about version updates source github",
+    ),
+    (
+        SettingsSection::ReportBug,
+        "settings.report_bug",
+        "bug report issue crash problem broken github feedback",
+    ),
+    (
+        SettingsSection::ReportBug,
+        "bug_report.heading",
+        "bug report issue title description steps reproduce diagnostics",
+    ),
+];
+
+/// The nav icon and label key for a section, from [`SETTINGS_SECTIONS`].
+fn settings_section_meta(section: SettingsSection) -> (&'static str, &'static str) {
+    SETTINGS_SECTIONS
+        .iter()
+        .find(|(candidate, _, _)| *candidate == section)
+        .map(|&(_, icon, label_key)| (icon, label_key))
+        .unwrap_or(("icons/settings.svg", "settings.general"))
+}
+
+/// Settings whose translated label or keyword list contains the already
+/// lowercased `needle`, in index order. An empty needle matches nothing —
+/// callers only mount results while a query is active.
+fn settings_search_hits(needle: &str) -> Vec<(SettingsSection, &'static str, &'static str)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    SETTINGS_SEARCH_INDEX
+        .iter()
+        .filter(|(_, label_key, keywords)| {
+            tr!(*label_key).to_lowercase().contains(needle) || keywords.contains(needle)
+        })
+        .copied()
+        .collect()
+}
+
+/// The label a Reduce Motion segment carries.
+fn motion_preference_label(preference: MotionPreference) -> String {
+    match preference {
+        MotionPreference::System => tr!("settings.motion_system"),
+        MotionPreference::Reduced => tr!("settings.motion_reduced"),
+        MotionPreference::Full => tr!("settings.motion_full"),
+    }
+}
+
+/// What the Reduce Motion row says is actually in force.
+///
+/// `System` is not a state the user can read off the segments, so the row names
+/// the resolution: following the system, following it into reduced motion, the
+/// user's own answer either way, or `Full` overriding a system that asks.
+fn motion_status(preference: MotionPreference, os_asks: bool) -> String {
+    match preference {
+        MotionPreference::System if os_asks => tr!("settings.motion_status_system_reduced"),
+        MotionPreference::System => tr!("settings.motion_status_system"),
+        MotionPreference::Reduced => tr!("settings.motion_status_reduced"),
+        MotionPreference::Full if os_asks => tr!("settings.motion_status_full_overriding"),
+        MotionPreference::Full => tr!("settings.motion_status_full"),
+    }
+}
 
 /// The operation a background plugin task runs.
 #[derive(Clone, Copy)]
@@ -45,58 +622,7 @@ impl OrbitApp {
     pub(super) fn render_settings(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let this = cx.entity();
         let theme = *theme::get(cx);
-        let sections: [(SettingsSection, &'static str, String); 10] = [
-            (
-                SettingsSection::General,
-                "icons/settings.svg",
-                tr!("settings.general"),
-            ),
-            (
-                SettingsSection::Runtime,
-                "icons/server-stack.svg",
-                tr!("settings.runtime"),
-            ),
-            (
-                SettingsSection::Agent,
-                "icons/spark.svg",
-                tr!("settings.agent"),
-            ),
-            (
-                SettingsSection::Skills,
-                "icons/magic-wand.svg",
-                tr!("settings.skills"),
-            ),
-            (
-                SettingsSection::Plugins,
-                "icons/extensions.svg",
-                tr!("settings.plugins"),
-            ),
-            (
-                SettingsSection::Models,
-                "icons/tag-01.svg",
-                tr!("settings.models"),
-            ),
-            (
-                SettingsSection::Appearance,
-                "icons/contrast.svg",
-                tr!("settings.appearance"),
-            ),
-            (
-                SettingsSection::Providers,
-                "icons/cloud.svg",
-                tr!("settings.providers"),
-            ),
-            (
-                SettingsSection::Shortcuts,
-                "icons/keyboard.svg",
-                tr!("settings.shortcuts"),
-            ),
-            (
-                SettingsSection::About,
-                "icons/info.svg",
-                tr!("settings.about"),
-            ),
-        ];
+        let sections = SETTINGS_SECTIONS;
 
         div()
             .flex_1()
@@ -104,15 +630,15 @@ impl OrbitApp {
             .min_h_0()
             .flex()
             .relative()
-            .bg(theme.bg_main)
+            .bg(theme.panel_fill(theme.background))
             .font_family(theme::ui_font_family())
             // ── nav column ──
             .child(
                 div()
-                    .w(px(240.))
+                    .w(px(256.))
                     .h_full()
                     .flex_shrink_0()
-                    .bg(theme.bg_sidebar)
+                    .bg(theme.panel_fill(theme.surface))
                     .border_r_1()
                     .border_color(theme.border)
                     .flex()
@@ -124,162 +650,199 @@ impl OrbitApp {
                     .child(window_drag_region(
                         div().h(px(super::view::TOP_BAR_H)).w_full(),
                     ))
-                    // Back — same 28px row language as the section list.
-                    // The list below sits in an 8px container with 10px row
-                    // insets, so the icon column lands at 18px here, on the
-                    // eyebrow, and in the footer: one left edge, read once.
                     .child(
-                        div().px_2().pt_1().pb_3().child(
-                            div()
-                                .id("settings-back")
-                                .w_full()
-                                .h(px(28.))
-                                .px(px(10.))
-                                .rounded_lg()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme.bg_hover))
-                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_back))
-                                .child(icon("icons/arrow-left.svg", 13., theme.text_3))
-                                .child(
+                        div()
+                            .px(DynamicSpacing::Base12.px(&theme))
+                            .pt(DynamicSpacing::Base08.px(&theme))
+                            .pb(DynamicSpacing::Base16.px(&theme))
+                            .child(crate::motion::hover(
+                                press(
                                     div()
-                                        .text_size(theme.ui_px(13.))
-                                        .text_color(theme.text_2)
-                                        .child(tr!("settings.back")),
-                                ),
-                        ),
-                    )
-                    // Eyebrow: a small caps label gives the flat list a
-                    // heading to read under, the way a sidebar in a
-                    // crafted app does. No accent marker — the accent is
-                    // reserved for data emphasis, not chrome. Inset matches
-                    // the rows' icon column (8px container + 10px row pad).
-                    .child(
-                        div().pl(px(18.)).pb(px(6.)).child(
-                            div()
-                                .text_size(theme.ui_px(10.5))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.text_3)
-                                .child(tr!("settings.settings")),
-                        ),
-                    )
-                    // Section rows — 28px pills with a 2px rhythm (the
-                    // density Linear uses for flat nav lists), grouped by
-                    // what they belong to (app / pi resources /
-                    // personalisation). Groups are set off by a hairline
-                    // with 8px of air on each side — 16px of separation
-                    // total, so the groups read as set-off but related.
-                    // Selection is a single low-opacity accent wash — no
-                    // bar, no weight change — with the icon and ink
-                    // stepping toward the accent so the row reads as one
-                    // quiet highlight, never a button that took over.
-                    .child(div().px_2().flex().flex_col().gap(px(2.)).children(
-                        sections.iter().map(|&(section, section_icon, ref label)| {
-                            let this = this.clone();
-                            let selected = self.settings_section == section;
-                            // Group starts: Skills opens the pi
-                            // resources block, Appearance opens
-                            // personalisation + About.
-                            let group_start = matches!(
-                                section,
-                                SettingsSection::Skills | SettingsSection::Appearance
-                            );
-                            let row = div()
-                                .id(ElementId::Name(format!("settings-nav-{label}").into()))
-                                .w_full()
-                                .h(px(28.))
-                                .px(px(10.))
-                                .rounded_md()
-                                .text_size(theme.ui_px(13.))
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .when(selected, |row| {
-                                    row.bg(theme.accent.opacity(0.10))
-                                        .hover(|s| s.bg(theme.accent.opacity(0.14)))
-                                })
-                                .when(!selected, |row| row.hover(|s| s.bg(theme.bg_hover)))
-                                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                                    this.update(cx, |app, cx| {
-                                        app.set_settings_section(section, cx);
-                                    });
-                                })
+                                        .id("settings-back")
+                                        .w_full()
+                                        .h(ButtonSize::Large.height(&theme))
+                                        .px(DynamicSpacing::Base08.px(&theme))
+                                        .rounded(button::RADIUS.px(&theme))
+                                        .flex()
+                                        .items_center()
+                                        .gap(DynamicSpacing::Base08.px(&theme))
+                                        .cursor_pointer(),
+                                )
+                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_back))
                                 .child(icon(
-                                    section_icon,
-                                    13.,
-                                    if selected { theme.accent } else { theme.text_3 },
+                                    "icons/arrow-left.svg",
+                                    IconSize::Small.px(&theme),
+                                    theme.text_muted,
                                 ))
                                 .child(
                                     div()
-                                        .text_color(if selected {
-                                            theme.text
-                                        } else {
-                                            theme.text_2
-                                        })
-                                        .child(label.to_string()),
-                                );
-                            if group_start {
+                                        .text_size(TextSize::Default.px(&theme))
+                                        .text_color(theme.text_secondary)
+                                        .child(tr!("settings.back")),
+                                ),
+                                "settings-back",
+                                &theme,
+                                Hover::wash(&theme),
+                            )),
+                    )
+                    // Search — the first control in the column, just above
+                    // the list it reaches into, so a query is one click from
+                    // any setting in any section.
+                    .child(self.settings_search_bar(theme))
+                    .child(
+                        div()
+                            .pl(DynamicSpacing::Base20.px(&theme))
+                            .pb(DynamicSpacing::Base08.px(&theme))
+                            .child(
                                 div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .pt(px(8.))
-                                    .mt(px(6.))
-                                    .border_t_1()
-                                    .border_color(theme.border)
-                                    .child(row)
-                                    .into_any_element()
-                            } else {
-                                row.into_any_element()
-                            }
-                        }),
-                    ))
+                                    .text_size(TextSize::Default.px(&theme))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.text_primary)
+                                    .child(tr!("settings.settings")),
+                            ),
+                    )
+                    // Keep the navigation reachable at short window heights.
+                    .child(
+                        div()
+                            .id("settings-navigation")
+                            .debug_selector(|| "settings-navigation".to_string())
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .px(DynamicSpacing::Base12.px(&theme))
+                            .pb(DynamicSpacing::Base12.px(&theme))
+                            .flex()
+                            .flex_col()
+                            .gap(DynamicSpacing::Base02.px(&theme))
+                            .children(sections.iter().map(
+                                |&(section, section_icon, label_key)| {
+                                    let this = this.clone();
+                                    let label = tr!(label_key).to_string();
+                                    let selected = self.settings_section == section;
+                                    // Group starts: Runtime opens the agent
+                                    // block, Skills opens the extensions
+                                    // block, and About closes the list alone.
+                                    let group_start = matches!(
+                                        section,
+                                        SettingsSection::Runtime
+                                            | SettingsSection::Skills
+                                            | SettingsSection::About
+                                            | SettingsSection::ReportBug
+                                    );
+                                    let row = div()
+                                        .id(ElementId::Name(format!("settings-nav-{label}").into()))
+                                        .w_full()
+                                        .h(ButtonSize::Large.height(&theme))
+                                        .flex_none()
+                                        .debug_selector(move || format!("settings-nav-{label_key}"))
+                                        .px(DynamicSpacing::Base08.px(&theme))
+                                        .rounded(Radius::Medium.px(&theme))
+                                        .text_size(TextSize::Default.px(&theme))
+                                        .flex()
+                                        .items_center()
+                                        .gap(DynamicSpacing::Base12.px(&theme))
+                                        .cursor_pointer()
+                                        .when(selected, |row| {
+                                            row.font_weight(FontWeight::MEDIUM)
+                                                .bg(theme.surface_hover)
+                                        })
+                                        .when(!selected, |row| row.hover_state(&theme))
+                                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                                            this.update(cx, |app, cx| {
+                                                app.set_settings_section(section, cx);
+                                            });
+                                        })
+                                        .child(icon(
+                                            section_icon,
+                                            IconSize::Medium.px(&theme),
+                                            if selected {
+                                                theme.accent_text
+                                            } else {
+                                                theme.text_muted
+                                            },
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_color(if selected {
+                                                    theme.text_primary
+                                                } else {
+                                                    theme.text_secondary
+                                                })
+                                                .child(label.to_string()),
+                                        );
+                                    if group_start {
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(DynamicSpacing::Base02.px(&theme))
+                                            .pt(DynamicSpacing::Base08.px(&theme))
+                                            .mt(DynamicSpacing::Base08.px(&theme))
+                                            .child(row)
+                                            .into_any_element()
+                                    } else {
+                                        row.into_any_element()
+                                    }
+                                },
+                            )),
+                    )
                     // Footer: the build identity, pinned bottom-left in the
                     // same tertiary register the About page uses — a quiet
                     // closer for the column. A hairline caps the scrollable
                     // area above it, and the left inset keeps the icon
-                    // column's 18px edge.
+                    // column's 16px edge.
                     .child(
                         div()
                             .mt_auto()
                             .w_full()
-                            .px(px(18.))
-                            .py(px(12.))
+                            .px(DynamicSpacing::Base16.px(&theme))
+                            .py(DynamicSpacing::Base12.px(&theme))
                             .border_t_1()
                             .border_color(theme.border)
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(DynamicSpacing::Base06.px(&theme))
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(11.))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.text_3)
+                                    .text_color(theme.text_muted)
                                     .child(tr!("app.name")),
                             )
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(11.))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .font(crate::usage::view::num_font())
-                                    .text_color(theme.text_3.opacity(0.7))
+                                    .text_color(theme.text_muted)
                                     .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                             ),
                     ),
             )
             // ── content column ──
-            // Skills owns a full-bleed master-detail surface; every other
-            // section is a fixed header + a scrolling column of cards.
-            .child(if self.settings_section == SettingsSection::Skills {
-                self.render_skills_page(theme, this.clone(), cx)
-            } else {
-                self.settings_body(theme, this.clone(), cx)
+            // While the sidebar search carries a query the column shows
+            // matches instead of the active section. Skills owns a full-bleed
+            // master-detail surface; every other section is a fixed header + a
+            // scrolling column of cards.
+            .child({
+                let searching = !self.settings_search.read(cx).text().trim().is_empty();
+                if searching {
+                    self.settings_search_results(theme, this.clone(), cx)
+                } else if self.settings_section == SettingsSection::Skills {
+                    self.render_skills_page(theme, this.clone(), cx)
+                } else if self.settings_section == SettingsSection::Subagents {
+                    self.render_subagents_page(theme, this.clone(), cx)
+                } else {
+                    self.settings_body(theme, this.clone(), cx)
+                }
             })
             // ── provider editor modals (models.json + API key) ──
             .children(self.provider_editor_layer(theme, this.clone(), cx))
             .children(self.provider_usage_layer(theme, this.clone(), cx))
+            // ── MCP add/edit modal ──
+            .children(self.mcp_editor_layer(theme, this.clone(), cx))
             .children(self.provider_key_layer(theme, this, cx))
     }
 
@@ -311,25 +874,26 @@ impl OrbitApp {
                     .child(
                         div()
                             .w_full()
-                            .px(px(24.))
-                            .pt(px(20.))
-                            .pb(px(12.))
+                            .px(DynamicSpacing::Base24.px(&theme))
+                            .pt(DynamicSpacing::Base20.px(&theme))
+                            .pb(DynamicSpacing::Base12.px(&theme))
                             .flex()
                             .flex_col()
-                            .gap_3()
+                            .gap(DynamicSpacing::Base12.px(&theme))
                             .child(self.settings_header(theme))
                             .children(self.settings_toolbar(theme, this.clone(), cx)),
                     )
                     .child(
                         div()
                             .w_full()
-                            .px(px(24.))
-                            .child(div().w_full().h(px(1.)).bg(theme.border)),
+                            .px(DynamicSpacing::Base24.px(&theme))
+                            .child(div().w_full().h(BORDER_WIDTH).bg(theme.border)),
                     ),
             )
             .child(
                 div()
                     .id("settings-content")
+                    .debug_selector(|| "settings-content".to_string())
                     .flex_1()
                     .min_h_0()
                     .w_full()
@@ -339,17 +903,141 @@ impl OrbitApp {
                     .child(
                         div()
                             .w_full()
-                            .px(px(24.))
-                            .pt(px(20.))
-                            .pb(px(28.))
+                            .px(DynamicSpacing::Base24.px(&theme))
+                            .pt(DynamicSpacing::Base20.px(&theme))
+                            .pb(DynamicSpacing::Base24.px(&theme))
                             .flex()
                             .flex_col()
-                            .gap(theme.space(20.))
+                            .gap(DynamicSpacing::Base20.px(&theme))
                             .children(self.error_banner(theme, cx))
                             .children(self.settings_rows(&this, theme, cx)),
                     ),
             )
             .into_any_element()
+    }
+
+    /// The global settings search, at the top of the nav column so a query
+    /// can reach any setting without hunting through the section list.
+    fn settings_search_bar(&self, theme: Theme) -> AnyElement {
+        let search = picker_search_frame(div(), &theme)
+            .w_full()
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(div().flex_1().min_w_0().child(self.settings_search.clone()));
+        div()
+            .w_full()
+            .flex_shrink_0()
+            .px(DynamicSpacing::Base12.px(&theme))
+            .pb(DynamicSpacing::Base20.px(&theme))
+            .child(search)
+            .into_any_element()
+    }
+
+    /// The search results: every setting whose label or keywords match,
+    /// grouped as one board. A row opens its section and clears the query, so
+    /// the section it points at is visible immediately.
+    fn settings_search_results(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let needle = self.settings_search.read(cx).text().trim().to_lowercase();
+        let hits = settings_search_hits(&needle);
+        let body: AnyElement = if hits.is_empty() {
+            self.empty_resource_card(
+                theme,
+                "icons/search.svg",
+                &tr!("settings.no_matches"),
+                &tr!("settings.try_a_different_search"),
+            )
+        } else {
+            let rows = hits
+                .into_iter()
+                .map(|(section, label_key, _)| {
+                    self.settings_search_row(section, label_key, theme, this.clone())
+                })
+                .collect();
+            self.settings_group(theme, rows)
+        };
+        div()
+            .id("settings-search-results")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .max_w(px(CONTENT_MAX_W))
+            .mx_auto()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .w_full()
+                    .px(DynamicSpacing::Base24.px(&theme))
+                    .pt(DynamicSpacing::Base20.px(&theme))
+                    .pb(DynamicSpacing::Base24.px(&theme))
+                    .child(body),
+            )
+            .into_any_element()
+    }
+
+    /// One search result: the setting's label leading, its section trailing,
+    /// with the section's nav icon at the start of the row.
+    fn settings_search_row(
+        &self,
+        section: SettingsSection,
+        label_key: &'static str,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        let (section_icon, section_key) = settings_section_meta(section);
+        crate::motion::hover(
+            press(
+                div()
+                    .id(ElementId::Name(
+                        format!("settings-result-{label_key}").into(),
+                    ))
+                    .w_full()
+                    .px(DynamicSpacing::Base16.px(&theme))
+                    .py(DynamicSpacing::Base12.px(&theme))
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base12.px(&theme))
+                    .cursor_pointer(),
+            )
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| {
+                    app.settings_search.update(cx, |input, cx| input.clear(cx));
+                    app.set_settings_section(section, cx);
+                });
+            })
+            .child(icon(
+                section_icon,
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(TextSize::Default.px(&theme))
+                    .text_color(theme.text_primary)
+                    .child(tr!(label_key).to_string()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!(section_key).to_string()),
+            ),
+            format!("settings-result-{label_key}"),
+            &theme,
+            Hover::wash(&theme),
+        )
+        .into_any_element()
     }
 
     pub(super) fn settings_header(&self, theme: Theme) -> impl IntoElement + use<> {
@@ -361,10 +1049,26 @@ impl OrbitApp {
                 (tr!("settings.runtime"), tr!("settings.runtime_description"))
             }
             SettingsSection::Agent => (tr!("settings.agent"), tr!("settings.agent_description")),
+            SettingsSection::Worktrees => (
+                tr!("worktree.settings.title"),
+                tr!("worktree.settings.description"),
+            ),
+            SettingsSection::GitAccounts => {
+                (tr!("git_accounts.title"), tr!("git_accounts.description"))
+            }
             SettingsSection::Skills => (tr!("settings.skills"), tr!("settings.skills_description")),
+            SettingsSection::Subagents => (
+                tr!("settings.subagents"),
+                tr!("settings.subagents_description"),
+            ),
+            SettingsSection::Permissions => (
+                tr!("settings.permissions"),
+                tr!("settings.permissions_description"),
+            ),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
             }
+            SettingsSection::Mcp => (tr!("settings.mcp"), tr!("settings.mcp_description")),
             SettingsSection::Models => (tr!("settings.models"), tr!("settings.models_description")),
             SettingsSection::Appearance => (
                 tr!("settings.appearance"),
@@ -378,27 +1082,38 @@ impl OrbitApp {
                 tr!("settings.shortcuts"),
                 tr!("settings.shortcuts_description"),
             ),
+            SettingsSection::Privacy => {
+                (tr!("settings.privacy"), tr!("settings.privacy_description"))
+            }
             SettingsSection::About => (tr!("settings.about"), tr!("settings.about_description")),
+            SettingsSection::ReportBug => (
+                tr!("settings.report_bug"),
+                tr!("settings.report_bug_description"),
+            ),
         };
         div()
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(DynamicSpacing::Base04.px(&theme))
             .when(self.settings_section == SettingsSection::About, |header| {
-                header.child(embedded_image(crate::app_icon::ASSET, 48.))
+                header.child(embedded_image(
+                    crate::app_icon::ASSET,
+                    f32::from(IconSize::XLarge.px(&theme)),
+                ))
             })
             .child(
                 div()
-                    .text_size(theme.ui_px(15.))
+                    .debug_selector(|| "settings-page-title".to_string())
+                    .text_size(HeadlineSize::Large.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .line_height(px(20.))
-                    .text_color(theme.text)
+                    .line_height(BufferLineHeight::Standard.relative())
+                    .text_color(theme.text_primary)
                     .child(title.to_string()),
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_3)
+                    .text_size(TextSize::Default.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(subtitle.to_string()),
             )
     }
@@ -454,17 +1169,48 @@ impl OrbitApp {
                     rows.push(updates);
                 }
                 rows.push(self.notification_rows(theme, this.clone()));
+                rows.push(self.export_rows(theme, this.clone()));
+                // The last group is the escape hatch: a clean relaunch kills
+                // every live run, so it sits below the preferences rather than
+                // beside the everyday controls.
+                rows.push(self.settings_section(
+                    theme,
+                    &tr!("settings.application"),
+                    vec![self.setting_row(
+                        theme,
+                        &tr!("settings.reload_app"),
+                        Some(&tr!("settings.reload_app_description")),
+                        None,
+                        Some(self.runtime_button(
+                            "reload-app",
+                            &tr!("settings.reload_app_action"),
+                            false,
+                            theme,
+                            this.clone(),
+                            OrbitApp::reload_app,
+                        )),
+                    )],
+                ));
                 rows
             }
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
             SettingsSection::Agent => self.agent_rows(theme, this.clone(), cx),
+            SettingsSection::Worktrees => self.worktree_settings_rows(theme, this.clone(), cx),
+            SettingsSection::GitAccounts => self.git_accounts_rows(theme, this.clone()),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
+            // Rendered by `subagents_ui::render_subagents_page`.
+            SettingsSection::Subagents => Vec::new(),
+            SettingsSection::Permissions => self.permissions_rows(theme, this.clone(), cx),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
+            // The MCP page's rows are owned by `mcp_ui`; it needs the cursor
+            // and filter state that lives beside the manager.
+            SettingsSection::Mcp => self.mcp_rows(theme, this.clone(), cx),
             SettingsSection::Models => self.model_rows(theme, this.clone(), cx),
             SettingsSection::Appearance => self.appearance_rows(theme, this.clone(), cx),
             SettingsSection::Providers => self.provider_rows(theme, this.clone(), cx),
             SettingsSection::Shortcuts => self.shortcut_rows(theme),
+            SettingsSection::Privacy => self.privacy_rows(theme, this.clone(), cx),
             SettingsSection::About => {
                 let mut about = vec![self.setting_row(
                     theme,
@@ -473,8 +1219,8 @@ impl OrbitApp {
                     None,
                     Some(
                         div()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.text_2)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_secondary)
                             .child(format!("v{}", env!("CARGO_PKG_VERSION")))
                             .into_any_element(),
                     ),
@@ -492,8 +1238,8 @@ impl OrbitApp {
                         None,
                         Some(
                             div()
-                                .text_size(theme.ui_px(12.))
-                                .text_color(theme.text_2)
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_secondary)
                                 .child("0.2.2")
                                 .into_any_element(),
                         ),
@@ -517,8 +1263,15 @@ impl OrbitApp {
                     None,
                     Some(self.about_github_button(theme)),
                 ));
-                vec![self.settings_section(theme, &tr!("settings.about"), about)]
+                // The page header already reads "About"; a board header of
+                // the same name would just repeat it, so the group is
+                // headerless.
+                vec![
+                    star_project_banner(theme, "about-star-banner", None),
+                    self.settings_group(theme, about),
+                ]
             }
+            SettingsSection::ReportBug => self.bug_report_rows(theme, cx),
         }
     }
 
@@ -533,7 +1286,9 @@ impl OrbitApp {
         match self.settings_section {
             SettingsSection::Providers => Some(self.provider_toolbar(theme, this, cx)),
             SettingsSection::Plugins => Some(self.plugin_toolbar(theme, this, cx)),
+            SettingsSection::Mcp => Some(self.mcp_toolbar(theme, this, cx)),
             SettingsSection::Models => Some(self.model_toolbar(theme, this, cx)),
+            SettingsSection::GitAccounts => Some(self.git_accounts_toolbar(theme, this)),
             _ => None,
         }
     }
@@ -549,23 +1304,18 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let search = div()
+        let search = picker_search_frame(div(), &theme)
             .w_full()
-            .h(px(34.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(13.))
-            .child(icon("icons/search.svg", 14., theme.text_3))
-            .child(self.models_filter.clone());
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(div().flex_1().min_w_0().child(self.models_filter.clone()));
 
         let needle = self.models_filter.read(cx).text().trim().to_lowercase();
         let favorites = crate::favorites::all();
+        let provider_filter = self.models_provider_filter.as_deref();
         let total = self.available_models.len();
         let favorite_count = self
             .available_models
@@ -575,28 +1325,38 @@ impl OrbitApp {
         let shown = self
             .available_models
             .iter()
-            .filter(|model| model_visible(model, &needle, self.models_favorites_only, &favorites))
+            .filter(|model| {
+                model_visible(
+                    model,
+                    &needle,
+                    self.models_favorites_only,
+                    &favorites,
+                    provider_filter,
+                )
+            })
             .count();
+        let filtered =
+            self.models_favorites_only || !needle.is_empty() || provider_filter.is_some();
 
-        // A filter chip in the toolbar's button language: `bg_raised` + a
-        // hairline when off, the standard `active` fill when on — never an
+        // A filter chip in the toolbar's button language: `surface_elevated` + a
+        // hairline when off, the standard `selection` fill when on — never an
         // accent wash, which is reserved for the favorite stars themselves.
-        let favorites_button = div()
-            .id("models-favorites-filter")
-            .h(px(30.))
-            .px(px(12.))
-            .rounded_lg()
+        let favorites_button = crate::motion::hover(
+            button_frame(
+                div().id("models-favorites-filter"),
+                &theme,
+                ButtonSize::Large,
+            )
             .border_1()
             .border_color(theme.border)
-            .flex()
-            .items_center()
-            .gap_1p5()
             .cursor_pointer()
             .when(self.models_favorites_only, |button| {
-                button.bg(theme.active).text_color(theme.active_fg)
+                button
+                    .raised(theme.surface_active, &theme)
+                    .text_color(theme.text_primary)
             })
             .when(!self.models_favorites_only, |button| {
-                button.bg(theme.bg_raised).hover(|s| s.bg(theme.bg_hover))
+                button.raised(theme.surface_elevated, &theme)
             })
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
@@ -606,59 +1366,314 @@ impl OrbitApp {
             })
             .child(icon(
                 "icons/star.svg",
-                13.,
+                ButtonSize::Large.icon_size().px(&theme),
                 if self.models_favorites_only {
-                    theme.active_fg
+                    theme.text_primary
                 } else {
-                    theme.text_2
+                    theme.text_secondary
                 },
             ))
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if self.models_favorites_only {
-                        theme.active_fg
+                        theme.text_primary
                     } else {
-                        theme.text_2
+                        theme.text_secondary
                     })
                     .child(tr!("settings.favorites")),
-            );
+            ),
+            "models-favorites-filter",
+            &theme,
+            Hover::over(
+                Some(if self.models_favorites_only {
+                    theme.surface_active
+                } else {
+                    theme.surface_elevated
+                }),
+                if self.models_favorites_only {
+                    theme.surface_active
+                } else {
+                    theme.surface_hover
+                },
+            ),
+        );
+
+        // Refresh pi's provider/model catalog (`pi update --models`) and
+        // reload it. The catalog is pi's own data, so this is the one control
+        // that fetches new providers/models rather than filtering what we have.
+        let update_button = crate::motion::hover(
+            button_frame(div().id("models-update"), &theme, ButtonSize::Large)
+                .group(BUTTON_GROUP)
+                .border_1()
+                .border_color(theme.border)
+                .raised(theme.surface_elevated, &theme)
+                .cursor_pointer()
+                .when(self.models_refreshing, |button| button.opacity(0.6))
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_mouse_up(MouseButton::Left, {
+                    let this = this.clone();
+                    move |_, _, cx| {
+                        this.update(cx, |app, cx| app.models_refresh(cx));
+                    }
+                })
+                .child(refresh_glyph(
+                    "models-update-spin",
+                    ButtonSize::Large.icon_size().px(&theme),
+                    self.models_refreshing,
+                    theme.text_secondary,
+                    theme,
+                ))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_secondary)
+                        .child(tr!("settings.models_update")),
+                ),
+            "models-update",
+            &theme,
+            Hover::over(Some(theme.surface_elevated), theme.surface_hover),
+        );
+
+        // Provider filter: a dropdown instead of a badge per provider, so the
+        // control scales to any catalog. Hidden when there is nothing to choose.
+        let providers = self.model_providers();
+        let provider_select = (providers.len() > 1)
+            .then(|| self.model_provider_select(&providers, theme, this.clone(), cx));
 
         div()
             .w_full()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            // Search leads, like Providers and Plugins — the filter belongs
+            // with the list it narrows.
             .child(search)
+            // Status and actions, matching Providers: a live count fills the
+            // left, the 32px controls sit flush right. The provider dropdown
+            // shares their height so the row reads on one baseline.
             .child(
                 div()
                     .w_full()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.text_3)
-                            .child(model_count_label(
-                                total,
-                                shown,
-                                favorite_count,
-                                self.models_favorites_only || !needle.is_empty(),
-                            )),
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(model_count_label(total, shown, favorite_count, filtered)),
                     )
+                    .children(provider_select)
+                    .child(update_button)
                     .child(favorites_button),
             )
             .into_any_element()
+    }
+
+    /// The active model as a settings-style row: label on the left, selector
+    /// flush right, on a raised hairline board. Owns the page's "current
+    /// selection" so the grid below stays purely a catalog.
+    fn active_model_row(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let control = self.active_model_select(theme, this, cx);
+        div()
+            .w_full()
+            .rounded(panel::RADIUS.px(&theme))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface_elevated)
+            .overflow_hidden()
+            .child(self.setting_row(
+                theme,
+                &tr!("settings.active_model"),
+                Some(&tr!("settings.active_model_description")),
+                None,
+                Some(control),
+            ))
+            .into_any_element()
+    }
+
+    /// The catalog's providers in first-appearance order (the grid's group
+    /// order), for the scope chips.
+    fn model_providers(&self) -> Vec<String> {
+        let mut providers: Vec<String> = Vec::new();
+        for model in &self.available_models {
+            if !providers.contains(&model.provider) {
+                providers.push(model.provider.clone());
+            }
+        }
+        providers
+    }
+
+    /// The provider filter dropdown: `All providers` plus every provider in
+    /// the catalog, as a 32px select matching the toolbar's action buttons. A
+    /// dropdown scales to any number of providers where a badge per provider
+    /// would wrap into a wall.
+    fn model_provider_select(
+        &self,
+        providers: &[String],
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let mut options = vec![tr!("settings.all_providers")];
+        options.extend(
+            providers
+                .iter()
+                .map(|provider| crate::providers::provider_display_name(provider)),
+        );
+        let selected = self
+            .models_provider_filter
+            .as_ref()
+            .and_then(|current| providers.iter().position(|provider| provider == current))
+            .map(|ix| ix + 1)
+            .unwrap_or(0);
+        self.select_control_sized(
+            "models-provider-select",
+            SettingsSelect::ModelProvider,
+            ButtonSize::Large,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// The active-model selector: a dropdown over the reported catalog that
+    /// sets the session's model directly, so the Models page can both browse
+    /// and switch.
+    pub(super) fn active_model_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        if self.available_models.is_empty() {
+            return button_frame(div().id("active-model-select"), &theme, SELECT_CHIP_SIZE)
+                .border_1()
+                .border_color(theme.border)
+                .raised(theme.surface_elevated, &theme)
+                .text_color(theme.text_muted)
+                .child(tr!("settings.no_models_reported"))
+                .into_any_element();
+        }
+        let options: Vec<String> = self
+            .available_models
+            .iter()
+            .map(|model| {
+                format!(
+                    "{} · {}",
+                    crate::providers::provider_display_name(&model.provider),
+                    model.name
+                )
+            })
+            .collect();
+        let selected = self
+            .available_models
+            .iter()
+            .position(|model| model.id == self.model_id && model.provider == self.model_provider)
+            .unwrap_or(0);
+        self.select_control(
+            "active-model-select",
+            SettingsSelect::ActiveModel,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
     }
 
     /// Flip the Models page's favorites-only filter.
     pub(super) fn toggle_models_favorites_only(&mut self, cx: &mut Context<Self>) {
         self.models_favorites_only = !self.models_favorites_only;
         cx.notify();
+    }
+
+    /// Update the provider/model catalog: run pi's documented `pi update
+    /// --models`, then restart the agent so it loads the refreshed catalog and
+    /// re-query. Refused mid-run, like every other restart.
+    pub(super) fn models_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.models_refreshing {
+            return;
+        }
+        // A live run still holds the process; swapping pi's catalog files under
+        // it and restarting would kill the turn.
+        if self.busy || self.transcript.is_streaming() {
+            self.toast_warning(tr!("settings.finish_turn_before_restart"));
+            cx.notify();
+            return;
+        }
+        self.models_refreshing = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { crate::pi_install::run_model_catalog_refresh() })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.models_refreshing = false;
+                match result {
+                    Ok(output) if output.status.success() => {
+                        // pi keeps the catalog it loaded at startup, so reload
+                        // it by restarting and resuming the active session.
+                        app.restart_pi_for_catalog(cx);
+                        app.toast_success(tr!("settings.models_updated"));
+                    }
+                    Ok(output) => {
+                        let detail =
+                            crate::pi_update::failure_detail(&output.stdout, &output.stderr);
+                        app.toast_error(tr!("settings.models_update_failed", detail = detail));
+                    }
+                    Err(err) => {
+                        app.toast_error(tr!(
+                            "settings.models_update_failed",
+                            detail = err.to_string()
+                        ));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Restart the agent so a catalog refreshed on disk is loaded, resuming the
+    /// active session when one exists. Mirrors the credential-reload restart.
+    ///
+    /// The refresh runs off the main thread, so the state is re-checked here:
+    /// a run or a fork may have started while `pi --models` was running, and
+    /// neither may be yanked out from under.
+    pub(super) fn restart_pi_for_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        if self.busy || self.transcript.is_streaming() {
+            self.toast_warning(tr!("settings.finish_turn_before_restart"));
+            cx.notify();
+            return;
+        }
+        let resume = self
+            .current_session_path
+            .clone()
+            .and_then(|path| self.sessions.iter().find(|s| s.path == path).cloned());
+        self.drop_client();
+        self.current_session_path = None;
+        if let Some(session) = resume {
+            self.switch_to_session(session, false, cx);
+        } else {
+            self.runtime_start(cx);
+        }
     }
 
     /// The Models page: the catalog grouped by provider — a hairline header
@@ -681,6 +1696,7 @@ impl OrbitApp {
         let needle = self.models_filter.read(cx).text().trim().to_lowercase();
         let favorites = crate::favorites::all();
         let favorites_only = self.models_favorites_only;
+        let provider_filter = self.models_provider_filter.as_deref();
 
         // Group in catalog order: a stable provider order with its models.
         let mut providers: Vec<String> = Vec::new();
@@ -690,14 +1706,22 @@ impl OrbitApp {
             }
         }
 
-        let mut sections: Vec<AnyElement> = Vec::new();
+        // The active-selection row leads: a page-level "current model"
+        // control, then the browsable catalog groups.
+        let mut sections: Vec<AnyElement> = vec![self.active_model_row(theme, this.clone(), cx)];
         for provider in providers {
             let models: Vec<&ModelEntry> = self
                 .available_models
                 .iter()
                 .filter(|model| {
                     model.provider == provider
-                        && model_visible(model, &needle, favorites_only, &favorites)
+                        && model_visible(
+                            model,
+                            &needle,
+                            favorites_only,
+                            &favorites,
+                            provider_filter,
+                        )
                 })
                 .collect();
             if models.is_empty() {
@@ -716,7 +1740,7 @@ impl OrbitApp {
                     .w_full()
                     .flex()
                     .flex_col()
-                    .gap(theme.space(10.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(
                         // Provider header: glyph, name, then the group's
                         // count, closed by a hairline. The grid below has no
@@ -725,26 +1749,30 @@ impl OrbitApp {
                             .w_full()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .pb(theme.space(6.))
+                            .gap(DynamicSpacing::Base08.px(&theme))
+                            .pb(DynamicSpacing::Base06.px(&theme))
                             .border_b_1()
                             .border_color(theme.border)
-                            .child(icon_dyn(provider_icon(&provider), 14., theme.text_3))
+                            .child(icon_dyn(
+                                provider_icon(&provider),
+                                IconSize::Small.px(&theme),
+                                provider_mark_color(&provider, &theme, theme.text_muted),
+                            ))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(theme.ui_px(12.5))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.text_2)
+                                    .text_color(theme.text_secondary)
                                     .child(crate::providers::provider_display_name(&provider)),
                             )
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_size(theme.ui_px(11.))
-                                    .text_color(theme.text_3)
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .text_color(theme.text_muted)
                                     .child(tr!("settings.n_models", count = models.len())),
                             ),
                     )
@@ -753,7 +1781,7 @@ impl OrbitApp {
                             .w_full()
                             .grid()
                             .grid_cols(3)
-                            .gap(theme.space(10.))
+                            .gap(DynamicSpacing::Base08.px(&theme))
                             .children(cards),
                     )
                     .into_any_element(),
@@ -789,55 +1817,64 @@ impl OrbitApp {
         let (provider, id) = (model.provider.clone(), model.id.clone());
         let active = self.model_id == model.id && self.model_provider == model.provider;
         let is_favorite = favorites.contains(&model.provider, &model.id);
-        // Ink on the active fill comes from `active_fg`, stepped down for the
-        // secondary lines — `text_3` is authored for the canvas, not a
+        // Ink on the active fill comes from `selection_fg`, stepped down for the
+        // secondary lines — `text_muted` is authored for the canvas, not a
         // selected card.
         let meta_ink = if active {
-            theme.active_fg.opacity(0.72)
+            theme.text_primary.opacity(0.72)
         } else {
-            theme.text_3
+            theme.text_muted
         };
 
-        let star = div()
-            .id(ElementId::Name(
+        let star = icon_button_frame(
+            div().id(ElementId::Name(
                 format!("model-star-{provider}-{id}").into(),
-            ))
-            .flex_none()
-            .size(px(24.))
-            .rounded_md()
+            )),
+            &theme,
+            ButtonSize::Default,
+        )
+        .tip(if is_favorite {
+            tr!("settings.unfavorite")
+        } else {
+            tr!("settings.favorite")
+        })
+        .cursor_pointer()
+        .hover_state(&theme)
+        .on_mouse_up(MouseButton::Left, {
+            let this = this.clone();
+            let (provider, id) = (provider.clone(), id.clone());
+            move |_, _, cx| {
+                // Keep the star from bubbling to the card's
+                // "set active model" handler.
+                cx.stop_propagation();
+                crate::favorites::toggle(&provider, &id);
+                this.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .child(icon(
+            "icons/star.svg",
+            ButtonSize::Default.icon_size().px(&theme),
+            if is_favorite {
+                theme.accent_text
+            } else {
+                meta_ink
+            },
+        ));
+
+        let mut footer = div()
             .flex()
             .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.overlay))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                let (provider, id) = (provider.clone(), id.clone());
-                move |_, _, cx| {
-                    // Keep the star from bubbling to the card's
-                    // "set active model" handler.
-                    cx.stop_propagation();
-                    crate::favorites::toggle(&provider, &id);
-                    this.update(cx, |_, cx| cx.notify());
-                }
-            })
-            .child(icon(
-                "icons/star.svg",
-                14.,
-                if is_favorite { theme.accent } else { meta_ink },
-            ));
-
-        let mut footer = div().flex().items_center().gap(px(6.));
+            .gap(DynamicSpacing::Base06.px(&theme));
         if let Some(window) = model.context_window {
             footer = footer.child(
                 div()
-                    .h(px(20.))
-                    .px(px(7.))
-                    .rounded(px(6.))
+                    .h(DynamicSpacing::Base20.px(&theme))
+                    .px(DynamicSpacing::Base06.px(&theme))
+                    .rounded(Radius::Small.px(&theme))
                     .bg(theme.overlay_strong)
                     .flex()
                     .items_center()
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(meta_ink)
                     .child(tr!(
@@ -850,19 +1887,23 @@ impl OrbitApp {
         if active {
             footer = footer.child(
                 div()
-                    .h(px(20.))
-                    .px(px(7.))
-                    .rounded(px(6.))
+                    .h(DynamicSpacing::Base20.px(&theme))
+                    .px(DynamicSpacing::Base06.px(&theme))
+                    .rounded(Radius::Small.px(&theme))
                     .bg(theme.overlay_strong)
                     .flex()
                     .items_center()
-                    .gap_1p5()
-                    .child(icon("icons/check.svg", 11., theme.active_fg))
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .child(icon(
+                        "icons/check.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_primary,
+                    ))
                     .child(
                         div()
-                            .text_size(theme.ui_px(10.5))
+                            .text_size(TextSize::XSmall.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.active_fg)
+                            .text_color(theme.text_primary)
                             .child(tr!("settings.active")),
                     ),
             );
@@ -871,14 +1912,14 @@ impl OrbitApp {
             // footer the same height.
             footer = footer.child(
                 div()
-                    .h(px(20.))
+                    .h(DynamicSpacing::Base20.px(&theme))
                     .flex()
                     .items_center()
                     .opacity(0.)
                     .group_hover("model-card", |s| s.opacity(1.))
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(tr!("settings.set_active")),
             );
         }
@@ -891,9 +1932,9 @@ impl OrbitApp {
             .w_full()
             .min_w_0()
             .bg(if active {
-                theme.active
+                theme.surface_active
             } else {
-                theme.bg_composer
+                theme.surface_secondary
             })
             .border_1()
             .border_color(if active {
@@ -901,15 +1942,13 @@ impl OrbitApp {
             } else {
                 theme.border
             })
-            .rounded_lg()
-            .p(theme.space(12.))
+            .rounded(panel::RADIUS.px(&theme))
+            .p(DynamicSpacing::Base12.px(&theme))
             .flex()
             .flex_col()
-            .gap(theme.space(8.))
+            .gap(DynamicSpacing::Base08.px(&theme))
             .cursor_pointer()
-            .when(!active, |card| {
-                card.hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
-            })
+            .when(!active, |card| card.hover_bordered(&theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -923,15 +1962,15 @@ impl OrbitApp {
                     .w_full()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(theme.ui_px(13.))
+                            .text_size(TextSize::Default.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(if active { theme.active_fg } else { theme.text })
+                            .text_color(theme.text_primary)
                             .child(model.name.clone()),
                     )
                     .child(star),
@@ -1012,8 +2051,8 @@ impl OrbitApp {
             rows.push(
                 div()
                     .w_full()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_3)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
                     .child(tr!(
                         "settings.plugins_shown_installed",
                         shown = visible.len(),
@@ -1045,24 +2084,24 @@ impl OrbitApp {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap_1p5()
-            .pl(px(40.))
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .pl(DynamicSpacing::Base40.px(&theme))
             .child(self.provider_badge(
                 package.scope.label(),
-                theme.text_3,
+                theme.text_muted,
                 theme.overlay_strong,
                 theme,
             ))
             .child(self.provider_badge(
                 package.kind.label(),
-                theme.text_3,
+                theme.text_muted,
                 theme.overlay_strong,
                 theme,
             ));
         if let Some(version) = &package.version {
             badges = badges.child(self.provider_badge(
                 &format!("v{version}"),
-                theme.text_3,
+                theme.text_muted,
                 theme.overlay_strong,
                 theme,
             ));
@@ -1070,8 +2109,8 @@ impl OrbitApp {
         if !package.installed {
             badges = badges.child(self.provider_badge(
                 &tr!("settings.not_installed"),
-                theme.crit,
-                theme.crit.opacity(0.12),
+                theme.error,
+                theme.error.opacity(0.12),
                 theme,
             ));
         }
@@ -1080,11 +2119,11 @@ impl OrbitApp {
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
-                        .text_size(theme.ui_px(11.5))
-                        .text_color(theme.crit)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.error)
                         .child(tr!("settings.remove_this_plugin")),
                 )
                 .child(self.plugin_button(
@@ -1114,7 +2153,11 @@ impl OrbitApp {
                 ))
                 .into_any_element()
         } else {
-            let mut actions = div().flex_none().flex().items_center().gap_2();
+            let mut actions = div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme));
             if package.installed {
                 actions = actions.child(self.plugin_button(
                     format!("plugin-update-{source}"),
@@ -1149,27 +2192,31 @@ impl OrbitApp {
         div()
             .w_full()
             .min_w_0()
-            .px(theme.space(16.))
-            .py(theme.space(12.))
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
             .flex()
             .flex_col()
-            .gap_2()
+            .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 div()
                     .w_full()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap(DynamicSpacing::Base12.px(&theme))
                     .child(
                         div()
                             .size(px(28.))
                             .flex_none()
-                            .rounded(px(8.))
+                            .rounded(Radius::Large.px(&theme))
                             .bg(theme.overlay)
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon("icons/extensions.svg", 14., theme.text_2)),
+                            .child(icon(
+                                "icons/extensions.svg",
+                                IconSize::Small.px(&theme),
+                                theme.text_secondary,
+                            )),
                     )
                     .child(
                         div()
@@ -1177,12 +2224,12 @@ impl OrbitApp {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
+                            .gap(DynamicSpacing::Base02.px(&theme))
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(13.))
+                                    .text_size(TextSize::Default.px(&theme))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.text)
+                                    .text_color(theme.text_primary)
                                     .truncate()
                                     .child(package.name.clone()),
                             )
@@ -1190,7 +2237,7 @@ impl OrbitApp {
                                 div()
                                     .font_family(theme::code_font_family())
                                     .text_size(theme.code_px(10.5))
-                                    .text_color(theme.text_3)
+                                    .text_color(theme.text_muted)
                                     .truncate()
                                     .child(source),
                             ),
@@ -1201,10 +2248,10 @@ impl OrbitApp {
             .when(!package.install_path.as_os_str().is_empty(), |row| {
                 row.child(
                     div()
-                        .pl(px(40.))
+                        .pl(DynamicSpacing::Base40.px(&theme))
                         .font_family(theme::code_font_family())
                         .text_size(theme.code_px(10.5))
-                        .text_color(theme.text_3)
+                        .text_color(theme.text_muted)
                         .truncate()
                         .child(package.install_path.to_string_lossy().into_owned()),
                 )
@@ -1220,26 +2267,26 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         _cx: &Context<Self>,
     ) -> AnyElement {
-        let field = div()
+        let field = input_field_frame(div(), &theme)
             .flex_1()
             .min_w_0()
-            .h(px(34.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(13.))
-            .child(icon("icons/extensions.svg", 14., theme.text_3))
-            .child(self.plugin_source_input.clone());
+            .bg(theme.background)
+            .child(icon(
+                "icons/extensions.svg",
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(self.plugin_source_input.clone()),
+            );
 
         let scope = div()
             .flex()
             .items_center()
-            .gap_1()
+            .gap(DynamicSpacing::Base04.px(&theme))
             .child(self.plugin_scope_chip(
                 "Global",
                 !self.plugin_install_project,
@@ -1279,49 +2326,47 @@ impl OrbitApp {
             PluginAction::Refresh,
         );
 
-        let plugin_spinner: AnyElement =
-            crate::app::spinner("plugin-action-spin", 13., theme.text_2, theme);
+        let plugin_spinner: AnyElement = crate::app::spinner(
+            "plugin-action-spin",
+            IconSize::Small.px(&theme),
+            theme.text_secondary,
+            theme,
+        );
         let status: AnyElement = match &self.plugin_action {
             Some(action) => div()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap_2()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_2)
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_secondary)
                 .child(plugin_spinner)
                 .child(action.clone())
                 .into_any_element(),
             None => div()
                 .flex_1()
                 .min_w_0()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .child(tr!("settings.n_packages", count = self.plugins.len()))
                 .into_any_element(),
         };
 
-        let search = div()
+        let search = picker_search_frame(div(), &theme)
             .w_full()
-            .h(px(34.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(13.))
-            .child(icon("icons/search.svg", 14., theme.text_3))
-            .child(self.plugins_filter.clone());
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(div().flex_1().min_w_0().child(self.plugins_filter.clone()));
 
         div()
             .w_full()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(DynamicSpacing::Base12.px(&theme))
             // Search leads, like Providers and Models — the filter belongs
             // with the list it narrows, above the controls that add to it.
             .child(search)
@@ -1330,7 +2375,7 @@ impl OrbitApp {
                     .w_full()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(field)
                     .child(scope)
                     .child(install),
@@ -1340,7 +2385,7 @@ impl OrbitApp {
                     .w_full()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(status)
                     .child(refresh),
             )
@@ -1359,24 +2404,22 @@ impl OrbitApp {
             "plugin-scope-{}",
             if project { "project" } else { "global" }
         );
-        let mut chip = div()
-            .id(ElementId::Name(id.into()))
-            .h(px(30.))
-            .px(px(12.))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .text_size(theme.ui_px(12.))
-            .font_weight(FontWeight::MEDIUM);
+        let mut chip = button_frame(
+            div().id(ElementId::Name(id.into())),
+            &theme,
+            ButtonSize::Large,
+        )
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM);
         chip = if active {
-            chip.bg(theme.active).text_color(theme.active_fg)
+            chip.raised(theme.surface_active, &theme)
+                .text_color(theme.text_primary)
         } else {
             chip.border_1()
                 .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .text_color(theme.text_3)
-                .hover(|style| style.bg(theme.bg_hover))
+                .raised(theme.surface_elevated, &theme)
+                .text_color(theme.text_muted)
+                .hover_state(&theme)
         };
         chip.on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| {
@@ -1400,39 +2443,32 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: PluginAction,
     ) -> AnyElement {
-        let (height, pad_x, text_size, icon_size) = match size {
-            PluginButtonSize::Compact => (px(28.), px(10.), theme.ui_px(11.5), 12.),
-            PluginButtonSize::Toolbar => (px(30.), px(12.), theme.ui_px(12.), 13.),
+        let button_size = match size {
+            PluginButtonSize::Compact => ButtonSize::Medium,
+            PluginButtonSize::Toolbar => ButtonSize::Large,
         };
+        let icon_size = button_size.icon_size().px(&theme);
         let spin_id = ElementId::Name(format!("{id}-spin").into());
-        let base = div()
-            .id(ElementId::Name(id.into()))
+        let base = button_frame(div().id(ElementId::Name(id.into())), &theme, button_size)
             .group(BUTTON_GROUP)
-            .h(height)
-            .px(pad_x)
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1p5()
             .cursor_pointer()
-            .text_size(text_size)
             .font_weight(FontWeight::MEDIUM);
         let (button, icon_color) = if primary {
             (
-                base.bg(theme.send_bg)
-                    .text_color(theme.send_fg)
-                    .hover(|style| style.bg(theme.send_bg_hover)),
-                theme.send_fg,
+                base.raised(theme.action, &theme)
+                    .text_color(theme.action_fg)
+                    .hover_action(&theme)
+                    .pressed_state(&theme, PressedRamp::Action),
+                theme.action_fg,
             )
         } else {
             (
                 base.border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_raised)
-                    .text_color(theme.text_2)
-                    .hover(|style| style.bg(theme.bg_hover)),
-                theme.text_2,
+                    .raised(theme.surface_elevated, &theme)
+                    .text_color(theme.text_secondary)
+                    .hover_state(&theme),
+                theme.text_secondary,
             )
         };
         press(button)
@@ -1462,29 +2498,31 @@ impl OrbitApp {
     ) -> AnyElement {
         div()
             .w_full()
-            .bg(theme.bg_composer)
-            .border_1()
-            .border_color(theme.border)
-            .rounded_lg()
-            .px(px(14.))
-            .py(px(40.))
+            .bg(theme.surface_secondary)
+            .when_some(theme.glass_sigma(), |card, _| {
+                card.bg(theme.card_fill(theme.surface_secondary))
+            })
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base40.px(&theme))
             .flex()
             .flex_col()
             .items_center()
-            .gap_2()
-            .child(icon(icon_path, 26., theme.text_3))
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .child(empty_state_glyph(theme, icon_path))
             .child(
                 div()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(title.to_string()),
             )
             .child(
                 div()
                     .max_w(px(420.))
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_2)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(body.to_string()),
             )
             .into_any_element()
@@ -1504,96 +2542,87 @@ impl OrbitApp {
         let active = all.iter().filter(|view| view.active).count();
         let connected = all.iter().filter(|view| view.connected()).count();
 
-        let search = div()
+        let search = picker_search_frame(div(), &theme)
             .w_full()
-            .h(px(34.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(13.))
-            .child(icon("icons/search.svg", 14., theme.text_3))
-            .child(self.provider_filter.clone());
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(div().flex_1().min_w_0().child(self.provider_filter.clone()));
 
         let refresh_icon = refresh_glyph(
             "providers-refresh-spin",
-            13.,
+            ButtonSize::Large.icon_size().px(&theme),
             self.providers_refreshing,
-            theme.text_2,
+            theme.text_secondary,
             theme,
         );
-        let refresh_button = div()
-            .id("providers-refresh")
-            .group(BUTTON_GROUP)
-            .h(px(30.))
-            .px(px(12.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .cursor_pointer()
-            .when(self.providers_refreshing, |button| button.opacity(0.6))
-            .hover(|style| style.bg(theme.bg_hover))
-            .active(|style| style.bg(theme.active))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |app, cx| app.provider_refresh(cx));
-                }
-            })
-            .child(refresh_icon)
-            .child(
-                div()
-                    .text_size(theme.ui_px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_2)
-                    .child(tr!("settings.refresh")),
-            );
+        let refresh_button = crate::motion::hover(
+            button_frame(div().id("providers-refresh"), &theme, ButtonSize::Large)
+                .group(BUTTON_GROUP)
+                .border_1()
+                .border_color(theme.border)
+                .raised(theme.surface_elevated, &theme)
+                .cursor_pointer()
+                .when(self.providers_refreshing, |button| button.opacity(0.6))
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_mouse_up(MouseButton::Left, {
+                    let this = this.clone();
+                    move |_, _, cx| {
+                        this.update(cx, |app, cx| app.provider_refresh(cx));
+                    }
+                })
+                .child(refresh_icon)
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_secondary)
+                        .child(tr!("settings.refresh")),
+                ),
+            "providers-refresh",
+            &theme,
+            Hover::over(Some(theme.surface_elevated), theme.surface_hover),
+        );
 
-        let add_button = div()
-            .id("providers-add")
-            .h(px(30.))
-            .px(px(12.))
-            .rounded_lg()
-            .bg(theme.send_bg)
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .cursor_pointer()
-            .hover(|style| style.bg(theme.send_bg_hover))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, window, cx| {
-                    this.update(cx, |app, cx| app.provider_editor_open(None, window, cx));
-                }
-            })
-            .child(icon("icons/plus.svg", 13., theme.send_fg))
-            .child(
-                div()
-                    .text_size(theme.ui_px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.send_fg)
-                    .child(tr!("settings.add_provider")),
-            );
+        let add_button = crate::motion::hover(
+            button_frame(div().id("providers-add"), &theme, ButtonSize::Large)
+                .raised(theme.action, &theme)
+                .cursor_pointer()
+                .pressed_state(&theme, PressedRamp::Action)
+                .on_mouse_up(MouseButton::Left, {
+                    let this = this.clone();
+                    move |_, window, cx| {
+                        this.update(cx, |app, cx| app.provider_editor_open(None, window, cx));
+                    }
+                })
+                .child(icon(
+                    "icons/plus.svg",
+                    ButtonSize::Large.icon_size().px(&theme),
+                    theme.action_fg,
+                ))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.action_fg)
+                        .child(tr!("settings.add_provider")),
+                ),
+            "providers-add",
+            &theme,
+            Hover::over(Some(theme.action), theme.action_hover),
+        );
 
         let toolbar = div()
             .w_full()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_3)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
                     .child(tr!(
                         "settings.providers_active_connected",
                         all = all.len(),
@@ -1608,7 +2637,7 @@ impl OrbitApp {
             .w_full()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(DynamicSpacing::Base12.px(&theme))
             .child(search)
             .child(toolbar)
             .into_any_element()
@@ -1664,31 +2693,35 @@ impl OrbitApp {
                     .bg(theme.accent.opacity(0.1))
                     .border_1()
                     .border_color(theme.accent.opacity(0.35))
-                    .rounded_lg()
-                    .px(px(14.))
-                    .py(px(10.))
+                    .rounded(panel::RADIUS.px(&theme))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .items_center()
-                    .gap_2p5()
-                    .child(icon("icons/info.svg", 15., theme.accent))
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(icon(
+                        "icons/info.svg",
+                        IconSize::Medium.px(&theme),
+                        theme.accent_text,
+                    ))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap_0p5()
+                            .gap(DynamicSpacing::Base02.px(&theme))
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(12.5))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.text)
+                                    .text_color(theme.text_primary)
                                     .child(tr!("settings.credentials_changed")),
                             )
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(11.5))
-                                    .text_color(theme.text_2)
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .text_color(theme.text_secondary)
                                     .child(tr!("settings.restart_pi_credentials_hint")),
                             ),
                     )
@@ -1724,28 +2757,32 @@ impl OrbitApp {
             rows.push(
                 div()
                     .w_full()
-                    .bg(theme.bg_composer)
+                    .bg(theme.surface_secondary)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded_lg()
-                    .px(px(14.))
-                    .py(px(40.))
+                    .rounded(panel::RADIUS.px(&theme))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base40.px(&theme))
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap_2()
-                    .child(icon("icons/search.svg", 26., theme.text_3))
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(icon(
+                        "icons/search.svg",
+                        IconSize::Custom(26. / 16.).px(&theme),
+                        theme.text_muted,
+                    ))
                     .child(
                         div()
-                            .text_size(theme.ui_px(13.))
+                            .text_size(TextSize::Default.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(tr!("settings.no_providers_match")),
                     )
                     .child(
                         div()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.text_2)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_secondary)
                             .child(tr!("settings.try_a_different_search")),
                     )
                     .into_any_element(),
@@ -1760,7 +2797,7 @@ impl OrbitApp {
                     .w_full()
                     .grid()
                     .grid_cols(3)
-                    .gap_3()
+                    .gap(DynamicSpacing::Base12.px(&theme))
                     .children(cards)
                     .into_any_element(),
             );
@@ -1771,48 +2808,15 @@ impl OrbitApp {
 
     /// A red note card for a config read error.
     pub(super) fn provider_error_card(&self, theme: Theme, title: &str, error: &str) -> AnyElement {
-        div()
-            .w_full()
-            .bg(theme.crit.opacity(0.08))
-            .border_1()
-            .border_color(theme.crit.opacity(0.35))
-            .rounded_lg()
-            .px(px(14.))
-            .py(px(12.))
-            .flex()
-            .items_start()
-            .gap_2p5()
-            .child(icon("icons/info.svg", 15., theme.crit))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(theme.ui_px(13.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(title.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.text_2)
-                            .child(error.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme.ui_px(11.5))
-                            .text_color(theme.text_3)
-                            .child(tr!(
-                                "settings.fix_or_remove_the_file_before_editing_providers_"
-                            )),
-                    ),
-            )
-            .into_any_element()
+        error_state(
+            theme,
+            title,
+            Some(error),
+            Some(&tr!(
+                "settings.fix_or_remove_the_file_before_editing_providers_"
+            )),
+            None,
+        )
     }
 
     /// Every provider pi ships with, merged with the live catalog, models.json,
@@ -1981,21 +2985,25 @@ impl OrbitApp {
     ) -> Option<AnyElement> {
         let session = self.auth.login_for(&view.id)?;
         let (headline, detail, tint) = match session.phase {
-            LoginPhase::Connecting => (tr!("status.connecting"), tr!("auth.asking_pi"), theme.warn),
+            LoginPhase::Connecting => (
+                tr!("status.connecting"),
+                tr!("auth.asking_pi"),
+                theme.warning,
+            ),
             LoginPhase::AwaitingBrowser => (
                 tr!("auth.waiting_browser"),
                 tr!("auth.finish_in_browser"),
-                theme.accent,
+                theme.accent_text,
             ),
             LoginPhase::AwaitingDeviceCode => (
                 tr!("auth.enter_device_code"),
                 tr!("auth.approve_in_browser"),
-                theme.accent,
+                theme.accent_text,
             ),
             LoginPhase::Succeeded => (
                 tr!("status.connected"),
                 tr!("auth.credential_saved"),
-                theme.ok_green,
+                theme.success,
             ),
             LoginPhase::Error => (
                 tr!("status.sign_in_failed"),
@@ -2005,7 +3013,7 @@ impl OrbitApp {
                     .map(|(_, message)| message.clone())
                     .filter(|message| !message.is_empty())
                     .unwrap_or_else(|| tr!("auth.sign_in_incomplete")),
-                theme.crit,
+                theme.error,
             ),
             LoginPhase::Cancelled => (
                 tr!("status.cancelled"),
@@ -2013,7 +3021,7 @@ impl OrbitApp {
                     .message
                     .clone()
                     .unwrap_or_else(|| tr!("auth.sign_in_cancelled")),
-                theme.text_3,
+                theme.text_muted,
             ),
         };
 
@@ -2021,16 +3029,16 @@ impl OrbitApp {
             .w_full()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(div().size(px(7.)).rounded_full().bg(tint))
                     .child(
                         div()
-                            .text_size(theme.ui_px(12.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(tint)
                             .child(headline),
@@ -2038,8 +3046,8 @@ impl OrbitApp {
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(11.5))
-                    .text_color(theme.text_2)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(detail),
             );
 
@@ -2047,19 +3055,19 @@ impl OrbitApp {
             body = body.child(
                 div()
                     .w_full()
-                    .px_3()
-                    .py_2p5()
-                    .rounded_md()
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_main)
+                    .bg(theme.background)
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap(DynamicSpacing::Base04.px(&theme))
                     .child(
                         div()
-                            .text_size(theme.ui_px(10.5))
-                            .text_color(theme.text_3)
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_muted)
                             .child(tr!("settings.device_code")),
                     )
                     .child(
@@ -2067,14 +3075,14 @@ impl OrbitApp {
                             .font_family(theme::code_font_family())
                             .text_size(theme.code_px(16.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(device.user_code.clone()),
                     )
                     .child(
                         div()
                             .font_family(theme::code_font_family())
                             .text_size(theme.code_px(10.5))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .truncate()
                             .child(device.verification_uri.clone()),
                     ),
@@ -2087,7 +3095,7 @@ impl OrbitApp {
                         .truncate()
                         .font_family(theme::code_font_family())
                         .text_size(theme.code_px(10.5))
-                        .text_color(theme.text_3)
+                        .text_color(theme.text_muted)
                         .child(url.clone()),
                 );
             }
@@ -2096,7 +3104,11 @@ impl OrbitApp {
         let id = view.id.clone();
         let name = view.name.clone();
         let method = session.method.clone();
-        let mut buttons = div().flex().flex_wrap().items_center().gap_2();
+        let mut buttons = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme));
         match session.phase {
             LoginPhase::Connecting
             | LoginPhase::AwaitingBrowser
@@ -2193,17 +3205,21 @@ impl OrbitApp {
         };
         let reset_label = |ms: i64| tr!("session.resets_at", time = format_epoch_ms(ms));
 
-        let mut head = div().flex().items_center().gap_2().child(
-            div()
-                .text_size(theme.ui_px(10.5))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text_3)
-                .child(tr!("settings.usage")),
-        );
+        let mut head = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(
+                div()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_muted)
+                    .child(tr!("settings.usage")),
+            );
         if let Some(plan) = &report.plan {
             head = head.child(self.provider_badge(
                 plan,
-                theme.accent,
+                theme.accent_text,
                 theme.accent.opacity(0.12),
                 theme,
             ));
@@ -2213,13 +3229,13 @@ impl OrbitApp {
             .w_full()
             .flex()
             .flex_col()
-            .gap_2()
-            .px_3()
-            .py_2p5()
-            .rounded_md()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_main)
+            .bg(theme.background)
             .child(head);
 
         for window in &report.windows {
@@ -2240,36 +3256,41 @@ impl OrbitApp {
                 continue;
             };
 
-            let mut row = div().w_full().flex().flex_col().gap_1().child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(theme.ui_px(11.))
-                            .text_color(theme.text_2)
-                            .child(window.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(theme.ui_px(11.))
-                            .text_color(theme.text)
-                            .child(value),
-                    ),
-            );
+            let mut row = div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_secondary)
+                                .child(window.label.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_primary)
+                                .child(value),
+                        ),
+                );
 
             if let Some(fraction) = window.fraction() {
                 let tint = if fraction >= 0.9 {
-                    theme.crit
+                    theme.error
                 } else if fraction >= 0.75 {
-                    theme.warn
+                    theme.warning
                 } else {
-                    theme.ok_green
+                    theme.success
                 };
                 row = row.child(
                     div()
@@ -2284,8 +3305,8 @@ impl OrbitApp {
             if let Some(resets_at) = window.resets_at {
                 row = row.child(
                     div()
-                        .text_size(theme.ui_px(10.))
-                        .text_color(theme.text_3)
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_muted)
                         .child(reset_label(resets_at)),
                 );
             }
@@ -2302,21 +3323,21 @@ impl OrbitApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(theme.ui_px(11.))
-                            .text_color(theme.text_2)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_secondary)
                             .child(balance.label.clone()),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .text_size(theme.ui_px(11.))
-                            .text_color(theme.text)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_primary)
                             .child(text),
                     ),
             );
@@ -2325,16 +3346,16 @@ impl OrbitApp {
         if let Some(error) = &report.error {
             body = body.child(
                 div()
-                    .text_size(theme.ui_px(10.5))
-                    .text_color(theme.crit)
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.error)
                     .child(error.to_string()),
             );
         } else if note_should_render(report) {
             if let Some(note) = &report.note {
                 body = body.child(
                     div()
-                        .text_size(theme.ui_px(10.5))
-                        .text_color(theme.text_3)
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_muted)
                         .child(note.to_string()),
                 );
             }
@@ -2363,29 +3384,29 @@ impl OrbitApp {
         let session = self.auth.login_for(&view.id);
         let (status_label, status_color) = if let Some(session) = session {
             match session.phase {
-                LoginPhase::Connecting => (tr!("status.connecting"), theme.warn),
+                LoginPhase::Connecting => (tr!("status.connecting"), theme.warning),
                 LoginPhase::AwaitingBrowser | LoginPhase::AwaitingDeviceCode => {
-                    (tr!("status.connecting"), theme.accent)
+                    (tr!("status.connecting"), theme.accent_text)
                 }
-                LoginPhase::Succeeded => (tr!("status.connected"), theme.ok_green),
-                LoginPhase::Error => (tr!("status.sign_in_failed"), theme.crit),
-                LoginPhase::Cancelled => (tr!("status.cancelled"), theme.text_3),
+                LoginPhase::Succeeded => (tr!("status.connected"), theme.success),
+                LoginPhase::Error => (tr!("status.sign_in_failed"), theme.error),
+                LoginPhase::Cancelled => (tr!("status.cancelled"), theme.text_muted),
             }
         } else if view.active {
-            (tr!("status.active"), theme.ok_green)
+            (tr!("status.active"), theme.success)
         } else if view.connected() {
-            (tr!("status.connected"), theme.accent)
+            (tr!("status.connected"), theme.accent_text)
         } else if view.custom {
-            (tr!("status.not_loaded"), theme.warn)
+            (tr!("status.not_loaded"), theme.warning)
         } else {
-            (tr!("status.not_configured"), theme.text_3)
+            (tr!("status.not_configured"), theme.text_muted)
         };
 
         let tile = div()
             .size(px(52.))
             .flex_none()
-            .rounded(px(14.))
-            .bg(theme.bg_raised)
+            .rounded(panel::RADIUS.px(&theme))
+            .bg(theme.surface_elevated)
             .border_1()
             .border_color(theme.border)
             .flex()
@@ -2393,56 +3414,65 @@ impl OrbitApp {
             .justify_center()
             .child(icon_dyn(
                 provider_icon(&view.id),
-                30.,
-                if view.active || view.connected() {
-                    theme.text
-                } else {
-                    theme.text_2
-                },
+                IconSize::Custom(30. / 16.).px(&theme),
+                provider_mark_color(
+                    &view.id,
+                    &theme,
+                    if view.active || view.connected() {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    },
+                ),
             ));
 
         let status_pill = div()
-            .h(px(22.))
-            .px(px(8.))
+            .h(ButtonSize::Default.height(&theme))
+            .px(DynamicSpacing::Base08.px(&theme))
             .rounded_full()
             .flex_none()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap(DynamicSpacing::Base06.px(&theme))
             .bg(status_color.opacity(0.12))
             .child(div().size(px(6.)).rounded_full().bg(status_color))
             .child(
                 div()
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(status_color)
                     .child(status_label),
             );
 
-        let header = div().flex().items_start().gap_3().child(tile).child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_size(theme.ui_px(14.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text)
-                        .truncate()
-                        .child(view.name.clone()),
-                )
-                .child(
-                    div()
-                        .font_family(theme::code_font_family())
-                        .text_size(theme.code_px(10.5))
-                        .text_color(theme.text_3)
-                        .truncate()
-                        .child(view.id.clone()),
-                ),
-        );
+        let header = div()
+            .flex()
+            .items_start()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .child(tile)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::Default.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .truncate()
+                            .child(view.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme::code_font_family())
+                            .text_size(theme.code_px(10.5))
+                            .text_color(theme.text_muted)
+                            .truncate()
+                            .child(view.id.clone()),
+                    ),
+            );
 
         // Status and source badges share a row under the name so the name
         // column keeps the card's full width (a right-aligned pill in the
@@ -2451,12 +3481,12 @@ impl OrbitApp {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap_1p5()
+            .gap(DynamicSpacing::Base06.px(&theme))
             .child(status_pill);
         if view.oauth {
             badges = badges.child(self.provider_badge(
                 "OAuth",
-                theme.accent,
+                theme.accent_text,
                 theme.accent.opacity(0.12),
                 theme,
             ));
@@ -2464,7 +3494,7 @@ impl OrbitApp {
         if view.api_key {
             badges = badges.child(self.provider_badge(
                 &tr!("settings.api_key"),
-                theme.text_3,
+                theme.text_muted,
                 theme.overlay_strong,
                 theme,
             ));
@@ -2478,9 +3508,9 @@ impl OrbitApp {
                 "Provider"
             },
             if view.custom {
-                theme.accent
+                theme.accent_text
             } else {
-                theme.text_3
+                theme.text_muted
             },
             if view.custom {
                 theme.accent.opacity(0.12)
@@ -2500,28 +3530,27 @@ impl OrbitApp {
         let mut facts = div()
             .flex()
             .items_center()
-            .gap_1p5()
-            .text_size(theme.ui_px(11.5))
-            .text_color(theme.text_3)
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_muted)
             .child(count_label);
         if let Some(kind) = view.credential_kind() {
             facts = facts
-                .child(div().size(px(3.)).rounded_full().bg(theme.text_3))
+                .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
                 .child(match kind {
                     "oauth" => tr!("settings.cred_oauth"),
                     "api_key" => tr!("settings.cred_api_key"),
-                    "session" => tr!("settings.cred_session"),
                     other => other.to_string(),
                 });
             if let Some(status) = &view.live_status {
                 if let Some(account) = &status.account {
                     facts = facts
-                        .child(div().size(px(3.)).rounded_full().bg(theme.text_3))
+                        .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
                         .child(account.clone());
                 }
                 if let Some(expires_at) = status.expires_at {
                     facts = facts
-                        .child(div().size(px(3.)).rounded_full().bg(theme.text_3))
+                        .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
                         .child(tr!(
                             "settings.expires_at",
                             time = format_epoch_ms(expires_at)
@@ -2530,12 +3559,12 @@ impl OrbitApp {
             }
         } else if let Some(env_var) = &view.env_var {
             facts = facts
-                .child(div().size(px(3.)).rounded_full().bg(theme.text_3))
+                .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
                 .child(tr!("settings.via_env_var", env_var = env_var));
         }
         if view.has_api_key {
             facts = facts
-                .child(div().size(px(3.)).rounded_full().bg(theme.text_3))
+                .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
                 .child(tr!("settings.models_json_key"));
         }
 
@@ -2554,7 +3583,7 @@ impl OrbitApp {
             .truncate()
             .font_family(theme::code_font_family())
             .text_size(theme.code_px(10.5))
-            .text_color(theme.text_3)
+            .text_color(theme.text_muted)
             .child(endpoint);
 
         let actions: AnyElement = if confirming {
@@ -2562,13 +3591,13 @@ impl OrbitApp {
                 .w_full()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(theme.ui_px(11.5))
-                        .text_color(theme.crit)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.error)
                         .child(tr!("settings.remove_this_provider")),
                 )
                 .child(self.provider_button(
@@ -2600,7 +3629,11 @@ impl OrbitApp {
             } else {
                 None
             };
-            let mut primary = div().flex().flex_wrap().items_center().gap_2();
+            let mut primary = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme));
             if let Some(capability) = capability {
                 for method in &capability.methods {
                     if method.id == "api_key" {
@@ -2641,8 +3674,8 @@ impl OrbitApp {
                 if capability.methods.is_empty() {
                     primary = primary.child(
                         div()
-                            .text_size(theme.ui_px(11.))
-                            .text_color(theme.text_3)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
                             .child(tr!("settings.no_sign_in_methods_available")),
                     );
                 }
@@ -2691,24 +3724,6 @@ impl OrbitApp {
                     ));
                 }
             }
-            // Ollama Cloud usage is separate from the local endpoint's API key:
-            // current accounts use a real cloud key (monthly credits); legacy
-            // accounts expose session/weekly usage only behind a signed-in
-            // settings page, which needs the user's own session cookie. Offer
-            // the session editor explicitly so neither is auto-scraped.
-            if providers::is_ollama_cloud_provider(&view.id) {
-                primary = primary.child(self.provider_button(
-                    format!("provider-ollama-session-{}", view.id),
-                    &tr!("settings.usage_session"),
-                    ProviderButtonStyle::Ghost,
-                    theme,
-                    this.clone(),
-                    ProviderAction::EditOllamaSession {
-                        id: view.id.clone(),
-                        name: view.name.clone(),
-                    },
-                ));
-            }
             let connected = view.auth.is_some()
                 || view
                     .live_status
@@ -2717,7 +3732,11 @@ impl OrbitApp {
             // Secondary actions: Configure/Remove only exist when there is a
             // models.json entry to edit; Sign out only when a credential is
             // stored. Built-ins with neither show just the auth button.
-            let mut secondary = div().flex().flex_wrap().items_center().gap_1p5();
+            let mut secondary = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme));
             if view.custom {
                 secondary = secondary.child(self.provider_button(
                     format!("provider-configure-{}", view.id),
@@ -2766,7 +3785,12 @@ impl OrbitApp {
                     },
                 ));
             }
-            let mut actions = div().w_full().flex().flex_col().gap_2().child(primary);
+            let mut actions = div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(primary);
             if view.custom || connected || has_usage {
                 actions = actions.child(secondary);
             }
@@ -2776,19 +3800,21 @@ impl OrbitApp {
         div()
             .w_full()
             .min_w_0()
-            .bg(theme.bg_composer)
-            .border_1()
-            .border_color(theme.border)
-            .rounded_lg()
-            .p(px(14.))
+            .bg(theme.surface_secondary)
+            .when_some(theme.glass_sigma(), |card, _| {
+                card.bg(theme.card_fill(theme.surface_secondary))
+            })
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
+            .p(DynamicSpacing::Base12.px(&theme))
             .flex()
             .flex_col()
-            .gap_2p5()
+            .gap(DynamicSpacing::Base08.px(&theme))
             .child(header)
             .child(badges)
             .child(facts)
             .child(base_url)
-            .child(div().h(px(1.)).w_full().bg(theme.border))
+            .child(div().h(BORDER_WIDTH).w_full().bg(theme.border))
             .child(actions)
             .into_any_element()
     }
@@ -2802,16 +3828,16 @@ impl OrbitApp {
         theme: Theme,
     ) -> AnyElement {
         div()
-            .h(px(20.))
-            .px(px(7.))
-            .rounded(px(6.))
+            .h(DynamicSpacing::Base20.px(&theme))
+            .px(DynamicSpacing::Base06.px(&theme))
+            .rounded(Radius::Small.px(&theme))
             .flex_none()
             .flex()
             .items_center()
             .bg(bg)
             .child(
                 div()
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(fg)
                     .child(label.to_string()),
@@ -2832,49 +3858,41 @@ impl OrbitApp {
         action: ProviderAction,
     ) -> AnyElement {
         let icon_path = Self::provider_action_icon(&action);
-        let mut button = div()
-            .id(ElementId::Name(id.into()))
-            .group(BUTTON_GROUP)
-            .h(px(28.))
-            .px(px(10.))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1p5()
-            .cursor_pointer()
-            .text_size(theme.ui_px(11.5))
-            .font_weight(FontWeight::MEDIUM);
+        let mut button = button_frame(
+            div().id(ElementId::Name(id.into())),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .group(BUTTON_GROUP)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM);
         button = match style {
             ProviderButtonStyle::Primary => button
-                .bg(theme.send_bg)
-                .text_color(theme.send_fg)
-                .hover(|style| style.bg(theme.send_bg_hover)),
+                .raised(theme.action, &theme)
+                .text_color(theme.action_fg)
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action),
             ProviderButtonStyle::Ghost => button
                 .border_1()
                 .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .text_color(theme.text_2)
-                .hover(|style| style.bg(theme.bg_hover)),
+                .raised(theme.surface_elevated, &theme)
+                .text_color(theme.text_secondary)
+                .hover_state(&theme),
             ProviderButtonStyle::Danger => button
                 .border_1()
                 .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .text_color(theme.crit)
-                .hover(|style| {
-                    style
-                        .border_color(theme.crit.opacity(0.6))
-                        .bg(theme.crit.opacity(0.08))
-                }),
+                .raised(theme.surface_elevated, &theme)
+                .text_color(theme.error)
+                .hover_danger_soft(&theme),
         };
         let icon_color = match style {
-            ProviderButtonStyle::Primary => theme.send_fg,
-            ProviderButtonStyle::Danger => theme.crit,
-            ProviderButtonStyle::Ghost => theme.text_2,
+            ProviderButtonStyle::Primary => theme.action_fg,
+            ProviderButtonStyle::Danger => theme.error,
+            ProviderButtonStyle::Ghost => theme.text_secondary,
         };
         press(button)
             .when_some(icon_path, |button, path| {
-                button.child(icon(path, 12., icon_color))
+                button.child(icon(path, IconSize::XSmall.px(&theme), icon_color))
             })
             .child(div().child(label.to_string()))
             .on_mouse_up(MouseButton::Left, move |_, window, cx| {
@@ -2895,7 +3913,6 @@ impl OrbitApp {
             ProviderAction::AuthCancel => Some("icons/x.svg"),
             ProviderAction::AuthDismiss => Some("icons/check.svg"),
             ProviderAction::EditKey { .. } => Some("icons/at-sign.svg"),
-            ProviderAction::EditOllamaSession { .. } => Some("icons/clock.svg"),
             ProviderAction::ShowUsage { .. } => Some("icons/usage-total.svg"),
             ProviderAction::SignOut { .. } => Some("icons/stop.svg"),
             ProviderAction::Configure { .. } => Some("icons/settings.svg"),
@@ -2944,15 +3961,6 @@ impl OrbitApp {
                 oauth,
                 note,
             } => self.provider_key_open(id, name, oauth, note, window, cx),
-            ProviderAction::EditOllamaSession { id, name } => self.provider_credential_open(
-                id,
-                name,
-                false,
-                "",
-                ProviderKeyKind::OllamaCloudSession,
-                window,
-                cx,
-            ),
             ProviderAction::SignOut { id } => self.provider_sign_out(id, cx),
             ProviderAction::ShowUsage { id } => {
                 self.provider_usage_open = Some(id);
@@ -2989,19 +3997,12 @@ impl OrbitApp {
             .find(|view| view.id == id)?;
         let body = self.provider_quota_section(&view, theme)?;
 
-        let close = div()
-            .id("provider-usage-close")
-            .h(px(32.))
-            .px(px(14.))
-            .rounded_lg()
+        let close = button_frame(div().id("provider-usage-close"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .justify_center()
+            .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -3013,46 +4014,39 @@ impl OrbitApp {
             })
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_2)
+                    .text_color(theme.text_secondary)
                     .child(tr!("settings.close")),
             );
 
-        let card = div()
+        let card = modal_card(&theme)
             .w_full()
             .max_w(px(460.))
             .max_h(relative(1.))
-            .rounded(px(14.))
-            .popover_surface(theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .child(
                 div()
-                    .px(px(18.))
-                    .py(px(14.))
+                    .px(modal::header_padding_x(&theme))
+                    .pt(modal::header_padding_top(&theme))
+                    .pb(modal::header_padding_bottom(&theme))
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap(modal::header_gap(&theme))
                     .border_b_1()
                     .border_color(theme.border)
                     .child(
                         div()
-                            .text_size(theme.ui_px(15.))
+                            .text_size(modal::HEADLINE.px(&theme))
+                            .line_height(modal::HEADLINE.line_height(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(tr!("settings.usage_for", name = view.name)),
                     )
                     .child(
                         div()
                             .font_family(theme::code_font_family())
                             .text_size(theme.code_px(11.))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(view.id.clone()),
                     ),
             )
@@ -3062,15 +4056,15 @@ impl OrbitApp {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(18.))
-                    .py(px(16.))
+                    .px(modal::section_padding_x(&theme, false))
+                    .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             )
             .child(
                 div()
                     .flex_none()
-                    .px(px(18.))
-                    .py(px(12.))
+                    .px(modal::footer_padding(&theme))
+                    .py(modal::footer_padding(&theme))
                     .flex()
                     .items_center()
                     .justify_end()
@@ -3100,12 +4094,18 @@ impl OrbitApp {
                 .inset_0()
                 .occlude()
                 .bg(scrim)
-                .p(px(24.))
+                .p(DynamicSpacing::Base24.px(&theme))
                 .flex()
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-usage-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -3119,54 +4119,46 @@ impl OrbitApp {
     ) -> Option<AnyElement> {
         let editor = self.provider_key_editor.as_ref()?;
 
-        let (field_label, hint) = match editor.kind {
-            ProviderKeyKind::ApiKey => (tr!("settings.api_key"), tr!("settings.api_key_hint")),
-            ProviderKeyKind::OllamaCloudSession => (
-                tr!("settings.session_cookie"),
-                tr!("settings.session_cookie_hint"),
-            ),
-        };
+        let field_label = tr!("settings.api_key");
+        let hint = tr!("settings.api_key_hint");
 
-        let mut body = div().w_full().flex().flex_col().gap_3().child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1p5()
-                .child(
-                    div()
-                        .text_size(theme.ui_px(12.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
-                        .child(field_label),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .px_2p5()
-                        .py_1p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.bg_main)
-                        .text_size(theme.ui_px(13.))
-                        .child(editor.key.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_3)
-                        .child(hint),
-                ),
-        );
+        let mut body = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(input::gap(&theme))
+                    .child(
+                        input_label(field_label, &theme)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_secondary),
+                    )
+                    .child(
+                        input_field_frame(div(), &theme)
+                            .w_full()
+                            .bg(theme.background)
+                            .child(editor.key.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(hint),
+                    ),
+            );
         if !editor.note.is_empty() {
             body = body.child(
                 div()
-                    .text_size(theme.ui_px(11.))
-                    .text_color(theme.text_3)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
                     .child(providers::localize_note(editor.note)),
             );
         }
-        if editor.oauth && editor.kind == ProviderKeyKind::ApiKey {
+        if editor.oauth {
             let id = editor.provider_id.clone();
             let name = editor.provider_name.clone();
             let this_signin = this.clone();
@@ -3174,12 +4166,12 @@ impl OrbitApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(theme.ui_px(11.))
-                            .text_color(theme.text_3)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
                             .child(tr!(
                                 "settings.prefer_a_subscription_sign_in_with_oauth_instead"
                             )),
@@ -3197,29 +4189,22 @@ impl OrbitApp {
         if let Some(error) = &editor.error {
             body = body.child(
                 div()
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded_md()
-                    .bg(theme.crit.opacity(0.1))
-                    .text_size(theme.ui_px(11.5))
-                    .text_color(theme.crit)
+                    .px(DynamicSpacing::Base08.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
+                    .bg(theme.error.opacity(0.1))
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.error)
                     .child(error.clone()),
             );
         }
 
-        let cancel = div()
-            .id("provider-key-close")
-            .h(px(32.))
-            .px(px(14.))
-            .rounded_lg()
+        let cancel = button_frame(div().id("provider-key-close"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .justify_center()
+            .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -3231,8 +4216,7 @@ impl OrbitApp {
             })
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_2)
+                    .text_color(theme.text_secondary)
                     .child(tr!("settings.cancel")),
             );
         let save = self.provider_button(
@@ -3244,42 +4228,36 @@ impl OrbitApp {
             ProviderAction::SaveKey,
         );
 
-        let card = div()
+        let card = modal_card(&theme)
             .w_full()
             .max_w(px(460.))
             .max_h(relative(1.))
-            .rounded(px(14.))
-            .popover_surface(theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
             .child(
                 div()
-                    .px(px(18.))
-                    .py(px(14.))
+                    .px(modal::header_padding_x(&theme))
+                    .pt(modal::header_padding_top(&theme))
+                    .pb(modal::header_padding_bottom(&theme))
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap(modal::header_gap(&theme))
                     .border_b_1()
                     .border_color(theme.border)
                     .child(
                         div()
-                            .text_size(theme.ui_px(15.))
+                            .text_size(modal::HEADLINE.px(&theme))
+                            .line_height(modal::HEADLINE.line_height(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(tr!("settings.api_key_for", name = editor.provider_name)),
                     )
                     .child(
                         div()
                             .font_family(theme::code_font_family())
                             .text_size(theme.code_px(11.))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(editor.provider_id.clone()),
                     ),
             )
@@ -3289,19 +4267,19 @@ impl OrbitApp {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(18.))
-                    .py(px(16.))
+                    .px(modal::section_padding_x(&theme, false))
+                    .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             )
             .child(
                 div()
                     .flex_none()
-                    .px(px(18.))
-                    .py(px(12.))
+                    .px(modal::footer_padding(&theme))
+                    .py(modal::footer_padding(&theme))
                     .flex()
                     .items_center()
                     .justify_end()
-                    .gap_2()
+                    .gap(modal::footer_gap(&theme))
                     .border_t_1()
                     .border_color(theme.border)
                     .child(cancel)
@@ -3329,12 +4307,18 @@ impl OrbitApp {
                 .inset_0()
                 .occlude()
                 .bg(scrim)
-                .p(px(24.))
+                .p(DynamicSpacing::Base24.px(&theme))
                 .flex()
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-key-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -3363,31 +4347,23 @@ impl OrbitApp {
             let mut column = div()
                 .flex()
                 .flex_col()
-                .gap_1p5()
+                .gap(input::gap(&theme))
                 .child(
-                    div()
-                        .text_size(theme.ui_px(12.))
+                    input_label(label.to_string(), &theme)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
-                        .child(label.to_string()),
+                        .text_color(theme.text_secondary),
                 )
                 .child(
-                    div()
+                    input_field_frame(div(), &theme)
                         .w_full()
-                        .px_2p5()
-                        .py_1p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.bg_main)
-                        .text_size(theme.ui_px(13.))
+                        .bg(theme.background)
                         .child(input),
                 );
             if let Some(hint) = hint {
                 column = column.child(
                     div()
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_3)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
                         .child(hint.to_string()),
                 );
             }
@@ -3395,44 +4371,53 @@ impl OrbitApp {
         };
 
         // API family chips.
-        let mut api_chips = div().flex().flex_wrap().gap_1p5();
+        let mut api_chips = div()
+            .flex()
+            .flex_wrap()
+            .gap(DynamicSpacing::Base06.px(&theme));
         for api in PROVIDER_APIS {
             let selected = editor.api == api;
             let this = this.clone();
             api_chips = api_chips.child(
-                div()
-                    .id(ElementId::Name(format!("provider-api-{api}").into()))
-                    .px(px(8.))
-                    .py(px(3.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(if selected {
-                        theme.accent.opacity(0.5)
-                    } else {
-                        theme.border
-                    })
-                    .bg(if selected {
+                button_frame(
+                    div().id(ElementId::Name(format!("provider-api-{api}").into())),
+                    &theme,
+                    ButtonSize::Default,
+                )
+                .border_1()
+                .border_color(if selected {
+                    theme.accent.opacity(0.5)
+                } else {
+                    theme.border
+                })
+                .raised(
+                    if selected {
                         theme.accent.opacity(0.12)
                     } else {
-                        theme.bg_raised
-                    })
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.bg_hover))
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        this.update(cx, |app, cx| {
-                            if let Some(editor) = app.provider_editor.as_mut() {
-                                editor.api = api.to_string();
-                                cx.notify();
-                            }
-                        });
-                    })
-                    .child(
-                        div()
-                            .font_family(theme::code_font_family())
-                            .text_size(theme.code_px(10.5))
-                            .text_color(if selected { theme.accent } else { theme.text_3 })
-                            .child(api),
-                    ),
+                        theme.surface_elevated
+                    },
+                    &theme,
+                )
+                .cursor_pointer()
+                .hover_state(&theme)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| {
+                        if let Some(editor) = app.provider_editor.as_mut() {
+                            editor.api = api.to_string();
+                            cx.notify();
+                        }
+                    });
+                })
+                .child(
+                    div()
+                        .font_family(theme::code_font_family())
+                        .text_color(if selected {
+                            theme.accent_text
+                        } else {
+                            theme.text_muted
+                        })
+                        .child(api),
+                ),
             );
         }
 
@@ -3441,19 +4426,17 @@ impl OrbitApp {
             div()
                 .flex()
                 .flex_col()
-                .gap_1p5()
+                .gap(input::gap(&theme))
                 .child(
-                    div()
-                        .text_size(theme.ui_px(12.))
+                    input_label(tr!("settings.provider_id"), &theme)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
-                        .child(tr!("settings.provider_id")),
+                        .text_color(theme.text_secondary),
                 )
                 .child(
                     div()
                         .font_family(theme::code_font_family())
                         .text_size(theme.code_px(12.))
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(editor.original_id.clone().unwrap_or_default()),
                 )
                 .into_any_element()
@@ -3477,7 +4460,7 @@ impl OrbitApp {
             .w_full()
             .flex()
             .flex_col()
-            .gap_3p5()
+            .gap(DynamicSpacing::Base12.px(&theme))
             .child(identity)
             .child(field(
                 &tr!("settings.display_name"),
@@ -3493,13 +4476,11 @@ impl OrbitApp {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1p5()
+                    .gap(input::gap(&theme))
                     .child(
-                        div()
-                            .text_size(theme.ui_px(12.))
+                        input_label(tr!("settings.api_type"), &theme)
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_2)
-                            .child(tr!("settings.api_type")),
+                            .text_color(theme.text_secondary),
                     )
                     .child(api_chips),
             )
@@ -3518,35 +4499,29 @@ impl OrbitApp {
                 editor.models.clone(),
             ));
 
-        let mut card = div()
+        let mut card = modal_card(&theme)
             .w_full()
             .max_w(px(520.))
             .max_h(px(560.))
-            .rounded(px(14.))
-            .popover_surface(theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
             .child(
                 div()
-                    .px(px(18.))
-                    .py(px(14.))
+                    .px(modal::header_padding_x(&theme))
+                    .pt(modal::header_padding_top(&theme))
+                    .pb(modal::header_padding_bottom(&theme))
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap(modal::header_gap(&theme))
                     .border_b_1()
                     .border_color(theme.border)
                     .child(
                         div()
-                            .text_size(theme.ui_px(15.))
+                            .text_size(modal::HEADLINE.px(&theme))
+                            .line_height(modal::HEADLINE.line_height(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(if editing {
                                 tr!("settings.configure_provider")
                             } else {
@@ -3555,8 +4530,8 @@ impl OrbitApp {
                     )
                     .child(
                         div()
-                            .text_size(theme.ui_px(11.5))
-                            .text_color(theme.text_3)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
                             .child(subtitle),
                     ),
             )
@@ -3566,75 +4541,64 @@ impl OrbitApp {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px(px(18.))
-                    .py(px(16.))
+                    .px(modal::section_padding_x(&theme, false))
+                    .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             );
 
         if let Some(error) = &editor.error {
             card = card.child(
                 div()
-                    .mx(px(18.))
-                    .mb(px(4.))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded_md()
-                    .bg(theme.crit.opacity(0.1))
-                    .text_size(theme.ui_px(11.5))
-                    .text_color(theme.crit)
+                    .mx(modal::section_padding_x(&theme, false))
+                    .mb(DynamicSpacing::Base04.px(&theme))
+                    .px(DynamicSpacing::Base06.px(&theme))
+                    .py(DynamicSpacing::Base04.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
+                    .bg(theme.error.opacity(0.1))
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.error)
                     .child(error.clone()),
             );
         }
 
         let cancel = {
             let this = this.clone();
-            div()
-                .id("provider-editor-cancel")
-                .h(px(32.))
-                .px(px(14.))
-                .rounded_lg()
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| {
-                        app.provider_editor = None;
-                        cx.notify();
-                    });
-                })
-                .child(
-                    div()
-                        .text_size(theme.ui_px(12.))
-                        .text_color(theme.text_2)
-                        .child(tr!("settings.cancel")),
-                )
+            button_frame(
+                div().id("provider-editor-cancel"),
+                &theme,
+                ButtonSize::Large,
+            )
+            .border_1()
+            .border_color(theme.border)
+            .raised(theme.surface_elevated, &theme)
+            .cursor_pointer()
+            .hover_state(&theme)
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| {
+                    app.provider_editor = None;
+                    cx.notify();
+                });
+            })
+            .child(
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(tr!("settings.cancel")),
+            )
         };
         let save = {
             let this = this.clone();
-            div()
-                .id("provider-editor-save")
-                .h(px(32.))
-                .px(px(16.))
-                .rounded_lg()
-                .bg(theme.send_bg)
-                .flex()
-                .items_center()
-                .justify_center()
+            button_frame(div().id("provider-editor-save"), &theme, ButtonSize::Large)
+                .raised(theme.action, &theme)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.send_bg_hover))
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action)
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     this.update(cx, |app, cx| app.provider_save(window, cx));
                 })
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.send_fg)
+                        .text_color(theme.action_fg)
                         .child(if editing {
                             tr!("settings.save_changes")
                         } else {
@@ -3645,12 +4609,12 @@ impl OrbitApp {
         card = card.child(
             div()
                 .flex_none()
-                .px(px(18.))
-                .py(px(12.))
+                .px(modal::footer_padding(&theme))
+                .py(modal::footer_padding(&theme))
                 .flex()
                 .items_center()
                 .justify_end()
-                .gap_2()
+                .gap(modal::footer_gap(&theme))
                 .border_t_1()
                 .border_color(theme.border)
                 .child(cancel)
@@ -3678,17 +4642,23 @@ impl OrbitApp {
                 .inset_0()
                 .occlude()
                 .bg(scrim)
-                .px(px(24.))
+                .px(DynamicSpacing::Base24.px(&theme))
                 .flex()
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-editor-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
 
-    /// A settings section: an 11px uppercase label over one grouped board.
+    /// A settings section: a readable label over one grouped board.
     /// The label sits closer to its board than to the section above it.
     pub(super) fn settings_section(
         &self,
@@ -3696,18 +4666,44 @@ impl OrbitApp {
         label: &str,
         rows: Vec<AnyElement>,
     ) -> AnyElement {
+        self.settings_section_desc(theme, label, None, rows)
+    }
+
+    /// Like [`Self::settings_section`], with one line of context under the
+    /// label. Used where several rows share a trigger, so it is stated once
+    /// instead of repeated on every row.
+    pub(super) fn settings_section_desc(
+        &self,
+        theme: Theme,
+        label: &str,
+        desc: Option<&str>,
+        rows: Vec<AnyElement>,
+    ) -> AnyElement {
         div()
             .w_full()
+            .flex_none()
             .flex()
             .flex_col()
-            .gap(theme.space(8.))
+            .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 div()
-                    .px(theme.space(4.))
-                    .text_size(theme.ui_px(10.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_3)
-                    .child(label.to_uppercase()),
+                    .px(DynamicSpacing::Base04.px(&theme))
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::Default.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(label.to_string()),
+                    )
+                    .children(desc.map(|desc| {
+                        div()
+                            .text_size(TextSize::Default.px(&theme))
+                            .text_color(theme.text_secondary)
+                            .child(desc.to_string())
+                    })),
             )
             .child(self.settings_group(theme, rows))
             .into_any_element()
@@ -3721,10 +4717,9 @@ impl OrbitApp {
         let last = rows.len().saturating_sub(1);
         let mut board = div()
             .w_full()
-            .bg(theme.bg_composer)
-            .border_1()
-            .border_color(theme.border)
-            .rounded_lg()
+            .bg(theme.card_fill(theme.surface_secondary))
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
             .flex()
             .flex_col();
         for (i, row) in rows.into_iter().enumerate() {
@@ -3732,9 +4727,9 @@ impl OrbitApp {
             if i != last {
                 board = board.child(
                     div()
-                        .h(px(1.))
+                        .h(BORDER_WIDTH)
                         .flex_none()
-                        .mx(theme.space(16.))
+                        .mx(DynamicSpacing::Base16.px(&theme))
                         .bg(theme.border),
                 );
             }
@@ -3755,40 +4750,52 @@ impl OrbitApp {
     ) -> AnyElement {
         div()
             .w_full()
-            .px(theme.space(16.))
-            .py(theme.space(12.))
+            .flex_none()
+            .min_h(ButtonSize::Large.height(&theme) + DynamicSpacing::Base08.px(&theme))
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
             .flex()
             .items_center()
-            .gap(theme.space(16.))
+            .gap(DynamicSpacing::Base16.px(&theme))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(theme.space(3.))
+                    .gap(DynamicSpacing::Base03.px(&theme))
                     .child(
                         div()
-                            .text_size(theme.ui_px(13.))
+                            .text_size(TextSize::Default.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(title.to_string()),
                     )
                     .children(desc.map(|d| {
                         div()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.text_2)
+                            .text_size(TextSize::Default.px(&theme))
+                            .text_color(theme.text_secondary)
                             .child(d.to_string())
                     }))
                     .children(meta.map(|m| {
                         div()
-                            .text_size(theme.ui_px(11.5))
-                            .text_color(theme.text_3)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
                             .truncate()
                             .child(m.to_string())
                     })),
             )
-            .children(control.map(|c| div().flex_none().child(c)))
+            // A control keeps its intrinsic size but may never claim the
+            // whole row: the title shares the width, so a long control (a
+            // path, a version string) truncates instead of squeezing the
+            // title down to one letter per line.
+            .children(control.map(|c| {
+                div()
+                    .flex_none()
+                    .min_w_0()
+                    .max_w(gpui::relative(0.6))
+                    .child(c)
+            }))
             .into_any_element()
     }
 
@@ -3797,21 +4804,21 @@ impl OrbitApp {
         div()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap(DynamicSpacing::Base06.px(&theme))
             .child(
                 div()
                     .size(px(7.))
                     .rounded_full()
                     .bg(if self.client.is_some() {
-                        theme.ok_green
+                        theme.success
                     } else {
-                        theme.stop_red
+                        theme.error
                     }),
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_2)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(if self.client.is_some() {
                         tr!("status.connected")
                     } else {
@@ -3826,24 +4833,20 @@ impl OrbitApp {
     /// The About page's repository link: a ghost button that opens the
     /// project's GitHub page in the OS browser.
     pub(super) fn about_github_button(&self, theme: Theme) -> AnyElement {
-        div()
-            .id("about-github")
+        button_frame(div().id("about-github"), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
-            .h(px(26.))
-            .px(px(12.))
-            .rounded_lg()
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .text_size(theme.ui_px(12.))
+            .raised(theme.surface_elevated, &theme)
             .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_2)
+            .text_color(theme.text_secondary)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
-            .child(icon("icons/arrow-up-right.svg", 12., theme.text_2))
+            .hover_state(&theme)
+            .child(icon(
+                "icons/arrow-up-right.svg",
+                ButtonSize::Medium.icon_size().px(&theme),
+                theme.text_secondary,
+            ))
             .child(tr!("settings.github"))
             .on_mouse_up(MouseButton::Left, |_, _, cx| {
                 cx.open_url(env!("CARGO_PKG_REPOSITORY"));
@@ -3854,61 +4857,93 @@ impl OrbitApp {
     // ── Settings → Shortcuts ─────────────────────────────────────
 
     /// The Shortcuts reference: every workbench-level chord, grouped by the
-    /// surface it acts on. Read-only, so each row pairs its label with the
-    /// same keycap chip the command palette paints — one right-aligned axis
-    /// down each board, like every other settings page.
+    /// surface it acts on. The app-command rows are generated from the
+    /// command registry (`crate::commands`), so the page is complete and can
+    /// never advertise a chord the keymap does not bind. Only the composer's
+    /// text-entry conventions (send/newline/accept — not commands) are
+    /// listed literally, because their labels depend on live preferences.
     pub(super) fn shortcut_rows(&self, theme: Theme) -> Vec<AnyElement> {
+        use crate::commands::{self, Category};
+
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for category in Category::ORDER {
+            let section: Vec<AnyElement> = commands::COMMANDS
+                .iter()
+                .filter(|spec| spec.help && spec.category == category)
+                .map(|spec| {
+                    let title = tr!(spec.title_key);
+                    let chips = spec.shortcuts();
+                    if chips.is_empty() {
+                        self.setting_row(theme, &title, None, None, None)
+                    } else {
+                        let keys: Vec<&str> = chips.iter().map(String::as_str).collect();
+                        self.shortcut_row(theme, &title, &keys)
+                    }
+                })
+                .collect();
+            if !section.is_empty() {
+                rows.push(self.settings_section(theme, &tr!(category.group_key()), section));
+            }
+            if category == Category::Agent {
+                rows.push(self.composer_shortcut_section(theme));
+            }
+        }
+        rows
+    }
+
+    /// The composer's text-entry conventions — not commands, so kept out of
+    /// the registry — with the live send-mode labels the preference drives.
+    fn composer_shortcut_section(&self, theme: Theme) -> AnyElement {
         use crate::platform::shortcuts as keys;
-        vec![
-            self.settings_section(
-                theme,
-                &tr!("shortcut.group_workbench"),
-                vec![
-                    self.shortcut_row(theme, &tr!("menu.new_task"), &[keys::NEW_SESSION]),
-                    self.shortcut_row(theme, &tr!("menu.refresh_sessions"), &[keys::REFRESH]),
-                    self.shortcut_row(theme, &tr!("menu.command_palette"), &[keys::PALETTE]),
-                    self.shortcut_row(theme, &tr!("menu.toggle_sidebar"), &[keys::SIDEBAR]),
-                    self.shortcut_row(
-                        theme,
-                        &tr!("command_palette.focus_sessions"),
-                        &[keys::FOCUS_SESSIONS],
+        self.settings_section(
+            theme,
+            &tr!("shortcut.group_composer"),
+            vec![
+                self.shortcut_row(
+                    theme,
+                    &tr!("shortcut.send_idle"),
+                    &[keys::label(keys::SEND).as_str()],
+                ),
+                self.shortcut_row(
+                    theme,
+                    &tr!(
+                        "shortcut.send_while_running",
+                        mode = SendMode::FollowUp.label()
                     ),
-                    self.shortcut_row(theme, &tr!("menu.toggle_terminal"), &[keys::TERMINAL]),
-                    self.shortcut_row(theme, &tr!("explorer.toggle"), &[keys::PROJECT_PANEL]),
-                    self.shortcut_row(theme, &tr!("menu.usage"), &[keys::USAGE]),
-                ],
-            ),
-            self.settings_section(
-                theme,
-                &tr!("shortcut.group_composer"),
-                vec![
-                    self.shortcut_row(theme, &tr!("shortcut.send"), &[keys::SEND]),
-                    self.shortcut_row(theme, &tr!("shortcut.steer"), &[keys::STEER]),
-                    self.shortcut_row(theme, &tr!("shortcut.newline"), &[keys::NEWLINE]),
-                    self.shortcut_row(theme, &tr!("shortcut.accept"), &[keys::ACCEPT]),
-                    self.shortcut_row(theme, &tr!("shortcut.stop"), &[keys::STOP]),
-                ],
-            ),
-            self.settings_section(
-                theme,
-                &tr!("shortcut.group_transcript"),
-                vec![
-                    self.shortcut_row(theme, &tr!("menu.find_in_transcript"), &[keys::FIND]),
-                    self.shortcut_row(theme, &tr!("shortcut.prev_turn"), &[keys::PREV_TURN]),
-                    self.shortcut_row(theme, &tr!("shortcut.next_turn"), &[keys::NEXT_TURN]),
-                    self.shortcut_row(theme, &tr!("shortcut.copy_last"), &[keys::COPY_LAST_RESPONSE]),
-                ],
-            ),
-            self.settings_section(
-                theme,
-                &tr!("shortcut.group_application"),
-                vec![
-                    self.shortcut_row(theme, &tr!("menu.settings"), &[keys::SETTINGS]),
-                    self.shortcut_row(theme, &tr!("menu.check_for_updates"), &[keys::CHECK_UPDATES]),
-                    self.shortcut_row(theme, &tr!("menu.quit", app = tr!("app.name")), &[keys::QUIT]),
-                ],
-            ),
-        ]
+                    &[SendMode::FollowUp
+                        .shortcut_label(theme.ui.composer_send_mode)
+                        .as_str()],
+                ),
+                self.shortcut_row(
+                    theme,
+                    &tr!(
+                        "shortcut.send_while_running",
+                        mode = SendMode::Steer.label()
+                    ),
+                    &[
+                        SendMode::Steer
+                            .shortcut_label(theme.ui.composer_send_mode)
+                            .as_str(),
+                        keys::label(keys::STEER).as_str(),
+                    ],
+                ),
+                self.shortcut_row(
+                    theme,
+                    &tr!("shortcut.newline"),
+                    &[keys::label(keys::NEWLINE).as_str()],
+                ),
+                self.shortcut_row(
+                    theme,
+                    &tr!("shortcut.accept"),
+                    &[keys::label(keys::ACCEPT).as_str()],
+                ),
+                self.shortcut_row(
+                    theme,
+                    &tr!("shortcut.stop"),
+                    &[keys::label(keys::STOP).as_str()],
+                ),
+            ],
+        )
     }
 
     /// One shortcut reference row: the command label on the left, its chord as
@@ -3924,7 +4959,7 @@ impl OrbitApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(DynamicSpacing::Base04.px(&theme))
                     .children(keys.iter().map(|key| keycap(key, theme)))
                     .into_any_element(),
             ),
@@ -4016,7 +5051,12 @@ impl OrbitApp {
                 notifications::DesktopAuth::Granted | notifications::DesktopAuth::Unknown => {}
             }
         }
-        self.settings_section(theme, &tr!("settings.notifications"), rows)
+        self.settings_section_desc(
+            theme,
+            &tr!("settings.notifications"),
+            Some(&tr!("settings.notifications_description")),
+            rows,
+        )
     }
 
     /// Flip the desktop channel, ask for permission on the way on, and
@@ -4079,6 +5119,45 @@ impl OrbitApp {
         .detach();
     }
 
+    // ── Settings → General: exports ─────────────────────────────────────
+
+    /// The export board: what a Markdown/PDF export carries beyond the answer.
+    /// Off by default — the reasoning and tool trail is the agent's working
+    /// noise, not the conversation.
+    pub(super) fn export_rows(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let rows = vec![self.setting_row(
+            theme,
+            &tr!("settings.include_reasoning_and_tools"),
+            Some(&tr!("settings.include_reasoning_and_tools_description")),
+            None,
+            Some(self.settings_toggle(
+                "export-work-toggle",
+                self.export_prefs.include_thinking_and_tools,
+                theme,
+                this,
+                Self::toggle_export_work,
+            )),
+        )];
+        self.settings_section_desc(
+            theme,
+            &tr!("settings.transcript_export"),
+            Some(&tr!("settings.transcript_export_description")),
+            rows,
+        )
+    }
+
+    /// Flip whether exports append reasoning and tool calls, and persist it so
+    /// the next export in any session honours the choice.
+    pub(super) fn toggle_export_work(&mut self, cx: &mut Context<Self>) {
+        self.export_prefs.include_thinking_and_tools =
+            !self.export_prefs.include_thinking_and_tools;
+        self.export_prefs.persist();
+        if self.export_prefs.include_thinking_and_tools {
+            self.toast_info(tr!("settings.exports_include_reasoning_and_tools"));
+        }
+        cx.notify();
+    }
+
     // ── Settings → Runtime ─────────────────────────────────────────────
 
     /// The Runtime section: the live pi process, its details, and
@@ -4092,10 +5171,10 @@ impl OrbitApp {
     ) -> Vec<AnyElement> {
         let state = self.runtime_state();
         let (state_label, state_color) = match state {
-            RuntimeState::Running => (tr!("runtime.state_running"), theme.ok_green),
-            RuntimeState::Exited => (tr!("runtime.state_exited"), theme.crit),
-            RuntimeState::Stopped => (tr!("runtime.state_stopped"), theme.text_3),
-            RuntimeState::Failed => (tr!("runtime.state_failed"), theme.crit),
+            RuntimeState::Running => (tr!("runtime.state_running"), theme.success),
+            RuntimeState::Exited => (tr!("runtime.state_exited"), theme.error),
+            RuntimeState::Stopped => (tr!("runtime.state_stopped"), theme.text_muted),
+            RuntimeState::Failed => (tr!("runtime.state_failed"), theme.error),
         };
         let running = state == RuntimeState::Running;
         let has_client = self.client.is_some();
@@ -4109,7 +5188,10 @@ impl OrbitApp {
             RuntimeState::Failed => tr!("settings.runtime_failed"),
         };
 
-        let mut controls = div().flex().items_center().gap_2();
+        let mut controls = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme));
         if has_client {
             controls = controls
                 .child(self.runtime_button(
@@ -4152,23 +5234,16 @@ impl OrbitApp {
         } else {
             "—".to_string()
         };
-        let workspace = self
-            .current_workspace
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
 
         let status = div()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap(DynamicSpacing::Base06.px(&theme))
             .child(div().size(px(7.)).rounded_full().bg(state_color))
             .child(
                 div()
-                    .text_size(theme.ui_px(12.5))
-                    .text_color(theme.text)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_primary)
                     .child(state_label),
             )
             .into_any_element();
@@ -4182,7 +5257,7 @@ impl OrbitApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(status)
                     .child(controls)
                     .into_any_element(),
@@ -4216,34 +5291,27 @@ impl OrbitApp {
             None,
             Some(runtime_text(theme, tr!("settings.transport_stdio"))),
         ));
+        // The package root the patches land in is a deep `node_modules` path.
+        // It rides the row's truncating meta line rather than the control
+        // slot: a control never shrinks, so a path there eats the whole row
+        // and leaves the title one letter per line. Home-shortened, it still
+        // makes a stale saved root obvious.
+        let package_root = self
+            .rpc_patches
+            .package_root
+            .as_ref()
+            .map(|root| crate::usage::format::short_path(&root.display().to_string()));
         process.push(self.setting_row(
             theme,
             "RPC patches",
             Some(&self.rpc_patches.summary()),
-            None,
+            package_root.as_deref(),
             Some(self.settings_toggle(
                 "rpc-patches-toggle",
                 self.rpc_patches.enabled,
                 theme,
                 this.clone(),
                 OrbitApp::toggle_rpc_patches,
-            )),
-        ));
-        process.push(self.setting_row(
-            theme,
-            &tr!("settings.workspace"),
-            None,
-            None,
-            Some(runtime_path(theme, workspace)),
-        ));
-        process.push(self.setting_row(
-            theme,
-            &tr!("settings.session_store"),
-            None,
-            None,
-            Some(runtime_path(
-                theme,
-                sessions::sessions_dir().to_string_lossy().into_owned(),
             )),
         ));
         if let Some(error) = &self.runtime.error {
@@ -4302,16 +5370,25 @@ impl OrbitApp {
             .as_ref()
             .map(|client| client.recent_stderr(8))
             .unwrap_or_default();
+        // The panel is a window onto the child's raw stderr; a known MCP
+        // secret value in a failure line must not become readable here.
+        let stderr: Vec<String> = stderr
+            .iter()
+            .map(|line| self.mcp.redact_text(line))
+            .collect();
         let body: AnyElement = if stderr.is_empty() {
             div()
-                .px(theme.space(16.))
-                .py(theme.space(12.))
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_3)
+                .px(DynamicSpacing::Base16.px(&theme))
+                .py(DynamicSpacing::Base12.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .child(tr!("settings.no_output_from_the_pi_process"))
                 .into_any_element()
         } else {
-            let mut block = div().flex().flex_col().gap(px(2.));
+            let mut block = div()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base02.px(&theme));
             for line in &stderr {
                 block = block.child(
                     div()
@@ -4326,9 +5403,9 @@ impl OrbitApp {
             }
             div()
                 .bg(theme.code_bg)
-                .rounded_md()
-                .px(px(12.))
-                .py(px(10.))
+                .rounded(panel::RADIUS.px(&theme))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
                 .child(block)
                 .into_any_element()
         };
@@ -4337,13 +5414,13 @@ impl OrbitApp {
                 .w_full()
                 .flex()
                 .flex_col()
-                .gap(theme.space(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
-                        .px(theme.space(4.))
-                        .text_size(theme.ui_px(10.5))
+                        .px(DynamicSpacing::Base04.px(&theme))
+                        .text_size(TextSize::XSmall.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_3)
+                        .text_color(theme.text_muted)
                         .child(tr!("settings.recent_stderr")),
                 )
                 .child(body)
@@ -4355,10 +5432,9 @@ impl OrbitApp {
 
     // ── Settings → Agent ───────────────────────────────────────────────
 
-    /// The Agent section: queue delivery modes, auto-compaction, and
-    /// auto-retry. Every control sends a real pi RPC command. Manual
-    /// compaction lives in the context-usage popover and the session rename
-    /// in the session-details popover, next to the state they act on.
+    /// Agent behavior: Orbit's composer preference plus pi's queue delivery,
+    /// compaction, and retry controls. The composer preference is local; it
+    /// chooses which existing RPC command the next send uses.
     pub(super) fn agent_rows(
         &self,
         theme: Theme,
@@ -4366,6 +5442,16 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
         let behavior = vec![
+            self.setting_row(
+                theme,
+                &tr!("settings.enter_while_running"),
+                Some(&tr!(
+                    "settings.enter_while_running_hint",
+                    keys = platform::shortcuts::label(platform::shortcuts::SEND_ALTERNATE)
+                )),
+                None,
+                Some(self.composer_send_mode_toggle(theme, this.clone())),
+            ),
             self.setting_row(
                 theme,
                 &tr!("settings.follow_up_messages"),
@@ -4404,6 +5490,13 @@ impl OrbitApp {
                     this.clone(),
                     Self::toggle_auto_retry,
                 )),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("settings.agent_call_details"),
+                Some(&tr!("settings.agent_call_details_hint")),
+                None,
+                Some(self.agent_calls_select(theme, this.clone(), cx)),
             ),
         ];
 
@@ -4479,7 +5572,84 @@ impl OrbitApp {
                 ),
             ],
         ));
+
+        sections.push(self.settings_section(
+            theme,
+            &tr!("settings.follow_up_suggestions"),
+            vec![
+                self.setting_row(
+                    theme,
+                    &tr!("settings.follow_up_suggestions"),
+                    Some(&tr!("settings.follow_up_suggestions_hint")),
+                    None,
+                    Some(self.settings_toggle(
+                        "suggestions-toggle",
+                        self.suggestions.enabled,
+                        theme,
+                        this.clone(),
+                        Self::toggle_suggestions,
+                    )),
+                ),
+                self.setting_row(
+                    theme,
+                    &tr!("settings.suggestions_model"),
+                    Some(&tr!("settings.suggestions_model_hint")),
+                    None,
+                    Some(self.suggestions_model_select(theme, this.clone(), cx)),
+                ),
+            ],
+        ));
+
+        // The model every new session starts on, and its thinking level.
+        // Applied at session birth; existing sessions keep the model recorded
+        // in their file.
+        sections.push(self.settings_section(
+            theme,
+            &tr!("settings.session_defaults"),
+            vec![
+                self.setting_row(
+                    theme,
+                    &tr!("settings.default_model"),
+                    Some(&tr!("settings.default_model_hint")),
+                    None,
+                    Some(self.default_model_select(theme, this.clone(), cx)),
+                ),
+                self.setting_row(
+                    theme,
+                    &tr!("settings.default_thinking"),
+                    Some(&tr!("settings.default_thinking_hint")),
+                    None,
+                    Some(self.default_thinking_select(theme, this.clone(), cx)),
+                ),
+            ],
+        ));
         sections
+    }
+
+    /// Settings → Agent: how agent call details open in the transcript. An
+    /// explicit per-call toggle still wins; this only moves the default.
+    pub(super) fn agent_calls_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        use crate::agent_call_display::AgentCallDisplay;
+        let options: Vec<String> = AgentCallDisplay::OPTIONS
+            .into_iter()
+            .map(|mode| tr!(mode.label_key()))
+            .collect();
+        let selected = self.agent_calls.index();
+        self.select_control(
+            "agent-calls-select",
+            SettingsSelect::AgentCalls,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
     }
 
     /// Flip auto session titles on/off and persist it for the extension.
@@ -4528,47 +5698,299 @@ impl OrbitApp {
         )
     }
 
-    /// Two-button segmented control for the follow-up delivery mode.
-    pub(super) fn follow_up_mode_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let all = self.follow_up_mode == "all";
-        let (one_id, all_id) = ("follow-up-mode-one", "follow-up-mode-all");
-        let one_label = tr!("settings.one_at_a_time");
-        let all_label = tr!("settings.all");
-        let button = |label: String, value_all: bool, id: &'static str, this: Entity<OrbitApp>| {
-            let active = all == value_all;
-            div()
-                .id(id)
-                .h(px(28.))
-                .px(px(10.))
-                .rounded_lg()
-                .border_1()
-                .flex()
-                .items_center()
-                .text_size(theme.ui_px(12.))
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .when(active, |b| {
-                    b.border_color(theme.border)
-                        .bg(theme.active)
-                        .text_color(theme.active_fg)
+    pub(super) fn toggle_suggestions(&mut self, cx: &mut Context<Self>) {
+        self.suggestions.enabled = !self.suggestions.enabled;
+        self.suggestions.persist_suggestions();
+        self.clear_follow_up_suggestions();
+        cx.notify();
+    }
+
+    pub(super) fn suggestions_model_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let mut options = vec![tr!("settings.active_session_model")];
+        options.extend(self.available_models.iter().map(|model| {
+            format!(
+                "{} · {}",
+                crate::providers::provider_display_name(&model.provider),
+                model.name
+            )
+        }));
+        let selected = self
+            .suggestions
+            .model
+            .as_ref()
+            .and_then(|wanted| {
+                self.available_models
+                    .iter()
+                    .position(|model| model.provider == wanted.provider && model.id == wanted.id)
+            })
+            .map(|ix| ix + 1)
+            .unwrap_or(0);
+        self.select_control(
+            "suggestions-model-select",
+            SettingsSelect::SuggestionsModel,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// The model new sessions start on. The leading option clears the slot,
+    /// leaving pi's own startup model untouched.
+    pub(super) fn default_model_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let mut options: Vec<String> = vec![tr!("settings.pi_default")];
+        options.extend(self.available_models.iter().map(|model| {
+            format!(
+                "{} · {}",
+                crate::providers::provider_display_name(&model.provider),
+                model.name
+            )
+        }));
+        let slot = &self.session_default;
+        let selected = slot
+            .model_id
+            .as_ref()
+            .and_then(|id| {
+                self.available_models.iter().position(|model| {
+                    model.id == *id
+                        && slot
+                            .provider
+                            .as_deref()
+                            .is_none_or(|provider| model.provider == provider)
                 })
-                .when(!active, |b| {
-                    b.border_color(theme.border)
-                        .bg(theme.bg_raised)
-                        .text_color(theme.text_2)
-                        .hover(|s| s.bg(theme.bg_hover))
-                })
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| app.set_follow_up_mode(value_all, cx));
-                })
-                .child(label)
+            })
+            .map(|ix| ix + 1)
+            .unwrap_or(0);
+        self.select_control(
+            "default-model-select",
+            SettingsSelect::DefaultModel,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// The default model's thinking level. Options are the levels pi itself
+    /// derives for the selected model (see `catalog_thinking_levels`); until a
+    /// model is chosen the control is a disabled `pi default` chip.
+    pub(super) fn default_thinking_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let Some(model) = self.default_model_entry() else {
+            return button_frame(
+                div().id("default-thinking-select"),
+                &theme,
+                SELECT_CHIP_SIZE,
+            )
+            .border_1()
+            .border_color(theme.border)
+            .raised(theme.surface_elevated, &theme)
+            .text_color(theme.text_muted)
+            .child(tr!("settings.pi_default"))
+            .into_any_element();
         };
+        let mut options: Vec<String> = vec![tr!("settings.pi_default")];
+        options.extend(
+            model
+                .thinking_levels
+                .iter()
+                .map(|level| crate::model_selector::thinking_display(level)),
+        );
+        let selected = self
+            .session_default
+            .thinking
+            .as_ref()
+            .and_then(|level| model.thinking_levels.iter().position(|l| l == level))
+            .map(|ix| ix + 1)
+            .unwrap_or(0);
+        self.select_control(
+            "default-thinking-select",
+            SettingsSelect::DefaultThinking,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// Orbit-only preference; existing pi queues are left untouched.
+    fn composer_send_mode_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let modes = [SendMode::FollowUp, SendMode::Steer];
         div()
             .flex()
             .items_center()
-            .gap_2()
-            .child(button(one_label, false, one_id, this.clone()))
-            .child(button(all_label, true, all_id, this))
+            .children(modes.into_iter().enumerate().map(|(index, mode)| {
+                let this = this.clone();
+                let active = mode == theme.ui.composer_send_mode;
+                let segment = segmented_segment(
+                    div().id(("composer-send-mode", index)),
+                    &theme,
+                    ButtonSize::Medium,
+                    SegmentPosition::at(index, modes.len()),
+                )
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .raised_flat(theme.surface_elevated)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_composer_send_mode(mode, cx));
+                })
+                .child(mode.label());
+                crate::motion::control(
+                    segment,
+                    format!("composer-send-mode-{index}"),
+                    &theme,
+                    crate::theme::tokens::Motion::Interaction,
+                    crate::theme::tokens::Motion::Interaction,
+                    if active { 1.0 } else { 0.0 },
+                    move |segment, hover, selected| {
+                        let fill = crate::motion::blend(
+                            crate::motion::blend(
+                                theme.surface_elevated,
+                                theme.surface_hover,
+                                hover,
+                            ),
+                            theme.surface_active,
+                            selected,
+                        );
+                        segment.bg(fill).text_color(crate::motion::blend(
+                            theme.text_secondary,
+                            theme.text_primary,
+                            selected,
+                        ))
+                    },
+                )
+            }))
+            .into_any_element()
+    }
+
+    fn set_composer_send_mode(&mut self, mode: SendMode, cx: &mut Context<Self>) {
+        let mut ui = theme::get(cx).ui;
+        ui.composer_send_mode = mode;
+        theme::set_ui_prefs(cx, ui);
+        cx.notify();
+    }
+
+    /// Appearance → Reduce motion: a three-way control, because a switch
+    /// cannot express `Full` — the state that stops the OS from overruling the
+    /// user's own answer.
+    fn motion_preference_control(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let options = MotionPreference::ALL;
+        let active = theme.ui.motion;
+        let count = options.len();
+        div()
+            .flex()
+            .items_center()
+            .children(options.into_iter().enumerate().map(|(index, preference)| {
+                let this = this.clone();
+                let selected = preference == active;
+                let segment = segmented_segment(
+                    div().id(("motion-preference", index)),
+                    &theme,
+                    ButtonSize::Medium,
+                    SegmentPosition::at(index, count),
+                )
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .raised_flat(theme.surface_elevated)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_motion_preference(preference, cx));
+                })
+                .child(motion_preference_label(preference));
+                // Both states are the layer's: the hover wash and the chosen
+                // half cross-fade together instead of one winning outright.
+                crate::motion::control(
+                    segment,
+                    format!("motion-preference-{index}"),
+                    &theme,
+                    crate::theme::tokens::Motion::Interaction,
+                    crate::theme::tokens::Motion::Interaction,
+                    if selected { 1.0 } else { 0.0 },
+                    move |segment, hover, selected| {
+                        let fill = crate::motion::blend(
+                            crate::motion::blend(
+                                theme.surface_elevated,
+                                theme.surface_hover,
+                                hover,
+                            ),
+                            theme.surface_active,
+                            selected,
+                        );
+                        segment.bg(fill).text_color(crate::motion::blend(
+                            theme.text_secondary,
+                            theme.text_primary,
+                            selected,
+                        ))
+                    },
+                )
+            }))
+            .into_any_element()
+    }
+
+    /// Two-button segmented control for the follow-up delivery mode.
+    pub(super) fn follow_up_mode_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let all = self.follow_up_mode == "all";
+        let segments = [
+            (tr!("settings.one_at_a_time"), false, "follow-up-mode-one"),
+            (tr!("settings.all"), true, "follow-up-mode-all"),
+        ];
+        let count = segments.len();
+        // One segmented control: only its outer corners round, and the two
+        // halves share the hairline between them.
+        div()
+            .flex()
+            .items_center()
+            .children(
+                segments
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (label, value_all, id))| {
+                        let this = this.clone();
+                        let active = all == value_all;
+                        segmented_segment(
+                            div().id(id),
+                            &theme,
+                            ButtonSize::Medium,
+                            SegmentPosition::at(index, count),
+                        )
+                        .font_weight(FontWeight::MEDIUM)
+                        .cursor_pointer()
+                        .when(active, |b| {
+                            b.border_color(theme.border)
+                                .raised_flat(theme.surface_selected)
+                                .text_color(theme.text_primary)
+                        })
+                        .when(!active, |b| {
+                            b.border_color(theme.border)
+                                .raised_flat(theme.surface_elevated)
+                                .text_color(theme.text_secondary)
+                                .hover_state(&theme)
+                        })
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            this.update(cx, |app, cx| app.set_follow_up_mode(value_all, cx));
+                        })
+                        .child(label)
+                    }),
+            )
             .into_any_element()
     }
 
@@ -4589,25 +6011,200 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        div()
-            .id(id)
-            .w(px(36.))
-            .h(px(20.))
-            .rounded_full()
-            .p(px(2.))
+        switch(id, on, &theme, move |_, _, cx| {
+            this.update(cx, action);
+        })
+    }
+
+    /// Settings → Privacy: local-only controls such as session retention.
+    pub(super) fn privacy_rows(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        vec![
+            self.settings_section(
+                theme,
+                &tr!("settings.session_retention"),
+                vec![
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.session_retention_enabled"),
+                        Some(&tr!("settings.session_retention_enabled_description")),
+                        None,
+                        Some(self.settings_toggle(
+                            "session-retention-toggle",
+                            self.retention.enabled,
+                            theme,
+                            this.clone(),
+                            Self::toggle_session_retention,
+                        )),
+                    ),
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.session_retention_action"),
+                        Some(&tr!("settings.session_retention_action_description")),
+                        None,
+                        Some(self.retention_mode_select(theme, this.clone(), cx)),
+                    ),
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.session_retention_age"),
+                        Some(&tr!("settings.session_retention_age_description")),
+                        None,
+                        Some(self.retention_days_select(theme, this.clone(), cx)),
+                    ),
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.session_retention_run"),
+                        Some(&tr!("settings.session_retention_run_description")),
+                        None,
+                        Some(self.retention_run_button(theme, this.clone())),
+                    ),
+                ],
+            ),
+            self.remembered_approvals_section(theme, this),
+        ]
+    }
+
+    /// Settings → Privacy: the guard's "Always allow this tool" grants. The
+    /// extension writes them and Orbit never needs to read them for anything but
+    /// this row, so it is the only place a user can see or undo one.
+    fn remembered_approvals_section(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let remembered = crate::access::remembered_approvals();
+        let detail = if remembered.is_empty() {
+            tr!("settings.remembered_approvals_none")
+        } else {
+            tr!(
+                "settings.remembered_approvals_list",
+                tools = remembered.join(", ")
+            )
+        };
+        let mut clear = button_frame(
+            div().id("clear-remembered-approvals"),
+            &theme,
+            ButtonSize::Large,
+        )
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, &theme)
+        .text_color(theme.text_secondary)
+        .child(tr!("settings.remembered_approvals_clear"));
+        if !remembered.is_empty() {
+            clear = clear
+                .cursor_pointer()
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.clear_remembered_approvals(cx));
+                });
+        }
+        self.settings_section(
+            theme,
+            &tr!("settings.remembered_approvals"),
+            vec![self.setting_row(
+                theme,
+                &tr!("settings.remembered_approvals"),
+                Some(&detail),
+                None,
+                Some(clear.into_any_element()),
+            )],
+        )
+    }
+
+    /// Drop every remembered "Always allow this tool" grant. The guard reads the
+    /// file on the next tool call, so live sessions re-arm without a restart.
+    pub(super) fn clear_remembered_approvals(&mut self, cx: &mut Context<Self>) {
+        match crate::access::clear_remembered_approvals() {
+            Ok(0) => self.toast_info(tr!("settings.remembered_approvals_none")),
+            Ok(count) => {
+                self.toast_success(tr!("settings.remembered_approvals_cleared", count = count))
+            }
+            Err(error) => self.toast_error(error),
+        }
+        cx.notify();
+    }
+
+    /// Settings → Privacy: the retention action dropdown (archive / delete).
+    fn retention_mode_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let options = vec![
+            tr!("settings.session_retention_mode_archive"),
+            tr!("settings.session_retention_mode_delete"),
+        ];
+        let selected = match self.retention.mode {
+            crate::session_retention::RetentionMode::Archive => 0,
+            crate::session_retention::RetentionMode::Delete => 1,
+        };
+        self.select_control(
+            "session-retention-mode-select",
+            SettingsSelect::RetentionMode,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// Settings → Privacy: the idle-threshold dropdown.
+    fn retention_days_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        use crate::session_retention::DAY_PRESETS;
+        let options: Vec<String> = DAY_PRESETS
+            .iter()
+            .map(|days| tr!("settings.session_retention_days", days = days))
+            .collect();
+        let selected = DAY_PRESETS
+            .iter()
+            .position(|days| *days == self.retention.days)
+            .unwrap_or(0);
+        self.select_control(
+            "session-retention-days-select",
+            SettingsSelect::RetentionDays,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// Settings → Privacy: run the policy immediately (the same pass the
+    /// launch hook runs) and report the result as a toast.
+    fn retention_run_button(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        button_frame(div().id("session-retention-run"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .flex()
-            .items_center()
+            .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .when(on, |t| t.bg(theme.accent).justify_end())
-            .when(!on, |t| t.bg(theme.bg_raised).justify_start())
-            .hover(|t| t.border_color(theme.border_strong))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
+            .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                this.update(cx, action);
+                this.update(cx, |app, cx| app.run_session_retention(cx));
             })
-            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
+            .child(tr!("settings.session_retention_run"))
             .into_any_element()
+    }
+
+    /// Flip the session-retention policy and persist it. It takes effect on
+    /// the next launch, or right away from "Clean up now".
+    pub(super) fn toggle_session_retention(&mut self, cx: &mut Context<Self>) {
+        self.retention.enabled = !self.retention.enabled;
+        self.retention.persist();
+        cx.notify();
     }
 
     /// Toggle auto-applying pi's RPC patches. Persisted; the patches run
@@ -4656,21 +6253,25 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Appearance → Reduce motion: persist the preference; every paint site
-    /// reads it through `Theme.ui`, so the change is live.
-    pub(super) fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
+    /// Appearance → Reduce motion: persist the three-way choice. Every paint
+    /// site reads the resolved value through `Theme::reduce_motion`, so the
+    /// change is live and `Full` overrides an OS that asks for reduced motion.
+    pub(super) fn set_motion_preference(
+        &mut self,
+        preference: MotionPreference,
+        cx: &mut Context<Self>,
+    ) {
         let mut ui = theme::get(cx).ui;
-        ui.reduce_motion = !ui.reduce_motion;
+        ui.motion = preference;
         theme::set_ui_prefs(cx, ui);
-        self.set_status(if ui.reduce_motion {
-            tr!("settings.reduce_motion_on")
-        } else {
-            tr!("settings.reduce_motion_off")
-        });
+        self.set_status(motion_status(preference, theme::os_reduce_motion()));
         cx.notify();
     }
 
     pub(super) fn compact_now(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.is_compacting {
             return;
         }
@@ -4688,6 +6289,13 @@ impl OrbitApp {
     }
 
     pub(super) fn abort_retry(&mut self, cx: &mut Context<Self>) {
+        // pi funnels `abort_retry` into `auto_retry_end { success: false,
+        // finalError: "Retry cancelled" }` (pi-core `_finishCancelledRetry`).
+        // Record the request — as Esc does — or that report reads as retries
+        // that failed, and the banner says so for a cancel the user asked for.
+        if self.retrying {
+            self.abort_requested = true;
+        }
         self.send(CommandBody::AbortRetry, "abort_retry");
         self.retrying = false;
         self.retry_detail = None;
@@ -4696,6 +6304,20 @@ impl OrbitApp {
     }
 
     pub(super) fn rename_session(&mut self, cx: &mut Context<Self>) {
+        // The fork reply resets the session under the popover; a rename now
+        // would either land on the wrong branch or be wiped by that reset.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        if self.pending_session_rename.is_some() {
+            return;
+        }
+        // Enter while an IME candidate window is open confirms the candidate;
+        // it must not commit a half-composed name. The click path is covered
+        // by the same guard, since the preedit text is not a final answer.
+        if self.session_name_input.read(cx).is_composing() {
+            return;
+        }
         let name = self.session_name_input.read(cx).text().trim().to_string();
         if name.is_empty() {
             self.toast_warning(tr!("settings.enter_session_name"));
@@ -4746,94 +6368,98 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        let mut button = div()
-            .id(id)
+        let button = button_frame(div().id(id), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
-            .h(px(28.))
-            .px(px(12.))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(6.))
             .cursor_pointer()
-            .text_size(theme.ui_px(12.))
             .font_weight(FontWeight::MEDIUM);
-        if primary {
-            button = button
-                .bg(theme.send_bg)
-                .text_color(theme.send_fg)
-                .hover(|s| s.bg(theme.send_bg_hover));
+        // The hover is a fade on the Interaction role, not a swap: primary
+        // buttons cross-fade `action` → `action_hover`, secondary ones fade the
+        // raised fill into the wash.
+        let (button, hover) = if primary {
+            (
+                button
+                    .raised(theme.action, &theme)
+                    .text_color(theme.action_fg)
+                    .pressed_state(&theme, PressedRamp::Action),
+                crate::motion::Hover::fill(theme.action, theme.action_hover),
+            )
         } else {
-            button = button
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .text_color(theme.text_2)
-                .hover(|s| s.bg(theme.bg_hover));
-        }
-        press(button)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                this.update(cx, action);
-            })
-            .child(label.to_string())
-            .into_any_element()
+            (
+                button
+                    .border_1()
+                    .border_color(theme.border)
+                    .raised(theme.surface_elevated, &theme)
+                    .text_color(theme.text_secondary),
+                crate::motion::Hover::fill(theme.surface_elevated, theme.surface_hover),
+            )
+        };
+        crate::motion::hover(
+            press(button)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, action);
+                })
+                .child(label.to_string()),
+            format!("runtime-button-{id}"),
+            &theme,
+            hover,
+        )
     }
 
     // ── Appearance ─────────────────────────────────────────────────────
 
-    /// The Appearance section: theme, background, type & density, and
-    /// layout. Grouped boards with hairline-separated rows, each section led
-    /// by a live preview so a change is legible on the page before you leave
-    /// it. The backdrop's tuning is its own board and appears only once an
-    /// image is configured — there is nothing to tune otherwise.
+    /// The Appearance section: theme, wallpaper, type & density, and layout.
+    /// Grouped boards with hairline-separated rows, each section led by a live
+    /// preview so a change is legible on the page before you leave it.
     pub(super) fn appearance_rows(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
-        let background = crate::dither::configured_label();
-        // The empty 84px strip is a hole: Theme already has live swatches,
-        // and the default dot grid is visible on the new-task page. Preview
-        // the processed image only once there is one to judge.
-        let mut theme_rows = Vec::new();
-        if background.is_some() {
-            theme_rows.push(self.backdrop_preview(theme));
-        }
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("settings.appearance"),
-            Some(&tr!("settings.appearance_mode_description")),
-            None,
-            Some(self.appearance_mode_control(theme, this.clone(), cx)),
-        ));
-        for (mode, label) in [
-            (ThemeMode::Light, tr!("settings.light_theme")),
-            (ThemeMode::Dark, tr!("settings.dark_theme")),
-        ] {
-            theme_rows.push(self.setting_row(
+        let theme_rows = vec![
+            // The design-system switch comes first: it selects the visual
+            // language (Classic or Operational) without touching the
+            // remembered palette in either system.
+            self.setting_row(
                 theme,
-                &label,
+                &tr!("settings.design_system"),
+                Some(&tr!("settings.design_system_description")),
+                None,
+                Some(self.design_system_control(theme, this.clone(), cx)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("settings.appearance"),
+                Some(&tr!("settings.appearance_mode_description")),
+                None,
+                Some(self.appearance_mode_control(theme, this.clone(), cx)),
+            ),
+            // One Theme control, not one per appearance mode. It shows and
+            // edits the palette currently in effect, and each mode's choice is
+            // remembered separately. The list is filtered to the active
+            // design system.
+            self.setting_row(
+                theme,
+                &tr!("settings.theme"),
                 None,
                 None,
-                Some(self.theme_control(mode, theme, this.clone(), cx)),
-            ));
-        }
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("settings.background_image"),
-            Some(&tr!("settings.a_dithered_image_behind_the_new_task_page")),
-            background.as_deref(),
-            Some(self.background_controls(theme, this.clone())),
-        ));
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("language.title"),
-            Some(&tr!("language.description")),
-            None,
-            Some(self.language_select(theme, this.clone(), cx)),
-        ));
+                Some(self.theme_select(theme.mode, theme, this.clone(), cx)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("settings.accent_color"),
+                None,
+                None,
+                Some(self.accent_color_control(theme, this.clone(), cx)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("language.title"),
+                Some(&tr!("language.description")),
+                None,
+                Some(self.language_select(theme, this.clone(), cx)),
+            ),
+        ];
         let mut sections = vec![
             self.settings_section(theme, &tr!("settings.theme_and_background"), theme_rows),
             self.settings_section(
@@ -4903,6 +6529,18 @@ impl OrbitApp {
                     ),
                     self.setting_row(
                         theme,
+                        &tr!("settings.corner_rounding"),
+                        Some(&tr!("settings.corner_rounding_description")),
+                        None,
+                        Some(self.preset_select(
+                            SettingsSelect::CornerRounding,
+                            theme,
+                            this.clone(),
+                            cx,
+                        )),
+                    ),
+                    self.setting_row(
+                        theme,
                         &tr!("settings.spacing_density"),
                         None,
                         None,
@@ -4924,7 +6562,9 @@ impl OrbitApp {
                         &tr!("settings.show_sidebar"),
                         Some(&tr!(
                             "settings.show_the_sessions_sidebar_also_toggleable_from_t",
-                            shortcut = crate::platform::shortcuts::SIDEBAR
+                            shortcut = crate::platform::shortcuts::label(
+                                crate::platform::shortcuts::SIDEBAR
+                            )
                         )),
                         None,
                         Some(self.sidebar_toggle(theme, this.clone())),
@@ -4935,76 +6575,545 @@ impl OrbitApp {
                         Some(&tr!(
                             "settings.stop_looping_animations_spinners_and_the_running"
                         )),
-                        None,
-                        Some(self.settings_toggle(
-                            "reduce-motion",
-                            theme.ui.reduce_motion,
-                            theme,
-                            this.clone(),
-                            Self::toggle_reduce_motion,
-                        )),
+                        // Name what is actually in force, so `System` on a Mac
+                        // that asks for reduced motion is never a guess.
+                        Some(&motion_status(theme.ui.motion, theme::os_reduce_motion())),
+                        Some(self.motion_preference_control(theme, this.clone())),
                     ),
                 ],
             ),
         ];
-        // Tuning only means something once there is an image to tune, so the
-        // board appears with it, directly under the background it belongs to.
-        if background.is_some() {
-            sections.insert(
-                1,
-                self.settings_section(
-                    theme,
-                    &tr!("settings.background_tuning"),
-                    vec![
-                        self.setting_row(
-                            theme,
-                            &tr!("settings.blur"),
-                            Some(&tr!(
-                                "settings.softens_the_picture_before_the_dither_pass_so_a_"
-                            )),
-                            None,
-                            Some(self.tuning_select(
-                                SettingsSelect::BackdropBlur,
-                                theme,
-                                this.clone(),
-                                cx,
-                            )),
-                        ),
-                        self.setting_row(
-                            theme,
-                            &tr!("settings.pixel_size"),
-                            Some(&tr!(
-                                "settings.the_dither_cell_edge_fine_cells_read_as_halftone"
-                            )),
-                            None,
-                            Some(self.tuning_select(
-                                SettingsSelect::BackdropCell,
-                                theme,
-                                this.clone(),
-                                cx,
-                            )),
-                        ),
-                        self.setting_row(
-                            theme,
-                            &tr!("settings.bottom_fade"),
-                            Some(&tr!(
-                                "settings.how_far_the_picture_fades_into_the_page_behind_t"
-                            )),
-                            None,
-                            Some(self.tuning_select(
-                                SettingsSelect::BackdropFade,
-                                theme,
-                                this.clone(),
-                                cx,
-                            )),
-                        ),
-                    ],
-                ),
-            );
-        }
+        // The wallpaper board sits directly under the theme card. Its own
+        // preview and controls are self-contained.
+        sections.insert(
+            1,
+            self.settings_section(
+                theme,
+                &tr!("settings.wallpaper"),
+                self.wallpaper_rows(theme, this.clone(), cx),
+            ),
+        );
         sections
     }
-    /// One keyboard-focusable radio group; arrows choose the adjacent mode.
+
+    /// Appearance → the wallpaper board: preview, mode, image picker, effect,
+    /// and the continuous controls. The tuning rows only appear once an image
+    /// exists.
+    fn wallpaper_rows(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        let settings = crate::wallpaper::settings();
+        let this_for_controls = this.clone();
+        let mut rows = vec![
+            self.wallpaper_preview(theme, &settings),
+            self.setting_row(
+                theme,
+                &tr!("wallpaper.mode"),
+                Some(&tr!("wallpaper.mode_description")),
+                None,
+                Some(self.wallpaper_mode_select(theme, this_for_controls.clone(), cx)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("wallpaper.image"),
+                Some(&tr!("wallpaper.image_description")),
+                settings.display_label(),
+                Some(self.wallpaper_controls(theme, this_for_controls.clone())),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("wallpaper.effect"),
+                Some(&tr!("wallpaper.effect_description")),
+                None,
+                Some(self.wallpaper_effect_select(theme, this_for_controls, cx)),
+            ),
+        ];
+        // Intensity and pixel size only mean something while an effect is
+        // replacing the photograph, so the rows appear with the effect instead
+        // of sitting inert next to `None`.
+        if settings.path.is_some() && settings.effect != crate::wallpaper_fx::Effect::None {
+            rows.push(self.setting_row(
+                theme,
+                &tr!("wallpaper.effect_intensity"),
+                Some(&tr!("wallpaper.effect_intensity_description")),
+                None,
+                Some(self.wallpaper_slider(
+                    WallpaperSlider::EffectIntensity,
+                    theme,
+                    this.clone(),
+                    &settings,
+                )),
+            ));
+            rows.push(self.setting_row(
+                theme,
+                &tr!("wallpaper.effect_pixel_size"),
+                Some(&tr!("wallpaper.effect_pixel_size_description")),
+                None,
+                Some(self.wallpaper_slider(
+                    WallpaperSlider::EffectScale,
+                    theme,
+                    this.clone(),
+                    &settings,
+                )),
+            ));
+        }
+        if let Some(error) = crate::wallpaper::last_error() {
+            rows.push(self.setting_row(theme, &tr!("wallpaper.error"), Some(&error), None, None));
+        }
+        if settings.path.is_some() {
+            rows.push(self.setting_row(
+                theme,
+                &tr!("wallpaper.image_opacity"),
+                Some(&tr!("wallpaper.image_opacity_description")),
+                None,
+                Some(self.wallpaper_slider(
+                    WallpaperSlider::ImageOpacity,
+                    theme,
+                    this.clone(),
+                    &settings,
+                )),
+            ));
+            if settings.mode != crate::wallpaper::WallpaperMode::Disabled {
+                rows.push(self.setting_row(
+                    theme,
+                    &tr!("wallpaper.blur"),
+                    Some(&tr!("wallpaper.blur_description")),
+                    None,
+                    Some(self.wallpaper_slider(
+                        WallpaperSlider::Blur,
+                        theme,
+                        this.clone(),
+                        &settings,
+                    )),
+                ));
+                rows.push(self.setting_row(
+                    theme,
+                    &tr!("wallpaper.dim"),
+                    Some(&tr!("wallpaper.dim_description")),
+                    None,
+                    Some(self.wallpaper_slider(
+                        WallpaperSlider::Dim,
+                        theme,
+                        this.clone(),
+                        &settings,
+                    )),
+                ));
+                rows.push(self.setting_row(
+                    theme,
+                    &tr!("wallpaper.card_opacity"),
+                    Some(&tr!("wallpaper.card_opacity_description")),
+                    None,
+                    Some(self.wallpaper_slider(
+                        WallpaperSlider::CardOpacity,
+                        theme,
+                        this.clone(),
+                        &settings,
+                    )),
+                ));
+                if gpui::backdrop_blur_supported() {
+                    rows.push(self.setting_row(
+                        theme,
+                        &tr!("wallpaper.glass"),
+                        Some(&tr!("wallpaper.glass_description")),
+                        None,
+                        Some(self.settings_toggle(
+                            "wallpaper-glass",
+                            settings.glass,
+                            theme,
+                            this.clone(),
+                            Self::toggle_wallpaper_glass,
+                        )),
+                    ));
+                }
+                rows.push(self.setting_row(
+                    theme,
+                    &tr!("wallpaper.derive_accent"),
+                    Some(&tr!("wallpaper.derive_accent_description")),
+                    None,
+                    Some(self.settings_toggle(
+                        "wallpaper-accent",
+                        settings.derive_accent,
+                        theme,
+                        this,
+                        Self::toggle_wallpaper_accent,
+                    )),
+                ));
+            }
+        }
+        rows
+    }
+
+    fn wallpaper_preview(
+        &self,
+        theme: Theme,
+        settings: &crate::wallpaper::WallpaperSettings,
+    ) -> AnyElement {
+        let preview = div()
+            .id("wallpaper-preview")
+            .debug_selector(|| "wallpaper-preview".to_string())
+            .relative()
+            .w_full()
+            .h(px(84.))
+            .rounded(panel::RADIUS.px(&theme))
+            .border_1()
+            .border_color(theme.border)
+            .overflow_hidden()
+            .child(Self::dot_backdrop(theme))
+            .children(if settings.enabled() {
+                crate::wallpaper::preview(theme)
+            } else {
+                None
+            });
+        div()
+            .w_full()
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
+            .child(preview)
+            .into_any_element()
+    }
+
+    fn wallpaper_controls(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let settings = crate::wallpaper::settings();
+        let choose_label = if settings.path.is_some() {
+            tr!("settings.replace_ellipsis")
+        } else {
+            tr!("settings.choose_image")
+        };
+        let mut controls = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(self.runtime_button(
+                "wallpaper-choose",
+                &choose_label,
+                false,
+                theme,
+                this.clone(),
+                OrbitApp::wallpaper_choose,
+            ));
+        if settings.path.is_some() || settings.mode != crate::wallpaper::WallpaperMode::Disabled {
+            controls = controls.child(self.runtime_button(
+                "wallpaper-reset",
+                &tr!("wallpaper.reset_action"),
+                false,
+                theme,
+                this,
+                OrbitApp::wallpaper_reset,
+            ));
+        }
+        controls.into_any_element()
+    }
+
+    fn wallpaper_mode_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let settings = crate::wallpaper::settings();
+        let selected = crate::wallpaper::WallpaperMode::ALL
+            .iter()
+            .position(|mode| *mode == settings.mode)
+            .unwrap_or(0);
+        self.select_control(
+            "wallpaper-mode-select",
+            SettingsSelect::WallpaperMode,
+            wallpaper_mode_label(settings.mode),
+            crate::wallpaper::WallpaperMode::ALL
+                .iter()
+                .map(|mode| wallpaper_mode_label(*mode))
+                .collect(),
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    fn wallpaper_effect_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let settings = crate::wallpaper::settings();
+        let selected = crate::wallpaper_fx::Effect::ALL
+            .iter()
+            .position(|effect| *effect == settings.effect)
+            .unwrap_or(0);
+        self.select_control(
+            "wallpaper-effect-select",
+            SettingsSelect::WallpaperEffect,
+            wallpaper_effect_label(settings.effect),
+            crate::wallpaper_fx::Effect::ALL
+                .iter()
+                .map(|effect| wallpaper_effect_label(*effect))
+                .collect(),
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    fn wallpaper_slider(
+        &self,
+        kind: WallpaperSlider,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        settings: &crate::wallpaper::WallpaperSettings,
+    ) -> AnyElement {
+        let value = kind.value(settings);
+        let (lo, hi) = kind.range();
+        let norm = ((value - lo) / (hi - lo)).clamp(0., 1.);
+        let (slider_id, fill_id, knob_id) = kind.ids();
+        let track_w = px(SLIDER_TRACK_W);
+        let knob = px(SLIDER_KNOB);
+        let usable = track_w - knob;
+        let knob_left = usable * norm;
+        let center_x = knob_left + knob / 2.;
+        let track_top = px((SLIDER_ROW_H - SLIDER_TRACK_H) / 2.);
+        let knob_top = px((SLIDER_ROW_H - SLIDER_KNOB) / 2.);
+        let display = match kind {
+            WallpaperSlider::Blur => format!("{value:.1}"),
+            WallpaperSlider::EffectScale => {
+                let value = if settings.effect == crate::wallpaper_fx::Effect::Dither {
+                    value.round().max(1.0)
+                } else {
+                    value
+                };
+                if (value.fract()).abs() < 0.05 {
+                    format!("{value:.0}×")
+                } else {
+                    format!("{value:.1}×")
+                }
+            }
+            _ => format!("{}%", (value * 100.).round() as u32),
+        };
+
+        let events = canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _cx| {
+                register_wallpaper_slider(this, kind, bounds, hitbox, window);
+            },
+        )
+        .absolute()
+        .inset_0()
+        .cursor_pointer();
+
+        div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(
+                div()
+                    .id(slider_id)
+                    .debug_selector(move || slider_id.to_string())
+                    .relative()
+                    .group("wallpaper-slider")
+                    .w(track_w)
+                    .h(px(SLIDER_ROW_H))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(track_top)
+                            .h(px(SLIDER_TRACK_H))
+                            .rounded_full()
+                            .bg(theme.surface_active)
+                            .group_hover("wallpaper-slider", |s| s.bg(theme.surface_hover)),
+                    )
+                    .child(
+                        div()
+                            .id(fill_id)
+                            .debug_selector(move || fill_id.to_string())
+                            .absolute()
+                            .left_0()
+                            .top(track_top)
+                            .h(px(SLIDER_TRACK_H))
+                            .w(center_x)
+                            .rounded_full()
+                            .bg(theme.accent),
+                    )
+                    .child(
+                        div()
+                            .id(knob_id)
+                            .debug_selector(move || knob_id.to_string())
+                            .absolute()
+                            .left(knob_left)
+                            .top(knob_top)
+                            .size(knob)
+                            .rounded_full()
+                            .border_1()
+                            .border_color(theme.border_strong)
+                            .bg(theme.toggle_knob)
+                            .group_hover("wallpaper-slider", |s| s.border_color(theme.accent)),
+                    )
+                    .child(events),
+            )
+            .child(
+                div()
+                    .min_w(px(44.))
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
+                    .text_align(TextAlign::Right)
+                    .child(display),
+            )
+            .into_any_element()
+    }
+
+    /// Frost the panes over the wallpaper, or show it sharp through them.
+    pub(super) fn toggle_wallpaper_glass(&mut self, cx: &mut Context<Self>) {
+        let mut settings = crate::wallpaper::settings();
+        settings.glass = !settings.glass;
+        self.set_wallpaper(settings, cx);
+    }
+
+    pub(super) fn toggle_wallpaper_accent(&mut self, cx: &mut Context<Self>) {
+        let mut settings = crate::wallpaper::settings();
+        settings.derive_accent = !settings.derive_accent;
+        self.set_wallpaper(settings, cx);
+    }
+
+    /// One keyboard-focusable radio group for the visual language. The two
+    /// choices are stable identities; the Theme row below lists only the
+    /// palettes belonging to the chosen system.
+    fn design_system_control(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        use theme::DesignSystem;
+        let current = theme::appearance_prefs(cx).design_system;
+        let keyboard_this = this.clone();
+        let count = DesignSystem::ALL.len();
+        div()
+            .id("design-system")
+            .focusable()
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .rounded(button::RADIUS.px(&theme))
+            .p(DynamicSpacing::Base04.px(&theme))
+            .focus(|style| style.border_color(theme.focus_ring))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .flex()
+            .items_center()
+            .on_key_down(move |event, _, cx| {
+                let index = DesignSystem::ALL
+                    .iter()
+                    .position(|system| *system == current)
+                    .unwrap_or(0);
+                let next = match event.keystroke.key.as_str() {
+                    "left" | "up" => (index + count - 1) % count,
+                    "right" | "down" => (index + 1) % count,
+                    "home" => 0,
+                    "end" => count - 1,
+                    _ => return,
+                };
+                cx.stop_propagation();
+                keyboard_this.update(cx, |app, cx| {
+                    app.set_design_system(DesignSystem::ALL[next], cx);
+                });
+            })
+            .children(
+                DesignSystem::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, system)| {
+                        let this = this.clone();
+                        let active = current == system;
+                        let label = match system {
+                            DesignSystem::Classic => tr!("settings.design_system_classic"),
+                            DesignSystem::Operational => {
+                                tr!("settings.design_system_operational")
+                            }
+                        };
+                        segmented_segment(
+                            div().id(system.as_str()),
+                            &theme,
+                            ButtonSize::Medium,
+                            SegmentPosition::at(index, count),
+                        )
+                        .font_weight(FontWeight::MEDIUM)
+                        .cursor_pointer()
+                        .when(active, |b| {
+                            b.border_color(theme.border)
+                                .raised_flat(theme.surface_selected)
+                                .text_color(theme.text_primary)
+                        })
+                        .when(!active, |b| {
+                            b.border_color(theme.border)
+                                .raised_flat(theme.surface_elevated)
+                                .text_color(theme.text_secondary)
+                                .hover_state(&theme)
+                        })
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |app, cx| app.set_design_system(system, cx));
+                        })
+                        .child(label)
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn accent_color_control(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        use theme::AccentColor;
+        let current = theme::appearance_prefs(cx).accent_color;
+        let label = |color: AccentColor| match color {
+            AccentColor::Default => tr!("settings.accent_default").to_string(),
+            AccentColor::Blue => tr!("settings.accent_blue").to_string(),
+            AccentColor::Coral => tr!("settings.accent_coral").to_string(),
+            AccentColor::Orange => tr!("settings.accent_orange").to_string(),
+            AccentColor::Lime => tr!("settings.accent_lime").to_string(),
+            _ => color.label().to_string(),
+        };
+        let selected = AccentColor::ALL
+            .iter()
+            .position(|color| *color == current)
+            .unwrap_or(0);
+        self.select_control(
+            "accent-color-select",
+            SettingsSelect::AccentColor,
+            label(current),
+            AccentColor::ALL.into_iter().map(label).collect(),
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    fn set_accent_color(&mut self, color: theme::AccentColor, cx: &mut Context<Self>) {
+        let mut prefs = theme::appearance_prefs(cx);
+        prefs.accent_color = color;
+        if let Err(error) = theme::set_appearance_prefs(cx, prefs) {
+            self.toast_error(tr!("settings.appearance_save_failed", error = error));
+        }
+        cx.notify();
+    }
+
+    fn set_design_system(&mut self, design_system: theme::DesignSystem, cx: &mut Context<Self>) {
+        let mut prefs = theme::appearance_prefs(cx);
+        prefs.set_design_system(design_system);
+        if let Err(error) = theme::set_appearance_prefs(cx, prefs) {
+            self.toast_error(tr!("settings.appearance_save_failed", error = error));
+        }
+        cx.notify();
+    }
+
+    /// One keyboard-focusable radio group drawn as a segmented control (the
+    /// same control as the follow-up delivery mode); arrows choose the
+    /// adjacent mode.
     fn appearance_mode_control(
         &self,
         theme: Theme,
@@ -5014,22 +7123,22 @@ impl OrbitApp {
         use theme::AppearanceMode;
         let current = theme::appearance_prefs(cx).mode;
         let keyboard_this = this.clone();
+        let count = AppearanceMode::ALL.len();
         div()
             .id("appearance-mode")
             .focusable()
             .border_1()
             .border_color(gpui::transparent_black())
-            .rounded(px(7.))
-            .p(px(4.))
-            .focus(|style| style.border_color(theme.accent))
+            .rounded(button::RADIUS.px(&theme))
+            .p(DynamicSpacing::Base04.px(&theme))
+            .focus(|style| style.border_color(theme.focus_ring))
             // gpui 0.2 has no `:focus-visible`: an automatic focus transfer
             // on mouse-down would leave the accent ring behind after a click.
             // Suppress that transfer so the ring only appears for keyboard
-            // focus; the radio's own `on_click` still selects on mouse-up.
+            // focus; the segment's own `on_click` still selects on mouse-up.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .flex()
             .items_center()
-            .gap(theme.space(12.))
             .on_key_down(move |event, _, cx| {
                 let index = AppearanceMode::ALL
                     .iter()
@@ -5047,46 +7156,43 @@ impl OrbitApp {
                     app.set_appearance_mode(AppearanceMode::ALL[next], cx);
                 });
             })
-            .children(AppearanceMode::ALL.into_iter().map(|mode| {
-                let this = this.clone();
-                let selected = current == mode;
-                let label = match mode {
-                    AppearanceMode::Light => tr!("settings.appearance_light"),
-                    AppearanceMode::Dark => tr!("settings.appearance_dark"),
-                    AppearanceMode::System => tr!("settings.appearance_system"),
-                };
-                div()
-                    .id(mode.as_str())
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .py(px(4.))
-                    .cursor_pointer()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_2)
-                    .hover(|style| style.text_color(theme.text))
-                    .on_click(move |_, _, cx| {
-                        this.update(cx, |app, cx| app.set_appearance_mode(mode, cx));
-                    })
-                    .child(
-                        div()
-                            .size(px(14.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(if selected {
-                                theme.accent
-                            } else {
-                                theme.border_strong
-                            })
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(selected, |radio| {
-                                radio.child(div().size(px(6.)).rounded_full().bg(theme.accent))
-                            }),
-                    )
-                    .child(label)
-            }))
+            .children(
+                AppearanceMode::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, mode)| {
+                        let this = this.clone();
+                        let active = current == mode;
+                        let label = match mode {
+                            AppearanceMode::Light => tr!("settings.appearance_light"),
+                            AppearanceMode::Dark => tr!("settings.appearance_dark"),
+                            AppearanceMode::System => tr!("settings.appearance_system"),
+                        };
+                        segmented_segment(
+                            div().id(mode.as_str()),
+                            &theme,
+                            ButtonSize::Medium,
+                            SegmentPosition::at(index, count),
+                        )
+                        .font_weight(FontWeight::MEDIUM)
+                        .cursor_pointer()
+                        .when(active, |b| {
+                            b.border_color(theme.border)
+                                .raised_flat(theme.surface_selected)
+                                .text_color(theme.text_primary)
+                        })
+                        .when(!active, |b| {
+                            b.border_color(theme.border)
+                                .raised_flat(theme.surface_elevated)
+                                .text_color(theme.text_secondary)
+                                .hover_state(&theme)
+                        })
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |app, cx| app.set_appearance_mode(mode, cx));
+                        })
+                        .child(label)
+                    }),
+            )
             .into_any_element()
     }
 
@@ -5097,44 +7203,6 @@ impl OrbitApp {
             self.toast_error(tr!("settings.appearance_save_failed", error = error));
         }
         cx.notify();
-    }
-
-    /// Preview the configured palette, even when the other appearance is active.
-    pub(super) fn theme_control(
-        &self,
-        mode: ThemeMode,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let preview = Theme::for_id(theme::appearance_prefs(cx).theme(mode));
-        let swatch = |color: Hsla| {
-            div()
-                .size(px(16.))
-                .rounded(px(4.))
-                .bg(color)
-                .border_1()
-                .border_color(theme.border_strong)
-                .flex_none()
-        };
-        div()
-            .flex()
-            .items_center()
-            .gap(theme.space(12.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(swatch(preview.bg_main))
-                    .child(swatch(preview.bg_sidebar))
-                    .child(swatch(preview.bg_raised))
-                    .child(swatch(preview.text_3))
-                    .child(swatch(preview.text))
-                    .child(swatch(preview.accent)),
-            )
-            .child(self.theme_select(mode, theme, this, cx))
-            .into_any_element()
     }
 
     /// Live previews of the chosen faces at their current sizes: the
@@ -5148,12 +7216,12 @@ impl OrbitApp {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(theme.space(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .child(
                     div()
-                        .text_size(theme.ui_px(10.5))
+                        .text_size(TextSize::XSmall.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_3)
+                        .text_color(theme.text_muted)
                         .child(label.to_uppercase()),
                 )
                 .child(body)
@@ -5164,27 +7232,27 @@ impl OrbitApp {
         let interface = div()
             .w_full()
             .flex_1()
-            .px(theme.space(14.))
-            .py(theme.space(12.))
-            .rounded_md()
-            .bg(theme.bg_main)
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
+            .bg(theme.background)
             .flex()
             .flex_col()
             .justify_center()
-            .gap(theme.space(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .child(
                 div()
                     .font_family(theme::ui_font_family())
-                    .text_size(theme.ui_px(15.))
+                    .text_size(TextSize::Large.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(tr!("settings.new_task")),
             )
             .child(
                 div()
                     .font_family(theme::ui_font_family())
-                    .text_size(theme.ui_px(12.5))
-                    .text_color(theme.text_2)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(tr!("settings.the_quick_brown_fox_jumps_over_the_lazy_dog")),
             );
 
@@ -5193,18 +7261,18 @@ impl OrbitApp {
             let mut row = div()
                 .flex()
                 .items_center()
-                .gap_1p5()
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .font_family(theme::code_font_family())
                 .text_size(theme.term_px(12.5))
-                .child(div().text_color(theme.ok_green).child("$"))
+                .child(div().text_color(theme.success).child("$"))
                 .child(div().text_color(theme.code_text).child(command.to_string()));
             if cursor {
                 row = row.child(
                     div()
                         .w(theme.term_px(7.))
                         .h(theme.term_px(14.))
-                        .rounded(px(1.))
-                        .bg(theme.text_2),
+                        .rounded_full()
+                        .bg(theme.text_secondary),
                 );
             }
             row
@@ -5212,7 +7280,7 @@ impl OrbitApp {
         let terminal = div()
             .w_full()
             .flex_1()
-            .rounded_lg()
+            .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border)
             .bg(theme.code_bg)
@@ -5223,15 +7291,15 @@ impl OrbitApp {
                 div()
                     .flex_none()
                     .h(px(26.))
-                    .px(theme.space(10.))
+                    .px(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .items_center()
-                    .gap_1p5()
-                    .bg(theme.bg_sidebar)
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .bg(theme.surface)
                     .border_b_1()
                     .border_color(theme.border)
                     .children(
-                        [theme.stop_red, theme.warn, theme.ok_green]
+                        [theme.error, theme.warning, theme.success]
                             .map(|color| div().size(px(7.)).rounded_full().bg(color)),
                     )
                     .child(
@@ -5239,7 +7307,7 @@ impl OrbitApp {
                             .ml_1p5()
                             .font_family(theme::code_font_family())
                             .text_size(theme.term_px(10.5))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(tr!("settings.terminal_prompt")),
                     ),
             )
@@ -5247,17 +7315,17 @@ impl OrbitApp {
                 div()
                     .w_full()
                     .flex_1()
-                    .px(theme.space(12.))
-                    .py(theme.space(10.))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .flex_col()
-                    .gap(theme.space(3.))
+                    .gap(DynamicSpacing::Base03.px(&theme))
                     .child(prompt("orbit-pi --session", false))
                     .child(
                         div()
                             .font_family(theme::code_font_family())
                             .text_size(theme.term_px(12.5))
-                            .text_color(theme.text_2)
+                            .text_color(theme.text_secondary)
                             .child(tr!("settings.preview_prompt")),
                     )
                     .child(prompt("", true)),
@@ -5265,10 +7333,10 @@ impl OrbitApp {
 
         div()
             .w_full()
-            .px(theme.space(16.))
-            .py(theme.space(12.))
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
             .flex()
-            .gap(theme.space(16.))
+            .gap(DynamicSpacing::Base16.px(&theme))
             .child(column(
                 &tr!("settings.interface_preview"),
                 interface.into_any_element(),
@@ -5280,120 +7348,47 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// Appearance → "Background image": pick an image for the dithered
-    /// page backdrop, or reset to the dot grid.
-    pub(super) fn background_controls(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let label = crate::dither::configured_label();
-        let choose_label = if label.is_some() {
-            tr!("settings.replace_ellipsis")
-        } else {
-            tr!("settings.choose_image")
+    // ── Wallpaper ──────────────────────────────────────────────────────
+
+    /// Decode/process a wallpaper when the current setting has no matching
+    /// cache entry. Called from `render`; `wallpaper::begin` is idempotent, so
+    /// a frame that finds a load in flight does nothing.
+    pub(super) fn ensure_wallpaper(&mut self, cx: &mut Context<Self>) {
+        let light = crate::theme::get(cx).mode == crate::theme::ThemeMode::Light;
+        let Some(job) = crate::wallpaper::begin(light) else {
+            return;
         };
-        let mut controls = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(self.runtime_button(
-                "background-choose",
-                &choose_label,
-                false,
-                theme,
-                this.clone(),
-                OrbitApp::background_choose,
-            ));
-        if label.is_some() {
-            controls = controls.child(self.runtime_button(
-                "background-reset",
-                "Reset",
-                false,
-                theme,
-                this,
-                OrbitApp::background_reset,
-            ));
-        }
-        controls.into_any_element()
+        cx.spawn(async move |this, cx| {
+            let worker = job.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { worker.prepare() })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                let current_light = crate::theme::get(cx).mode == crate::theme::ThemeMode::Light;
+                if crate::wallpaper::finish(job, result, current_light) {
+                    // The extracted accent and the computed surface alphas
+                    // are part of the theme, so the whole window repaints on
+                    // one global update.
+                    crate::theme::rebuild_theme(cx);
+                    cx.notify();
+                } else {
+                    // Settings changed while the image decoded. Ask again for
+                    // the new key instead of installing a stale result.
+                    app.ensure_wallpaper(cx);
+                }
+            });
+        })
+        .detach();
     }
 
-    /// Appearance → the backdrop's live preview: the real processed image
-    /// (blur + dither cell) under the real bottom fade, at strip scale.
-    /// Only mounted when an image is configured — without one the Theme
-    /// swatches already show the palette, and the empty strip was a hole.
-    pub(super) fn backdrop_preview(&self, theme: Theme) -> AnyElement {
-        let image = crate::dither::background();
-        let dithered = image.is_some();
-        div()
-            .w_full()
-            .px(theme.space(16.))
-            .py(theme.space(12.))
-            .child(
-                div()
-                    .id("background-preview")
-                    .debug_selector(|| "background-preview".to_string())
-                    .relative()
-                    .w_full()
-                    .h(px(84.))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(theme.border)
-                    .overflow_hidden()
-                    .when(!dithered, |strip| strip.child(Self::dot_backdrop(theme)))
-                    .children(Self::backdrop_image(image, crate::dither::tuning(), theme)),
-            )
-            .into_any_element()
-    }
-
-    /// The background-tuning dropdowns (blur / pixel size / bottom fade).
-    /// Each option is a named preset, never a raw number, so the chip reads
-    /// as a look — "Heavy", "Coarse", "Deep" — rather than a parameter.
-    pub(super) fn tuning_select(
-        &self,
-        kind: SettingsSelect,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        use crate::dither::{BLUR_LABELS, CELL_LABELS, FADE_LABELS};
-        let tuning = crate::dither::tuning();
-        let (id, selected, labels): (&'static str, usize, &[&str]) = match kind {
-            SettingsSelect::BackdropBlur => (
-                "backdrop-blur-select",
-                tuning.blur_index(),
-                &BLUR_LABELS[..],
-            ),
-            SettingsSelect::BackdropCell => (
-                "backdrop-cell-select",
-                tuning.cell_index(),
-                &CELL_LABELS[..],
-            ),
-            SettingsSelect::BackdropFade => (
-                "backdrop-fade-select",
-                tuning.fade_index(),
-                &FADE_LABELS[..],
-            ),
-            _ => unreachable!(),
-        };
-        self.select_control(
-            id,
-            kind,
-            labels[selected].to_string(),
-            labels.iter().map(|label| label.to_string()).collect(),
-            selected,
-            theme,
-            this,
-            cx,
-        )
-    }
-
-    /// Pick the background image (native dialog), copy + process it, and
-    /// warm the dither cache so the first paint of the new-task page is
-    /// costless.
-    pub(super) fn background_choose(&mut self, cx: &mut Context<Self>) {
-        // Async panel only: see `OrbitApp::browse_for_folder` for why a
-        // blocking native dialog on the main thread aborts the app.
+    /// Pick a wallpaper (native dialog), copy it into the managed directory,
+    /// and process it off the UI thread.
+    pub(super) fn wallpaper_choose(&mut self, cx: &mut Context<Self>) {
         let dialog = rfd::AsyncFileDialog::new()
-            .set_title(tr!("settings.choose_background_title"))
+            .set_title(tr!("wallpaper.choose_title"))
             .add_filter(
-                &tr!("settings.images_filter"),
+                tr!("settings.images_filter"),
                 &["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff"],
             );
         cx.spawn(async move |this, cx| {
@@ -5401,13 +7396,58 @@ impl OrbitApp {
                 return;
             };
             let path = handle.path().to_path_buf();
+            let _ = this.update(cx, |app, cx| app.import_wallpaper(path, cx));
+        })
+        .detach();
+    }
+
+    fn import_wallpaper(&mut self, source: PathBuf, cx: &mut Context<Self>) {
+        let current = crate::wallpaper::settings();
+        let light = crate::theme::get(cx).mode == crate::theme::ThemeMode::Light;
+        self.set_status(tr!("wallpaper.importing"));
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { crate::wallpaper::import_and_prepare(&source, &current, light) },
+                )
+                .await;
             let _ = this.update(cx, |app, cx| {
-                match crate::dither::choose_file(&path) {
-                    Ok(label) => {
-                        crate::dither::background();
-                        app.set_status(tr!("settings.background_set", label = label));
+                match result {
+                    Ok((imported, prepared)) => {
+                        let label = imported.label.clone().unwrap_or_default();
+                        // Keep controls the user may have changed while the
+                        // file decoded; only the path/label come from the
+                        // import. If effect, blur, or appearance moved, the
+                        // prepared key will not match and the normal loader
+                        // re-runs the pass for the new settings.
+                        let mut next = crate::wallpaper::settings();
+                        next.path = imported.path;
+                        next.label = imported.label;
+                        if next.mode == crate::wallpaper::WallpaperMode::Disabled {
+                            next.mode = crate::wallpaper::WallpaperMode::Hero;
+                        }
+                        match crate::wallpaper::update(next.clone()) {
+                            Ok(_) => {
+                                // Publish the cache entry for the imported
+                                // file before asking `render` to warm it; if
+                                // the key does not match (a racing edit) the
+                                // normal loader picks it up.
+                                let current_light =
+                                    crate::theme::get(cx).mode == crate::theme::ThemeMode::Light;
+                                if current_light == light {
+                                    crate::wallpaper::install(&next, Ok(prepared), light);
+                                }
+                                crate::theme::rebuild_theme(cx);
+                                app.ensure_wallpaper(cx);
+                                app.set_status(tr!("wallpaper.set", label = label));
+                            }
+                            Err(error) => {
+                                app.toast_error(tr!("wallpaper.could_not_save", error = error));
+                            }
+                        }
                     }
-                    Err(err) => app.set_status(err),
+                    Err(error) => app.toast_error(error),
                 }
                 cx.notify();
             });
@@ -5415,12 +7455,27 @@ impl OrbitApp {
         .detach();
     }
 
-    /// Drop the background (the dot grid returns) and forget the cache.
-    pub(super) fn background_reset(&mut self, cx: &mut Context<Self>) {
-        crate::dither::clear_all();
-        crate::dither::background();
-        self.set_status(tr!("settings.background_reset"));
+    pub(super) fn wallpaper_reset(&mut self, cx: &mut Context<Self>) {
+        match crate::wallpaper::reset() {
+            Ok(()) => {
+                crate::theme::rebuild_theme(cx);
+                self.set_status(tr!("wallpaper.reset"));
+            }
+            Err(error) => self.toast_error(tr!("wallpaper.could_not_save", error = error)),
+        }
         cx.notify();
+    }
+
+    fn set_wallpaper(&mut self, next: crate::wallpaper::WallpaperSettings, cx: &mut Context<Self>) {
+        match crate::wallpaper::update(next) {
+            Ok(true) => {
+                crate::theme::rebuild_theme(cx);
+                self.ensure_wallpaper(cx);
+                cx.notify();
+            }
+            Ok(false) => {}
+            Err(error) => self.toast_error(tr!("wallpaper.could_not_save", error = error)),
+        }
     }
 
     /// The real sidebar toggle, wired to the same state as the top bar.
@@ -5429,16 +7484,16 @@ impl OrbitApp {
         div()
             .id("settings-sidebar-toggle")
             .w(px(36.))
-            .h(px(20.))
+            .h(DynamicSpacing::Base20.px(&theme))
             .rounded_full()
-            .p(px(2.))
+            .p(DynamicSpacing::Base02.px(&theme))
             .border_1()
             .border_color(theme.border)
             .flex()
             .items_center()
             .cursor_pointer()
             .when(on, |t| t.bg(theme.accent).justify_end())
-            .when(!on, |t| t.bg(theme.bg_raised).justify_start())
+            .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
             .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                 this.update(cx, |app, cx| {
                     app.toggle_sidebar(window, cx);
@@ -5449,7 +7504,20 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// Each appearance remembers its own choice and lists only matching palettes.
+    /// The palettes the Theme dropdown lists, in the order it paints them:
+    /// every palette of `mode` in the active design system, in
+    /// [`theme::ThemeId::ALL`] order.
+    ///
+    /// Both the label builder and the click handler read this, so a row index
+    /// always resolves to the palette it painted.
+    pub(super) fn theme_catalog(&self, mode: ThemeMode, cx: &Context<Self>) -> Vec<theme::ThemeId> {
+        let design_system = theme::appearance_prefs(cx).design_system;
+        theme::themes_for_system(mode, design_system).collect()
+    }
+
+    /// Appearance → Theme. `mode` is the resolved appearance, so the row shows
+    /// and edits the palette currently in effect and each mode's choice is
+    /// remembered separately.
     pub(super) fn theme_select(
         &self,
         mode: ThemeMode,
@@ -5457,17 +7525,15 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let all: Vec<_> = theme::themes_for(mode).collect();
+        let catalog = self.theme_catalog(mode, cx);
         let configured = theme::appearance_prefs(cx).theme(mode);
-        let selected = all.iter().position(|id| *id == configured).unwrap_or(0);
+        let selected = catalog.iter().position(|id| *id == configured).unwrap_or(0);
+        let options: Vec<String> = catalog.iter().map(|id| id.label().to_string()).collect();
         self.select_control(
-            match mode {
-                ThemeMode::Light => "light-theme-select",
-                ThemeMode::Dark => "dark-theme-select",
-            },
+            "theme-select",
             SettingsSelect::Theme(mode),
             configured.label().to_string(),
-            all.iter().map(|id| id.label().to_string()).collect(),
+            options,
             selected,
             theme,
             this,
@@ -5525,14 +7591,30 @@ impl OrbitApp {
                 theme.ui.spacing_density as f32,
                 "%",
             ),
+            SettingsSelect::CornerRounding => (
+                (0..=theme::MAX_CORNER_ROUNDING).map(|v| v as f32).collect(),
+                theme.ui.corner_rounding as f32,
+                "px",
+            ),
             SettingsSelect::Language
+            | SettingsSelect::SuggestionsModel
+            | SettingsSelect::ReportModel
+            | SettingsSelect::AccentColor
             | SettingsSelect::Theme(_)
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
-            | SettingsSelect::BackdropBlur
-            | SettingsSelect::BackdropCell
-            | SettingsSelect::BackdropFade
-            | SettingsSelect::TitleModel => unreachable!(),
+            | SettingsSelect::WallpaperMode
+            | SettingsSelect::WallpaperEffect
+            | SettingsSelect::TitleModel
+            | SettingsSelect::AgentCalls
+            | SettingsSelect::DefaultModel
+            | SettingsSelect::DefaultThinking
+            | SettingsSelect::SubagentModel
+            | SettingsSelect::ActiveModel
+            | SettingsSelect::ModelProvider
+            | SettingsSelect::RetentionMode
+            | SettingsSelect::RetentionDays
+            | SettingsSelect::AccessMode => unreachable!(),
         };
         let selected = values
             .iter()
@@ -5544,6 +7626,7 @@ impl OrbitApp {
                 SettingsSelect::TerminalFont => "terminal-font-select",
                 SettingsSelect::EditorFont => "editor-font-select",
                 SettingsSelect::SpacingDensity => "spacing-density-select",
+                SettingsSelect::CornerRounding => "corner-rounding-select",
                 _ => "settings-select",
             },
             kind,
@@ -5559,7 +7642,7 @@ impl OrbitApp {
         )
     }
 
-    /// The Interface / Code font-family dropdowns — Orbit's curated catalog.
+    /// The Interface / Code font-family dropdowns share GPUI's available families.
     pub(super) fn font_family_select(
         &self,
         kind: SettingsSelect,
@@ -5567,30 +7650,22 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        use crate::theme::{FontChoice, CODE_FONTS, UI_FONTS};
         let prefs = theme::font_prefs();
-        let (id, current, choices): (&'static str, SharedString, &[FontChoice]) = match kind {
-            SettingsSelect::UiFontFamily => (
-                "ui-font-family-select",
-                prefs.ui_font_family.clone(),
-                &UI_FONTS,
-            ),
-            SettingsSelect::CodeFontFamily => (
-                "code-font-family-select",
-                prefs.code_font_family.clone(),
-                &CODE_FONTS,
-            ),
+        let (id, current) = match kind {
+            SettingsSelect::UiFontFamily => ("ui-font-family-select", prefs.ui_font_family),
+            SettingsSelect::CodeFontFamily => ("code-font-family-select", prefs.code_font_family),
             _ => unreachable!(),
         };
+        let choices = font_family_options(cx, current.as_ref());
         let selected = choices
             .iter()
-            .position(|f| f.family == current.as_ref())
+            .position(|f| f == current.as_ref())
             .unwrap_or(0);
         self.select_control(
             id,
             kind,
-            theme::font_choice_label(current.as_ref()),
-            choices.iter().map(|f| f.label.to_string()).collect(),
+            current.to_string(),
+            choices,
             selected,
             theme,
             this,
@@ -5611,39 +7686,87 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
+        self.select_control_sized(
+            id,
+            kind,
+            SELECT_CHIP_SIZE,
+            label,
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// [`select_control`](Self::select_control) at an explicit chip size, so a
+    /// toolbar control can choose its size independently of settings rows.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn select_control_sized(
+        &self,
+        id: &'static str,
+        kind: SettingsSelect,
+        size: ButtonSize,
+        label: String,
+        options: Vec<String>,
+        selected: usize,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let open = self.settings_select == Some(kind);
+        let model_provider = match kind {
+            SettingsSelect::TitleModel
+            | SettingsSelect::SuggestionsModel
+            | SettingsSelect::ReportModel
+                if selected == 0 =>
+            {
+                Some(self.model_provider.as_str())
+            }
+            SettingsSelect::TitleModel
+            | SettingsSelect::SuggestionsModel
+            | SettingsSelect::ReportModel
+            | SettingsSelect::DefaultModel
+            | SettingsSelect::SubagentModel
+                if selected > 0 =>
+            {
+                self.available_models
+                    .get(selected - 1)
+                    .map(|model| model.provider.as_str())
+            }
+            _ => None,
+        };
         let chip_this = this.clone();
         div()
             .flex()
             .flex_col()
             .items_end()
             // dropdown anchored below the chip when open
-            .children(self.settings_select_popup(kind, options, selected, theme, &this, cx))
+            .children(self.settings_select_popup(kind, size, options, selected, theme, &this, cx))
             .child(
-                div()
-                    .id(ElementId::Name(id.into()))
-                    .h(px(26.))
-                    .px(px(10.))
-                    .rounded(px(7.))
+                button_frame(div().id(ElementId::Name(id.into())), &theme, size)
                     .border_1()
                     .border_color(if open {
                         theme.border_strong
                     } else {
                         theme.border
                     })
-                    .bg(if open { theme.overlay } else { theme.bg_raised })
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
+                    .raised(
+                        if open {
+                            theme.overlay
+                        } else {
+                            theme.surface_elevated
+                        },
+                        &theme,
+                    )
                     .cursor_pointer()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_2)
-                    .hover(|s| s.bg(theme.overlay))
+                    .text_color(theme.text_secondary)
+                    .hover_overlay(&theme)
                     .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                         chip_this.update(cx, |app, cx| {
                             // A dismissal from this same click's mouse-down
                             // must not immediately re-open (see
-                            // `toggle_session_menu`).
+                            // `toggle_workspace_menu`).
                             const GESTURE: Duration = Duration::from_millis(200);
                             if let Some(dismissed) = app.menu_dismissed_at.take() {
                                 if dismissed.elapsed() < GESTURE {
@@ -5659,6 +7782,7 @@ impl OrbitApp {
                                 app.settings_select_highlight = Some(selected);
                                 app.settings_select_scroll
                                     .scroll_to_item(selected, ScrollStrategy::Center);
+                                app.settings_select_query.clear();
                                 app.settings_filter
                                     .update(cx, |filter, cx| filter.clear(cx));
                                 let handle = app.settings_filter.read(cx).focus_handle(cx);
@@ -5667,16 +7791,29 @@ impl OrbitApp {
                             cx.notify();
                         });
                     })
+                    .when_some(model_provider, |chip, provider| {
+                        chip.child(icon_dyn(
+                            provider_icon(provider),
+                            context_menu::ICON.px(&theme),
+                            provider_mark_color(provider, &theme, theme.text_muted),
+                        ))
+                    })
                     .child(label)
-                    .child(icon("icons/chevron-down.svg", 10., theme.text_3)),
+                    .child(icon(
+                        "icons/chevron-down.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_muted,
+                    )),
             )
             .into_any_element()
     }
 
     /// The open dropdown's option list, anchored below its chip.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn settings_select_popup(
         &self,
         kind: SettingsSelect,
+        size: ButtonSize,
         options: Vec<String>,
         selected: usize,
         theme: Theme,
@@ -5695,7 +7832,26 @@ impl OrbitApp {
             .map(|ix| (ix, options[ix].clone()))
             .collect();
         let empty = rows.is_empty();
-        let highlight = self.settings_select_highlight;
+        let model_rows = matches!(
+            kind,
+            SettingsSelect::TitleModel
+                | SettingsSelect::SuggestionsModel
+                | SettingsSelect::ReportModel
+                | SettingsSelect::DefaultModel
+                | SettingsSelect::SubagentModel
+        )
+        .then(|| {
+            self.available_models
+                .iter()
+                .map(|model| (model.provider.clone(), model.name.clone()))
+                .collect::<Vec<_>>()
+        });
+        let active_provider = self.model_provider.clone();
+        let active_model = self.model_label.clone();
+        let highlight = self
+            .settings_select_highlight
+            .filter(|ix| rows.iter().any(|(row_ix, _)| row_ix == ix))
+            .or_else(|| rows.first().map(|(ix, _)| *ix));
         // Virtualized list — only the visible rows are laid out and painted.
         // The font-family dropdowns can have a thousand+ entries, and the
         // whole app re-renders on every scroll tick, so rendering every row
@@ -5704,23 +7860,23 @@ impl OrbitApp {
         // `uniform_list`'s Infer sizing reads the *available* height, and this
         // popup lives inside a 0×0 anchor div, so the available height is 0 and
         // the list collapses to nothing. Give it an explicit height computed
-        // from the row count instead (30 px stride + 8 px vertical padding,
-        // capped at the old 220 px max) — same visual, real viewport.
-        let list_h = (rows.len() as f32 * 30. + 8.).min(220.);
+        // from the row count instead (one picker entry per row plus the
+        // list's vertical padding, capped at the old 220 px max) — a real
+        // viewport. Rows and height share `row_h`, so they cannot drift.
+        let row_h = picker::entry_height(&theme);
+        let list_pad_y = picker::list_padding_y(&theme);
+        let list_h = (row_h * rows.len() as f32 + list_pad_y * 2.).min(px(220.));
         let list: AnyElement = if empty {
             div()
                 .w_full()
-                .px(px(4.))
-                .py(px(4.))
+                .py(list_pad_y)
                 .child(
-                    div()
-                        .h(px(28.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(theme.ui_px(12.))
-                        .text_color(theme.text_3)
-                        .child(tr!("settings.no_matches")),
+                    picker_entry(
+                        div().debug_selector(|| "settings-select-empty".to_string()),
+                        &theme,
+                    )
+                    .text_color(theme.text_muted)
+                    .child(tr!("settings.no_matches")),
                 )
                 .into_any_element()
         } else {
@@ -5736,53 +7892,109 @@ impl OrbitApp {
                         let selected_row = orig_ix == selected;
                         let highlighted_row = highlight == Some(orig_ix);
                         let this = this.clone();
-                        // 30 px stride = 28 px row + the 2 px gap the old
-                        // flex list had between rows (uniform_list has no
-                        // gap support, so the gap rides on the row shell).
+                        let model = model_rows.as_ref().and_then(|models| {
+                            orig_ix.checked_sub(1).and_then(|ix| models.get(ix))
+                        });
+                        let provider = model.map(|(provider, _)| provider.as_str()).or_else(|| {
+                            (model_rows.is_some()
+                                && matches!(
+                                    kind,
+                                    SettingsSelect::TitleModel | SettingsSelect::ReportModel
+                                )
+                                && orig_ix == 0)
+                                .then_some(active_provider.as_str())
+                        });
+                        let primary = model.map_or(option.as_str(), |(_, name)| name.as_str());
+                        let secondary = model
+                            .map(|(provider, _)| crate::providers::provider_display_name(provider))
+                            .or_else(|| {
+                                (model_rows.is_some()
+                                    && matches!(
+                                        kind,
+                                        SettingsSelect::TitleModel | SettingsSelect::ReportModel
+                                    )
+                                    && orig_ix == 0
+                                    && !active_model.is_empty())
+                                .then(|| active_model.clone())
+                            });
+                        // Every row is exactly one picker entry tall
+                        // (`uniform_list` strides by the first row, and
+                        // `list_h` uses the same `row_h`). The block shell
+                        // fits the entry's inset margins inside the list.
+                        let row_id =
+                            ElementId::NamedInteger("settings-select-row".into(), orig_ix as u64);
                         children.push(
-                            div().h(px(30.)).w_full().child(
-                                div()
-                                    .id(ElementId::NamedInteger(
-                                        "settings-select-row".into(),
-                                        orig_ix as u64,
+                            div().h(row_h).w_full().child(
+                                picker_entry(
+                                    div().id(row_id).debug_selector(move || {
+                                        format!("settings-select-row-{orig_ix}")
+                                    }),
+                                    &theme,
+                                )
+                                .h(row_h)
+                                .justify_between()
+                                .cursor_pointer()
+                                // The chosen option keeps the fill; the
+                                // keyboard cursor rides the same wash.
+                                .when(highlighted_row || selected_row, |row| {
+                                    row.bg(theme.surface_active)
+                                })
+                                .when(!highlighted_row && !selected_row, |row| {
+                                    row.hover_state(&theme)
+                                })
+                                .text_color(if selected_row || highlighted_row {
+                                    theme.text_primary
+                                } else {
+                                    theme.text_secondary
+                                })
+                                .when(kind == SettingsSelect::AccentColor, |row| {
+                                    let base = Theme::for_id(theme.theme_id);
+                                    let color = theme::AccentColor::ALL[orig_ix].apply(base).accent;
+                                    row.child(div().size(px(14.)).rounded_full().bg(color))
+                                })
+                                .when_some(provider, |row, provider| {
+                                    row.child(icon_dyn(
+                                        provider_icon(provider),
+                                        context_menu::ICON.px(&theme),
+                                        provider_mark_color(provider, &theme, theme.text_muted),
                                     ))
-                                    .h(px(28.))
-                                    .w_full()
-                                    .px(px(10.))
-                                    .rounded(px(6.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(px(10.))
-                                    .cursor_pointer()
-                                    // The keyboard cursor is a wash; the
-                                    // chosen option keeps the fill.
-                                    .when(highlighted_row, |row| row.bg(theme.overlay_strong))
-                                    .when(!highlighted_row && selected_row, |row| {
-                                        row.bg(theme.active)
-                                    })
-                                    .when(!highlighted_row && !selected_row, |row| {
-                                        row.hover(|style| style.bg(theme.overlay))
-                                    })
-                                    .text_size(theme.ui_px(12.))
-                                    .text_color(if selected_row {
-                                        theme.active_fg
-                                    } else if highlighted_row {
-                                        theme.text
-                                    } else {
-                                        theme.text_2
-                                    })
-                                    .child(option.clone())
-                                    .when(selected_row, |row| {
-                                        row.child(icon("icons/check.svg", 11., theme.accent))
-                                    })
-                                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                                })
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(primary.to_owned()),
+                                )
+                                .when_some(secondary, |row, provider| {
+                                    row.child(
+                                        div()
+                                            .flex_none()
+                                            .max_w(px(120.))
+                                            .truncate()
+                                            .text_size(TextSize::Small.px(&theme))
+                                            .text_color(theme.text_muted)
+                                            .child(provider),
+                                    )
+                                })
+                                .when(selected_row, |row| {
+                                    row.child(icon(
+                                        "icons/check.svg",
+                                        context_menu::ICON.px(&theme),
+                                        theme.accent_text,
+                                    ))
+                                })
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    move |_, _, cx| {
                                         this.update(cx, |app, cx| {
-                                            app.apply_settings_select(kind, orig_ix, cx);
-                                            app.settings_select = None;
+                                            if app.apply_settings_select(kind, orig_ix, cx) {
+                                                app.settings_select = None;
+                                            }
                                             cx.notify();
                                         });
-                                    }),
+                                    },
+                                ),
                             ),
                         );
                     }
@@ -5790,75 +8002,76 @@ impl OrbitApp {
                 },
             )
             .w_full()
-            .h(px(list_h))
+            .debug_selector(|| "settings-select-list".to_string())
+            .h(list_h)
             .track_scroll(self.settings_select_scroll.clone())
-            .px(px(4.))
-            .py(px(4.))
+            .py(list_pad_y)
             .into_any_element()
         };
-        let popup = div()
-            .min_w(px(360.))
-            .rounded(px(8.))
-            .popover_surface(theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out({
-                let this = this.clone();
-                move |_: &MouseDownEvent, _, cx: &mut App| {
-                    this.update(cx, |app, cx| {
-                        if app.settings_select.take().is_some() {
-                            // Arm the click-through guard so this same click's
-                            // mouse-up on the chip cannot immediately re-open
-                            // the dropdown.
-                            app.menu_dismissed_at = Some(Instant::now());
-                            cx.notify();
-                        }
-                    });
-                }
-            })
-            // The filter input carries the `Picker` context, so these ride
-            // the same dispatch node as the model picker's: arrows move the
-            // cursor, Enter chooses it, Escape (global) closes.
-            .on_action({
-                let this = this.clone();
-                let options = options.clone();
-                move |_: &crate::PickerSelectPrev, _, cx: &mut App| {
-                    this.update(cx, |app, cx| app.settings_select_step(&options, -1, cx));
-                }
-            })
-            .on_action({
-                let this = this.clone();
-                let options = options.clone();
-                move |_: &crate::PickerSelectNext, _, cx: &mut App| {
-                    this.update(cx, |app, cx| app.settings_select_step(&options, 1, cx));
-                }
-            })
-            .on_action({
-                let this = this.clone();
-                let options = options.clone();
-                move |_: &crate::PickerConfirm, _, cx: &mut App| {
-                    this.update(cx, |app, cx| app.settings_select_confirm(&options, cx));
-                }
-            })
-            // Search field — filters the options below.
-            .child(
-                div()
-                    .h(px(34.))
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .text_size(theme.ui_px(12.))
-                    .child(icon("icons/search.svg", 13., theme.text_3))
-                    .child(self.settings_filter.clone()),
-            )
-            .child(list);
+        // An explicit width, not `min_w`: the list below is `w_full`, and a
+        // percentage width inside an auto-width parent resolves to 0, which
+        // laid every option row out at a negative width — an empty panel.
+        let popup = picker_surface(
+            div().debug_selector(|| "settings-select-popup".to_string()),
+            &theme,
+        )
+        .w(px(360.))
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .occlude()
+        .on_mouse_down_out({
+            let this = this.clone();
+            move |_: &MouseDownEvent, _, cx: &mut App| {
+                this.update(cx, |app, cx| {
+                    if app.settings_select.take().is_some() {
+                        // Arm the click-through guard so this same click's
+                        // mouse-up on the chip cannot immediately re-open
+                        // the dropdown.
+                        app.menu_dismissed_at = Some(Instant::now());
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        // The filter input carries the `Picker` context, so these ride
+        // the same dispatch node as the model picker's: arrows move the
+        // cursor, Enter chooses it, Escape (global) closes.
+        .on_action({
+            let this = this.clone();
+            let options = options.clone();
+            move |_: &crate::PickerSelectPrev, _, cx: &mut App| {
+                this.update(cx, |app, cx| app.settings_select_step(&options, -1, cx));
+            }
+        })
+        .on_action({
+            let this = this.clone();
+            let options = options.clone();
+            move |_: &crate::PickerSelectNext, _, cx: &mut App| {
+                this.update(cx, |app, cx| app.settings_select_step(&options, 1, cx));
+            }
+        })
+        .on_action({
+            let this = this.clone();
+            let options = options.clone();
+            move |_: &crate::PickerConfirm, _, cx: &mut App| {
+                this.update(cx, |app, cx| app.settings_select_confirm(&options, cx));
+            }
+        })
+        // Search field — filters the options below.
+        .child(
+            picker_search_frame(div(), &theme)
+                .child(icon(
+                    "icons/search.svg",
+                    input::ICON.px(&theme),
+                    theme.text_muted,
+                ))
+                .child(div().flex_1().min_w_0().child(self.settings_filter.clone())),
+        )
+        .child(list);
         // Anchor to the chip's top-right corner (via a zero-size point) and
-        // drop the popup 4 px below the 26 px chip, right-aligned. `Window`
+        // drop the popup `popover::MENU_OFFSET` below the chip
+        // (`SELECT_CHIP_SIZE`), right-aligned. `Window`
         // position mode (not `Local`) is deliberate: `anchored`'s switch-anchor
         // fit then flips the popup above the chip when the viewport bottom is
         // closer than the list is tall, instead of sliding it down over its own
@@ -5870,13 +8083,13 @@ impl OrbitApp {
                 .top_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Window)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(30.)))
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover_in_window(
+                    Corner::TopRight,
+                    point(px(0.), size.height(&theme) + popover::MENU_OFFSET),
+                    popup,
+                    "anchored_popover_in_window-in-11",
+                    &theme,
+                ))
                 .into_any_element(),
         )
     }
@@ -5917,8 +8130,11 @@ impl OrbitApp {
         let Some(ix) = ix else {
             return;
         };
-        self.apply_settings_select(kind, ix, cx);
-        self.settings_select = None;
+        // A disclosure row ("All themes…") only reshapes the list, so the
+        // dropdown stays open on what it just revealed.
+        if self.apply_settings_select(kind, ix, cx) {
+            self.settings_select = None;
+        }
         cx.notify();
     }
 
@@ -5940,37 +8156,68 @@ impl OrbitApp {
         kind: SettingsSelect,
         ix: usize,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
+        // Settings → Permissions owns four dropdowns; they live beside that
+        // page's state rather than in this file.
+        if self.apply_permission_select(kind, ix, cx) {
+            return true;
+        }
         match kind {
+            SettingsSelect::AccentColor => {
+                if let Some(color) = theme::AccentColor::ALL.get(ix).copied() {
+                    self.set_accent_color(color, cx);
+                }
+                return true;
+            }
             SettingsSelect::Theme(mode) => {
-                let Some(id) = theme::themes_for(mode).nth(ix) else {
-                    return;
+                let catalog = self.theme_catalog(mode, cx);
+                let Some(id) = catalog.get(ix).copied() else {
+                    return true;
                 };
                 let mut prefs = theme::appearance_prefs(cx);
                 prefs.set_theme(mode, id);
                 if let Err(error) = theme::set_appearance_prefs(cx, prefs) {
                     self.toast_error(tr!("settings.appearance_save_failed", error = error));
                 }
-                return;
+                return true;
             }
             SettingsSelect::UiFontFamily | SettingsSelect::CodeFontFamily => {
-                use crate::theme::{CODE_FONTS, UI_FONTS};
-                let choices = match kind {
-                    SettingsSelect::UiFontFamily => &UI_FONTS[..],
-                    SettingsSelect::CodeFontFamily => &CODE_FONTS[..],
+                let mut prefs = theme::font_prefs();
+                let current = match kind {
+                    SettingsSelect::UiFontFamily => &prefs.ui_font_family,
+                    SettingsSelect::CodeFontFamily => &prefs.code_font_family,
                     _ => unreachable!(),
                 };
+                let choices = font_family_options(cx, current.as_ref());
                 let Some(choice) = choices.get(ix) else {
-                    return;
+                    return true;
                 };
-                let mut prefs = theme::font_prefs();
                 match kind {
-                    SettingsSelect::UiFontFamily => prefs.ui_font_family = choice.family.into(),
-                    SettingsSelect::CodeFontFamily => prefs.code_font_family = choice.family.into(),
+                    SettingsSelect::UiFontFamily => prefs.ui_font_family = choice.clone().into(),
+                    SettingsSelect::CodeFontFamily => {
+                        prefs.code_font_family = choice.clone().into()
+                    }
                     _ => unreachable!(),
                 }
                 theme::set_font_prefs(prefs);
-                return;
+                return true;
+            }
+            SettingsSelect::SuggestionsModel => {
+                let model = if ix == 0 {
+                    None
+                } else {
+                    self.available_models
+                        .get(ix - 1)
+                        .map(|model| crate::auto_title::TitleModel {
+                            provider: model.provider.clone(),
+                            id: model.id.clone(),
+                        })
+                };
+                self.suggestions.model = model;
+                self.suggestions.persist_suggestions();
+                self.clear_follow_up_suggestions();
+                cx.notify();
+                return true;
             }
             SettingsSelect::TitleModel => {
                 let model = if ix == 0 {
@@ -5986,39 +8233,143 @@ impl OrbitApp {
                 self.auto_title.model = model;
                 self.auto_title.persist();
                 cx.notify();
-                return;
+                return true;
             }
-            SettingsSelect::BackdropBlur
-            | SettingsSelect::BackdropCell
-            | SettingsSelect::BackdropFade => {
-                let mut tuning = crate::dither::tuning();
-                match kind {
-                    SettingsSelect::BackdropBlur => {
-                        tuning.blur = crate::dither::BLUR_SIGMAS
-                            .get(ix)
-                            .copied()
-                            .unwrap_or(tuning.blur);
-                    }
-                    SettingsSelect::BackdropCell => {
-                        tuning.cell = crate::dither::CELL_SIZES
-                            .get(ix)
-                            .copied()
-                            .unwrap_or(tuning.cell);
-                    }
-                    SettingsSelect::BackdropFade => {
-                        tuning.fade = crate::dither::FADE_HEIGHTS
-                            .get(ix)
-                            .copied()
-                            .unwrap_or(tuning.fade);
-                    }
-                    _ => unreachable!(),
+            SettingsSelect::ReportModel => {
+                if ix == 0 {
+                    self.bug_report_model.model = None;
+                } else if let Some(model) = self.available_models.get(ix - 1) {
+                    self.bug_report_model.model = Some(crate::commit_model::CommitModel {
+                        provider: model.provider.clone(),
+                        id: model.id.clone(),
+                    });
+                } else {
+                    // An unavailable saved model is shown for honesty, but
+                    // clicking that row must not silently clear the choice.
+                    return true;
                 }
-                crate::dither::set_tuning(tuning);
-                // The cache is keyed on the tuning, so rebuild the pass now:
-                // this frame's preview and the next new-task paint both hit a
-                // warm cache instead of stalling on the first draw.
-                crate::dither::background();
-                return;
+                self.bug_report_model.persist_report();
+                cx.notify();
+                return true;
+            }
+            SettingsSelect::AgentCalls => {
+                self.agent_calls = crate::agent_call_display::AgentCallDisplay::from_index(ix);
+                self.agent_calls.persist();
+                cx.notify();
+                return true;
+            }
+            SettingsSelect::DefaultModel => {
+                let model = if ix == 0 {
+                    None
+                } else {
+                    self.available_models.get(ix - 1)
+                };
+                let slot = match model {
+                    Some(model) => crate::session_defaults::SessionDefault {
+                        provider: Some(model.provider.clone()),
+                        model_id: Some(model.id.clone()),
+                        // Keep the level only when the new model supports it;
+                        // a bare level must not land on an arbitrary model.
+                        thinking: self.session_default.thinking.clone().filter(|level| {
+                            model
+                                .thinking_levels
+                                .iter()
+                                .any(|candidate| candidate == level)
+                        }),
+                    },
+                    None => crate::session_defaults::SessionDefault::default(),
+                };
+                self.set_default_model(slot);
+                cx.notify();
+                return true;
+            }
+            SettingsSelect::DefaultThinking => {
+                let level = if ix == 0 {
+                    None
+                } else {
+                    self.default_model_entry()
+                        .and_then(|model| model.thinking_levels.get(ix - 1))
+                        .cloned()
+                };
+                let mut slot = self.session_default.clone();
+                slot.thinking = level;
+                self.set_default_model(slot);
+                cx.notify();
+                return true;
+            }
+            SettingsSelect::SubagentModel => {
+                // Index 0 inherits the session's model; the rest are this
+                // machine's catalog, written as the file's `provider/id`.
+                let value = match ix {
+                    0 => String::new(),
+                    _ => match self.available_models.get(ix - 1) {
+                        Some(model) => format!("{}/{}", model.provider, model.id),
+                        // A pinned model the catalog cannot resolve is shown
+                        // for honesty; clicking that row must not rewrite it.
+                        None => return true,
+                    },
+                };
+                if let Some(editor) = self.subagent_editor.as_ref() {
+                    let model = editor.model.clone();
+                    model.update(cx, |input, cx| input.set_text(value, cx));
+                }
+                cx.notify();
+                return true;
+            }
+            SettingsSelect::ActiveModel => {
+                if let Some(model) = self.available_models.get(ix) {
+                    let (id, provider) = (model.id.clone(), model.provider.clone());
+                    self.set_model(id, provider, cx);
+                }
+                return true;
+            }
+            SettingsSelect::ModelProvider => {
+                // Index 0 is `All providers`; the rest follow the catalog's
+                // provider order, the same order the dropdown was built from.
+                self.models_provider_filter = if ix == 0 {
+                    None
+                } else {
+                    self.model_providers().get(ix - 1).cloned()
+                };
+                cx.notify();
+                return true;
+            }
+            SettingsSelect::WallpaperMode => {
+                let mode = crate::wallpaper::WallpaperMode::ALL
+                    .get(ix)
+                    .copied()
+                    .unwrap_or_default();
+                let mut settings = crate::wallpaper::settings();
+                settings.mode = mode;
+                self.set_wallpaper(settings, cx);
+                return true;
+            }
+            SettingsSelect::WallpaperEffect => {
+                let effect = crate::wallpaper_fx::Effect::ALL
+                    .get(ix)
+                    .copied()
+                    .unwrap_or_default();
+                let mut settings = crate::wallpaper::settings();
+                settings.effect = effect;
+                self.set_wallpaper(settings, cx);
+                return true;
+            }
+            SettingsSelect::RetentionMode => {
+                self.retention.mode = match ix {
+                    1 => crate::session_retention::RetentionMode::Delete,
+                    _ => crate::session_retention::RetentionMode::Archive,
+                };
+                self.retention.persist();
+                cx.notify();
+                return true;
+            }
+            SettingsSelect::RetentionDays => {
+                if let Some(days) = crate::session_retention::DAY_PRESETS.get(ix) {
+                    self.retention.days = *days;
+                    self.retention.persist();
+                }
+                cx.notify();
+                return true;
             }
             _ => {}
         }
@@ -6040,15 +8391,30 @@ impl OrbitApp {
             SettingsSelect::SpacingDensity => {
                 ui.spacing_density = SPACING_DENSITIES.get(ix).copied().unwrap_or(100);
             }
+            SettingsSelect::CornerRounding => {
+                ui.corner_rounding = (ix as u32).min(theme::MAX_CORNER_ROUNDING);
+            }
             SettingsSelect::Theme(_)
+            | SettingsSelect::SuggestionsModel
+            | SettingsSelect::ReportModel
+            | SettingsSelect::AccentColor
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
-            | SettingsSelect::BackdropBlur
-            | SettingsSelect::BackdropCell
-            | SettingsSelect::BackdropFade
-            | SettingsSelect::TitleModel => unreachable!(),
+            | SettingsSelect::WallpaperMode
+            | SettingsSelect::WallpaperEffect
+            | SettingsSelect::TitleModel
+            | SettingsSelect::AgentCalls
+            | SettingsSelect::DefaultModel
+            | SettingsSelect::DefaultThinking
+            | SettingsSelect::SubagentModel
+            | SettingsSelect::ActiveModel
+            | SettingsSelect::ModelProvider
+            | SettingsSelect::RetentionMode
+            | SettingsSelect::RetentionDays
+            | SettingsSelect::AccessMode => unreachable!(),
         }
         theme::set_ui_prefs(cx, ui);
+        true
     }
 }
 
@@ -6058,6 +8424,7 @@ impl OrbitApp {
         self.refresh_updater(cx);
         self.settings_open = true;
         self.set_settings_section(SettingsSection::General, cx);
+        self.sync_terminal_active(cx);
     }
 
     pub(super) fn on_open_settings(
@@ -6080,6 +8447,7 @@ impl OrbitApp {
         self.refresh_updater(cx);
         self.settings_open = true;
         self.set_settings_section(SettingsSection::About, cx);
+        self.sync_terminal_active(cx);
     }
 
     pub(super) fn on_settings_gear_click(
@@ -6094,6 +8462,7 @@ impl OrbitApp {
             self.settings_open = false;
             self.provider_editor = None;
             self.provider_key_editor = None;
+            self.sync_terminal_active(cx);
         } else {
             self.open_settings(cx);
             return;
@@ -6111,6 +8480,7 @@ impl OrbitApp {
         self.provider_editor = None;
         self.provider_key_editor = None;
         self.input.read(cx).focus(window);
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -6122,12 +8492,22 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         self.settings_section = section;
+        if section != SettingsSection::ReportBug
+            && self.settings_select == Some(SettingsSelect::ReportModel)
+        {
+            self.settings_select = None;
+        }
         self.provider_remove_confirm = None;
         self.provider_editor = None;
         self.provider_key_editor = None;
         self.plugin_remove_confirm = None;
+        // The MCP add/edit modal belongs to the MCP page; leaving the page
+        // discards it like the provider editors above.
+        self.mcp_editor = None;
+        self.mcp_remove_confirm = None;
         match section {
             SettingsSection::General => self.refresh_notification_auth(cx),
+            SettingsSection::GitAccounts => self.refresh_git_accounts_for_workspace(cx),
             SettingsSection::Providers => {
                 // Paint from cached state now; the file re-read (models.json,
                 // auth.json) lands after this frame.
@@ -6135,7 +8515,10 @@ impl OrbitApp {
                 self.refresh_auth();
             }
             SettingsSection::Skills => self.refresh_skills(cx),
+            SettingsSection::Subagents => self.refresh_subagents(cx),
+            SettingsSection::Permissions => self.refresh_permissions(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
+            SettingsSection::Mcp => self.mcp_section_opened(cx),
             _ => {}
         }
         cx.notify();
@@ -6252,6 +8635,7 @@ impl OrbitApp {
             }
             PluginAction::Refresh => {
                 self.refresh_plugins(cx);
+                self.check_plugin_updates_now(cx);
                 self.toast_info(tr!("settings.reloaded_installed_plugins"));
                 self.plugin_refresh_spin_until = Some(Instant::now() + PLUGIN_REFRESH_FEEDBACK);
                 cx.spawn(async move |this, cx| {
@@ -6382,6 +8766,11 @@ impl OrbitApp {
     /// `auth.json` only at startup, so this is the "use it" step. Resumes the
     /// active session on the fresh process when one exists.
     pub(super) fn provider_apply_credentials(&mut self, cx: &mut Context<Self>) {
+        // A fork owns the process until its reply lands; restarting now would
+        // lose the branch and the answer that moves Orbit onto it.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // Never yank the process out from under a live turn.
         if self.busy || self.transcript.is_streaming() {
             self.toast_warning(tr!("settings.finish_turn_before_restart"));
@@ -6415,40 +8804,13 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.provider_credential_open(
-            provider_id,
-            provider_name,
-            oauth,
-            note,
-            ProviderKeyKind::ApiKey,
-            window,
-            cx,
-        );
-    }
-
-    /// Open the credential editor for `kind` (API key or an Ollama Cloud
-    /// session). One modal handles both; the field, hint, and save path differ.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn provider_credential_open(
-        &mut self,
-        provider_id: String,
-        provider_name: String,
-        oauth: bool,
-        note: &'static str,
-        kind: ProviderKeyKind,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let placeholder = match kind {
-            ProviderKeyKind::ApiKey => "sk-…",
-            ProviderKeyKind::OllamaCloudSession => "__Secure-session=…",
-        };
         let key = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("provider-key-input")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
-                .with_placeholder(placeholder)
+                .with_wrap(false)
+                .with_placeholder("sk-…")
         });
         let focus = key.read(cx).focus_handle(cx);
         window.focus(&focus);
@@ -6457,7 +8819,6 @@ impl OrbitApp {
             provider_name,
             oauth,
             note,
-            kind,
             key,
             error: None,
         });
@@ -6469,23 +8830,21 @@ impl OrbitApp {
         let Some(editor) = self.provider_key_editor.as_ref() else {
             return;
         };
+        // A key field mid-composition still holds the preedit; ⏎/Save waits for
+        // the IME rather than storing a half-composed key (issue #100).
+        if crate::composer::any_composing(cx, &[&editor.key]) {
+            return;
+        }
         let id = editor.provider_id.clone();
         let name = editor.provider_name.clone();
-        let kind = editor.kind;
         let key = editor.key.read(cx).text();
-        let result = match kind {
-            ProviderKeyKind::ApiKey => providers::write_api_key(&id, &key),
-            ProviderKeyKind::OllamaCloudSession => providers::write_ollama_cloud_session(&key),
-        };
+        let result = providers::write_api_key(&id, &key);
         match result {
             Ok(()) => {
                 self.provider_key_editor = None;
                 self.provider_auth_dirty = true;
                 self.reload_custom_providers(cx);
-                let what = match kind {
-                    ProviderKeyKind::ApiKey => tr!("settings.api_key"),
-                    ProviderKeyKind::OllamaCloudSession => tr!("settings.ollama_cloud_session"),
-                };
+                let what = tr!("settings.api_key");
                 self.toast_success(tr!("settings.key_saved_for", what = what, name = name));
             }
             Err(err) => {
@@ -6535,14 +8894,6 @@ impl OrbitApp {
     /// removes it live; otherwise fall back to dropping the auth.json entry
     /// (env credentials are outside Orbit's reach and left alone).
     pub(super) fn provider_sign_out(&mut self, id: String, cx: &mut Context<Self>) {
-        // The Ollama Cloud session lives under its own auth.json key, which
-        // pi's provider logout does not know about; clear it so Disconnect
-        // drops the whole credential. Both Ollama ids share the session.
-        if providers::is_ollama_cloud_provider(&id) {
-            if let Err(err) = providers::remove_ollama_session() {
-                self.provider_auth_error = Some(err);
-            }
-        }
         if self.auth.support() == AuthSupport::Supported {
             self.auth.on_logout_response(true, &id);
             self.send(
@@ -6613,6 +8964,7 @@ impl OrbitApp {
                 .with_element_id("provider-editor-id")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
                 .with_placeholder("my-gateway")
                 .with_text(id_text)
         });
@@ -6621,6 +8973,7 @@ impl OrbitApp {
                 .with_element_id("provider-editor-name")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
                 .with_placeholder_key("settings.optional_display_name")
                 .with_text(name_text)
         });
@@ -6629,6 +8982,7 @@ impl OrbitApp {
                 .with_element_id("provider-editor-base-url")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
                 .with_placeholder("https://api.example.com/v1")
                 .with_text(base_url_text)
         });
@@ -6637,6 +8991,7 @@ impl OrbitApp {
                 .with_element_id("provider-editor-api-key")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
                 .with_placeholder(if had_api_key {
                     "••••••••"
                 } else {
@@ -6720,6 +9075,20 @@ impl OrbitApp {
         let Some(editor) = self.provider_editor.as_ref() else {
             return;
         };
+        // Same rule as every other confirm: the fields hold the preedit while
+        // an IME candidate window is open (issue #100).
+        if crate::composer::any_composing(
+            cx,
+            &[
+                &editor.id,
+                &editor.name,
+                &editor.base_url,
+                &editor.api_key,
+                &editor.models,
+            ],
+        ) {
+            return;
+        }
         let id = editor.id.read(cx).text().trim().to_string();
         let name = editor.name.read(cx).text().trim().to_string();
         let base_url = editor.base_url.read(cx).text().trim().to_string();
@@ -6753,7 +9122,12 @@ impl OrbitApp {
             Some(tr!("settings.base_url_scheme"))
         } else if base_url.is_empty() && !in_catalog {
             Some(tr!("settings.base_url_required"))
-        } else if models.is_empty() && !in_catalog {
+        } else if models.is_empty() && providers::builtin(&id).is_none() {
+            // Only a built-in provider may go without a model list — empty
+            // there means "use pi's catalog". A custom provider needs at
+            // least one id or the entry resolves to no models at all. Keyed
+            // on the id rather than `in_catalog`, which also goes true once
+            // the agent advertises a *custom* provider's models.
             Some(tr!("settings.add_model_id"))
         } else {
             None
@@ -6808,34 +9182,119 @@ impl OrbitApp {
     }
 }
 
+fn wallpaper_mode_label(mode: crate::wallpaper::WallpaperMode) -> String {
+    match mode {
+        crate::wallpaper::WallpaperMode::Disabled => tr!("wallpaper.mode_disabled"),
+        crate::wallpaper::WallpaperMode::Hero => tr!("wallpaper.mode_hero"),
+        crate::wallpaper::WallpaperMode::FullWindow => tr!("wallpaper.mode_full"),
+    }
+}
+
+fn wallpaper_effect_label(effect: crate::wallpaper_fx::Effect) -> String {
+    match effect {
+        crate::wallpaper_fx::Effect::None => tr!("wallpaper.effect_none"),
+        crate::wallpaper_fx::Effect::Dither => tr!("wallpaper.effect_dither"),
+        crate::wallpaper_fx::Effect::Ascii => tr!("wallpaper.effect_ascii"),
+        crate::wallpaper_fx::Effect::Halftone => tr!("wallpaper.effect_halftone"),
+        crate::wallpaper_fx::Effect::Scanlines => tr!("wallpaper.effect_scanlines"),
+    }
+}
+
+/// The wallpaper sliders' pointer handling: a press inside the track jumps
+/// the value to that point and begins a scrub; moves keep updating even
+/// outside the track; release ends it.
+fn register_wallpaper_slider(
+    this: Entity<OrbitApp>,
+    kind: WallpaperSlider,
+    bounds: Bounds<Pixels>,
+    hitbox: Hitbox,
+    window: &mut Window,
+) {
+    let scrubbing = Rc::new(Cell::new(false));
+    window.on_mouse_event({
+        let scrubbing = scrubbing.clone();
+        let this = this.clone();
+        move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Left
+                || !hitbox.is_hovered(window)
+            {
+                return;
+            }
+            scrubbing.set(true);
+            apply_wallpaper_slider_at(&this, kind, bounds, event.position.x, cx);
+        }
+    });
+    window.on_mouse_event({
+        let scrubbing = scrubbing.clone();
+        let this = this.clone();
+        move |event: &MouseMoveEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Capture || !scrubbing.get() {
+                return;
+            }
+            apply_wallpaper_slider_at(&this, kind, bounds, event.position.x, cx);
+        }
+    });
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, _cx| {
+        if phase != DispatchPhase::Capture
+            || event.button != MouseButton::Left
+            || !scrubbing.replace(false)
+        {
+            return;
+        }
+        window.refresh();
+    });
+}
+
+fn apply_wallpaper_slider_at(
+    this: &Entity<OrbitApp>,
+    kind: WallpaperSlider,
+    bounds: Bounds<Pixels>,
+    x: Pixels,
+    cx: &mut App,
+) {
+    let usable = (f32::from(bounds.size.width) - SLIDER_KNOB).max(1.);
+    let norm =
+        ((f32::from(x) - f32::from(bounds.origin.x) - SLIDER_KNOB / 2.) / usable).clamp(0., 1.);
+    let (lo, hi) = kind.range();
+    let value = lo + (hi - lo) * norm;
+    let mut settings = crate::wallpaper::settings();
+    kind.set(&mut settings, value);
+    this.update(cx, |app, cx| app.set_wallpaper(settings, cx));
+}
+
 /// A keyboard chord painted as a keycap chip: the same 22px pill the command
 /// palette uses, so a shortcut reads identically wherever Orbit shows one.
 fn keycap(label: &str, theme: Theme) -> AnyElement {
     div()
-        .h(px(22.))
+        .h(ButtonSize::Default.height(&theme))
         .min_w(px(28.))
-        .px(px(7.))
-        .rounded(px(7.))
+        .px(DynamicSpacing::Base06.px(&theme))
+        .rounded(Radius::Large.px(&theme))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .bg(theme.overlay_strong)
-        .text_size(theme.ui_px(11.5))
-        .text_color(theme.text_3)
+        .text_size(TextSize::Small.px(&theme))
+        .text_color(theme.text_muted)
         .child(label.to_string())
         .into_any_element()
 }
 
-/// Whether a catalog model survives the Models page's search + favorites
-/// filter. Shared by the grid and the toolbar's live count so the two can
-/// never disagree.
+/// Whether a catalog model survives the Models page's search, favorites, and
+/// provider filters. Shared by the grid and the toolbar's live count so the
+/// two can never disagree.
 fn model_visible(
     model: &ModelEntry,
     needle: &str,
     favorites_only: bool,
     favorites: &crate::favorites::Favorites,
+    provider: Option<&str>,
 ) -> bool {
+    if provider.is_some_and(|provider| model.provider != provider) {
+        return false;
+    }
     if favorites_only && !favorites.contains(&model.provider, &model.id) {
         return false;
     }
@@ -6891,7 +9350,37 @@ fn stepped_visible_position(
 
 #[cfg(test)]
 mod settings_select_tests {
-    use super::stepped_visible_position;
+    use super::{font_options_with_current, stepped_visible_position};
+
+    #[test]
+    fn font_options_include_all_families_and_missing_current_without_duplicates() {
+        let available = ["Onest", ".ZedSans", "Onest", "Lilex"].map(str::to_owned);
+        let options = font_options_with_current(&available, "Legacy Font");
+        assert_eq!(options, [".ZedSans", "Legacy Font", "Lilex", "Onest"]);
+        assert_eq!(
+            font_options_with_current(&available, "Onest"),
+            [".ZedSans", "Lilex", "Onest"]
+        );
+    }
+
+    #[test]
+    fn font_option_indices_match_filtered_keyboard_navigation() {
+        let available = ["Beta", "Alpha", "Gamma"].map(str::to_owned);
+        let options = font_options_with_current(&available, "Missing");
+        let visible: Vec<_> = options
+            .iter()
+            .enumerate()
+            .filter(|(_, family)| family.contains('a'))
+            .map(|(index, _)| index)
+            .collect();
+        let position = stepped_visible_position(&visible, Some(0), 1).unwrap();
+        let index = visible[position];
+        assert_eq!(options[index], "Beta");
+        assert_eq!(
+            font_options_with_current(&available, "Missing")[index],
+            "Beta"
+        );
+    }
 
     /// The cursor is an original option index; `visible` holds the indices
     /// the current query left in the list, in display order.
@@ -6924,6 +9413,97 @@ mod settings_select_tests {
     }
 }
 
+/// The Theme dropdown's option list is the single ordering both the label
+/// builder and the click resolver read, so a row index always resolves to the
+/// palette it painted. Preferences are set in memory here; the real setter
+/// writes the user's `~/.orbit-pi/theme` and has no business running from a
+/// test.
+#[cfg(test)]
+mod theme_catalog_tests {
+    use super::*;
+
+    fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
+        cx.update(|cx| {
+            cx.set_global(Theme::for_id(theme::ThemeId::Orbit));
+            cx.set_global(theme::AppearancePrefs::default());
+            cx.new(OrbitApp::new)
+        })
+    }
+
+    fn choose_dark_theme(cx: &mut gpui::TestAppContext, id: theme::ThemeId) {
+        cx.update(|cx| {
+            let mut prefs = theme::appearance_prefs(cx);
+            prefs.set_theme(ThemeMode::Dark, id);
+            cx.set_global(prefs);
+        });
+    }
+
+    #[gpui::test]
+    fn catalog_lists_every_dark_palette(cx: &mut gpui::TestAppContext) {
+        let app = test_app(cx);
+        let cx = cx.add_empty_window();
+        choose_dark_theme(cx, theme::ThemeId::Orbit);
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(
+                    app.theme_catalog(ThemeMode::Dark, cx),
+                    vec![
+                        theme::ThemeId::Orbit,
+                        theme::ThemeId::OrbitDarker,
+                        theme::ThemeId::OrbitCobalt,
+                        theme::ThemeId::OrbitAzure,
+                        theme::ThemeId::Flexoki,
+                        theme::ThemeId::OrbitOnyx,
+                    ]
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn catalog_follows_the_design_system(cx: &mut gpui::TestAppContext) {
+        let app = test_app(cx);
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| {
+            let mut prefs = theme::appearance_prefs(cx);
+            prefs.set_design_system(theme::DesignSystem::Operational);
+            cx.set_global(prefs);
+        });
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(
+                    app.theme_catalog(ThemeMode::Dark, cx),
+                    vec![theme::ThemeId::Operational]
+                );
+                assert_eq!(
+                    app.theme_catalog(ThemeMode::Light, cx),
+                    vec![theme::ThemeId::OperationalLight]
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn catalog_lists_every_light_palette(cx: &mut gpui::TestAppContext) {
+        let app = test_app(cx);
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(
+                    app.theme_catalog(ThemeMode::Light, cx),
+                    vec![
+                        theme::ThemeId::OrbitLight,
+                        theme::ThemeId::OrbitAzureLight,
+                        theme::ThemeId::OrbitPaper,
+                        theme::ThemeId::OrbitContrast,
+                        theme::ThemeId::FlexokiLight,
+                    ]
+                );
+            });
+        });
+    }
+}
+
 #[cfg(test)]
 mod model_filter_tests {
     use super::{model_count_label, model_visible, ModelEntry};
@@ -6935,6 +9515,7 @@ mod model_filter_tests {
             name: name.into(),
             provider: provider.into(),
             context_window: None,
+            thinking_levels: Vec::new(),
         }
     }
 
@@ -6943,11 +9524,17 @@ mod model_filter_tests {
         // Callers hand the helper an already-lowercased needle.
         let favorites = Favorites::from_pairs(&[]);
         let model = entry("anthropic", "claude-sonnet-4-5", "Claude Sonnet 4.5");
-        assert!(model_visible(&model, "", false, &favorites));
-        assert!(model_visible(&model, "sonnet", false, &favorites));
-        assert!(model_visible(&model, "claude-sonnet", false, &favorites));
-        assert!(model_visible(&model, "anthropic", false, &favorites));
-        assert!(!model_visible(&model, "gemini", false, &favorites));
+        assert!(model_visible(&model, "", false, &favorites, None));
+        assert!(model_visible(&model, "sonnet", false, &favorites, None));
+        assert!(model_visible(
+            &model,
+            "claude-sonnet",
+            false,
+            &favorites,
+            None
+        ));
+        assert!(model_visible(&model, "anthropic", false, &favorites, None));
+        assert!(!model_visible(&model, "gemini", false, &favorites, None));
     }
 
     #[test]
@@ -6955,10 +9542,51 @@ mod model_filter_tests {
         let favorites = Favorites::from_pairs(&[("openai", "gpt-5")]);
         let starred = entry("openai", "gpt-5", "GPT-5");
         let other = entry("openai", "gpt-5-mini", "GPT-5 mini");
-        assert!(model_visible(&starred, "", true, &favorites));
-        assert!(!model_visible(&other, "", true, &favorites));
+        assert!(model_visible(&starred, "", true, &favorites, None));
+        assert!(!model_visible(&other, "", true, &favorites, None));
         // The search still applies inside the favorites scope.
-        assert!(!model_visible(&starred, "mini", true, &favorites));
+        assert!(!model_visible(&starred, "mini", true, &favorites, None));
+    }
+
+    #[test]
+    fn provider_filter_scopes_the_grid_and_composes_with_search() {
+        let favorites = Favorites::from_pairs(&[]);
+        let opus = entry("anthropic", "claude-opus-4", "Claude Opus 4");
+        let sonnet = entry("anthropic", "claude-sonnet-4-5", "Claude Sonnet 4.5");
+        let gpt = entry("openai", "gpt-5", "GPT-5");
+
+        // A provider scope admits only that provider's models.
+        assert!(model_visible(
+            &opus,
+            "",
+            false,
+            &favorites,
+            Some("anthropic")
+        ));
+        assert!(model_visible(
+            &sonnet,
+            "",
+            false,
+            &favorites,
+            Some("anthropic")
+        ));
+        assert!(!model_visible(
+            &gpt,
+            "",
+            false,
+            &favorites,
+            Some("anthropic")
+        ));
+        // The search still applies inside the provider scope.
+        assert!(!model_visible(
+            &sonnet,
+            "opus",
+            false,
+            &favorites,
+            Some("anthropic")
+        ));
+        // `None` means every provider.
+        assert!(model_visible(&gpt, "", false, &favorites, None));
     }
 
     #[test]
@@ -6979,5 +9607,79 @@ mod model_filter_tests {
             model_count_label(3, 3, 1, false),
             "3 models · 1 favorite(s)"
         );
+    }
+}
+
+#[cfg(test)]
+mod about_banner_tests {
+    use super::*;
+
+    /// Settings → About mounts the star banner permanently: it is the same
+    /// card as the sidebar's, but carries no dismiss button. (The sidebar's
+    /// dismiss id is absent from the About tree.)
+    #[gpui::test]
+    fn about_page_mounts_the_star_banner_without_a_dismiss(cx: &mut gpui::TestAppContext) {
+        use crate::theme::{Theme, ThemeId};
+
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.open_settings(cx);
+                app.set_settings_section(SettingsSection::About, cx);
+            })
+        });
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+        let banner = cx
+            .debug_bounds("about-star-banner")
+            .expect("Settings → About must show the star banner");
+        assert!(
+            f32::from(banner.size.width) > 300.,
+            "the About banner spans the content column: {banner:?}"
+        );
+        assert!(
+            cx.debug_bounds("sidebar-star-dismiss").is_none(),
+            "the About banner is permanent — it carries no dismiss button"
+        );
+    }
+}
+
+#[cfg(test)]
+mod settings_search_tests {
+    use super::{settings_search_hits, SettingsSection};
+
+    #[test]
+    fn empty_query_matches_nothing() {
+        assert!(settings_search_hits("").is_empty());
+    }
+
+    #[test]
+    fn label_and_keyword_matches_span_sections() {
+        // A translated label match (Auto-compaction contains "compaction").
+        assert!(settings_search_hits("compaction")
+            .iter()
+            .any(|(section, key, _)| *section == SettingsSection::Agent
+                && *key == "settings.auto_compaction"));
+        // A keyword synonym the label does not spell out.
+        assert!(settings_search_hits("banner")
+            .iter()
+            .any(|(section, _, _)| *section == SettingsSection::General));
+        // A section-level keyword resolves to its page.
+        assert!(settings_search_hits("protocol")
+            .iter()
+            .any(|(section, _, _)| *section == SettingsSection::Mcp));
+        // The app-wide reload control is reachable from Settings search.
+        assert!(settings_search_hits("reload")
+            .iter()
+            .any(|(section, key, _)| *section == SettingsSection::General
+                && *key == "settings.reload_app"));
+    }
+
+    #[test]
+    fn no_match_is_empty() {
+        assert!(settings_search_hits("zzzzzz").is_empty());
     }
 }

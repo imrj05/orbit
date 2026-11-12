@@ -20,6 +20,8 @@ use gpui::{
     Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Window,
 };
 
+use crate::app::ControlExt;
+use crate::theme::tokens::{panel, DynamicSpacing, IconSize, TextSize};
 use crate::theme::Theme;
 
 /// A body row's height. Every table height is a whole number of these plus the
@@ -44,7 +46,6 @@ pub enum TableKind {
     Buckets,
     Failures,
     Breakdown,
-    Series,
 }
 
 /// The sort state drawn on a column header. Three states, like a desktop grid:
@@ -241,7 +242,7 @@ pub fn data_table(
 
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .overflow_hidden()
@@ -284,23 +285,24 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
         .relative()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .px(px(CELL_PADDING))
         .when(column.numeric, |cell| cell.justify_end())
         .when(column.sortable, |cell| {
-            cell.cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cell.cursor_pointer().hover_state(&theme).on_mouse_down(
+                MouseButton::Left,
+                move |_, window, cx| {
                     sort(ix, sort_next, window, cx);
-                })
+                },
+            )
         })
         .child(
             div()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(column.label.clone()),
         );
 
@@ -329,7 +331,7 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
                         .h_full()
                         .w(px(1.))
                         .bg(theme.border.opacity(0.))
-                        .hover(|style| style.bg(theme.border_strong)),
+                        .hover_divider(&theme),
                 )
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     // A divider drag is not a sort click.
@@ -356,15 +358,27 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
 /// others — a grid that draws carets everywhere reads as noise.
 fn sort_caret(sort: SortState, theme: Theme) -> AnyElement {
     let visible = sort != SortState::Default;
-    let color = if visible { theme.text_2 } else { theme.text_3 };
+    let color = if visible {
+        theme.text_secondary
+    } else {
+        theme.text_muted
+    };
     div()
         .flex_none()
         .flex()
         .flex_col()
         .items_center()
         .when(!visible, |caret| caret.opacity(0.))
-        .child(crate::app::icon("icons/chevron-up.svg", 8., color))
-        .child(crate::app::icon("icons/chevron-down.svg", 8., color))
+        .child(crate::app::icon(
+            "icons/chevron-up.svg",
+            IconSize::Indicator.px(&theme),
+            color,
+        ))
+        .child(crate::app::icon(
+            "icons/chevron-down.svg",
+            IconSize::Indicator.px(&theme),
+            color,
+        ))
         .into_any_element()
 }
 
@@ -397,7 +411,7 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
                 div()
                     .font(super::view::num_font())
                     .whitespace_nowrap()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .text_color(color)
                     .child(text),
             )
@@ -409,7 +423,7 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .text_color(color)
                 .child(text),
         )
@@ -419,11 +433,11 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
 /// The empty state, centered in the table body.
 pub(super) fn empty_cell(text: &str, theme: Theme) -> AnyElement {
     div()
-        .py(px(28.))
+        .py(DynamicSpacing::Base24.px(&theme))
         .flex()
         .justify_center()
-        .text_size(theme.ui_px(13.))
-        .text_color(theme.text_3)
+        .text_size(TextSize::Default.px(&theme))
+        .text_color(theme.text_muted)
         .child(text.to_string())
         .into_any_element()
 }
@@ -498,8 +512,8 @@ pub struct FailureRow {
 /// failures a warning.
 pub(super) fn failure_kind_register(kind: super::model::ErrorKind, theme: Theme) -> (String, Hsla) {
     match kind {
-        super::model::ErrorKind::Provider => (kind.label(), theme.crit),
-        super::model::ErrorKind::Tool => (kind.label(), theme.warn),
+        super::model::ErrorKind::Provider => (kind.label(), theme.error),
+        super::model::ErrorKind::Tool => (kind.label(), theme.warning),
     }
 }
 

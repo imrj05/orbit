@@ -1,45 +1,324 @@
 use super::helpers::*;
 use super::*;
+use crate::theme::tokens::{
+    context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+};
+
+/// Why the completion gate was invoked. The gate behaves the same either way
+/// for a completion that changes the text; they differ only when accepting
+/// would be a no-op, which is the difference between "take this entry" and
+/// "send what I typed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompletionIntent {
+    /// Tab: accept the highlighted entry even if it changes nothing.
+    Accept,
+    /// Enter or a Send click: never let a no-op completion eat the send.
+    Send,
+}
+
+/// The composer facts the app-level chrome renders from, compared across edits
+/// so an ordinary keystroke does not rebuild the window. See
+/// [`super::OrbitApp::composer_chrome`].
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(super) struct ComposerChrome {
+    /// Chips in the attachment tray: its presence, and the count header.
+    slots: usize,
+    /// A send would deliver something, so the primary control is live.
+    ready: bool,
+    /// The draft holds characters, so the follow-up chips step aside.
+    typed: bool,
+    /// The slash/`@` menu, and what it was ranked for.
+    menu_open: bool,
+    menu_trigger: Option<(TriggerKind, String)>,
+    menu_count: usize,
+    menu_highlighted: usize,
+}
+
+/// The three text slots of an attachment chip: what it is called, its one
+/// secondary fact (size or line count), and the hover explanation.
+struct ChipContent {
+    name: String,
+    meta: String,
+    tip: SharedString,
+}
+
+/// Opens a chip's image in the app's full-window lightbox — the surface a
+/// transcript attachment tile opens. `None` leaves the chip inert.
+type ChipOpener = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// Where a picked, dropped, or pasted path belongs: an image attachment, a
+/// file chip, or — for a folder or an unreadable path — a plain reference at
+/// the caret. One rule, shared by every entry point.
+pub(super) enum QueuedPath {
+    Image(Attachment),
+    File(AttachedFile),
+    Reference(PathBuf),
+}
+
+impl QueuedPath {
+    /// Classifies a path by reading (and for an image, decoding) it, so a
+    /// caller off the UI thread — the attach picker — does the work before
+    /// landing on it.
+    pub(super) fn classify(path: &Path) -> Self {
+        if let Some(attachment) = Attachment::from_path(path) {
+            return Self::Image(attachment);
+        }
+        if let Some(file) = AttachedFile::from_path(path) {
+            return Self::File(file);
+        }
+        Self::Reference(path.to_path_buf())
+    }
+}
 
 impl OrbitApp {
     /// The filtered menu entries for the active trigger (empty when none).
-    pub(super) fn autocomplete_entries(&mut self, trigger: &Trigger) -> Vec<AcEntry> {
+    pub(super) fn autocomplete_entries(
+        &mut self,
+        trigger: &Trigger,
+        cx: &mut Context<Self>,
+    ) -> Vec<AcEntry> {
         match trigger.kind {
-            TriggerKind::Slash => mentions::filter_entries(
-                &trigger.query,
-                &[],
-                &self.slash_commands,
-                AUTOCOMPLETE_LIMIT,
-            ),
-            TriggerKind::At => {
-                self.ensure_mention_files();
-                mentions::filter_entries(
-                    &trigger.query,
-                    &self.mention_files,
-                    &[],
-                    AUTOCOMPLETE_LIMIT,
-                )
+            TriggerKind::Slash => {
+                mentions::filter_entries(&trigger.query, &self.slash_commands, AUTOCOMPLETE_LIMIT)
             }
+            TriggerKind::At => self.at_entries(&trigger.query, cx),
         }
     }
 
-    /// (Re)build the workspace file cache when the workspace changed.
-    pub(super) fn ensure_mention_files(&mut self) {
-        if self.mention_files_workspace == self.current_workspace {
+    /// `@` file rows, ranked from the workspace index.
+    pub(super) fn at_entries(&mut self, query: &str, cx: &mut Context<Self>) -> Vec<AcEntry> {
+        self.at_paths(query, cx)
+            .into_iter()
+            .map(|path| AcEntry::File { path })
+            .collect()
+    }
+
+    /// The `@` hits for `query`, memoised per index generation.
+    ///
+    /// `sync_autocomplete` runs every frame and the popup asks again while
+    /// rendering, so the same query is scored several times per keystroke; the
+    /// memo is what keeps a redraw from re-ranking the whole workspace.
+    pub(super) fn at_paths(&mut self, query: &str, cx: &mut Context<Self>) -> Vec<String> {
+        // `@` stays gated on a workspace: without one there is nothing to rank.
+        if self.current_workspace.is_none() {
+            return Vec::new();
+        }
+        self.ensure_mention_index(false, cx);
+        let generation = self.mention_index_generation;
+        if let Some((memo_generation, memo_query, hits)) = &self.mention_query_memo {
+            if *memo_generation == generation && memo_query == query {
+                return hits.clone();
+            }
+        }
+        let Some(index) = self.mention_index.clone() else {
+            return Vec::new();
+        };
+        let hits = index.query(query, AUTOCOMPLETE_LIMIT);
+        self.mention_query_memo = Some((generation, query.to_string(), hits.clone()));
+        hits
+    }
+
+    /// (Re)build the index `@` ranks, when it is stale and the throttle allows.
+    ///
+    /// `force` is for changes the user just made and is waiting to see — a
+    /// created or renamed file must be in the next `@` — and skips the throttle
+    /// without skipping the generation guard.
+    pub(super) fn ensure_mention_index(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some(root) = self.current_workspace.clone() else {
+            if self.mention_index.is_some() || self.mention_index_workspace.is_some() {
+                self.mention_index = None;
+                self.mention_index_workspace = None;
+                self.mention_index_stale = false;
+                self.mention_index_due = None;
+                self.mention_query_memo = None;
+            }
+            return;
+        };
+        if self.mention_index_workspace.as_ref() != Some(&root) {
+            // A different workspace: the old index describes paths that are not
+            // here, so it must not answer for them.
+            self.mention_index_workspace = Some(root.clone());
+            self.mention_index = None;
+            self.mention_query_memo = None;
+            self.mention_index_stale = true;
+            self.mention_index_due = None;
+        }
+        if !self.mention_index_stale {
             return;
         }
-        self.mention_files_workspace = self.current_workspace.clone();
-        self.mention_files = self
-            .current_workspace
-            .as_deref()
-            .map(mentions::list_workspace_files)
-            .unwrap_or_default();
+        let now = Instant::now();
+        if !force {
+            if let Some(due) = self.mention_index_due {
+                if now < due {
+                    // Trailing edge: the last change of a save burst still lands.
+                    self.schedule_mention_rebuild(due, cx);
+                    return;
+                }
+            }
+        }
+        // Marked clean now, not when the walk lands: a change that arrives
+        // during the walk must re-arm instead of being swallowed by it.
+        self.mention_index_stale = false;
+        self.mention_index_due = Some(now + MENTION_REBUILD_INTERVAL);
+        self.mention_index_generation = self.mention_index_generation.wrapping_add(1);
+        let generation = self.mention_index_generation;
+        cx.spawn(async move |this, cx| {
+            let index = cx
+                .background_executor()
+                .spawn(async move {
+                    // Hidden entries are indexed: today's `fd --hidden` found
+                    // dotfiles, and the menu is where you go looking for `.env`.
+                    let snapshot = crate::explorer::walk::snapshot(&root, true);
+                    mentions::MentionIndex::build(&snapshot.dirs, &snapshot.files)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.mention_index_generation != generation {
+                    return;
+                }
+                this.mention_index = Some(Arc::new(index));
+                this.mention_query_memo = None;
+                // A change during the walk re-armed the flag; land it now.
+                if this.mention_index_stale {
+                    this.ensure_mention_index(true, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Re-run the rebuild once the throttle window closes, so the last change in
+    /// a burst is not dropped on the floor.
+    fn schedule_mention_rebuild(&mut self, due: Instant, cx: &mut Context<Self>) {
+        if self.mention_rebuild_scheduled {
+            return;
+        }
+        self.mention_rebuild_scheduled = true;
+        let wait = due.saturating_duration_since(Instant::now());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                this.mention_rebuild_scheduled = false;
+                this.ensure_mention_index(false, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Something changed the workspace. `immediate` skips the throttle for
+    /// changes the user is waiting on (our own file operations).
+    pub(super) fn invalidate_index(&mut self, immediate: bool, cx: &mut Context<Self>) {
+        self.mention_index_stale = true;
+        if immediate {
+            self.mention_index_due = None;
+        }
+        self.ensure_mention_index(immediate, cx);
+    }
+
+    // ── per-session drafts ────────────────────────────────────────────
+
+    /// Stash the composer's unsent state under the *current* target (the
+    /// open session's file, or the New Task page's slot). An empty composer
+    /// drops the draft instead of parking a blank one. Call before leaving a
+    /// session for another.
+    pub(super) fn save_composer_draft(&mut self, cx: &mut Context<Self>) {
+        self.drain_pasted_files(cx);
+        self.drain_pasted_images(cx);
+        self.drain_pasted_texts(cx);
+        let draft = ComposerDraft {
+            text: self.input.read(cx).text(),
+            attachments: std::mem::take(&mut self.attachments),
+            files: std::mem::take(&mut self.files),
+            pasted_texts: std::mem::take(&mut self.pasted_texts),
+        };
+        let draft = (!draft.is_empty()).then_some(draft);
+        match self
+            .current_session_path
+            .clone()
+            .filter(|_| !self.composer_is_new_task)
+        {
+            Some(path) => match draft {
+                Some(draft) => {
+                    self.drafts.insert(path, draft);
+                }
+                None => {
+                    self.drafts.remove(&path);
+                }
+            },
+            None => self.new_task_draft = draft,
+        }
+    }
+
+    /// Restore the draft parked for `path` (or the New Task slot), clearing
+    /// the composer when there is none. Call after a session (or a fresh
+    /// task) becomes active.
+    pub(super) fn restore_composer_draft(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
+        self.composer_is_new_task = path.is_none();
+        let draft = match path {
+            Some(path) => self.drafts.remove(path),
+            None => self.new_task_draft.take(),
+        };
+        match draft {
+            Some(draft) => {
+                self.attachments = draft.attachments;
+                self.files = draft.files;
+                self.pasted_texts = draft.pasted_texts;
+                self.input
+                    .update(cx, |input, cx| input.set_text(draft.text, cx));
+            }
+            None => {
+                self.attachments.clear();
+                self.files.clear();
+                self.pasted_texts.clear();
+                self.input.update(cx, |input, cx| input.clear(cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Hand the composer to the New Task page: park the active target's
+    /// unsent state and load the page's own. Every entry point that starts a
+    /// fresh session in place (a reused idle process, or a folder pick that
+    /// respawns) must go through this, or the page keeps the text of the
+    /// session being left — and that text then lands in the New Task slot on
+    /// the way out, taking the parked draft with it.
+    pub(super) fn swap_to_new_task_draft(&mut self, cx: &mut Context<Self>) {
+        self.save_composer_draft(cx);
+        self.restore_composer_draft(None, cx);
+    }
+
+    /// What the app-level composer chrome reads out of an edit: the send
+    /// control's live state, the attachment tray, the follow-up chips and the
+    /// slash/`@` menu.
+    ///
+    /// Everything else an edit changes — the text itself, the caret, the box's
+    /// grown height, the selection — is drawn by `ComposerInput`'s own render,
+    /// which GPUI repaints without the app. So this key is what decides whether
+    /// a keystroke has to rebuild the window (see `OrbitApp::_input_sub`); a
+    /// field added here must be a fact the app-level render actually reads.
+    pub(super) fn composer_chrome(&self, cx: &Context<Self>) -> ComposerChrome {
+        let input = self.input.read(cx);
+        let draft = input.text();
+        let slots = self.attachment_slots_used();
+        let menu = self.autocomplete.borrow();
+        ComposerChrome {
+            slots,
+            // `send_controls` reads the same rule as `send_has_payload`.
+            ready: !draft.trim().is_empty() || slots > 0,
+            // The follow-up chips step aside once the box holds any character.
+            typed: !draft.is_empty(),
+            menu_open: menu.open,
+            menu_trigger: input.active_trigger().map(|t| (t.kind, t.query)),
+            menu_count: menu.count,
+            menu_highlighted: menu.highlighted,
+        }
     }
 
     /// Derive the open/closed/highlight state from the composer text.
     /// The trigger is pure text state, so this runs every frame and the
     /// menu opens/closes by itself as the user types.
-    pub(super) fn sync_autocomplete(&mut self, cx: &Context<Self>) {
+    pub(super) fn sync_autocomplete(&mut self, cx: &mut Context<Self>) {
         let trigger = self.input.read(cx).active_trigger();
         let key = trigger.as_ref().map(|t| (t.kind, t.query.clone()));
         if key != self.last_ac_trigger {
@@ -54,22 +333,15 @@ impl OrbitApp {
                 let count = match trigger.kind {
                     TriggerKind::Slash => mentions::filter_entries(
                         &trigger.query,
-                        &[],
                         &self.slash_commands,
                         AUTOCOMPLETE_LIMIT,
                     )
                     .len(),
                     TriggerKind::At => {
                         drop(state);
-                        self.ensure_mention_files();
+                        let count = self.at_entries(&trigger.query, cx).len();
                         state = self.autocomplete.borrow_mut();
-                        mentions::filter_entries(
-                            &trigger.query,
-                            &self.mention_files,
-                            &[],
-                            AUTOCOMPLETE_LIMIT,
-                        )
-                        .len()
+                        count
                     }
                 };
                 state.count = count;
@@ -87,7 +359,19 @@ impl OrbitApp {
 
     /// Commit the highlighted entry (Enter/click): replace the trigger
     /// token with the completed `/name ` or `@path ` text.
-    pub(super) fn commit_autocomplete_if_open(&mut self, cx: &mut Context<Self>) -> bool {
+    /// The text a completion inserts, trailing space included.
+    fn entry_insert_text(entry: &AcEntry) -> String {
+        match entry {
+            AcEntry::Command { name, .. } => format!("/{name} "),
+            AcEntry::File { path } => format!("@{path} "),
+        }
+    }
+
+    pub(super) fn commit_autocomplete_if_open(
+        &mut self,
+        intent: CompletionIntent,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let (open, highlighted) = {
             let state = self.autocomplete.borrow();
             (state.open, state.highlighted)
@@ -98,10 +382,22 @@ impl OrbitApp {
         let Some(trigger) = self.input.read(cx).active_trigger() else {
             return false;
         };
-        let entries = self.autocomplete_entries(&trigger);
+        let entries = self.autocomplete_entries(&trigger, cx);
         let Some(entry) = entries.into_iter().nth(highlighted) else {
             return false;
         };
+        // A completion that only restates the token already in the buffer
+        // (plus its trailing space) is not a completion — it is the user
+        // having finished the token and reaching for Send. Accepting it would
+        // swallow the keystroke or click: `@src/main.rs` with the menu open
+        // used to cost a second Enter, and a second click on Send.
+        let token = self.input.read(cx).text()[trigger.start..trigger.end].to_string();
+        let already_complete = token == Self::entry_insert_text(&entry).trim_end();
+        if already_complete {
+            // Tab still owns the key (it must not fall through to focus
+            // traversal); Enter and Send fall through to actually send.
+            return intent == CompletionIntent::Accept;
+        }
         self.commit_entry(entry, cx);
         true
     }
@@ -133,10 +429,16 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.autocomplete.borrow().open {
-            self.autocomplete_dismissed = true;
-            cx.notify();
+        if !self.autocomplete.borrow().open {
+            return;
         }
+        self.autocomplete_dismissed = true;
+        // Close it here rather than waiting for the next `sync_autocomplete`
+        // frame: a click that lands outside the menu (the Send button, say)
+        // must not race the heartbeat, or the same click sometimes sends and
+        // sometimes only accepts a completion.
+        self.autocomplete.borrow_mut().open = false;
+        cx.notify();
     }
 
     /// The autocomplete popup, anchored above the composer box (mirrors
@@ -150,24 +452,23 @@ impl OrbitApp {
             state.highlighted
         };
         let trigger = self.input.read(cx).active_trigger()?;
-        let entries = self.autocomplete_entries(&trigger);
+        let entries = self.autocomplete_entries(&trigger, cx);
         if entries.is_empty() {
             return None;
         }
         let highlighted = highlighted.min(entries.len() - 1);
         let theme = *theme::get(cx);
         let this = cx.weak_entity();
+        // Rows are one fixed height, so the list is exactly tall enough for
+        // the `AUTOCOMPLETE_LIMIT` entries it ever shows.
+        let row_h = picker::entry_height(&theme);
         let mut list = div()
             .id("ac-list")
             .w_full()
-            .max_h(px(8. * 34.))
+            .max_h(row_h * AUTOCOMPLETE_LIMIT as f32)
             .overflow_y_scroll()
-            .px(px(4.))
-            .pt(px(4.))
-            .pb(px(4.))
             .flex()
-            .flex_col()
-            .gap(px(2.));
+            .flex_col();
         for (ix, entry) in entries.iter().enumerate() {
             let selected = ix == highlighted;
             let this = this.clone();
@@ -177,14 +478,17 @@ impl OrbitApp {
             // badge when no Nerd Font is installed).
             let nerd = nerd_font_family(cx);
             let leading: AnyElement = match &entry {
-                AcEntry::Command { .. } => {
-                    icon("icons/extensions.svg", 13., theme.text_3).into_any_element()
-                }
+                AcEntry::Command { .. } => icon(
+                    "icons/extensions.svg",
+                    context_menu::ICON.px(&theme),
+                    theme.text_muted,
+                )
+                .into_any_element(),
                 AcEntry::File { path } => file_glyph(
                     path.as_str(),
                     theme.mode == ThemeMode::Dark,
                     nerd.as_ref(),
-                    13.,
+                    context_menu::ICON.px(&theme),
                     file_badge(path.as_str(), theme),
                 ),
             };
@@ -207,173 +511,376 @@ impl OrbitApp {
                 AcEntry::File { .. } => None,
             };
             list = list.child(
-                div()
-                    .id(ElementId::NamedInteger("ac-row".into(), ix as u64))
-                    .h(px(30.))
-                    .px(px(8.))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.active))
-                    .hover(|style| style.bg(theme.overlay))
-                    .on_click(move |_, _, cx| {
-                        this.update(cx, |app, cx| app.commit_entry(entry.clone(), cx))
-                            .ok();
-                    })
-                    .child(leading)
-                    .child(
+                picker_entry(
+                    div().id(ElementId::NamedInteger("ac-row".into(), ix as u64)),
+                    &theme,
+                )
+                .h(row_h)
+                .cursor_pointer()
+                .when(selected, |row| row.bg(theme.surface_selected))
+                .hover_state(&theme)
+                .on_click(move |_, _, cx| {
+                    this.update(cx, |app, cx| app.commit_entry(entry.clone(), cx))
+                        .ok();
+                })
+                .child(leading)
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        // Fuzzy match first: the basename (or command
+                        // name) leads, then — after a breath — the rest
+                        // of the path / description in dimmed text.
+                        .child(
+                            div()
+                                .flex_none()
+                                .max_w(px(CONTENT_MAX_W / 2.))
+                                .truncate()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if selected {
+                                    theme.text_primary
+                                } else {
+                                    theme.text_secondary
+                                })
+                                .child(title),
+                        )
+                        .when(!subtitle.is_empty(), |row| {
+                            row.child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(picker::SECONDARY_TEXT.px(&theme))
+                                    .text_color(theme.text_muted)
+                                    .child(subtitle),
+                            )
+                        }),
+                )
+                .when_some(scope_badge, |row, badge| {
+                    row.child(
                         div()
-                            .min_w_0()
-                            .flex_1()
+                            .h(px(18.))
+                            .px(DynamicSpacing::Base06.px(&theme))
+                            .rounded(Radius::Medium.px(&theme))
+                            .flex_none()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            // Fuzzy match first: the basename (or command
-                            // name) leads, then — after a breath — the rest
-                            // of the path / description in dimmed text.
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(px(CONTENT_MAX_W / 2.))
-                                    .truncate()
-                                    .text_size(theme.ui_px(12.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if selected {
-                                        theme.active_fg
-                                    } else {
-                                        theme.text_2
-                                    })
-                                    .child(title),
-                            )
-                            .when(!subtitle.is_empty(), |row| {
-                                row.child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .truncate()
-                                        .text_size(theme.ui_px(11.))
-                                        .text_color(theme.text_3)
-                                        .child(subtitle),
-                                )
-                            }),
+                            .bg(theme.overlay_strong)
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(badge),
                     )
-                    .when_some(scope_badge, |row, badge| {
-                        row.child(
-                            div()
-                                .h(px(18.))
-                                .px(px(6.))
-                                .rounded(px(5.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .bg(theme.overlay_strong)
-                                .text_size(theme.ui_px(10.5))
-                                .text_color(theme.text_3)
-                                .child(badge),
-                        )
-                    }),
+                }),
             );
         }
         // Full width of the chat box, so long paths are never cut.
-        let popup = div()
+        let popup = picker_surface(div(), &theme)
             .w(px(CONTENT_MAX_W))
-            .font_family(theme::ui_font_family())
-            .rounded(px(10.))
-            .popover_surface(theme)
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .overflow_hidden()
             .occlude()
             .on_mouse_down_out(cx.listener(Self::on_autocomplete_outside_down))
             .child(list);
 
         Some(
-            anchored()
-                .position_mode(AnchoredPositionMode::Local)
-                .anchor(Corner::BottomLeft)
-                .offset(point(px(0.), px(-4.)))
-                .snap_to_window()
-                .child(deferred(popup))
+            anchored_popover(
+                Corner::BottomLeft,
+                point(px(0.), -popover::MENU_OFFSET),
+                popup,
+                "anchored_popover-in-4",
+                &theme,
+            )
+            .into_any_element(),
+        )
+    }
+
+    /// The attachment tray above the input: every queued image, file, and
+    /// pasted-text pill in one wrapped row. A tray holding more than one chip
+    /// gains a count header with a Clear action; a lone chip needs no label,
+    /// and its own remove control says everything else.
+    pub(super) fn attachments_row(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let total = self.attachment_slots_used();
+        if total == 0 {
+            return None;
+        }
+        let theme = *theme::get(cx);
+        let mut tray = div()
+            .id("attachments")
+            .debug_selector(|| "attachments-row".to_string())
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base08.px(&theme));
+
+        // The header appears only once there is a tray to count: a single
+        // chip is its own explanation.
+        if total > 1 {
+            tray = tray.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(tr!("composer.attachments", count = total)),
+                    )
+                    .child(
+                        button_frame(div().id("attachments-clear"), &theme, ButtonSize::Compact)
+                            .debug_selector(|| "attachments-clear".to_string())
+                            .cursor_pointer()
+                            .hover_state(&theme)
+                            .tip(tr!("composer.clear_attachments"))
+                            .child(icon(
+                                "icons/x.svg",
+                                IconSize::XSmall.px(&theme),
+                                theme.text_muted,
+                            ))
+                            .child(div().text_color(theme.text_muted).child(tr!("view.clear")))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    this.clear_attachments(cx);
+                                }),
+                            ),
+                    ),
+            );
+        }
+
+        let row = div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .gap(DynamicSpacing::Base06.px(&theme));
+
+        // Pasted text leads: it is content the user meant to send, and the
+        // images and files sit beside it as attachments.
+        let pasted = self.pasted_texts.iter().enumerate().map(|(ix, paste)| {
+            // Content, not a file: the same tile as a file chip, in the neutral
+            // overlay wash, so the three chip kinds line up.
+            let visual = div()
+                .size(theme.ui_px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(Radius::Small.px(&theme))
+                .bg(theme.overlay)
+                .child(icon(
+                    "icons/file.svg",
+                    IconSize::Small.px(&theme),
+                    theme.text_muted,
+                ))
+                .into_any_element();
+            Self::attachment_chip(
+                &theme,
+                ElementId::NamedInteger("pasted-text".into(), ix as u64),
+                format!("pasted-text-{ix}"),
+                visual,
+                ChipContent {
+                    name: paste.title.clone(),
+                    meta: tr!("composer.pasted_text", lines = paste.lines),
+                    tip: paste.content.clone().into(),
+                },
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if ix < this.pasted_texts.len() {
+                        this.pasted_texts.remove(ix);
+                        cx.notify();
+                    }
+                }),
+                None,
+            )
+        });
+
+        let images = self.attachments.iter().enumerate().map(|(ix, a)| {
+            // The decoded preview is the chip's visual; the file-type badge is
+            // the fallback when a preview never decoded.
+            let visual: AnyElement = match &a.preview {
+                Some(image) => div()
+                    .size(theme.ui_px(20.))
+                    .flex_none()
+                    .rounded(Radius::Small.px(&theme))
+                    .overflow_hidden()
+                    .bg(theme.overlay)
+                    .child(
+                        img(ImageSource::Image(image.clone()))
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .into_any_element(),
+                None => file_badge(&a.name, theme),
+            };
+            // A compressed image says so on hover, so the size label reads as
+            // what will ship rather than what was picked.
+            let tip = if a.compressed {
+                tr!(
+                    "composer_ops.image_compressed",
+                    original = crate::attachments::human_bytes(a.original_len),
+                    stored = crate::attachments::human_bytes(a.stored_len),
+                )
+            } else {
+                a.name.clone()
+            };
+            // Clicking an image chip previews it full-window, the same
+            // surface a sent attachment opens from the transcript. A chip
+            // with no decoded preview has nothing to show, so it stays inert.
+            let open: Option<ChipOpener> = a.preview.clone().map(|image| {
+                Box::new(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.lightbox = Some(image.clone());
+                    cx.notify();
+                })) as ChipOpener
+            });
+            Self::attachment_chip(
+                &theme,
+                ElementId::NamedInteger("attachment".into(), ix as u64),
+                format!("attachment-{ix}"),
+                visual,
+                ChipContent {
+                    name: a.name.clone(),
+                    meta: crate::attachments::human_bytes(a.stored_len),
+                    tip: tip.into(),
+                },
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if ix < this.attachments.len() {
+                        this.attachments.remove(ix);
+                        cx.notify();
+                    }
+                }),
+                open,
+            )
+        });
+
+        // Files last: a file is a reference the agent will open, and the path
+        // in its tooltip is the one it will open.
+        let files = self.files.iter().enumerate().map(|(ix, file)| {
+            let visual = file_icon_tile(cx, &file.name, theme.ui_px(20.), theme);
+            Self::attachment_chip(
+                &theme,
+                ElementId::NamedInteger("attached-file".into(), ix as u64),
+                format!("attached-file-{ix}"),
+                visual,
+                ChipContent {
+                    name: file.name.clone(),
+                    meta: crate::attachments::human_bytes(file.size as usize),
+                    tip: file.path.display().to_string().into(),
+                },
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if ix < this.files.len() {
+                        this.files.remove(ix);
+                        cx.notify();
+                    }
+                }),
+                None,
+            )
+        });
+
+        Some(
+            tray.child(row.children(pasted).children(images).children(files))
                 .into_any_element(),
         )
     }
 
-    /// Attachment chips row shown above the input (pasted/picked images).
-    pub(super) fn attachments_row(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        if self.attachments.is_empty() {
-            return None;
-        }
-        let theme = *theme::get(cx);
-        let row = div().w_full().flex().flex_wrap().gap(px(6.));
-        Some(
-            row.children(self.attachments.iter().enumerate().map(|(ix, a)| {
-                // Image attachments show the decoded image; the glyph is the
-                // fallback if a preview never decoded.
-                let visual: AnyElement = match &a.preview {
-                    Some(image) => div()
-                        .size(px(18.))
-                        .flex_none()
-                        .rounded(px(4.))
-                        .overflow_hidden()
-                        .child(
-                            img(ImageSource::Image(image.clone()))
-                                .size_full()
-                                .object_fit(ObjectFit::Cover),
-                        )
-                        .into_any_element(),
-                    None => file_glyph(
-                        &a.name,
-                        theme.mode == ThemeMode::Dark,
-                        nerd_font_family(cx).as_ref(),
-                        12.,
-                        icon("icons/task.svg", 12., theme.text_3).into_any_element(),
-                    )
-                    .into_any_element(),
-                };
-                div()
-                    .id(ElementId::NamedInteger("attachment".into(), ix as u64))
-                    .h(px(26.))
-                    .pl(px(7.))
-                    .pr(px(6.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.bg_raised)
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.overlay))
-                    .child(visual)
-                    .child(
-                        div()
-                            .max_w(px(160.))
-                            .truncate()
-                            .text_size(theme.ui_px(11.5))
-                            .text_color(theme.text_2)
-                            .child(a.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme.ui_px(11.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text_3)
-                            .child("×".to_string()),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            if ix < this.attachments.len() {
-                                this.attachments.remove(ix);
-                                cx.notify();
-                            }
-                        }),
-                    )
-            }))
-            .into_any_element(),
+    /// One chip in the attachment tray: a leading visual, the name, a
+    /// secondary label, and an always-visible remove control. Images, files,
+    /// and pasted-text pills differ only in those three slots, so the frame
+    /// and its hover treatment live here once.
+    ///
+    /// The remove control is a real button on the chip's right edge rather
+    /// than the whole chip: a chip big enough to read the file name is also
+    /// big enough to delete by accident. That leaves the rest of the chip for
+    /// `open`, which previews an image the way the transcript's tiles do.
+    fn attachment_chip(
+        theme: &Theme,
+        id: ElementId,
+        debug: String,
+        visual: AnyElement,
+        content: ChipContent,
+        remove: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+        open: Option<ChipOpener>,
+    ) -> AnyElement {
+        let remove_debug = format!("remove-{debug}");
+        let chip = button_frame(
+            div().id(id).debug_selector(move || debug),
+            theme,
+            ButtonSize::Medium,
         )
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, theme)
+        .hover_border(theme)
+        .child(visual)
+        .child(
+            div()
+                .min_w_0()
+                .max_w(px(180.))
+                .truncate()
+                .text_color(theme.text_secondary)
+                .tip(content.tip)
+                .child(content.name),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(TextSize::XSmall.px(theme))
+                .text_color(theme.text_muted)
+                .child(content.meta),
+        )
+        .child(
+            button_frame(div(), theme, ButtonSize::Compact)
+                .debug_selector(move || remove_debug)
+                .cursor_pointer()
+                .hover_on_glass(theme)
+                .tip(tr!("composer.remove_attachment"))
+                .child(icon(
+                    "icons/x.svg",
+                    IconSize::XSmall.px(theme),
+                    theme.text_muted,
+                ))
+                .on_mouse_up(MouseButton::Left, move |event, window, cx| {
+                    // A nested button, so the chip's own `open` never fires
+                    // for a click that meant to delete.
+                    cx.stop_propagation();
+                    remove(event, window, cx);
+                }),
+        );
+        match open {
+            Some(open) => chip
+                .cursor_pointer()
+                .on_click(move |event, window, cx| open(event, window, cx)),
+            None => chip,
+        }
+        .into_any_element()
+    }
+
+    /// Queue one classified path, focusing the composer when the caller has a
+    /// window. File drops, clipboard file lists, and the attach picker all
+    /// route through here so their rules cannot drift apart.
+    pub(super) fn queue_path(
+        &mut self,
+        queued: QueuedPath,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        match queued {
+            QueuedPath::Image(attachment) => self.push_attachment(attachment, cx),
+            QueuedPath::File(file) => self.push_file(file, cx),
+            QueuedPath::Reference(path) => {
+                self.input.update(cx, |input, cx| {
+                    input.insert_at_caret(&format!("{} ", path.display()), cx);
+                });
+                if let Some(window) = window {
+                    self.input.read(cx).focus(window);
+                }
+            }
+        }
     }
 
     /// Files dragged over the window (external OS drag — gpui mirrors them
@@ -396,9 +903,10 @@ impl OrbitApp {
         }
     }
 
-    /// Files dropped anywhere on the window: images become attachments
-    /// (thumbnail chips above the composer); anything else is referenced by
-    /// path at the caret so the agent can read it with its tools.
+    /// Files dropped anywhere on the window: images become image attachments
+    /// (thumbnail chips above the composer), other files become file chips,
+    /// and a folder or unreadable path falls back to a plain reference at the
+    /// caret.
     pub(super) fn on_file_drop(
         &mut self,
         paths: &ExternalPaths,
@@ -411,27 +919,19 @@ impl OrbitApp {
             return;
         }
         for path in paths.paths() {
-            if self.attachments.len() >= MAX_ATTACHMENTS {
-                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
                 break;
             }
-            match Attachment::from_path(path) {
-                Some(attachment) => self.attachments.push(attachment),
-                None => {
-                    self.input.update(cx, |input, cx| {
-                        input.insert_at_caret(&format!("{} ", path.display()), cx);
-                    });
-                    self.input.read(cx).focus(window);
-                }
-            }
+            self.queue_path(QueuedPath::classify(path), Some(&mut *window), cx);
         }
         cx.notify();
     }
 
     /// Add menu → "Attach image…": pick an image file and queue it.
     pub(super) fn attach_image(&mut self, cx: &mut Context<Self>) {
-        if self.attachments.len() >= MAX_ATTACHMENTS {
-            self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+        if self.attachment_budget_exhausted() {
+            self.report_attachment_limit();
             cx.notify();
             return;
         }
@@ -448,21 +948,13 @@ impl OrbitApp {
                 return;
             };
             let path = handle.path().to_path_buf();
+            // Decode + compress off the UI thread; only the finished
+            // attachment (and its preview) lands on the next update.
+            let attachment = Attachment::from_path(&path);
             let _ = this.update(cx, |app, cx| {
-                match Attachment::from_path(&path) {
-                    Some(attachment) => {
-                        if app.attachments.len() >= MAX_ATTACHMENTS {
-                            app.set_status(tr!(
-                                "composer_ops.max_attachments",
-                                count = MAX_ATTACHMENTS
-                            ));
-                        } else {
-                            app.attachments.push(attachment);
-                        }
-                    }
-                    None => {
-                        app.set_status(tr!("composer_ops.unsupported_image_format"));
-                    }
+                match attachment {
+                    Some(attachment) => app.push_attachment(attachment, cx),
+                    None => app.set_status(tr!("composer_ops.unsupported_image_format")),
                 }
                 cx.notify();
             });
@@ -470,10 +962,16 @@ impl OrbitApp {
         .detach();
     }
 
-    /// Add menu → "Attach file…": any file. Images become attachments;
-    /// anything else is referenced by path at the caret (same rule as a
-    /// file dropped on the window).
+    /// Add menu → "Attach file…": any file. Images become image attachments;
+    /// any other file becomes a file chip (same rule as a file dropped on the
+    /// window), and only a folder or unreadable path is referenced in the
+    /// text.
     pub(super) fn attach_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.attachment_budget_exhausted() {
+            self.report_attachment_limit();
+            cx.notify();
+            return;
+        }
         // See `attach_image` — never block the main thread on the native panel
         // while this entity is borrowed.
         let dialog = rfd::AsyncFileDialog::new().set_title(tr!("composer_ops.attach_file_title"));
@@ -482,22 +980,11 @@ impl OrbitApp {
                 return;
             };
             let path = handle.path().to_path_buf();
+            // Read + decode off the UI thread; only the finished attachment
+            // (and its preview) lands on the next update.
+            let queued = QueuedPath::classify(&path);
             let _ = this.update_in(cx, |app, window, cx| {
-                if let Some(attachment) = Attachment::from_path(&path) {
-                    if app.attachments.len() >= MAX_ATTACHMENTS {
-                        app.set_status(tr!(
-                            "composer_ops.max_attachments",
-                            count = MAX_ATTACHMENTS
-                        ));
-                    } else {
-                        app.attachments.push(attachment);
-                    }
-                } else {
-                    app.input.update(cx, |input, cx| {
-                        input.insert_at_caret(&format!("{} ", path.display()), cx);
-                    });
-                    app.input.read(cx).focus(window);
-                }
+                app.queue_path(queued, Some(window), cx);
                 cx.notify();
             });
         })
@@ -530,6 +1017,8 @@ impl OrbitApp {
         self.model_selector = None;
         self.context_popup = ContextPopup::None;
         self.access_menu_open = false;
+        self.workflow_menu_open = false;
+        self.dismiss_work_in_menu();
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.add_menu_open = true;
@@ -647,6 +1136,14 @@ impl OrbitApp {
     }
 
     pub(super) fn set_model(&mut self, id: String, provider: String, cx: &mut Context<Self>) {
+        // pi would apply the change to the branch a pending fork is about to
+        // open, not the session the picker described.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        // A manual choice supersedes the session-birth default push. The push
+        // itself sends `SetModel` directly so it doesn't disarm itself.
+        self.default_model_armed = false;
         self.send(
             CommandBody::SetModel {
                 model_id: id,
@@ -658,6 +1155,11 @@ impl OrbitApp {
     }
 
     pub(super) fn set_thinking_level(&mut self, level: String, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        // A manual level choice likewise supersedes the pending default.
+        self.default_model_armed = false;
         self.send(
             CommandBody::SetThinkingLevel { level },
             "set_thinking_level",
@@ -693,9 +1195,11 @@ impl OrbitApp {
         self.model_selector = None;
         self.context_popup = ContextPopup::None;
         self.add_menu_open = false;
+        self.dismiss_work_in_menu();
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.access_menu_open = true;
+        self.workflow_menu_open = false;
         self.access_menu_highlight = AccessMode::ALL
             .iter()
             .position(|mode| *mode == self.access_mode)
@@ -772,12 +1276,153 @@ impl OrbitApp {
     /// the status line says so rather than implying it took.
     pub(super) fn set_access_mode(&mut self, mode: AccessMode, cx: &mut Context<Self>) {
         self.access_mode = mode;
-        mode.persist();
-        if self.extensions.guard().is_none() {
-            self.toast_warning(tr!("access.mode_set_unavailable", mode = mode.label()));
-        } else {
-            self.set_status(tr!("access.mode_set", mode = mode.label()));
+        self.clear_follow_up_suggestions();
+        // A mode the guard cannot read is not the mode in force: report the
+        // write failure rather than a confident "Access mode: …".
+        match mode.persist() {
+            Err(error) => self.toast_error(error),
+            Ok(()) if self.extensions.guard().is_none() => {
+                self.toast_warning(tr!("access.mode_set_unavailable", mode = mode.label()));
+            }
+            Ok(()) => self.set_status(tr!("access.mode_set", mode = mode.label())),
         }
         cx.notify();
+    }
+
+    // ── workflow mode (per session; the workflow extension's policy) ────
+
+    /// Mouse-up on the workflow chip. Swallows the toggle if the menu was
+    /// just dismissed by this click's mouse-down (outside-click dismissal).
+    pub(super) fn on_workflow_trigger_click(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        const GESTURE: Duration = Duration::from_millis(200);
+        if let Some(dismissed) = self.menu_dismissed_at.take() {
+            if dismissed.elapsed() < GESTURE {
+                return;
+            }
+        }
+        self.toggle_workflow_menu(window, cx);
+    }
+
+    pub(super) fn toggle_workflow_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workflow_menu_open {
+            self.close_workflow_menu(window, cx);
+            return;
+        }
+        // Mutually exclusive with the other composer popovers.
+        self.model_selector = None;
+        self.context_popup = ContextPopup::None;
+        self.access_menu_open = false;
+        self.add_menu_open = false;
+        self.dismiss_work_in_menu();
+        self.autocomplete_dismissed = true;
+        self.autocomplete.borrow_mut().open = false;
+        self.workflow_menu_open = true;
+        self.workflow_menu_highlight = WorkflowMode::ALL
+            .iter()
+            .position(|mode| *mode == self.workflow_mode)
+            .unwrap_or(0);
+        window.focus(&self.workflow_menu_focus);
+        cx.notify();
+    }
+
+    /// Close the workflow menu and hand focus back to the composer input.
+    pub(super) fn close_workflow_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workflow_menu_open {
+            self.workflow_menu_open = false;
+            self.input.read(cx).focus(window);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn on_workflow_menu_next(
+        &mut self,
+        _: &crate::WorkflowMenuNext,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workflow_menu_highlight = (self.workflow_menu_highlight + 1) % WorkflowMode::ALL.len();
+        cx.notify();
+    }
+
+    pub(super) fn on_workflow_menu_prev(
+        &mut self,
+        _: &crate::WorkflowMenuPrev,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workflow_menu_highlight =
+            (self.workflow_menu_highlight + WorkflowMode::ALL.len() - 1) % WorkflowMode::ALL.len();
+        cx.notify();
+    }
+
+    pub(super) fn on_workflow_menu_confirm(
+        &mut self,
+        _: &crate::WorkflowMenuConfirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_workflow_menu_item(self.workflow_menu_highlight, window, cx);
+    }
+
+    pub(super) fn on_workflow_menu_close(
+        &mut self,
+        _: &crate::WorkflowMenuClose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_workflow_menu(window, cx);
+    }
+
+    /// Select workflow mode `ix` (see [`WorkflowMode::ALL`]) and close the menu.
+    pub(super) fn run_workflow_menu_item(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(mode) = WorkflowMode::ALL.get(ix).copied() {
+            self.set_workflow_mode(mode, cx);
+        }
+        self.close_workflow_menu(window, cx);
+    }
+
+    /// Apply a workflow mode for the active session: persist it to the
+    /// per-session store (the extension reads it fresh on every hook, so this
+    /// re-arms a live session) and report it. Before a session exists the
+    /// choice is held as pending and applied when the id arrives.
+    pub(super) fn set_workflow_mode(&mut self, mode: WorkflowMode, cx: &mut Context<Self>) {
+        self.workflow_mode = mode;
+        self.clear_follow_up_suggestions();
+        match self.session_id.clone() {
+            Some(id) => crate::workflow::persist_for(&id, mode),
+            None => self.workflow_pending = Some(mode),
+        }
+        if self.extensions.workflow().is_none() {
+            self.toast_warning(tr!("workflow.mode_set_unavailable", mode = mode.label()));
+        } else {
+            self.set_status(tr!("workflow.mode_set", mode = mode.label()));
+        }
+        cx.notify();
+    }
+
+    /// Drop workflow-store entries for sessions that no longer exist, keeping
+    /// the active session (which may be an unlisted draft). Called whenever
+    /// the session list reloads, so the store cannot grow without bound.
+    pub(super) fn prune_workflow_store(&self) {
+        let mut known: Vec<String> = self.sessions.iter().map(|s| s.id.clone()).collect();
+        if let Some(id) = &self.session_id {
+            known.push(id.clone());
+        }
+        // Never prune from an empty set: a watcher firing before the session
+        // list loads (or a store read failure) must not wipe every entry.
+        if known.is_empty() {
+            return;
+        }
+        crate::workflow::prune(&known);
     }
 }

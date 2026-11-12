@@ -1,9 +1,36 @@
 use super::*;
+use crate::app::composer_ops::QueuedPath;
+use crate::app::sidebar::{clear_review_mark, should_mark_review};
 use crate::toast::ToastKind;
 
+/// One tick's worth of results from draining a background session.
+struct ParkedDrain {
+    /// An event changed the parked state — repaint.
+    changed: bool,
+    /// The session is mid-run (drives the sidebar loader).
+    busy: bool,
+    /// The process named its session file; move it from the pending pool into
+    /// `lives` under this path.
+    rekey: Option<PathBuf>,
+}
+
 impl OrbitApp {
-    /// Heartbeat (~90ms): drain protocol events into the UI.
-    pub(crate) fn tick(&mut self, cx: &mut Context<Self>) {
+    /// Heartbeat (~90ms): drain protocol events into the UI. Returns whether a
+    /// run is in flight so the caller can repaint faster while tokens stream.
+    pub(crate) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let active = self.tick_once(cx);
+        // A quit asked for while pi was forking waits for the reply that moves
+        // this process onto the branch. Checked after the drain (not inside
+        // it) so the reply from this tick is applied first, and on ticks with
+        // no client at all, where a teardown may have invalidated the fork.
+        if self.take_deferred_quit() {
+            cx.quit();
+            return false;
+        }
+        active
+    }
+
+    fn tick_once(&mut self, cx: &mut Context<Self>) -> bool {
         // Let a lapsed status message disappear from the status bar.
         if self
             .status_at
@@ -21,9 +48,25 @@ impl OrbitApp {
         if self.toasts.expire(Instant::now(), toast_fade) {
             cx.notify();
         }
+        // The new-task page's dithered field is alive: advance its clock and
+        // repaint. Only that page pays for it, and Reduce Motion freezes it.
+        if self.advance_backdrop(theme::reduce_motion(cx)) {
+            cx.notify();
+        }
+        // Session retention: once per launch, archive or delete sessions the
+        // user's policy marks idle. A no-op until enabled in Settings.
+        self.run_session_retention_once(cx);
         self.tick_background(cx);
+        // MCP: external-change detection, the debounced `pi mcp list` probe,
+        // and a deferred restart that applies new server configuration while
+        // preserving the session.
+        self.tick_mcp(cx);
         // Persist a settled panel layout (a drag writes once it stops).
         crate::layout::flush_if_settled();
+        // Debug builds only: time the frames a run actually produces, so a
+        // streaming session can be judged without a stopwatch at the keyboard.
+        #[cfg(debug_assertions)]
+        crate::perf::auto_capture(self.is_running());
         // Bound the warm-session pool: reap idle parked processes past the TTL.
         self.reap_idle_parked();
         // A banner click routes back to the session it announced.
@@ -32,6 +75,15 @@ impl OrbitApp {
         }
         // Background update checks and the install handoff report here.
         self.drain_updater_events(cx);
+        // A fork reply lost to a restart path (not an RPC event) can still
+        // have created a branch file. Reload the list on the next tick even
+        // when no session event follows, so the new session is not invisible.
+        if std::mem::take(&mut self.sessions_refresh_pending) {
+            self.sessions = sessions::load_sessions();
+            self.prune_workflow_store();
+            self.sync_session_menu(cx);
+            cx.notify();
+        }
         // Sessions can be written by the CLI or another Orbit window; the
         // watcher has already scanned off-thread, so this only swaps the list.
         if let Some(reloaded) = self
@@ -39,14 +91,19 @@ impl OrbitApp {
             .as_ref()
             .and_then(sessions::SessionWatcher::take_reload)
         {
-            self.sessions = reloaded;
-            self.sync_session_menu(cx);
-            // The usage index is built from the same files; a write means the
-            // analytics are stale (rate-limited inside the page).
-            if self.usage_open {
-                self.usage.update(cx, |page, cx| page.mark_stale(cx));
+            // A reload that changed nothing (e.g. a bookkeeping append the
+            // scan already reflected) must not rebuild the sidebar or repaint.
+            if reloaded != self.sessions {
+                self.sessions = reloaded;
+                self.prune_workflow_store();
+                self.sync_session_menu(cx);
+                // The usage index is built from the same files; a write means
+                // the analytics are stale (rate-limited inside the page).
+                if self.usage_open {
+                    self.usage.update(cx, |page, cx| page.mark_stale(cx));
+                }
+                cx.notify();
             }
-            cx.notify();
         }
         // Usage: drain any finished scan and recompute if the filter or the
         // index moved. Cheap when nothing changed.
@@ -55,21 +112,47 @@ impl OrbitApp {
         // refresh Review, the Git page, and the branch chip when the tree
         // changes.
         self.sync_workspace_watcher(cx);
+        // An added or removed project needs its branch for the sidebar row's
+        // metadata line; a compare of the project list, so it is free while
+        // nothing moved.
+        self.sync_sidebar_branches(cx);
+        // A review mark is spent the moment its session is really in front of
+        // the user — by click, by shortcut, by the window coming forward, or by
+        // a full-page surface closing. One rule on the heartbeat instead of a
+        // hook on each of those paths, so they cannot drift apart, and a
+        // selection made while Orbit is behind another app deliberately does
+        // not clear it (issue #83).
+        let in_front = self.transcript_in_front(cx);
+        if clear_review_mark(
+            &mut self.awaiting_review,
+            self.current_session_path.as_deref(),
+            in_front,
+        ) {
+            cx.notify();
+        }
         let workspace_dirty = self
             .workspace_watcher
             .as_ref()
             .is_some_and(watch::WorkspaceWatcher::take_dirty);
         if workspace_dirty {
+            // Last Turn is the conversation's edit/write calls. A file save
+            // must not rebuild it or throw away the reader's scroll position.
             self.sidepane
-                .update(cx, |pane, cx| pane.mark_review_stale(cx));
+                .update(cx, |pane, cx| pane.mark_git_review_stale(cx));
             self.git_panel.update(cx, |panel, cx| panel.refresh(cx));
             self.project_panel
                 .update(cx, |panel, cx| panel.mark_stale(cx));
+            // `@` ranks the same tree: a file that appeared or vanished must
+            // not stay in the menu. Throttled, so a save burst walks once.
+            self.invalidate_index(false, cx);
             if let Some(path) = self.file_viewer.read(cx).active_path() {
                 self.file_viewer
                     .update(cx, |viewer, cx| viewer.reload(&path, cx));
             }
             self.refresh_branch_status(cx);
+            // External `git worktree add`/`remove` lands as a workspace
+            // change; re-list the page so Git's own worktrees appear (§30).
+            self.refresh_worktrees_soon(cx);
             cx.notify();
         }
         // Expire a stalled login and auto-cancel it with pi.
@@ -83,8 +166,17 @@ impl OrbitApp {
         if let Some(client) = self.client.as_mut() {
             self.runtime.alive = client.is_alive();
         }
+        // A stop pi has not answered stops being a request and becomes an
+        // action. Runs before the event drain on purpose: while pi is stuck it
+        // sends no events at all, which is exactly the tick that needs it.
+        self.check_stalled_stop(cx);
         // Images pasted in the composer become message attachments.
+        self.drain_pasted_files(cx);
         self.drain_pasted_images(cx);
+        // Long pastes become collapsible pills above the composer.
+        self.drain_pasted_texts(cx);
+        // The placeholder names what Enter will do right now.
+        self.sync_composer_placeholder(cx);
         // Refresh the in-transcript find hits when the query or messages moved.
         self.sync_transcript_search(cx);
         // A drag that left the window clears gpui's active drag without any
@@ -95,7 +187,7 @@ impl OrbitApp {
         }
         let events = {
             let Some(client) = self.client.as_ref() else {
-                return;
+                return self.is_active();
             };
             client.drain_events()
         };
@@ -112,13 +204,23 @@ impl OrbitApp {
             if self.busy || self.transcript.is_streaming() || copy_pending {
                 cx.notify();
             }
-            return;
+            return self.is_active();
         }
 
         let mut refresh_sessions = false;
         for event in &events {
+            self.execution.apply_event(event);
+            if matches!(event, Event::TurnStart | Event::AgentSettled { .. }) {
+                self.dialog = None;
+                self.dialog_focus_pending = false;
+                self.approval = None;
+                self.approval_focus_pending = false;
+            }
             match event {
-                Event::AgentStart => self.busy = true,
+                Event::AgentStart => {
+                    self.clear_follow_up_suggestions();
+                    self.busy = true;
+                }
                 // An extension dialog blocks the run until the client answers.
                 // Render it natively (select / confirm / input / editor); the
                 // user's reply on the modal unblocks pi.
@@ -174,14 +276,26 @@ impl OrbitApp {
                 Event::AutoRetryEnd { value } => {
                     self.retrying = false;
                     self.retry_detail = None;
+                    let cancelled = std::mem::replace(&mut self.abort_requested, false);
                     let success = value.get("success").and_then(|v| v.as_bool());
-                    if success == Some(false) {
+                    // A retry the user stopped is a cancel, not a failed retry:
+                    // pi answers the abort with `success: false` and
+                    // `finalError: "Retry cancelled"`, and raising a banner for
+                    // it would report a failure the user asked for (issue #76).
+                    if success == Some(false) && !cancelled {
                         let error = value
                             .get("finalError")
                             .and_then(|v| v.as_str())
                             .map(str::to_string)
                             .unwrap_or_else(|| tr!("events.retries_exhausted"));
                         self.set_error(tr!("events.auto_retry_failed", error = error));
+                    } else if cancelled {
+                        // A retry the user stopped is a quiet stop, not the
+                        // failure the attempt before it left behind: retire
+                        // both its card and the held error so the settle that
+                        // follows reports neither (issue #96).
+                        self.pending_agent_error = None;
+                        self.transcript.mark_turn_aborted();
                     }
                 }
                 Event::QueueUpdate { value } => {
@@ -194,6 +308,9 @@ impl OrbitApp {
                     if confirmed {
                         self.pending_follow_up = None;
                     }
+                    // An open inline editor follows its message to whatever
+                    // position pi now reports, or closes once it is gone.
+                    self.reanchor_queue_edit(cx);
                 }
                 Event::ExtensionError { value } => {
                     let path = value
@@ -225,7 +342,9 @@ impl OrbitApp {
                     // `session_info_changed`, so drop the in-flight flag here.
                     self.title_generating = false;
                 }
-                Event::AgentSettled => {
+                Event::AgentSettled { aborted } => {
+                    self.abort_requested = false;
+                    self.abort_sent_at = None;
                     self.busy = false;
                     self.retrying = false;
                     self.retry_detail = None;
@@ -233,14 +352,32 @@ impl OrbitApp {
                     // A settled run has no queued continuation left; clear the
                     // bar even if the final `queue_update` was missed.
                     self.queue = PendingQueue::default();
+                    self.queue_edit = None;
+                    // The run is over, so this is where a failure it ended on
+                    // is reported — never per attempt. A stop the user asked
+                    // for is not a failure, and its held error is dropped
+                    // (issue #96).
+                    match (aborted, self.pending_agent_error.take()) {
+                        (false, Some(error)) => self.set_error_from(
+                            AGENT_ERROR_SOURCE,
+                            tr!("events.agent_error", error = error),
+                        ),
+                        _ => self.clear_error_from(AGENT_ERROR_SOURCE),
+                    }
                     refresh_sessions = true;
                     self.refresh_context_stats();
+                    #[cfg(debug_assertions)]
+                    self.log_turn_diagnostics();
                     // The bridge appends its post-turn snapshot at settle;
                     // read it now instead of waiting for the slow poll.
                     self.quota_entries_next_poll = Instant::now();
                     self.poll_quota_entries();
-                    // Capture the turn's end checkpoint, then refresh Review.
+                    // Close the turn on this frame. The Git checkpoint is
+                    // best-effort and does not gate Last Turn's recorded edits.
                     self.finish_turn(cx);
+                    // An MCP configuration change deferred during the run
+                    // applies now, with the session preserved.
+                    self.mcp_after_settle(cx);
                     // The run ended: announce it if the user is elsewhere.
                     let path = self.current_session_path.clone();
                     let title = self
@@ -248,7 +385,14 @@ impl OrbitApp {
                         .clone()
                         .or_else(|| self.session_name.clone());
                     let summary = self.transcript.latest_turn_summary();
-                    self.notify_turn_finished(path.as_deref(), title.as_deref(), summary.as_ref());
+                    if !aborted {
+                        self.notify_turn_finished(
+                            path.as_deref(),
+                            title.as_deref(),
+                            summary.as_ref(),
+                            cx,
+                        );
+                    }
                 }
                 Event::CompactionStart { .. } => {
                     // The run-status strip carries the in-progress state;
@@ -257,64 +401,109 @@ impl OrbitApp {
                 }
                 Event::CompactionEnd { value } => {
                     self.is_compacting = false;
+                    let aborted = value.get("aborted").and_then(Value::as_bool) == Some(true);
                     // A failed compaction carries `errorMessage` (docs).
                     if let Some(error) = value.get("errorMessage").and_then(Value::as_str) {
                         self.set_error(tr!("events.compaction_failed", error = error));
-                    } else if value.get("aborted").and_then(Value::as_bool) == Some(true) {
+                    } else if aborted {
                         self.set_status(tr!("events.compaction_aborted"));
+                    } else {
+                        // Success: pi replaced the summarized span with a
+                        // compaction summary plus the kept entries. Re-read
+                        // the projection so the boundary card lands in the
+                        // transcript (and pre-compaction rows drop).
+                        self.send(CommandBody::GetMessages, "get_messages");
                     }
                     // Post-compaction usage is unknown until the next turn;
                     // refresh so the meter can show an empty/unknown state.
                     self.refresh_context_stats();
                 }
                 Event::ProcessExited => {
+                    let fork_interrupted = self.take_pending_fork();
+                    self.pending_session_rename = None;
+                    self.session_rename_ready = false;
                     self.busy = false;
                     self.retrying = false;
                     self.retry_detail = None;
                     self.pending_follow_up = None;
                     self.queue = PendingQueue::default();
+                    self.queue_edit = None;
+                    // The departing process's held agent error cannot belong
+                    // to the next run.
+                    self.pending_agent_error = None;
                     // The run is gone; its dialog (if any) can never be
                     // answered, so drop it without a reply.
                     self.dialog = None;
                     self.dialog_focus_pending = false;
                     self.approval = None;
                     self.approval_focus_pending = false;
+                    // Every custom surface belonged to that process too: the
+                    // promise behind it can no longer resolve, so a form left on
+                    // screen would swallow keystrokes forever. Compaction and the
+                    // title command also die with the process, and `is_compacting`
+                    // alone keeps `is_running()` true — the composer would stay on
+                    // Stop over a dead pi.
+                    self.custom_ui.clear();
+                    self.custom_ui_focus_pending = false;
+                    self.is_compacting = false;
+                    self.title_generating = false;
                     self.runtime.alive = false;
                     self.runtime.exited = true;
+                    self.abort_requested = false;
+                    self.abort_sent_at = None;
                     self.auth.on_disconnect();
-                    self.set_error(tr!("events.process_exited"));
+                    // An exit the app can recover from on its own is a restart,
+                    // not a failure to leave on screen — see `on_process_exited`.
+                    self.on_process_exited(cx);
+                    if fork_interrupted {
+                        self.set_error_from(
+                            REWIND_INTERRUPTED_ERROR_SOURCE,
+                            tr!("rewind.interrupted"),
+                        );
+                        refresh_sessions = true;
+                    }
                 }
                 Event::MessageEnd { value } => {
                     // A failed LLM call ends the assistant message with
                     // `stopReason: "error"` + `errorMessage` (e.g. an
-                    // unsupported model). Surface it in the banner; the
-                    // transcript renders the same text inline.
-                    if let Some(error) = transcript::message_error(value) {
-                        self.set_error(tr!("events.agent_error", error = error));
-                    } else if self.error.as_deref().is_some_and(|error| {
-                        error.starts_with(tr!("events.agent_error_prefix").as_str())
-                    }) {
-                        // The next attempt produced a message — clear the
-                        // stale agent-error banner.
-                        self.error = None;
+                    // unsupported model). Hold it for the settle rather than
+                    // raising it now: pi retries a transient provider failure
+                    // on the same turn, and the next attempt may recover, so
+                    // only the settle knows whether the run really ended here
+                    // (issue #96).
+                    match transcript::message_error(value) {
+                        Some(error) => self.pending_agent_error = Some(error),
+                        None => {
+                            // The next attempt produced a message — retire the
+                            // stale agent-error banner. Matched by source, so a
+                            // language change never strands it (issue #76).
+                            self.pending_agent_error = None;
+                            self.clear_error_from(AGENT_ERROR_SOURCE);
+                        }
                     }
                     // Real edit stats from finalized tool calls.
                     let (a, r) = transcript::diff_from_message(value);
                     self.added += a;
                     self.removed += r;
+                    // Every finalized message — the prompt, an assistant step,
+                    // or a tool result — grows the context. Re-read the meter
+                    // now so the ring follows the run instead of waiting for
+                    // the settle.
+                    self.refresh_context_stats();
                 }
                 Event::Response {
                     command,
                     success,
                     data,
                     error,
-                    id: _,
+                    id,
                 } => {
                     self.on_response(
                         command,
                         *success,
                         data.as_ref(),
                         error.as_deref(),
+                        id,
                         &mut refresh_sessions,
                         cx,
                     );
@@ -333,8 +522,13 @@ impl OrbitApp {
                 cx.notify();
             }
         }
+        self.busy = self.execution.status().is_in_progress();
+        if let Some(path) = &self.current_session_path {
+            self.remember_session_outcome(path.clone(), self.execution.status());
+        }
         if refresh_sessions {
             self.sessions = sessions::load_sessions();
+            self.prune_workflow_store();
             self.sync_session_menu(cx);
             cx.notify();
         }
@@ -342,13 +536,79 @@ impl OrbitApp {
         // (model/thinking labels, catalogs, status) — always redraw a frame
         // in which events were processed so those changes become visible.
         cx.notify();
+        self.is_active()
+    }
+
+    /// Step the new-task backdrop's field. Returns whether anything changed and
+    /// the window should repaint.
+    ///
+    /// The phase is wall-clock seconds, not a tick counter: the heartbeat's
+    /// cadence changes with the run state, and the field must not speed up
+    /// while something else streams. The clock only runs while the page is
+    /// actually on screen (`render` records that), so a backdrop nobody can see
+    /// costs nothing. Reduce Motion holds the frame it was showing — a halftone
+    /// is a perfectly good still.
+    fn advance_backdrop(&mut self, reduce_motion: bool) -> bool {
+        if !self.backdrop_live || reduce_motion {
+            self.backdrop_clock = None;
+            return false;
+        }
+        // Resume from the phase already on screen rather than snapping back to
+        // zero: a page the reader returns to keeps the screen it left.
+        if self.backdrop_clock.is_none() {
+            let resumed = Duration::from_secs_f32(self.backdrop_phase);
+            self.backdrop_clock = Some(Instant::now() - resumed);
+        }
+        let Some(clock) = self.backdrop_clock else {
+            return false;
+        };
+        self.backdrop_phase = clock.elapsed().as_secs_f32();
+        true
+    }
+
+    /// True while a run is in flight. The heartbeat polls fast (instead of the
+    /// idle ~90 ms cadence) when this holds, so streamed tokens land smoothly
+    /// rather than in visible batches, and drops back the moment it settles.
+    fn is_active(&self) -> bool {
+        self.busy || self.transcript.is_streaming() || self.retrying || self.is_compacting
+    }
+
+    /// Debug-build-only, local per-turn diagnostic (not telemetry: it never
+    /// leaves the process, never touches the network, and is compiled out of
+    /// release builds). Prints the context window, this turn's cache hit,
+    /// uncached prompt, output, duration, and average rate so a "lower tok/s"
+    /// can be attributed to prefill vs. decode without guessing.
+    #[cfg(debug_assertions)]
+    fn log_turn_diagnostics(&self) {
+        let Some(usage) = self.transcript.last_message_usage() else {
+            return;
+        };
+        let window = self.context.as_ref().map(|c| c.context_window).unwrap_or(0);
+        let cache_pct = usage
+            .cache_read_percent()
+            .map(|p| format!("{p:.1}%"))
+            .unwrap_or_else(|| "n/a".into());
+        let duration = self.transcript.last_message_duration();
+        let tps = duration
+            .filter(|d| d.as_secs_f64() >= 1.0 && usage.output > 0)
+            .map(|d| usage.output as f64 / d.as_secs_f64());
+        eprintln!(
+            "[orbit:perf] turn settled — window {window} tokens | cache {} ({cache_pct} hit) | prompt {} uncached | output {} | {}ms | {} tok/s avg",
+            usage.cache_read,
+            usage.input,
+            usage.output,
+            duration
+                .map(|d| d.as_millis().to_string())
+                .unwrap_or_else(|| "?".into()),
+            tps.map(|t| format!("{t:.0}")).unwrap_or_else(|| "?".into()),
+        );
     }
 
     /// Drain background (parked) sessions. Their runs continue in their own
     /// pi processes; events keep their transcripts current, so reopening a
     /// parked session resumes the live stream exactly where it left off.
     pub(super) fn tick_background(&mut self, cx: &mut Context<Self>) {
-        if self.lives.is_empty() {
+        if self.lives.is_empty() && self.pending_parks.is_empty() {
             return;
         }
         let mut changed = false;
@@ -359,60 +619,61 @@ impl OrbitApp {
         let mut finished: Vec<(PathBuf, Option<String>, Option<transcript::TurnSummary>)> =
             Vec::new();
         for (path, parked) in self.lives.iter_mut() {
-            for event in parked.client.drain_events() {
-                match &event {
-                    Event::AgentStart => parked.busy = true,
-                    // `agent_settled` is the real settle (queued steering /
-                    // follow-up / retry can continue past `agent_end`).
-                    Event::AgentSettled => {
-                        parked.busy = false;
-                        finished.push((
-                            path.clone(),
-                            self.sessions
-                                .iter()
-                                .find(|session| session.path == *path)
-                                .map(|session| session.title.clone()),
-                            parked.transcript.latest_turn_summary(),
-                        ));
-                    }
-                    Event::ProcessExited => parked.busy = false,
-                    // A parked session has no visible dialog surface; cancel
-                    // so its blocked run can settle (an active session renders
-                    // the dialog in `tick` above).
-                    Event::ExtensionUiRequest { id, .. } => {
-                        let _ = parked.client.respond_dialog(
-                            id,
-                            serde_json::json!({
-                                "type": "extension_ui_response",
-                                "id": id,
-                                "cancelled": true
-                            }),
-                        );
-                        continue;
-                    }
-                    Event::MessageEnd { value } => {
-                        // Real edit stats from finalized tool calls.
-                        let (a, r) = transcript::diff_from_message(value);
-                        parked.added += a;
-                        parked.removed += r;
-                    }
-                    _ => {}
-                }
-                changed |= parked.transcript.apply_event(&event);
+            let drained =
+                Self::drain_parked_session(parked, Some(path), &self.sessions, &mut finished);
+            changed |= drained.changed;
+            any_busy |= drained.busy;
+            let status = parked.execution.status();
+            // Record the outcome, but only when it moved: this runs per parked
+            // session on every heartbeat, and re-inserting the same value would
+            // dirty the map for nothing.
+            if !status.is_in_progress()
+                && self.session_outcomes.insert(path.clone(), status) != Some(status)
+            {
+                changed = true;
             }
             if !parked.client.is_alive() {
                 dead.push(path.clone());
             }
-            any_busy |= parked.busy;
         }
         for path in dead {
             self.lives.remove(&path);
+        }
+        // Pending parks: live processes whose session file pi has not named
+        // yet. They drain like any parked session (a run started during boot
+        // keeps going) and join `lives` under their file the moment the boot
+        // handshake reveals it. A process that never claims a file is dropped
+        // only when it exits or the idle TTL reaps it.
+        let mut rekeyed: Vec<(PathBuf, ParkedSession)> = Vec::new();
+        let mut ix = 0;
+        while ix < self.pending_parks.len() {
+            let drained = Self::drain_parked_session(
+                &mut self.pending_parks[ix],
+                None,
+                &self.sessions,
+                &mut finished,
+            );
+            changed |= drained.changed;
+            any_busy |= drained.busy;
+            if !self.pending_parks[ix].client.is_alive() {
+                self.pending_parks.remove(ix);
+                changed = true;
+            } else if let Some(path) = drained.rekey {
+                let parked = self.pending_parks.remove(ix);
+                rekeyed.push((path, parked));
+                changed = true;
+            } else {
+                ix += 1;
+            }
+        }
+        for (path, parked) in rekeyed {
+            self.park(path, parked);
         }
         // A parked run that settled while the user was elsewhere still wants
         // saying. The settle also flips the sidebar's running loader, so the
         // final repaint is unconditional.
         for (path, title, summary) in finished {
-            self.notify_turn_finished(Some(&path), title.as_deref(), summary.as_ref());
+            self.notify_turn_finished(Some(&path), title.as_deref(), summary.as_ref(), cx);
             changed = true;
         }
         if changed || any_busy {
@@ -423,11 +684,186 @@ impl OrbitApp {
         }
     }
 
+    /// Drain one parked session's buffered events into its transcript and
+    /// report what changed. `path` is `None` for a pending park: such a
+    /// session also answers the boot handshake, because only the active view
+    /// used to — a `new_session`/`clone` reply asks the process for
+    /// `get_state`, and the reply naming `sessionFile` re-keys it into `lives`
+    /// (issue #46).
+    fn drain_parked_session(
+        parked: &mut ParkedSession,
+        path: Option<&Path>,
+        sessions: &[SessionInfo],
+        finished: &mut Vec<(PathBuf, Option<String>, Option<transcript::TurnSummary>)>,
+    ) -> ParkedDrain {
+        let mut changed = false;
+        let mut rekey = None;
+        for event in parked.client.drain_events() {
+            let own_prompt = matches!(&event, Event::Response { id, command, .. }
+                if command == "prompt" && parked.execution.prompt_id.as_deref() == Some(id));
+            parked.execution.apply_event(&event);
+            if own_prompt && !parked.execution.status().is_in_progress() {
+                parked.transcript.abandon_reply();
+                parked.turns.finish();
+                parked.transcript.set_review_turn_open(false);
+            }
+            changed = true;
+            match &event {
+                Event::AgentStart => parked.busy = true,
+                // `agent_settled` is the real settle (queued steering /
+                // follow-up / retry can continue past `agent_end`).
+                Event::AgentSettled { aborted } => {
+                    parked.busy = false;
+                    parked.interaction = ParkedInteraction::default();
+                    parked.retry_detail = None;
+                    // The clock was parked open with this run. Close it here;
+                    // the active view's `finish_turn` does not see this process.
+                    parked.turns.finish();
+                    // A settled run has no queued continuation left; clear
+                    // the mirror even if the final `queue_update` was missed.
+                    parked.queue = PendingQueue::default();
+                    // A pending session has no sidebar row yet, so there is
+                    // no path to name in a notification; it is re-keyed
+                    // moments later and notices from then on.
+                    if let Some(path) = path.filter(|_| !aborted) {
+                        finished.push((
+                            path.to_path_buf(),
+                            sessions
+                                .iter()
+                                .find(|session| session.path == path)
+                                .map(|session| session.title.clone()),
+                            parked.transcript.latest_turn_summary(),
+                        ));
+                    }
+                }
+                Event::ProcessExited => {
+                    parked.busy = false;
+                    parked.interaction = ParkedInteraction::default();
+                    parked.retry_detail = None;
+                    parked.queue = PendingQueue::default();
+                }
+                // pi emits `queue_update` only when the queue changes, so a
+                // parked session must mirror it here to restore the pending
+                // bar on resume — and to drop messages pi already delivered.
+                Event::QueueUpdate { value } => {
+                    parked.queue = PendingQueue::from_value(value);
+                }
+                // Native requests remain blocked until this session is opened.
+                // The reducer saved the raw request; no answer is fabricated.
+                Event::ExtensionUiRequest { id, method, .. } => {
+                    if matches!(method.as_str(), "select" | "input") {
+                        if let Some(replay) = parked.interaction.ask_replay.as_mut() {
+                            // These answers were already committed by the user;
+                            // replaying them must not wait for a foreground UI.
+                            let reply = replay.reply(id, method);
+                            let finished = replay.is_finished()
+                                || matches!(reply, crate::ask::AskReplayReply::Cancel);
+                            let payload = match reply {
+                                crate::ask::AskReplayReply::Value(value) => serde_json::json!({
+                                    "type": "extension_ui_response", "id": id, "value": value,
+                                }),
+                                crate::ask::AskReplayReply::Cancel => serde_json::json!({
+                                    "type": "extension_ui_response", "id": id, "cancelled": true,
+                                }),
+                            };
+                            if parked.client.send(CommandBody::Raw(payload)).is_ok() {
+                                parked.execution.respond(id);
+                            } else {
+                                parked.execution.apply_event(&Event::ProcessExited);
+                            }
+                            if finished {
+                                parked.interaction.ask_replay = None;
+                            }
+                        }
+                    } else if method == "custom" {
+                        let _ = parked.client.cancel_dialog(id);
+                    }
+                    continue;
+                }
+                Event::AutoRetryEnd { .. } => parked.retry_detail = None,
+                Event::TurnStart => parked.interaction = ParkedInteraction::default(),
+                Event::ToolExecutionStart { value } => {
+                    if value
+                        .get("toolName")
+                        .and_then(Value::as_str)
+                        .is_some_and(crate::ask::is_ask_tool)
+                    {
+                        parked.interaction.ask_tool_id = value
+                            .get("toolCallId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        parked.interaction.ask_questions =
+                            crate::ask::questions_from_args(value.get("args"));
+                    }
+                }
+                Event::ToolExecutionEnd { value } => {
+                    if parked.interaction.ask_tool_id.as_deref()
+                        == value.get("toolCallId").and_then(Value::as_str)
+                    {
+                        parked.interaction = ParkedInteraction::default();
+                    }
+                }
+                Event::MessageEnd { value } => {
+                    // Real edit stats from finalized tool calls.
+                    let (a, r) = transcript::diff_from_message(value);
+                    parked.added += a;
+                    parked.removed += r;
+                }
+                Event::Response {
+                    command,
+                    success,
+                    data,
+                    ..
+                } if path.is_none() && *success => {
+                    let file = data
+                        .as_ref()
+                        .and_then(|data| data.get("sessionFile"))
+                        .and_then(Value::as_str)
+                        .map(PathBuf::from);
+                    match command.as_str() {
+                        "new_session" | "clone" => {
+                            // A clone inherits the source transcript in the
+                            // active view, which clears it on the reply; the
+                            // parked one never saw that, so clear it here.
+                            if command == "clone" {
+                                parked.transcript = Transcript::new();
+                                parked.turns = crate::turn_review::TurnClock::default();
+                                changed = true;
+                            }
+                            match file {
+                                Some(file) => rekey = Some(file),
+                                // pi creates the file but does not echo it on
+                                // this reply; the follow-up `get_state` names
+                                // it (same order the active view uses).
+                                None => {
+                                    let _ = parked.client.send(CommandBody::GetState);
+                                }
+                            }
+                        }
+                        "get_state" | "get_session_stats" => rekey = file,
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            changed |= parked.transcript.apply_event(&event);
+            if matches!(event, Event::AgentSettled { .. }) {
+                parked.transcript.set_review_turn_open(parked.turns.open);
+            }
+        }
+        parked.busy = parked.execution.status().is_in_progress();
+        ParkedDrain {
+            changed,
+            busy: parked.busy,
+            rekey,
+        }
+    }
+
     /// Replace the transcript with a `get_messages`-shaped snapshot and
     /// rebuild the top-bar diff counts from it. Shared by pi's authoritative
     /// `get_messages` response and the disk preview that paints a cold session
     /// before pi answers.
-    pub(super) fn apply_messages_snapshot(&mut self, data: &Value) {
+    pub(super) fn apply_messages_snapshot(&mut self, data: &Value, cx: &mut Context<Self>) {
         self.transcript.load_from(data);
         self.added = 0;
         self.removed = 0;
@@ -438,14 +874,22 @@ impl OrbitApp {
                 self.removed += r;
             }
         }
+        // Message indices moved. Rebuild the turn clock without letting the
+        // latest number step backwards, then refresh Last Turn.
+        self.rebuild_turn_clock();
+        self.push_turn_records(cx);
     }
 
+    /// Apply a command response to the app. The arguments are the response's
+    /// own fields; `id` is what tells one `prompt` from another.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn on_response(
         &mut self,
         command: &str,
         success: bool,
         data: Option<&serde_json::Value>,
         error: Option<&str>,
+        id: &str,
         refresh_sessions: &mut bool,
         cx: &mut Context<Self>,
     ) {
@@ -473,19 +917,65 @@ impl OrbitApp {
             self.on_entries_response(success, data, error, cx);
             return;
         }
+        // Dismissed or superseded picker requests cannot update a newer
+        // picker or show a stale error after a session change.
+        if command == "get_fork_messages" {
+            if self.rewind_fetch_id.as_deref() != Some(id) {
+                return;
+            }
+            self.rewind_fetch_id = None;
+        }
+        if command == "fork" {
+            if self.rewind_fork_id.as_deref() != Some(id) {
+                return;
+            }
+            self.rewind_fork_id = None;
+        }
+        // Only the matching reply releases the coalescing gate. If messages
+        // arrived meanwhile, request one fresh snapshot after this response.
+        if command == "get_session_stats" && self.context_stats_in_flight.as_deref() == Some(id) {
+            self.context_stats_in_flight = None;
+            if success && self.context_stats_pending {
+                self.refresh_context_stats();
+            } else {
+                self.context_stats_pending = false;
+            }
+        }
         // Error handling (docs #error-handling): a failed command carries an
         // `error` string. Surface it, unwind command-specific optimistic
         // state, and stop — success paths below assume `data` is valid.
         if !success {
+            if matches!(command, "switch_session" | "get_state") {
+                self.pending_session_rename = None;
+                self.session_rename_ready = false;
+            }
+            if command == "get_state" {
+                // The branch reload a regenerate waits on never completed.
+                self.pending_regenerate = None;
+            }
             self.on_command_failure(command, error, cx);
             match command {
+                "get_fork_messages" => {
+                    // The picker has nothing to show; close it rather than
+                    // leave a spinner over pi's error.
+                    self.rewind_fetching = false;
+                    self.rewind_picker = None;
+                    self.rewind_intent = ForkIntent::Edit;
+                    self.rewind_prompt_images.clear();
+                }
                 "compact" => {
                     self.is_compacting = false;
                     self.refresh_context_stats();
                 }
+                // A failed switch can never complete the armed default push;
+                // disarm so a later manual pick of the same model cannot be
+                // overridden by the configured thinking level.
+                "set_model" => {
+                    self.default_model_armed = false;
+                    self.send(CommandBody::GetState, "get_state");
+                }
                 // These changed local UI optimistically; re-read pi's state.
-                "set_model"
-                | "cycle_model"
+                "cycle_model"
                 | "set_thinking_level"
                 | "cycle_thinking_level"
                 | "set_session_name" => {
@@ -496,7 +986,7 @@ impl OrbitApp {
             return;
         }
         // A successful retry clears the banner it raised earlier.
-        self.clear_error_for(command);
+        self.clear_error_from(command);
         // Commands whose replies carry no payload (e.g. `set_thinking_level`
         // answers `{"success":true}` with no `data`). They still need their
         // follow-up state refresh, so they are matched BEFORE the
@@ -525,6 +1015,39 @@ impl OrbitApp {
             | "follow_up" => {
                 return;
             }
+            // A prompt pi hands to an *extension command* never starts a run:
+            // the answer is `{disposition: "handled"}` and no `agent_start` or
+            // `agent_settled` follows. The composer arms the live "Working
+            // for…" row optimistically at the send, so without this the row and
+            // the Stop button stay up for a turn that does not exist — the
+            // `/review` custom UI case in issue #76, where cancelling the
+            // surface could not help because there was nothing to settle.
+            // `started` and `queued` both mean a run is coming or continuing.
+            "prompt" => {
+                let handled = data
+                    .as_ref()
+                    .and_then(|data| data.get("disposition"))
+                    .and_then(Value::as_str)
+                    == Some("handled");
+                // `prompt` is also how Orbit sends extension commands (the
+                // title regenerator), and pi answers those `handled` too. Only
+                // the composer's own prompt was armed for a run, so only its
+                // reply may unwind one — otherwise regenerating a title mid-run
+                // would abandon the live row of a run still streaming.
+                if self.prompt_in_flight.as_deref() != Some(id) {
+                    return;
+                }
+                self.prompt_in_flight = None;
+                if handled {
+                    self.execution = SessionExecution::default();
+                    self.busy = false;
+                    self.transcript.abandon_reply();
+                    // The turn opened at the send never ran: close it so the
+                    // next prompt starts a fresh one.
+                    self.finish_turn(cx);
+                }
+                return;
+            }
             // `compact` also has a result payload on success; clearing the
             // compacting state belongs before the data gate.
             "compact" => {
@@ -534,9 +1057,22 @@ impl OrbitApp {
                 self.send(CommandBody::GetState, "get_state");
                 return;
             }
+            // `get_fork_messages` answers the rewind picker. An empty payload is
+            // still an answer: the list is empty, not unknown.
+            "get_fork_messages" => {
+                self.on_fork_messages_response(data, cx);
+                return;
+            }
+            // `fork` moves the process onto a branched session file: treat it
+            // as the session replacement it is (see `on_fork_response`).
+            "fork" => {
+                self.on_fork_response(data, refresh_sessions, cx);
+                return;
+            }
             // `clone` duplicates the session and moves the process onto the
             // copy. Adopt the new file/id when pi reports them, then reload.
             "clone" => {
+                self.execution = SessionExecution::default();
                 self.transcript.clear();
                 self.current_title = None;
                 self.reset_session_name(cx);
@@ -545,9 +1081,12 @@ impl OrbitApp {
                 self.removed = 0;
                 self.context = None;
                 self.session_usage = None;
-                self.reset_turns();
+                self.reset_turns(cx);
                 self.reset_queue();
                 self.session_id = None;
+                // A clone mirrors its source session; it is not put on the
+                // default model.
+                self.default_model_armed = false;
                 if let Some(data) = data.as_ref() {
                     if let Some(file) = data.get("sessionFile").and_then(Value::as_str) {
                         self.adopt_session_file(PathBuf::from(file));
@@ -557,6 +1096,7 @@ impl OrbitApp {
                         self.reset_quota_entries();
                     }
                 }
+                self.sync_review_context(cx);
                 *refresh_sessions = true;
                 self.send(CommandBody::GetMessages, "get_messages");
                 self.send(CommandBody::GetState, "get_state");
@@ -582,6 +1122,8 @@ impl OrbitApp {
                         self.model_provider = provider.to_string();
                     }
                 }
+                // The Git page labels its context with the provider/model.
+                self.sync_review_context(cx);
                 if let Some(level) = data
                     .get("thinkingLevel")
                     .and_then(serde_json::Value::as_str)
@@ -598,12 +1140,16 @@ impl OrbitApp {
                         // the bridge cursor must start over.
                         self.reset_quota_entries();
                         self.recover_latest_turn(cx);
+                        self.sync_review_context(cx);
                     }
                 }
                 // Agent control surface: streaming/compaction state, queue
                 // modes, auto-compaction, and the session display name.
                 let state = SessionState::from_value(data);
-                self.busy = state.is_streaming || state.is_compacting;
+                self.execution.reconcile(&state);
+                self.busy = state.is_streaming
+                    || state.is_compacting
+                    || self.execution.status().is_in_progress();
                 self.is_compacting = state.is_compacting;
                 self.follow_up_mode = state.follow_up_mode;
                 self.auto_compaction = state.auto_compaction_enabled;
@@ -620,6 +1166,18 @@ impl OrbitApp {
                     }
                     _ => {}
                 }
+                if let Some(path) = self.pending_session_rename.as_ref() {
+                    if self.current_session_path.as_ref() == Some(path)
+                        && data
+                            .get("sessionFile")
+                            .and_then(Value::as_str)
+                            .is_some_and(|file| std::path::Path::new(file) == path)
+                    {
+                        self.pending_session_rename = None;
+                        self.session_rename_ready = true;
+                        cx.notify();
+                    }
+                }
                 self.sync_model_selector(cx);
                 self.refresh_context_stats();
                 // Capability probe: a pi that advertises `custom` will stream
@@ -633,9 +1191,28 @@ impl OrbitApp {
                         .iter()
                         .any(|method| method.as_str() == Some("custom"));
                 }
+                // A `new_session` birth may still need its default model
+                // pushed; this is a no-op otherwise.
+                self.apply_default_model(cx);
+                // A regenerate queued its prompt behind this reload: sending
+                // it before `get_messages` landed would be wiped out by that
+                // snapshot. The request id keeps an unrelated state reply from
+                // firing a stale prompt.
+                if self
+                    .pending_regenerate
+                    .as_ref()
+                    .is_some_and(|pending| pending.state_id == id)
+                {
+                    if let Some(pending) = self.pending_regenerate.take() {
+                        // The prompt's own images ride the resend, so the
+                        // model sees the prompt it answered the first time.
+                        self.attachments = pending.images;
+                        self.submit(pending.text, cx);
+                    }
+                }
             }
             "get_messages" => {
-                self.apply_messages_snapshot(data);
+                self.apply_messages_snapshot(data, cx);
                 self.refresh_context_stats();
             }
             "get_available_models" => {
@@ -656,12 +1233,19 @@ impl OrbitApp {
                                     context_window: m
                                         .get("contextWindow")
                                         .and_then(serde_json::Value::as_u64),
+                                    thinking_levels: catalog_thinking_levels(m),
                                 })
                             })
                             .collect()
                     })
                     .unwrap_or_default();
                 self.sync_model_selector(cx);
+                // The model catalog arrived after the session: retry a default
+                // that could not be resolved yet.
+                self.apply_default_model(cx);
+                // The Git page sizes its commit-message prompt from the model's
+                // context window, which only the catalog knows.
+                self.sync_review_context(cx);
             }
             "get_available_thinking_levels" => {
                 self.available_thinking_levels = data
@@ -712,6 +1296,8 @@ impl OrbitApp {
                             .collect()
                     })
                     .unwrap_or_default();
+                // A `/` menu already open picks up the fresh command list.
+                self.sync_autocomplete(cx);
             }
             "get_session_stats" => {
                 self.context = ContextUsage::from_stats(data);
@@ -722,8 +1308,11 @@ impl OrbitApp {
             }
             "switch_session" => {
                 if success {
-                    self.reset_turns();
+                    // A resumed session keeps the model in its file (D-D).
+                    self.default_model_armed = false;
+                    self.reset_turns(cx);
                     self.reset_queue();
+                    self.sync_review_context(cx);
                     // Load the session *before* the slower auth/quota probes,
                     // which would otherwise queue ahead of `get_messages` and
                     // push the transcript out by a network round trip.
@@ -734,6 +1323,9 @@ impl OrbitApp {
                 }
             }
             "new_session" => {
+                if !self.busy {
+                    self.execution = SessionExecution::default();
+                }
                 self.transcript.clear();
                 self.current_title = None;
                 self.reset_session_name(cx);
@@ -744,9 +1336,14 @@ impl OrbitApp {
                 self.session_usage = None;
                 // Widgets belong to the process that sent them.
                 self.extension_widgets.clear();
-                self.reset_turns();
+                self.reset_turns(cx);
                 self.reset_queue();
+                self.sync_review_context(cx);
                 *refresh_sessions = true;
+                // A fresh session is born on the default model; `set_model`
+                // is pushed once `get_state` reports the new id (see
+                // `apply_default_model`).
+                self.default_model_armed = true;
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
             }
@@ -761,8 +1358,16 @@ impl OrbitApp {
                     }
                 }
                 // `queue_update` mirrors the same fact; this keeps the row
-                // correct even if the event is missed.
-                self.queue = queue;
+                // correct even if the event is missed. A queue the app itself
+                // rebuilt is the exception: this echo carries the list from
+                // *before* the rebuild, so applying it would blink the old rows
+                // back in. The `queue_update`s that follow are authoritative.
+                if !std::mem::take(&mut self.queue_replaced) {
+                    self.queue = queue;
+                    // The dropped messages are gone, so an inline editor on one
+                    // of them has nothing left to save.
+                    self.reanchor_queue_edit(cx);
+                }
             }
             _ => {
                 let _ = success;
@@ -857,6 +1462,20 @@ impl OrbitApp {
         }
     }
 
+    /// Queue copied files using the same attachment rules as file drops.
+    pub(super) fn drain_pasted_files(&mut self, cx: &mut Context<Self>) {
+        let paths = self
+            .input
+            .update(cx, |input, _| std::mem::take(&mut input.pasted_files));
+        for path in paths {
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
+                break;
+            }
+            self.queue_path(QueuedPath::classify(&path), None, cx);
+        }
+    }
+
     /// Move images the composer collected (clipboard paste) into the
     /// attachment queue. Called on tick and again at submit so a paste
     /// immediately followed by Enter still attaches.
@@ -868,31 +1487,88 @@ impl OrbitApp {
             .input
             .update(cx, |input, _| std::mem::take(&mut input.pasted_images));
         for image in &pasted {
-            if self.attachments.len() >= MAX_ATTACHMENTS {
-                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
                 break;
             }
             let index = self.attachments.len();
-            self.attachments.push(Attachment::from_image(image, index));
+            self.push_attachment(Attachment::from_image(image, index), cx);
         }
         if !pasted.is_empty() {
             cx.notify();
         }
     }
 
-    /// Post the "turn finished" notification for a settle. Nothing is posted
+    /// Move long pastes the composer set aside into pill attachments. Called
+    /// on tick and again at submit, so paste-then-Enter never loses the text.
+    pub(super) fn drain_pasted_texts(&mut self, cx: &mut Context<Self>) {
+        if !self.input.read(cx).has_pasted_texts() {
+            return;
+        }
+        let pasted = self
+            .input
+            .update(cx, |input, _| std::mem::take(&mut input.pasted_texts));
+        for text in pasted {
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
+                break;
+            }
+            self.pasted_texts.push(PastedText::new(text));
+        }
+        cx.notify();
+    }
+
+    /// Keep the chat composer's placeholder honest about what Enter does: an
+    /// idle send starts a prompt, a send mid-run queues a follow-up or steers
+    /// the live turn, depending on the configured send mode. The key changes
+    /// only when that answer changes, so the heartbeat stays quiet.
+    pub(super) fn sync_composer_placeholder(&mut self, cx: &mut Context<Self>) {
+        let key = if self.is_running() {
+            match theme::get(cx).ui.composer_send_mode {
+                SendMode::FollowUp => "composer.placeholder_follow_up",
+                SendMode::Steer => "composer.placeholder_steer",
+            }
+        } else {
+            "composer.placeholder"
+        };
+        self.input
+            .update(cx, |input, cx| input.set_placeholder_key(key, cx));
+    }
+
+    /// Post the "turn finished" notification for a settle and leave the
+    /// session's row marked until the user actually reads it. Nothing is posted
     /// while the window is frontmost except the in-app toast, and a turn the
     /// user aborted holds no news. `session` is the file path that a banner
     /// click routes back to.
+    ///
+    /// Both settle paths meet here — the open session's and a parked background
+    /// run's — which is what makes the review mark cover every session that
+    /// finishes out of sight, not just the one on screen (issue #83).
     pub(super) fn notify_turn_finished(
         &mut self,
         session: Option<&Path>,
         title: Option<&str>,
         summary: Option<&transcript::TurnSummary>,
+        cx: &mut Context<Self>,
     ) {
         let Some(summary) = summary else { return };
         if summary.aborted {
             return;
+        }
+        // The mark outlives the toast: it is the only cue left once the toast
+        // has gone, and the only one that says *which* session it was.
+        if let Some(path) = session {
+            let in_front = self.transcript_in_front(cx);
+            if should_mark_review(in_front, path, self.current_session_path.as_deref()) {
+                let mark = if summary.failed {
+                    ReviewMark::Failed
+                } else {
+                    ReviewMark::Done
+                };
+                if self.awaiting_review.insert(path.to_path_buf(), mark) != Some(mark) {
+                    cx.notify();
+                }
+            }
         }
         let (subtitle, fallback, kind) = if summary.failed {
             (
@@ -913,6 +1589,32 @@ impl OrbitApp {
             summary.body.as_str()
         };
         self.post_notification(session, title, &subtitle, body, kind);
+    }
+
+    /// Whether a full-page surface has replaced the chat column: Files, Git,
+    /// Usage, Worktrees, or a full-width Review pane. Mirrors the renderer's own
+    /// rule in `view.rs` (`feature_open` / `pane_full`) — keep the two in step,
+    /// since a page that hides the transcript must also stop the review mark
+    /// from being spent.
+    fn chat_column_covered(&self, cx: &App) -> bool {
+        let pane = self.sidepane.read(cx);
+        // Same gate the renderer puts on a full-width Review pane: it only owns
+        // the page once its dependencies are ready and no page already has it.
+        let review_covers_chat =
+            pane.is_open() && pane.is_full_width() && self.dependencies_ready();
+        self.file_viewer.read(cx).is_open()
+            || self.git_open
+            || self.usage_open
+            || self.worktrees_open
+            || review_covers_chat
+    }
+
+    /// Whether the transcript is the surface genuinely in front of the user:
+    /// the window is frontmost and no full-page surface has replaced the chat
+    /// area. A settle out of sight leaves a review mark even when the window is
+    /// active (issue #83).
+    fn transcript_in_front(&self, cx: &App) -> bool {
+        self.window_active && !self.settings_open && !self.chat_column_covered(cx)
     }
 
     /// A run is blocked on an extension dialog — the one event a user cannot
@@ -999,5 +1701,53 @@ impl OrbitApp {
             .as_deref()
             .and_then(watch::WorkspaceWatcher::start);
         self.refresh_branch_status(cx);
+        // The status bar's "Work in" chip and the Worktrees page both read the
+        // repository's worktree list, so keep it current on every workspace
+        // move (one background `git worktree list`).
+        self.refresh_worktrees(cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The review mark is only spent when the chat column is genuinely in front
+    /// of the user. Every surface that replaces the chat area has to count as
+    /// "covered", or a settle behind it would look read (issue #83).
+    #[gpui::test]
+    fn a_full_page_surface_is_not_the_transcript_in_front(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit));
+            let app = cx.new(OrbitApp::new);
+            app.update(cx, |app, cx| {
+                app.window_active = true;
+                assert!(
+                    app.transcript_in_front(cx),
+                    "a frontmost window on the chat is the transcript in front"
+                );
+
+                app.git_open = true;
+                assert!(!app.transcript_in_front(cx), "the Git page covers it");
+                app.git_open = false;
+
+                app.usage_open = true;
+                assert!(!app.transcript_in_front(cx), "the Usage page covers it");
+                app.usage_open = false;
+
+                app.worktrees_open = true;
+                assert!(!app.transcript_in_front(cx), "the Worktrees page covers it");
+                app.worktrees_open = false;
+
+                app.settings_open = true;
+                assert!(!app.transcript_in_front(cx), "Settings covers it");
+                app.settings_open = false;
+
+                app.window_active = false;
+                assert!(!app.transcript_in_front(cx), "a background window is not");
+                app.window_active = true;
+                assert!(app.transcript_in_front(cx));
+            });
+        });
     }
 }

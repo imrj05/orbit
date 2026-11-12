@@ -9,10 +9,14 @@
 //! first user message.
 
 use std::{
+    collections::HashMap,
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        mpsc::{self, Receiver},
+        RwLock,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,11 +25,10 @@ use serde_json::Value;
 
 use crate::watch::debounced_watch;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
     /// Path to the `.jsonl` session file (used by `switch_session`).
     pub path: PathBuf,
-    #[allow(dead_code)] // useful for future fork/clone wiring
     pub id: String,
     /// Workspace the session belongs to.
     pub cwd: PathBuf,
@@ -34,11 +37,14 @@ pub struct SessionInfo {
     pub title: String,
     /// First user message preview — the sidebar's second line.
     pub first_message: String,
-    /// Wall-clock time of the session's last *activity* — the newest
-    /// `message` entry, not the file's mtime. Opening a session appends
+    /// Wall-clock time of the session's last *user* message, not the file's
+    /// mtime and not assistant or tool output. Opening a session appends
     /// bookkeeping entries (the quota bridge's `custom` snapshots), which
     /// would otherwise make an untouched session read "now" and jump to the
-    /// top of the sidebar. Only a new user/agent message moves this.
+    /// top of the sidebar. A run's streamed output must not move it either:
+    /// two sessions writing at once would otherwise trade the top slot on
+    /// every append. Only a new user message moves this, matching Cursor's
+    /// agent list (`lastUpdatedAt` advances when the person sends).
     pub modified: SystemTime,
 }
 
@@ -51,13 +57,14 @@ fn dirs_home() -> PathBuf {
     crate::platform::home_dir()
 }
 
-/// Load every session in pi's store, newest-*activity* first.
+/// Load every session in pi's store, newest-*user message* first.
 ///
-/// Ordering is keyed on the session's last message time (see
-/// [`SessionInfo::modified`]), so the session (and workspace) with the latest
-/// activity always sits at the top of the sidebar and older ones follow —
-/// matching the age label each row displays. Merely opening a session does
-/// not reorder the list.
+/// Ordering is keyed on the session's last user-message time (see
+/// [`SessionInfo::modified`]), so the session (and workspace) the person
+/// spoke to most recently sits at the top of the sidebar and older ones
+/// follow — matching the age label each row displays. Merely opening a
+/// session, or assistant and tool output landing while a run is in flight,
+/// does not reorder the list.
 pub fn load_sessions() -> Vec<SessionInfo> {
     load_sessions_in(&sessions_dir())
 }
@@ -89,6 +96,26 @@ fn load_sessions_in(dir: &Path) -> Vec<SessionInfo> {
             .then_with(|| b.path.cmp(&a.path))
     });
     out
+}
+
+/// Sessions whose newest message is more than `days` old — the retention
+/// policy's candidate set. Age uses the same last-activity time the sidebar
+/// shows, so a session merely opened (bookkeeping appends) is never swept.
+pub fn older_than(days: u32, now: SystemTime) -> Vec<SessionInfo> {
+    older_than_in(&sessions_dir(), days, now)
+}
+
+/// The scan body of [`older_than`], with the store directory injectable for
+/// tests.
+pub(crate) fn older_than_in(dir: &Path, days: u32, now: SystemTime) -> Vec<SessionInfo> {
+    let threshold = Duration::from_secs(u64::from(days) * 86_400);
+    load_sessions_in(dir)
+        .into_iter()
+        .filter(|session| {
+            now.duration_since(session.modified)
+                .is_ok_and(|age| age > threshold)
+        })
+        .collect()
 }
 
 /// Only session files matter — header/group-directory events are ignored.
@@ -252,9 +279,20 @@ impl SessionWatcher {
 }
 
 fn read_session(path: &Path) -> Option<SessionInfo> {
+    // A scan revisits every file on startup, every watcher reload, and every
+    // turn settle. Sessions that have not changed since the last scan are the
+    // common case (a store can hold hundreds of MB across dozens of files), so
+    // short-circuit on the file's (mtime, length) before opening anything.
+    let meta = fs::metadata(path).ok()?;
+    let file_modified = meta.modified().ok()?;
+    let len = meta.len();
+    if let Some(info) = info_cache_get(path, file_modified, len) {
+        return Some(info);
+    }
+
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
-    let fallback = fs::metadata(path).ok()?.modified().ok()?;
+    let fallback = file_modified;
     // Age from the last real message, so bookkeeping appends (quota snapshots
     // written when the session is merely opened) don't reset it to "now".
     let modified = last_message_time(path).unwrap_or(fallback);
@@ -267,7 +305,10 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
         return None;
     }
     let id = header.get("id")?.as_str()?.to_string();
-    let cwd = PathBuf::from(header.get("cwd")?.as_str()?);
+    // Resolve the recorded cwd to the same identity Orbit stores for a
+    // project, so a session created in a symlinked path (`/tmp` →
+    // `/private/tmp` on macOS) still lands under its workspace.
+    let cwd = canonical_workspace_path(Path::new(header.get("cwd")?.as_str()?));
 
     // Scan a bounded number of lines for the first user message → preview.
     let mut first_text = String::new();
@@ -304,39 +345,238 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
         .map(|name| cap_chars(&name, 80))
         .unwrap_or_else(|| cap_chars(&first_text, 80));
 
-    Some(SessionInfo {
+    let info = SessionInfo {
         path: path.to_path_buf(),
         id,
         cwd,
         title,
         first_message,
         modified,
+    };
+    let providers = assistant_providers(path, len);
+    info_cache_put(path, file_modified, len, info.clone(), providers);
+    Some(info)
+}
+
+/// A provider and model observed on an assistant message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionProvider {
+    pub provider: String,
+    pub model: Option<String>,
+}
+
+/// First-pass filter for [`assistant_provider_in_line`]. Deliberately as loose as
+/// the role value itself: a false positive only costs the parse we would have
+/// done anyway, while a false negative would drop a provider from the row.
+const ASSISTANT_MARKER: &[u8] = b"assistant";
+
+/// One session's cached metadata, valid while the file's `(mtime, length)`
+/// are unchanged. A stale entry is dropped and recomputed on the next scan.
+#[derive(Clone)]
+struct InfoCacheEntry {
+    file_modified: SystemTime,
+    len: u64,
+    info: SessionInfo,
+    providers: Vec<SessionProvider>,
+}
+
+/// Per-file [`SessionInfo`] cache shared by the startup scan and the watcher
+/// thread. Scans are therefore O(changed files): a settle or a watcher reload
+/// re-reads only the file(s) that actually grew, and directory walks hit this
+/// cache for the rest.
+static INFO_CACHE: RwLock<Option<HashMap<PathBuf, InfoCacheEntry>>> = RwLock::new(None);
+
+fn info_cache_get(path: &Path, file_modified: SystemTime, len: u64) -> Option<SessionInfo> {
+    let guard = INFO_CACHE.read().ok()?;
+    let entry = guard.as_ref()?.get(path)?;
+    (entry.file_modified == file_modified && entry.len == len).then(|| entry.info.clone())
+}
+
+/// Providers used by assistant messages, most recently used first.
+/// Never performs file I/O during rendering.
+pub(crate) fn cached_session_providers(path: &Path) -> Vec<SessionProvider> {
+    INFO_CACHE
+        .read()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()?
+                .get(path)
+                .map(|entry| entry.providers.clone())
+        })
+        .unwrap_or_default()
+}
+
+/// Scan the full history on a cache miss, then only appended complete lines
+/// when the previous snapshot ended at a line boundary. An append that lands
+/// mid-line (the previous read ended inside a partially written record) falls
+/// back to a full scan, so a torn line can never be skipped. A file replaced by
+/// a *longer* one still passes the offset check and keeps the providers it had —
+/// an acceptable blind spot, because pi only ever appends to a session file.
+fn assistant_providers(path: &Path, len: u64) -> Vec<SessionProvider> {
+    let Ok(mut file) = fs::File::open(path) else {
+        return Vec::new();
+    };
+    let previous = INFO_CACHE.read().ok().and_then(|guard| {
+        let entry = guard.as_ref()?.get(path)?;
+        (entry.len > 0 && entry.len < len).then(|| (entry.len, entry.providers.clone()))
+    });
+    let mut providers = Vec::new();
+    if let Some((offset, previous_providers)) = previous {
+        let mut byte = [0u8; 1];
+        if file.seek(SeekFrom::Start(offset - 1)).is_ok()
+            && file.read_exact(&mut byte).is_ok()
+            && byte[0] == b'\n'
+        {
+            providers = previous_providers;
+            providers.reverse();
+        } else if file.seek(SeekFrom::Start(0)).is_err() {
+            return Vec::new();
+        }
+    }
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line.last() != Some(&b'\n') => break,
+            Ok(_) => {}
+        }
+        if let Some(provider) = assistant_provider_in_line(&line) {
+            providers.retain(|item| item != &provider);
+            providers.push(provider);
+        }
+    }
+    providers.reverse();
+    providers
+}
+
+fn assistant_provider_in_line(line: &[u8]) -> Option<SessionProvider> {
+    // Cheap first: a session store holds multi-megabyte tool-result lines, and
+    // deserializing every one of them just to learn it is not an assistant
+    // message is the difference between a fast startup scan and a slow one.
+    if !line
+        .windows(ASSISTANT_MARKER.len())
+        .any(|window| window == ASSISTANT_MARKER)
+    {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(line).ok()?;
+    if value.get("type")?.as_str()? != "message"
+        || value["message"]["role"].as_str()? != "assistant"
+    {
+        return None;
+    }
+    let message = &value["message"];
+    let provider = message["provider"].as_str().filter(|s| !s.is_empty())?;
+    let model = message["model"].as_str().filter(|s| !s.is_empty());
+    Some(SessionProvider {
+        provider: provider.to_owned(),
+        model: model.map(str::to_owned),
     })
 }
 
-/// The session's most recent pi-assigned name, read from a bounded tail
-/// window so it works against a file pi is still appending to. pi writes a
-/// `session_info` entry when it auto-titles the session and again on rename,
-/// so the newest entry wins; a session never named (or whose name was
-/// cleared) yields `None` and the caller falls back to the first message.
-/// The window is capped because a session's name sits near its live edge long
-/// before the file grows unbounded — an older name simply falls back.
+fn info_cache_put(
+    path: &Path,
+    file_modified: SystemTime,
+    len: u64,
+    info: SessionInfo,
+    providers: Vec<SessionProvider>,
+) {
+    if let Ok(mut guard) = INFO_CACHE.write() {
+        guard.get_or_insert_with(HashMap::new).insert(
+            path.to_path_buf(),
+            InfoCacheEntry {
+                file_modified,
+                len,
+                info,
+                providers,
+            },
+        );
+    }
+}
+
+/// The session's most recent pi-assigned name. pi writes a `session_info`
+/// entry when it auto-titles the session and again on rename, so the newest
+/// entry wins; a session never named (or whose name was cleared) yields
+/// `None` and the caller falls back to the first message.
+///
+/// The name usually sits in the live tail, so the tail window is read first.
+/// A long session can push its auto-title entry far behind that window, so a
+/// full scan runs only when the tail yields nothing — and its result is
+/// cached per file, keyed by the scanned length, so later appends cost only
+/// the appended bytes.
 fn last_session_name(path: &Path) -> Option<String> {
-    const MAX_SCAN: u64 = 256 * 1024;
+    const TAIL: u64 = 256 * 1024;
+    /// Bytes of overlap rescanned on the incremental path so a line torn
+    /// across the previous boundary still parses.
+    const OVERLAP: u64 = 8 * 1024;
+
+    let len = fs::metadata(path).ok()?.len();
+    if let Some(entry) = name_cache_get(path) {
+        if entry.scanned == len {
+            return entry.name;
+        }
+        if len > entry.scanned {
+            // The file only grew: a new name can only be in the appended
+            // bytes (renames append a `session_info`). Reuse the cached name
+            // when the delta carries none.
+            let from = entry.scanned.saturating_sub(OVERLAP);
+            return scan_for_last_name(path, from, len).or(entry.name);
+        }
+        // Truncated or replaced: fall through to a fresh scan.
+    }
+
+    // Common case: the newest name sits in the tail.
+    let name = scan_for_last_name(path, len.saturating_sub(TAIL), len).or_else(|| {
+        // Long sessions can carry the auto-title entry far behind the tail;
+        // a one-time full scan finds it, then the cache keeps it cheap.
+        scan_for_last_name(path, 0, len)
+    });
+    name_cache_put(path, len, name.clone());
+    name
+}
+
+/// The name on the newest `session_info` line in `[start, end)`, if any.
+/// A window that starts mid-line leaves one unparseable segment, skipped.
+fn scan_for_last_name(path: &Path, start: u64, end: u64) -> Option<String> {
     let mut file = fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    let start = len.saturating_sub(MAX_SCAN);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf).ok()?;
+    file.take(end.saturating_sub(start))
+        .read_to_end(&mut buf)
+        .ok()?;
     // Newest line first: the last `session_info` entry is the current name.
-    // A window that starts mid-line leaves one unparseable segment, skipped.
     for line in buf.split(|byte| *byte == b'\n').rev() {
         if let Some(name) = session_name_in_line(line) {
             return name;
         }
     }
     None
+}
+
+/// One file's last-resolved name and the length it was resolved at.
+#[derive(Clone)]
+struct NameCache {
+    scanned: u64,
+    name: Option<String>,
+}
+
+/// Per-file name cache shared by the startup scan and the watcher thread.
+static NAME_CACHE: RwLock<Option<HashMap<PathBuf, NameCache>>> = RwLock::new(None);
+
+fn name_cache_get(path: &Path) -> Option<NameCache> {
+    let guard = NAME_CACHE.read().ok()?;
+    guard.as_ref()?.get(path).cloned()
+}
+
+fn name_cache_put(path: &Path, scanned: u64, name: Option<String>) {
+    if let Ok(mut guard) = NAME_CACHE.write() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(path.to_path_buf(), NameCache { scanned, name });
+    }
 }
 
 /// The name on one `session_info` line: `Some(Some(name))` when the entry
@@ -357,13 +597,14 @@ fn session_name_in_line(line: &[u8]) -> Option<Option<String>> {
     )
 }
 
-/// Wall-clock time of the newest `message` entry in a session file.
+/// Wall-clock time of the newest user `message` in a session file.
 ///
 /// Read from the tail so large transcripts cost a bounded amount of I/O, and
 /// so it works against a file pi is actively appending to. Non-message
-/// entries (`custom` quota snapshots, `model_change`, …) are skipped, which is
-/// what keeps "last activity" independent of the file's mtime. `None` when no
-/// stamped message is found — the caller falls back to the file mtime.
+/// entries (`custom` quota snapshots, `model_change`, …) are skipped, and so
+/// are assistant and tool messages: those keep arriving for the whole run and
+/// must not change sidebar order. `None` when no stamped user message is
+/// found — the caller falls back to the file mtime.
 fn last_message_time(path: &Path) -> Option<SystemTime> {
     const CHUNK: u64 = 64 * 1024;
     let mut file = fs::File::open(path).ok()?;
@@ -403,10 +644,22 @@ fn last_message_time(path: &Path) -> Option<SystemTime> {
     None
 }
 
-/// The wall-clock time on one JSONL line, when that line is a `message`.
+/// The wall-clock time on one JSONL line, when that line is a user `message`.
 fn message_time_in_line(line: &[u8]) -> Option<SystemTime> {
     let value: Value = serde_json::from_slice(line).ok()?;
     if value.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    let role = value
+        .get("message")
+        .and_then(|message| message.get("role"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    // Assistant and tool lines keep arriving for the whole run. Counting them
+    // makes two live sessions trade the top slot on every append. Cursor's
+    // agent list keys recency on the turn the person sent (`lastUpdatedAt`
+    // moves at submit, not on streamed output).
+    if role != "user" {
         return None;
     }
     let millis = timestamp_millis(value.get("timestamp")).or_else(|| {
@@ -494,6 +747,46 @@ pub fn workspace_label(cwd: &Path) -> String {
         .unwrap_or_else(|| cwd.to_string_lossy().to_string())
 }
 
+/// A workspace path with a stable identity: symlinks resolved and a trailing
+/// separator trimmed, so a folder and its symlinked form (`/tmp` →
+/// `/private/tmp` on macOS) map to one workspace. Falls back to the lexical
+/// path when the folder no longer exists, so a removed workspace still
+/// compares by its recorded path.
+pub fn canonical_workspace_path(path: &Path) -> PathBuf {
+    match fs::canonicalize(path) {
+        Ok(canonical) => strip_verbatim_prefix(canonical),
+        Err(_) => {
+            let raw = path.to_string_lossy();
+            let trimmed = raw.trim_end_matches(std::path::MAIN_SEPARATOR);
+            if trimmed.is_empty() {
+                PathBuf::from(raw.as_ref())
+            } else {
+                PathBuf::from(trimmed)
+            }
+        }
+    }
+}
+
+/// `fs::canonicalize` answers with a `\\?\` verbatim path on Windows; pi and
+/// the rest of Orbit speak the plain form, so unwrap the prefix.
+#[cfg(windows)]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let raw = path.to_string_lossy();
+    let Some(rest) = raw.strip_prefix(r"\\?\") else {
+        return path;
+    };
+    if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else {
+        PathBuf::from(rest)
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    path
+}
+
 /// Compact age label for a session row (`2m`, `2h`, `1d`, `2mo`, `1y`).
 pub fn relative_time(modified: SystemTime) -> String {
     let secs = SystemTime::now()
@@ -507,23 +800,6 @@ pub fn relative_time(modified: SystemTime) -> String {
         86_400..=2_591_999 => format!("{}d", secs / 86_400),
         2_592_000..=31_535_999 => format!("{}mo", secs / 2_592_000),
         _ => format!("{}y", secs / 31_536_000),
-    }
-}
-
-/// Coarse age bucket (kept for potential future time-grouped views).
-#[allow(dead_code)]
-pub fn time_bucket(modified: SystemTime) -> &'static str {
-    let hours = SystemTime::now()
-        .duration_since(modified)
-        .unwrap_or_default()
-        .as_secs()
-        / 3600;
-    match hours {
-        0..=23 => "Today",
-        24..=47 => "Yesterday",
-        48..=167 => "This Week",
-        168..=719 => "This Month",
-        _ => "Older",
     }
 }
 
@@ -574,6 +850,74 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_provider_uses_latest_assistant_and_refreshes_on_append() {
+        let path = named_session_file(
+            "orbit-session-provider-test",
+            "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"provider\":\"anthropic\"}}\n",
+        );
+        read_session(&path).unwrap();
+        let names = || {
+            cached_session_providers(&path)
+                .into_iter()
+                .map(|p| p.provider)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(), vec!["anthropic"]);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"openai\"}}}}") .unwrap();
+        writeln!(
+            file,
+            "{{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"provider\":\"ignored\"}}}}"
+        )
+        .unwrap();
+        read_session(&path).unwrap();
+        assert_eq!(names(), vec!["openai", "anthropic"]);
+        writeln!(file, "{{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"anthropic\"}}}}").unwrap();
+        read_session(&path).unwrap();
+        assert_eq!(names(), vec!["anthropic", "openai"]);
+        write!(
+            file,
+            "{{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"third\""
+        )
+        .unwrap();
+        read_session(&path).unwrap();
+        assert_eq!(names(), vec!["anthropic", "openai"]);
+        writeln!(file, "}}}}").unwrap();
+        read_session(&path).unwrap();
+        assert_eq!(names(), vec!["third", "anthropic", "openai"]);
+        writeln!(file, "{{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"provider\":\"openai\",\"model\":\"gpt-4\"}}}}").unwrap();
+        read_session(&path).unwrap();
+        let latest = cached_session_providers(&path).remove(0);
+        assert_eq!(latest.provider, "openai");
+        assert_eq!(latest.model.as_deref(), Some("gpt-4"));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn read_session_restores_the_worktree_cwd() {
+        // A session created in a worktree records the worktree path as its
+        // cwd; reopening after a restart must read that back exactly, because
+        // the app uses it as the active workspace (never the main repository).
+        let dir = std::env::temp_dir().join("orbit-session-worktree-cwd-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("2026-01-01T00-00-00-000Z_wt.jsonl");
+        let cwd = "/tmp/my-project/.wt/113";
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"id\":\"wt\",\"cwd\":\"{cwd}\"}}\n\
+                 {{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"ship it\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let info = read_session(&path).expect("listable");
+        assert_eq!(info.cwd, PathBuf::from(cwd));
+        assert_ne!(info.cwd, PathBuf::from("/tmp/my-project"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn read_session_uses_pis_persisted_name_as_the_title() {
         // pi writes the auto-title as a `session_info` entry; the sidebar
         // must show it as the title and the first message as the preview,
@@ -607,6 +951,74 @@ mod tests {
         );
         assert_eq!(read_session(&path).unwrap().title, "hii");
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A long session can push its auto-title entry further back than the
+    /// tail window; the disk title must still be found instead of falling
+    /// back to the first message (which is why a non-active row looked stale
+    /// while the active one, fed pi's live name, updated at once).
+    #[test]
+    fn read_session_finds_a_name_behind_the_tail_window() {
+        let dir = std::env::temp_dir().join("orbit-session-deep-name-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let filler = "x".repeat(400 * 1024);
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"id\":\"deep\",\"cwd\":\"/tmp/ws\"}}\n\
+                 {{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"hii\"}}}}\n\
+                 {{\"type\":\"session_info\",\"name\":\"deep name\"}}\n\
+                 {{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"content\":\"{filler}\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(read_session(&path).unwrap().title, "deep name");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The per-file cache must not serve a stale activity time after the
+    /// session grows: the key is the file's (mtime, length), so appending a
+    /// new message invalidates the entry and the next scan re-reads it.
+    #[test]
+    fn session_info_cache_refreshes_when_the_file_grows() {
+        let dir = std::env::temp_dir().join("orbit-session-cache-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+
+        let millis = |ts: u64| std::time::UNIX_EPOCH + Duration::from_millis(ts);
+        let body = |user: u64, assistant: u64| {
+            format!(
+                "{{\"type\":\"session\",\"id\":\"cache\",\"cwd\":\"/tmp/ws\"}}\n\
+                 {{\"type\":\"message\",\"timestamp\":{user},\"message\":{{\"role\":\"user\",\"content\":\"hi\"}}}}\n\
+                 {{\"type\":\"message\",\"timestamp\":{assistant},\"message\":{{\"role\":\"assistant\",\"content\":\"yo\"}}}}\n"
+            )
+        };
+
+        fs::write(&path, body(1_700_000_000_000, 1_700_000_001_000)).unwrap();
+        let first = read_session(&path).expect("listable");
+        // The assistant line is newer, but only the user message moves order.
+        assert_eq!(first.modified, millis(1_700_000_000_000));
+
+        // Grow the file with a newer user message; the cache key (length)
+        // changed, so the next read must reflect that send.
+        let appended = format!(
+            "{}{{\"type\":\"message\",\"timestamp\":1700000002000,\"message\":{{\"role\":\"user\",\"content\":\"more\"}}}}\n",
+            body(1_700_000_000_000, 1_700_000_001_000)
+        );
+        fs::write(&path, appended).unwrap();
+        let second = read_session(&path).expect("listable");
+        assert_eq!(second.modified, millis(1_700_000_002_000));
+
+        // An unchanged file re-reads to the same result (a cache hit).
+        assert_eq!(
+            read_session(&path).unwrap().modified,
+            millis(1_700_000_002_000)
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -775,6 +1187,52 @@ mod tests {
     }
 
     #[test]
+    fn output_does_not_reorder_ahead_of_a_later_user_message() {
+        // Session A was spoken to first, then its assistant line lands last.
+        // Session B was spoken to later, with an earlier tool result. B stays
+        // first: streamed output must not trade the two rows.
+        let dir = std::env::temp_dir().join("orbit-output-order-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let earlier_send = dir.join("a.jsonl");
+        let later_send = dir.join("b.jsonl");
+        fs::write(
+            &earlier_send,
+            "{\"type\":\"session\",\"id\":\"aaa\",\"cwd\":\"/tmp/ws\"}\n\
+             {\"type\":\"message\",\"timestamp\":1700000001000,\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n\
+             {\"type\":\"message\",\"timestamp\":1700000004000,\"message\":{\"role\":\"assistant\",\"content\":\"late output\"}}\n",
+        )
+        .unwrap();
+        fs::write(
+            &later_send,
+            "{\"type\":\"session\",\"id\":\"bbb\",\"cwd\":\"/tmp/ws\"}\n\
+             {\"type\":\"message\",\"timestamp\":1700000002000,\"message\":{\"role\":\"user\",\"content\":\"second\"}}\n\
+             {\"type\":\"message\",\"timestamp\":1700000003000,\"message\":{\"role\":\"toolResult\",\"content\":\"mid output\"}}\n",
+        )
+        .unwrap();
+
+        let mut rows = Vec::new();
+        for path in [&earlier_send, &later_send] {
+            rows.push(read_session(path).expect("listable"));
+        }
+        rows.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| b.path.cmp(&a.path))
+        });
+        assert_eq!(rows[0].id, "bbb");
+        assert_eq!(
+            rows[0].modified,
+            UNIX_EPOCH + Duration::from_millis(1_700_000_002_000)
+        );
+        assert_eq!(
+            rows[1].modified,
+            UNIX_EPOCH + Duration::from_millis(1_700_000_001_000)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn activity_time_ignores_trailing_bookkeeping_entries() {
         // Opening a session appends a `custom` quota snapshot (newer mtime)
         // without any real activity; the age must stay at the last message.
@@ -900,6 +1358,58 @@ mod tests {
         });
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].path, older_created);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn older_than_selects_only_sessions_past_the_threshold() {
+        // Age comes from the last message, not the file mtime or creation.
+        let dir = std::env::temp_dir().join("orbit-older-than-test");
+        let _ = fs::remove_dir_all(&dir);
+        // Mirror pi's store: `<store>/<workspace-slug>/<timestamp>.jsonl`.
+        let group = dir.join("ws");
+        fs::create_dir_all(&group).unwrap();
+        let now = SystemTime::now();
+        let stamp = |secs_ago: u64| {
+            chrono::DateTime::<chrono::Utc>::from(now - Duration::from_secs(secs_ago)).to_rfc3339()
+        };
+        // 40 days idle, 10 days idle, and just inside the 30-day window
+        // (timestamps are millisecond-precision, so the boundary itself
+        // reads as a shade older — a real edge, tested at 29 days below).
+        for (name, secs) in [
+            ("old", 40 * 86_400u64),
+            ("recent", 10 * 86_400),
+            ("edge", 30 * 86_400 - 3_600),
+        ] {
+            let path = group.join(format!("{name}.jsonl"));
+            fs::write(
+                &path,
+                format!(
+                    "{{\"type\":\"session\",\"id\":\"{name}\",\"cwd\":\"/tmp/ws\"}}\n\
+                     {{\"type\":\"message\",\"timestamp\":\"{}\",\"message\":{{\"role\":\"user\",\"content\":\"hi\"}}}}\n",
+                    stamp(secs)
+                ),
+            )
+            .unwrap();
+            // Touch the file so its mtime is newest: age must ignore it.
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(SystemTime::now())
+                .unwrap();
+        }
+
+        let old = older_than_in(&dir, 30, now);
+        assert_eq!(old.len(), 1, "only the 40-day session is past 30 days");
+        assert!(old[0].path.ends_with("old.jsonl"));
+        // A session inside the window is not swept; one day less is.
+        assert!(older_than_in(&dir, 30, now)
+            .iter()
+            .all(|s| !s.path.ends_with("edge.jsonl")));
+        assert!(older_than_in(&dir, 29, now)
+            .iter()
+            .any(|s| s.path.ends_with("edge.jsonl")));
         let _ = fs::remove_dir_all(&dir);
     }
 

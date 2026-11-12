@@ -223,7 +223,9 @@ pub enum Event {
     AgentEnd {
         will_retry: bool,
     },
-    AgentSettled,
+    AgentSettled {
+        aborted: bool,
+    },
     TurnStart,
     TurnEnd {
         value: Value,
@@ -768,6 +770,20 @@ pub struct QuotaReport {
     pub error: Option<String>,
 }
 
+/// Present a provider-reported plan tier in its documented, canonical form
+/// (`Pro`, `Max`, `Plus`). Providers are inconsistent about casing — Ollama's
+/// `/api/usage` returns `pro` while its settings page returns `Pro` — so the
+/// first character is upper-cased and the rest is left untouched. That keeps
+/// the badge stable across providers without mangling an acronym or a
+/// provider-specific label such as `ChatGPT Plus`.
+fn plan_display_label(plan: &str) -> String {
+    let mut chars = plan.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 impl QuotaReport {
     /// Parse one report object from a `quota.list` payload.
     pub fn from_value(value: &Value) -> Option<Self> {
@@ -781,7 +797,7 @@ impl QuotaReport {
             .get("plan")
             .and_then(Value::as_str)
             .filter(|plan| !plan.is_empty())
-            .map(str::to_owned);
+            .map(plan_display_label);
         let windows = value
             .get("windows")
             .and_then(Value::as_array)
@@ -953,7 +969,12 @@ impl Event {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             },
-            "agent_settled" => Event::AgentSettled,
+            "agent_settled" => Event::AgentSettled {
+                aborted: value
+                    .get("aborted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
             "turn_start" => Event::TurnStart,
             "turn_end" => Event::TurnEnd { value },
             "message_start" => Event::MessageStart { value },
@@ -1028,7 +1049,7 @@ impl Event {
                 )
             }
             Event::Auth(event) => auth_one_line(event),
-            Event::AgentSettled => "agent_settled ✓".into(),
+            Event::AgentSettled { aborted } => format!("agent_settled (aborted={aborted})"),
             Event::ExtensionUiRequest { method, .. } => format!("ui request: {method}"),
             Event::ProcessExited => "pi exited".into(),
             Event::Unknown(v) => trim(&v.to_string(), 80),
@@ -1160,10 +1181,10 @@ impl SessionUsage {
     }
 
     /// Share of prompt tokens served from the provider cache across the
-    /// session: `cacheRead / (input + cacheRead)`, as `0..=100`. `None` when
-    /// no prompt tokens were processed.
+    /// session: `cacheRead / (input + cacheRead + cacheWrite)`, as `0..=100`.
+    /// `None` when no prompt tokens were processed.
     pub fn cache_read_percent(&self) -> Option<f32> {
-        cache_hit_rate(self.input, self.cache_read)
+        cache_hit_rate(self.input, self.cache_read, self.cache_write)
     }
 }
 
@@ -1238,10 +1259,11 @@ impl MessageUsage {
     }
 
     /// Share of prompt tokens served from the provider cache:
-    /// `cacheRead / (input + cacheRead)`, as `0..=100`. `None` when no prompt
-    /// tokens were processed, so the UI never shows a meaningless `0%`.
+    /// `cacheRead / (input + cacheRead + cacheWrite)`, as `0..=100`. `None`
+    /// when no prompt tokens were processed, so the UI never shows a
+    /// meaningless `0%`.
     pub fn cache_read_percent(&self) -> Option<f32> {
-        cache_hit_rate(self.input, self.cache_read)
+        cache_hit_rate(self.input, self.cache_read, self.cache_write)
     }
 }
 
@@ -1308,6 +1330,19 @@ impl SessionState {
     }
 }
 
+/// Which of pi's two pending lanes a queued message waits in.
+///
+/// `queue_update` reports the lanes separately because they are delivered at
+/// different moments — steering before the next model call, follow-ups only
+/// once the run settles — and the queue commands are lane-specific
+/// (`steer` / `follow_up`). Any rebuild of the queue has to keep each message
+/// in its own lane, so the lane travels with the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueLane {
+    Steer,
+    FollowUp,
+}
+
 /// The pending steering / follow-up queue from a `queue_update` event or a
 /// `clear_queue` response.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1330,6 +1365,23 @@ impl PendingQueue {
 
     pub fn len(&self) -> usize {
         self.steering.len() + self.follow_up.len()
+    }
+
+    /// The messages waiting in one lane, in delivery order.
+    pub fn lane(&self, lane: QueueLane) -> &[String] {
+        match lane {
+            QueueLane::Steer => &self.steering,
+            QueueLane::FollowUp => &self.follow_up,
+        }
+    }
+
+    /// One lane's messages, mutably — how an edit replaces a message's text in
+    /// place before the queue is rebuilt.
+    pub fn lane_mut(&mut self, lane: QueueLane) -> &mut Vec<String> {
+        match lane {
+            QueueLane::Steer => &mut self.steering,
+            QueueLane::FollowUp => &mut self.follow_up,
+        }
     }
 
     /// The queued text joined back together (steering first), for restoring
@@ -1389,8 +1441,10 @@ fn json_f64_or_null(value: &Value) -> Option<f64> {
 /// Provider cache hit rate for prompt tokens: `cache_read / (input +
 /// cache_read)` scaled to `0..=100`. `None` when the prompt was empty (a turn
 /// with no input at all), which keeps the UI from claiming `0%`.
-fn cache_hit_rate(input: u64, cache_read: u64) -> Option<f32> {
-    let prompt = input + cache_read;
+fn cache_hit_rate(input: u64, cache_read: u64, cache_write: u64) -> Option<f32> {
+    // pi normalizes every provider so `input` is the *uncached* prompt; the
+    // whole prompt is therefore uncached input + cache reads + cache writes.
+    let prompt = input + cache_read + cache_write;
     (prompt > 0).then(|| (cache_read as f64 / prompt as f64 * 100.0) as f32)
 }
 
@@ -1642,6 +1696,18 @@ mod tests {
     }
 
     #[test]
+    fn settled_preserves_the_abort_without_requiring_a_final_message() {
+        assert!(matches!(
+            Event::parse_line(r#"{"type":"agent_settled","aborted":true}"#),
+            Event::AgentSettled { aborted: true }
+        ));
+        assert!(matches!(
+            Event::parse_line(r#"{"type":"agent_settled"}"#),
+            Event::AgentSettled { aborted: false }
+        ));
+    }
+
+    #[test]
     fn framing_strips_carriage_return() {
         let line = "{\"type\":\"agent_start\"}\r";
         assert!(matches!(Event::parse_line(line), Event::AgentStart));
@@ -1832,6 +1898,18 @@ mod tests {
             cost: None,
         };
         assert_eq!(session.cache_read_percent(), Some(50.0));
+
+        // Cache writes are prompt tokens too: reading a fully written cache
+        // back is a 50% hit rate, not 100%.
+        let written = MessageUsage {
+            input: 0,
+            output: 0,
+            cache_read: 100,
+            cache_write: 100,
+            total: 200,
+            cost: None,
+        };
+        assert_eq!(written.cache_read_percent(), Some(50.0));
     }
 
     #[test]
@@ -2220,5 +2298,24 @@ mod tests {
 
         assert!(!reports[2].has_data());
         assert_eq!(reports[2].note.as_deref(), Some("no usage API"));
+    }
+
+    #[test]
+    fn canonicalizes_lowercase_plan_labels() {
+        // Ollama's API reports `pro`; its settings page reports `Pro`. The
+        // badge must read the same either way, and acronyms must survive.
+        for (raw, expected) in [
+            ("pro", "Pro"),
+            ("max", "Max"),
+            ("Pro", "Pro"),
+            ("ChatGPT Plus", "ChatGPT Plus"),
+        ] {
+            let value: Value = serde_json::from_str(&format!(
+                r#"{{"providers":[{{"provider":"ollama","kind":"subscription","plan":"{raw}","windows":[]}}]}}"#
+            ))
+            .unwrap();
+            let reports = parse_quota_reports(&value);
+            assert_eq!(reports[0].plan.as_deref(), Some(expected), "raw: {raw}");
+        }
     }
 }

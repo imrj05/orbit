@@ -14,21 +14,27 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, ClickEvent, Context,
-    CursorStyle, Entity, FocusHandle, FontWeight, Hsla, KeyDownEvent, ListAlignment, ListState,
-    MouseButton, MouseDownEvent, Pixels, Render, Subscription, Window,
+    div, prelude::*, px, AnyElement, App, ClickEvent, Context, CursorStyle, Entity, FocusHandle,
+    FontWeight, Hsla, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, Pixels,
+    Render, Subscription, Window,
 };
 
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
 use crate::app::{
-    empty_state, file_badge, file_glyph, icon, nerd_font_family, press, refresh_glyph, EmptyFill,
-    PopoverSurface, BUTTON_GROUP,
+    anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
+    context_menu_surface, disclosure_chevron, empty_state, file_badge, file_glyph, icon,
+    icon_button_frame, nerd_font_family, picker_search_frame, press, refresh_glyph, AccentWash,
+    ControlExt, EmptyFill, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
+use crate::theme::tokens::RaisedExt;
+use crate::theme::tokens::{
+    context_menu, input, panel, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
+};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Panel width defaults / drag clamps.
@@ -39,7 +45,6 @@ pub const PANEL_MAX_W: f32 = 460.;
 /// Fixed tree row height — 28px, the design system's navigation-row height.
 const ROW_H: f32 = 28.;
 const HEADER_H: f32 = 40.;
-const FILTER_H: f32 = 34.;
 const FOOTER_H: f32 = 26.;
 
 /// What a row click does when the app is told a file was picked. The string
@@ -136,6 +141,7 @@ pub struct ProjectPanel {
     filter: Entity<ComposerInput>,
     _filter_sub: Subscription,
     focus: FocusHandle,
+    focus_subscriptions: Option<(gpui::AnyWindowHandle, Subscription, Subscription)>,
     /// Workspace-relative path of the file the app is showing.
     active: Option<String>,
     /// Right-click context menu, if open.
@@ -191,7 +197,8 @@ impl ProjectPanel {
             cursor: None,
             filter,
             _filter_sub: filter_sub,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
+            focus_subscriptions: None,
             active: None,
             menu: None,
             menu_dismissed_at: None,
@@ -219,15 +226,6 @@ impl ProjectPanel {
         if width != self.width {
             self.width = width;
             crate::layout::set_explorer_width(f32::from(width));
-            cx.notify();
-        }
-    }
-
-    /// Reserve the window-control inset in the header (Windows only, and only
-    /// while this dock is the window's rightmost column).
-    pub fn set_reserve_controls(&mut self, reserve: bool, cx: &mut Context<Self>) {
-        if reserve != self.reserve_controls {
-            self.reserve_controls = reserve;
             cx.notify();
         }
     }
@@ -349,16 +347,10 @@ impl ProjectPanel {
             self.list.reset(rows.len());
         }
         self.rows = rows;
-        self.cursor = self
-            .cursor
-            .filter(|index| *index < self.rows.len());
+        self.cursor = self.cursor.filter(|index| *index < self.rows.len());
         // A rename prompt whose row vanished (an external change, a filter)
         // has nowhere to render; retire it rather than stranding the keyboard.
-        if let Some(target) = self
-            .entry
-            .as_ref()
-            .and_then(|entry| entry.target.clone())
-        {
+        if let Some(target) = self.entry.as_ref().and_then(|entry| entry.target.clone()) {
             if !self.rows.iter().any(|row| row.path == target) {
                 self.entry = None;
             }
@@ -553,21 +545,19 @@ impl ProjectPanel {
         self.start_new_folder_in(dir, window, cx);
     }
 
-    fn start_new_file_in(
-        &mut self,
-        dir: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.begin_entry(EntryKind::NewFile, dir, None, "", "explorer.name_file", window, cx);
+    fn start_new_file_in(&mut self, dir: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_entry(
+            EntryKind::NewFile,
+            dir,
+            None,
+            "",
+            "explorer.name_file",
+            window,
+            cx,
+        );
     }
 
-    fn start_new_folder_in(
-        &mut self,
-        dir: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn start_new_folder_in(&mut self, dir: String, window: &mut Window, cx: &mut Context<Self>) {
         self.begin_entry(
             EntryKind::NewFolder,
             dir,
@@ -757,11 +747,11 @@ fn parent_of(path: &str) -> String {
 
 fn badge_color(badge: StatusBadge, theme: &Theme) -> Hsla {
     match badge {
-        StatusBadge::Added | StatusBadge::Untracked => theme.add_green,
-        StatusBadge::Modified => theme.warn,
-        StatusBadge::Deleted => theme.del_red,
-        StatusBadge::Renamed => theme.accent,
-        StatusBadge::Conflicted => theme.crit,
+        StatusBadge::Added | StatusBadge::Untracked => theme.success,
+        StatusBadge::Modified => theme.warning,
+        StatusBadge::Deleted => theme.error,
+        StatusBadge::Renamed => theme.accent_text,
+        StatusBadge::Conflicted => theme.error,
     }
 }
 
@@ -779,7 +769,7 @@ impl ProjectPanel {
             .flex()
             .items_center()
             .gap(px(2.))
-            .pl(px(12.))
+            .pl(DynamicSpacing::Base12.px(&theme))
             .pr(px(if self.reserve_controls {
                 crate::platform::WINDOW_CONTROLS_W
             } else {
@@ -791,16 +781,17 @@ impl ProjectPanel {
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(title),
             )
             .child(ghost_icon(
                 &theme,
                 "explorer-new-file",
                 "icons/file-plus.svg",
-                theme.text_3,
+                theme.text_muted,
+                tr!("explorer.new_file"),
                 cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.start_new_file(window, cx);
                 }),
@@ -809,32 +800,31 @@ impl ProjectPanel {
                 &theme,
                 "explorer-new-folder",
                 "icons/folder-plus.svg",
-                theme.text_3,
+                theme.text_muted,
+                tr!("explorer.new_folder"),
                 cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.start_new_folder(window, cx);
                 }),
             ))
             .child(
                 press(
-                    div()
-                        .id("explorer-refresh")
-                        .group(BUTTON_GROUP)
-                        .size(px(24.))
-                        .rounded(px(6.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|el| el.bg(theme.bg_hover)),
+                    icon_button_frame(
+                        div().id("explorer-refresh").group(BUTTON_GROUP),
+                        &theme,
+                        ButtonSize::Default,
+                    )
+                    .tip(tr!("common.refresh"))
+                    .cursor_pointer()
+                    .hover_state(&theme),
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.mark_stale(cx);
                 }))
                 .child(refresh_glyph(
                     "explorer-refresh-spin",
-                    13.,
+                    ButtonSize::Default.icon_size().px(&theme),
                     self.loading,
-                    theme.text_3,
+                    theme.text_muted,
                     theme,
                 )),
             )
@@ -842,7 +832,8 @@ impl ProjectPanel {
                 &theme,
                 "explorer-collapse",
                 "icons/chevron-up.svg",
-                theme.text_3,
+                theme.text_muted,
+                tr!("explorer.collapse"),
                 cx.listener(|this, _: &ClickEvent, _, cx| this.collapse_all(cx)),
             ))
             .child(ghost_icon(
@@ -854,9 +845,14 @@ impl ProjectPanel {
                     "icons/eye-off.svg"
                 },
                 if self.show_hidden {
-                    theme.text
+                    theme.text_primary
                 } else {
-                    theme.text_3
+                    theme.text_muted
+                },
+                if self.show_hidden {
+                    tr!("explorer.hide_hidden")
+                } else {
+                    tr!("explorer.show_hidden")
                 },
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.show_hidden = !this.show_hidden;
@@ -869,7 +865,8 @@ impl ProjectPanel {
                 &theme,
                 "explorer-close",
                 "icons/x.svg",
-                theme.text_3,
+                theme.text_muted,
+                tr!("explorer.hide"),
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     // Close here — this listener already holds the panel's
                     // lease, so the app callback must not re-enter `update`
@@ -884,23 +881,20 @@ impl ProjectPanel {
 
     fn filter_row(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let has_text = !self.filter.read(cx).text().is_empty();
-        div()
-            .h(px(FILTER_H))
-            .flex_none()
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(icon("icons/search.svg", 12., theme.text_3))
-            .child(self.filter.clone())
+        picker_search_frame(div(), &theme)
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(div().flex_1().min_w_0().child(self.filter.clone()))
             .when(has_text, |row| {
                 row.child(ghost_icon(
                     &theme,
                     "explorer-filter-clear",
                     "icons/x.svg",
-                    theme.text_3,
+                    theme.text_muted,
+                    tr!("view.clear_filters"),
                     cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.filter.update(cx, |input, cx| input.clear(cx));
                         this.refresh_rows(cx);
@@ -913,22 +907,29 @@ impl ProjectPanel {
 
     fn tree(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
-        let list = gpui::list(self.list.clone(), move |index, _window, cx| {
+        let list = gpui::list(self.list.clone(), move |index, window, cx| {
             entity
                 .upgrade()
-                .map(|entity| entity.update(cx, |this, cx| this.render_row(index, cx)))
+                .map(|entity| entity.update(cx, |this, cx| this.render_row(index, window, cx)))
                 .unwrap_or_else(|| div().into_any_element())
         })
         .size_full()
-        .py(px(4.));
+        .py(DynamicSpacing::Base04.px(&theme));
         let no_files_detail = tr!("explorer.no_files_detail");
         let body: AnyElement = if self.loading && self.rows.is_empty() {
             loading_state(&theme)
         } else if let Some(error) = &self.error {
-            empty_state(theme, &tr!("explorer.load_error"), Some(error.as_str()), EmptyFill::Full)
+            empty_state(
+                theme,
+                "icons/stop.svg",
+                &tr!("explorer.load_error"),
+                Some(error.as_str()),
+                EmptyFill::Full,
+            )
         } else if self.rows.is_empty() {
             empty_state(
                 theme,
+                "icons/folder.svg",
                 &tr!("explorer.no_files"),
                 Some(no_files_detail.as_str()),
                 EmptyFill::Full,
@@ -944,9 +945,9 @@ impl ProjectPanel {
             .min_h_0()
             .flex()
             .flex_col()
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_key_down(event, cx)
-            }))
+            .on_key_down(
+                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key_down(event, cx)),
+            )
             .on_action(cx.listener(Self::on_entry_confirm))
             .on_action(cx.listener(Self::on_entry_cancel))
             .children(self.entry_row(theme))
@@ -969,19 +970,23 @@ impl ProjectPanel {
         let mut row = div()
             .h(px(ROW_H))
             .flex_none()
-            .mx(px(4.))
+            .mx(DynamicSpacing::Base04.px(&theme))
             .pl(px(indent))
-            .pr(px(8.))
+            .pr(DynamicSpacing::Base08.px(&theme))
             .flex()
             .items_center()
-            .gap(px(6.))
-            .child(icon(icon_path, 13., theme.text_3));
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(icon(
+                icon_path,
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+            ));
         if !entry.dir.is_empty() {
             row = row.child(
                 div()
                     .flex_none()
-                    .text_size(theme.ui_px(12.5))
-                    .text_color(theme.text_3)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
                     .child(format!("{}/", entry.dir)),
             );
         }
@@ -1006,10 +1011,10 @@ impl ProjectPanel {
                 .py(px(5.))
                 .border_b_1()
                 .border_color(theme.border)
-                .bg(theme.crit.opacity(0.12))
-                .text_size(theme.ui_px(11.5))
+                .bg(theme.error.opacity(0.12))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(15.))
-                .text_color(theme.crit)
+                .text_color(theme.error)
                 .child(message)
                 .into_any_element(),
         )
@@ -1024,22 +1029,22 @@ impl ProjectPanel {
         div()
             .h(px(FOOTER_H))
             .flex_none()
-            .px(px(12.))
+            .px(DynamicSpacing::Base12.px(&theme))
             .border_t_1()
             .border_color(theme.border)
             .flex()
             .items_center()
-            .text_size(theme.ui_px(11.))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(if self.index.truncated {
-                theme.warn
+                theme.warning
             } else {
-                theme.text_3
+                theme.text_muted
             })
             .child(label)
             .into_any_element()
     }
 
-    fn render_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(row) = self.rows.get(index).cloned() else {
             return div().h(px(ROW_H)).into_any_element();
         };
@@ -1052,14 +1057,14 @@ impl ProjectPanel {
         // indent offsets that difference so names align in one column.
         let indent = (if row.is_dir() { 7.0 } else { 23.0 }) + row.depth as f32 * 14.0;
         let icon_color = if active {
-            theme.active_fg
+            theme.text_primary
         } else {
-            theme.text_3
+            theme.text_muted
         };
         let name_color = if active {
-            theme.active_fg
+            theme.text_primary
         } else {
-            theme.text_2
+            theme.text_secondary
         };
 
         let mut content = div()
@@ -1069,28 +1074,34 @@ impl ProjectPanel {
             .w_full()
             .h(px(ROW_H))
             .pl(px(indent))
-            .pr(px(8.))
-            .rounded(px(8.))
+            .pr(DynamicSpacing::Base08.px(&theme))
+            .rounded(Radius::Medium.px(&theme))
             .flex()
             .items_center()
-            .gap(px(6.));
+            .gap(DynamicSpacing::Base06.px(&theme));
         // A row with an open rename prompt owns the keyboard; it must not also
         // activate the file or open its context menu on click.
         let renaming = self
             .entry
             .as_ref()
             .is_some_and(|entry| entry.target.as_deref() == Some(row.path.as_str()));
-        let entry_input = renaming.then(|| self.entry.as_ref().expect("renaming implies an entry").input.clone());
+        let entry_input = renaming.then(|| {
+            self.entry
+                .as_ref()
+                .expect("renaming implies an entry")
+                .input
+                .clone()
+        });
         if renaming {
-            content = content.bg(theme.active);
+            content = content.bg(theme.surface_active);
         } else {
             content = content
                 .cursor_pointer()
                 // Selected (open in the viewer) wins; the keyboard cursor is a
                 // quieter wash; pointer hover is the lightest step.
-                .when(active, |el| el.bg(theme.active))
+                .when(active, |el| el.bg(theme.surface_selected))
                 .when(!active && cursor, |el| el.bg(theme.overlay))
-                .when(!active && !cursor, |el| el.hover(|el| el.bg(theme.bg_hover)))
+                .when(!active && !cursor, |el| el.hover_state(&theme))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     // Clicking away from an open prompt cancels it rather than
                     // activating the row under the pointer.
@@ -1117,16 +1128,20 @@ impl ProjectPanel {
 
         if row.is_dir() {
             content = content
-                .child(icon(
-                    if row.expanded() {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.,
+                // One glyph turning a quarter turn, not two glyphs swapping —
+                // the row is the same object between the two states.
+                .child(disclosure_chevron(
+                    format!("explorer-caret-{}", row.path),
+                    row.expanded(),
+                    IconSize::Indicator.px(&theme),
                     icon_color,
+                    &theme,
                 ))
-                .child(icon("icons/folder.svg", 13., icon_color));
+                .child(icon(
+                    "icons/folder.svg",
+                    IconSize::Small.px(&theme),
+                    icon_color,
+                ));
             if let Some(input) = entry_input {
                 content = content.child(div().flex().flex_1().min_w_0().child(input));
             } else {
@@ -1136,7 +1151,7 @@ impl ProjectPanel {
                         .flex_1()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(name_color)
                         .child(row.name.clone()),
@@ -1147,13 +1162,19 @@ impl ProjectPanel {
                             .size(px(5.))
                             .flex_none()
                             .rounded_full()
-                            .bg(theme.warn),
+                            .bg(theme.warning),
                     );
                 }
             }
         } else {
             let fallback = file_badge(&row.path, theme);
-            let glyph = file_glyph(&row.path, dark, nerd.as_ref(), 13., fallback);
+            let glyph = file_glyph(
+                &row.path,
+                dark,
+                nerd.as_ref(),
+                IconSize::Small.px(&theme),
+                fallback,
+            );
             content = content.child(glyph);
             if let Some(input) = entry_input {
                 content = content.child(div().flex().flex_1().min_w_0().child(input));
@@ -1164,7 +1185,7 @@ impl ProjectPanel {
                         .flex_1()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(name_color)
                         .child(row.name.clone()),
                 );
@@ -1173,13 +1194,27 @@ impl ProjectPanel {
                     content = content.child(
                         div()
                             .flex_none()
-                            .text_size(theme.ui_px(11.))
+                            .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(color)
                             .child(badge.letter().to_string()),
                     );
                 }
             }
+        }
+
+        if active && cursor && !renaming && self.focus.is_focused(window) {
+            // Paint the ring over the selected row without changing its layout
+            // or replacing the open-file selection fill.
+            content = content.relative().child(
+                div()
+                    .debug_selector(|| "explorer-selected-focus-ring".to_string())
+                    .absolute()
+                    .inset_0()
+                    .rounded(Radius::Medium.px(&theme))
+                    .border_1()
+                    .border_color(theme.focus_ring),
+            );
         }
 
         // The list measures each row with a definite width, but a bare flex
@@ -1189,7 +1224,7 @@ impl ProjectPanel {
         // inset rides on this wrapper instead of a margin on the row.
         div()
             .w_full()
-            .px(px(4.))
+            .px(DynamicSpacing::Base04.px(&theme))
             .child(content)
             .into_any_element()
     }
@@ -1206,12 +1241,8 @@ impl ProjectPanel {
         let relative = menu.path.clone();
         let is_dir = menu.is_dir;
         let expanded = menu.expanded;
-        let mut popup = div()
-            .id("explorer-context-menu")
+        let mut popup = context_menu_surface(div().id("explorer-context-menu"), &theme)
             .w(px(220.))
-            .py(px(4.))
-            .rounded(px(10.))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -1396,11 +1427,7 @@ impl ProjectPanel {
             // above/left when it would overflow the window — the default
             // `SwitchAnchor` fit mode. Previously it was pinned to the panel's
             // top-left regardless of where the row was clicked.
-            gpui::anchored()
-                .anchor(gpui::Corner::TopLeft)
-                .position(menu.position)
-                .child(popup)
-                .into_any_element(),
+            anchored_popover_at(menu.position, popup, "anchored_popover_at-in-17", &theme),
         )
     }
 
@@ -1418,11 +1445,7 @@ impl ProjectPanel {
         let card = div()
             .w_full()
             .max_w(px(250.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.card_shadow())
+            .elevation_2(&theme)
             .p(px(14.))
             .flex()
             .flex_col()
@@ -1433,17 +1456,17 @@ impl ProjectPanel {
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(tr!("explorer.delete_title", name = target.name.clone())),
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(16.))
                     .whitespace_normal()
-                    .text_color(theme.text_2)
+                    .text_color(theme.text_secondary)
                     .child(crate::i18n::translate(body_key)),
             )
             .child(
@@ -1451,7 +1474,7 @@ impl ProjectPanel {
                     .mt(px(2.))
                     .flex()
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(prompt_button(
                         theme,
                         "explorer-delete-cancel",
@@ -1472,7 +1495,7 @@ impl ProjectPanel {
                 .absolute()
                 .inset_0()
                 .px(px(10.))
-                .bg(theme.bg_sidebar.opacity(0.72))
+                .bg(theme.surface.opacity(0.72))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1491,28 +1514,19 @@ fn prompt_button(
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let (bg, fg) = if destructive {
-        (theme.crit, theme.send_fg)
+        (theme.error, theme.error_fg)
     } else {
-        (theme.bg_raised, theme.text)
+        (theme.surface_elevated, theme.text_primary)
     };
     press(
-        div()
-            .id(id)
-            .group(BUTTON_GROUP)
-            .h(px(28.))
-            .px(px(12.))
-            .rounded(px(8.))
-            .flex()
-            .items_center()
-            .justify_center()
+        button_frame(div().id(id).group(BUTTON_GROUP), &theme, ButtonSize::Medium)
             .cursor_pointer()
-            .bg(bg)
-            .hover(|el| el.opacity(0.9)),
+            .raised(bg, &theme)
+            .hover_dimmed(),
     )
     .on_click(listener)
     .child(
         div()
-            .text_size(theme.ui_px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(fg)
             .child(label),
@@ -1520,40 +1534,32 @@ fn prompt_button(
     .into_any_element()
 }
 
-/// A header/toolbar ghost icon control: 24px hit area, hover fill only.
+/// A header/toolbar ghost icon control: a Default icon button, hover fill
+/// only.
 fn ghost_icon(
     theme: &Theme,
     id: &'static str,
     path: &'static str,
     color: Hsla,
+    label: String,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     press(
-        div()
-            .id(id)
-            .group(BUTTON_GROUP)
-            .size(px(24.))
-            .rounded(px(6.))
-            .flex()
-            .items_center()
-            .justify_center()
+        icon_button_frame(div().id(id).group(BUTTON_GROUP), theme, ButtonSize::Default)
+            .tip(label)
             .cursor_pointer()
-            .hover(|el| el.bg(theme.bg_hover)),
+            .hover_state(theme),
     )
     .on_click(listener)
-    .child(icon(path, 13., color))
+    .child(icon(path, ButtonSize::Default.icon_size().px(theme), color))
     .into_any_element()
 }
 
 fn separator(theme: Theme) -> AnyElement {
-    div()
-        .h(px(1.))
-        .mx(px(4.))
-        .my(px(4.))
-        .bg(theme.border)
-        .into_any_element()
+    context_menu_separator(&theme).into_any_element()
 }
 
+/// One Explorer context-menu entry, on Zed's context menu metrics.
 fn menu_row(
     theme: Theme,
     icon_path: &'static str,
@@ -1561,38 +1567,38 @@ fn menu_row(
     hint: Option<String>,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(gpui::ElementId::Name(
+    context_menu_entry(
+        div().id(gpui::ElementId::Name(
             format!("explorer-menu-{label}").into(),
-        ))
-        .h(px(28.))
-        .mx(px(4.))
-        .px(px(8.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .cursor_pointer()
-        .hover(|el| el.bg(theme.overlay))
-        .on_click(listener)
-        .child(icon(icon_path, 12., theme.text_3))
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .truncate()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_2)
-                .child(label),
-        )
-        .children(hint.map(|hint| {
-            div()
-                .flex_none()
-                .text_size(theme.ui_px(10.5))
-                .text_color(theme.text_3)
-                .child(hint)
-        }))
-        .into_any_element()
+        )),
+        &theme,
+    )
+    .cursor_pointer()
+    .hover_state(&theme)
+    .on_click(listener)
+    .child(icon(
+        icon_path,
+        context_menu::ICON.px(&theme),
+        theme.text_muted,
+    ))
+    .child(
+        div()
+            .min_w_0()
+            .flex_1()
+            .truncate()
+            .text_color(theme.text_secondary)
+            .child(label),
+    )
+    .children(hint.map(|hint| {
+        // Zed's `ml_4` before a keybinding, less the row gap already there.
+        div()
+            .flex_none()
+            .ml(context_menu::keybinding_gap(&theme) - context_menu::icon_gap(&theme))
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_muted)
+            .child(hint)
+    }))
+    .into_any_element()
 }
 
 /// A page-level spinner; static under reduce-motion.
@@ -1602,21 +1608,37 @@ fn loading_state(theme: &Theme) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .gap(px(8.))
-        .child(crate::app::spinner("explorer-loading", 13., theme.text_3, *theme))
+        .gap(DynamicSpacing::Base08.px(theme))
+        .child(crate::app::spinner(
+            "explorer-loading",
+            IconSize::Small.px(theme),
+            theme.text_muted,
+            *theme,
+        ))
         .child(
             div()
-                .text_size(theme.ui_px(12.5))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(theme))
+                .text_color(theme.text_muted)
                 .child(tr!("explorer.loading")),
         )
         .into_any_element()
 }
 
 impl Render for ProjectPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
             return div().into_any_element();
+        }
+        if self
+            .focus_subscriptions
+            .as_ref()
+            .is_none_or(|(handle, _, _)| *handle != window.window_handle())
+        {
+            self.focus_subscriptions = Some((
+                window.window_handle(),
+                cx.on_focus(&self.focus, window, |_, _, cx| cx.notify()),
+                cx.on_blur(&self.focus, window, |_, _, cx| cx.notify()),
+            ));
         }
         self.ensure_loaded(cx);
         // The filter is read here; the observer marks rows dirty on change.
@@ -1628,10 +1650,7 @@ impl Render for ProjectPanel {
             .flex_none()
             .w(self.width)
             .h_full()
-            .bg(theme.bg_sidebar)
-            .border_l_1()
-            .border_r_1()
-            .border_color(theme.border)
+            .pl(DynamicSpacing::Base12.px(&theme))
             .flex()
             .flex_col()
             .min_h_0()
@@ -1641,16 +1660,35 @@ impl Render for ProjectPanel {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left_0()
+                    // Sit on the card's left border (the 12px gutter, minus
+                    // half the handle width), not the panel's outer edge, so
+                    // the edge users see is the edge they can grab.
+                    .left(px(9.))
                     .w(px(6.))
                     .cursor(CursorStyle::ResizeLeftRight)
-                    .hover(|style| style.bg(theme.accent.opacity(0.4)))
+                    .hover_accent_wash(&theme, AccentWash::Strong)
                     .on_drag(ExplorerResize, |_, _, _, cx| cx.new(|_| ExplorerDragGhost)),
             )
-            .child(self.header(theme, cx))
-            .child(self.filter_row(theme, cx))
-            .child(self.tree(theme, cx))
-            .child(self.footer(theme, cx))
+            // The dock reads as a rounded card, like the Git/Usage cards in
+            // the main column. The popups stay outside this clipped shell so
+            // they are not cut off at its corners.
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .bg(theme.surface)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(panel::RADIUS.px(&theme))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(self.header(theme, cx))
+                    .child(self.filter_row(theme, cx))
+                    .child(self.tree(theme, cx))
+                    .child(self.footer(theme, cx)),
+            )
             .children(self.context_menu(theme, cx))
             .children(self.delete_prompt(theme, cx))
             .into_any_element()
@@ -1703,21 +1741,90 @@ mod tests {
             });
         });
         let drawn = panel.clone();
-        cx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(280.), px(600.)), {
-            let drawn = drawn.clone();
-            move |_, _| drawn.clone()
-        });
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(280.), px(600.)),
+            {
+                let drawn = drawn.clone();
+                move |_, _| drawn.clone()
+            },
+        );
         assert_prompt_has_width(cx, "rename");
 
         cx.update(|window, app| {
             panel.update(app, |panel, cx| panel.start_new_file(window, cx));
         });
         let drawn = panel.clone();
-        cx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(280.), px(600.)), {
-            let drawn = drawn.clone();
-            move |_, _| drawn.clone()
-        });
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(280.), px(600.)),
+            {
+                let drawn = drawn.clone();
+                move |_, _| drawn.clone()
+            },
+        );
         assert_prompt_has_width(cx, "new file");
+    }
+
+    #[gpui::test]
+    fn open_file_focus_ring_tracks_tree_focus_and_cursor(cx: &mut gpui::TestAppContext) {
+        let root = std::env::temp_dir().join("orbit-explorer-focus-ring");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("other.rs"), "").unwrap();
+
+        // `draw` accumulates debug bounds, so use a fresh window for each
+        // state rather than treating old bounds as the current frame.
+        for (focused, cursor_path, expected_ring) in [
+            (true, "main.rs", true),
+            (false, "main.rs", false),
+            (true, "other.rs", false),
+        ] {
+            let visual = cx.add_empty_window();
+            visual.update(|_, app| app.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+            let panel = visual.update(|_, app| {
+                app.new(|cx| {
+                    ProjectPanel::new(
+                        Rc::new(|_, _, _| {}),
+                        Rc::new(|_, _| {}),
+                        Rc::new(|_| {}),
+                        cx,
+                    )
+                })
+            });
+            let snapshot = walk::snapshot(&root, false);
+            visual.update(|window, app| {
+                panel.update(app, |panel, cx| {
+                    panel.open = true;
+                    panel.width = px(280.);
+                    panel.workspace = Some(root.clone());
+                    panel.index = TreeIndex::build(snapshot, HashMap::new());
+                    panel.stale = false;
+                    panel.refresh_rows(cx);
+                    panel.active = Some("main.rs".into());
+                    panel.cursor = panel.rows.iter().position(|row| row.path == cursor_path);
+                    assert!(panel.cursor.is_some());
+                    if focused {
+                        window.focus(&panel.focus);
+                    }
+                    cx.notify();
+                });
+            });
+            let drawn = panel.clone();
+            visual.draw(
+                gpui::point(px(0.), px(0.)),
+                gpui::size(px(280.), px(600.)),
+                move |_, _| drawn.clone(),
+            );
+            assert_eq!(
+                visual
+                    .debug_bounds("explorer-selected-focus-ring")
+                    .is_some(),
+                expected_ring
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn assert_prompt_has_width(cx: &mut gpui::VisualTestContext, label: &str) {

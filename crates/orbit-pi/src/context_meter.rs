@@ -14,11 +14,22 @@ use gpui::{
 };
 use orbit_rpc::{ContextUsage, SessionUsage};
 
+use crate::app::{button_frame, icon_button_frame, ControlExt, TipExt};
+use crate::theme::tokens::RaisedExt;
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
 
 const RING: f32 = 16.;
 const RING_BOX: f32 = 22.;
 const STROKE: f32 = 2.;
+/// Opacity of the ring's unfilled track.
+///
+/// The track used to be `surface_elevated`, which is ~1.1:1 against the
+/// status bar and vanishes on a dim display — the circle read as a lone arc
+/// with no denominator. Tinting the current accent and stepping it down here
+/// keeps the empty capacity legible at low brightness while staying well
+/// under the fill, so the used fraction is still the thing that reads first.
+const RING_TRACK_ALPHA: f32 = 0.3;
 /// Gap between the ring and the bottom edge of the hover/details card.
 const POPUP_GAP: f32 = 8.;
 /// Hover card width. The overlay lives in the 22px ring box; without an
@@ -46,15 +57,37 @@ pub struct ContextSlice {
     pub color: Hsla,
 }
 
-/// Fill color for the ring / "In use" slice, keyed off the used fraction
+/// Fill color for the ring, keyed off the used fraction
 /// (0..=1) so the color always matches the drawn ring even when pi reports
 /// `tokens` without an explicit `percent`.
+///
+/// Below the warning threshold the fill is the current accent — the same hue
+/// the details card's slices use — so fill, track and percent label all read
+/// as one meter. Warning and error still escalate, which is what makes "you
+/// are running out of context" visible without opening the card.
 pub fn fill_color(fraction: Option<f32>, theme: &Theme) -> Hsla {
     match fraction {
-        Some(f) if f >= 0.90 => theme.crit,
-        Some(f) if f >= 0.70 => theme.warn,
-        _ => theme.ring_fill,
+        Some(f) if f >= 0.90 => theme.error,
+        Some(f) if f >= 0.70 => theme.warning,
+        Some(_) => theme.accent,
+        None => theme.text_muted,
     }
+}
+
+/// The ring's unfilled track: a low-opacity accent tint once real usage
+/// exists, and neutral while the agent has not supplied a measurement. An
+/// unknown value is not zero percent, so a fresh session must not paint an
+/// active accent meter before its first snapshot arrives.
+///
+/// Kept as a function rather than inlined so the ring, and any other meter
+/// that borrows [`context_ring`], agree on one track treatment.
+pub fn ring_track(fraction: Option<f32>, theme: &Theme) -> Hsla {
+    if fraction.is_some() {
+        theme.accent
+    } else {
+        theme.text_muted
+    }
+    .opacity(RING_TRACK_ALPHA)
 }
 
 pub fn format_percent(usage: &ContextUsage) -> Option<String> {
@@ -67,17 +100,33 @@ pub fn format_percent(usage: &ContextUsage) -> Option<String> {
     }
 }
 
-/// Whole-number label for a cache hit rate: rounds to nearest, but a rate
-/// that merely *rounds* to 100 (e.g. 99.9%) shows `99`, since claiming a
-/// perfect hit rate would be false — pi still served uncached input tokens.
-/// Only an exact 100 prints as `100`.
+/// Whether a snapshot carries a real measurement.
+///
+/// pi can report the context window with zero tokens on a brand-new session:
+/// that is a valid snapshot but not usage. The new-task footer waits for ink
+/// rather than painting `0%` and an empty ring under a composer nobody has used
+/// yet; a session that has measured something always keeps its meter.
+pub fn has_usage(usage: Option<&ContextUsage>) -> bool {
+    usage.is_some_and(|usage| {
+        usage.tokens.is_some_and(|tokens| tokens > 0)
+            || usage.percent.is_some_and(|percent| percent > 0.0)
+    })
+}
+
+/// One-decimal label for a cache hit rate (`99.9`, `68.4`, `100`). A rate
+/// that merely *rounds* up to 100 (e.g. 99.96%) is withheld at `99.9`, since
+/// claiming a perfect hit rate would be false — the model still processed
+/// uncached prompt tokens. Only an exact 100 prints as `100`.
 pub fn hit_percent_label(percent: f32) -> String {
-    let rounded = (percent.round() as i32).clamp(0, 100);
-    if rounded == 100 && percent < 100.0 {
-        String::from("99")
-    } else {
-        rounded.to_string()
+    if !percent.is_finite() {
+        return "0".into();
     }
+    let mut value = (percent.clamp(0.0, 100.0) * 10.0).round() / 10.0;
+    if percent < 100.0 && value >= 100.0 {
+        value = 99.9;
+    }
+    let text = format!("{value:.1}");
+    text.strip_suffix(".0").unwrap_or(&text).to_string()
 }
 
 /// Compact token label (`151K`, `1.0K`, `688`) matching the reference UI.
@@ -135,7 +184,7 @@ pub fn usage_slices(
             label: label.into(),
             tokens: other,
             color: if conversation == 0 {
-                fill_color(usage.fraction(), theme)
+                theme.accent
             } else {
                 theme.accent.opacity(0.55)
             },
@@ -271,34 +320,30 @@ pub fn compact_card(
     let cost = session.and_then(|s| s.cost).map(format_cost);
     div()
         .w_full()
-        .px(px(12.))
-        .py(px(8.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.card_shadow())
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .elevation_2(&theme)
         .flex()
         .flex_col()
         .gap(px(2.))
         .child(
             div()
-                .text_size(theme.ui_px(13.))
-                .text_color(theme.text)
+                .text_size(TextSize::Default.px(&theme))
+                .text_color(theme.text_primary)
                 .whitespace_nowrap()
                 .child(title),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .whitespace_nowrap()
                 .child(subtitle),
         )
         .children(cost.map(|cost| {
             div()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .whitespace_nowrap()
                 .child(tr!("context_meter.spent", cost = cost))
         }))
@@ -306,7 +351,7 @@ pub fn compact_card(
 
 /// Money label for a session cost in USD. Sub-cent amounts read `<$0.01`
 /// rather than rounding to a misleading `$0.00`.
-fn format_cost(cost: f64) -> String {
+pub(crate) fn format_cost(cost: f64) -> String {
     if !cost.is_finite() || cost <= 0.0 {
         "$0.00".into()
     } else if cost < 0.01 {
@@ -347,18 +392,14 @@ pub fn details_card(
 
     div()
         .w(px(PANEL_W))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.card_shadow())
+        .elevation_2(&theme)
         .occlude()
         .on_mouse_down_out(on_outside)
         .flex()
         .flex_col()
         .px(px(14.))
-        .pt(px(12.))
-        .pb(px(12.))
+        .pt(DynamicSpacing::Base12.px(&theme))
+        .pb(DynamicSpacing::Base12.px(&theme))
         .gap(px(10.))
         .child(
             div()
@@ -367,27 +408,21 @@ pub fn details_card(
                 .child(
                     div()
                         .flex_1()
-                        .text_size(theme.ui_px(13.))
-                        .text_color(theme.text_2)
+                        .text_size(TextSize::Default.px(&theme))
+                        .text_color(theme.text_secondary)
                         .child(tr!("context_meter.context_usage")),
                 )
                 .child(
-                    div()
-                        .id("context-close")
-                        .size(px(20.))
-                        .rounded_sm()
-                        .flex()
-                        .items_center()
-                        .justify_center()
+                    icon_button_frame(div().id("context-close"), &theme, ButtonSize::Compact)
+                        .tip(tr!("common.close"))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.overlay))
+                        .hover_state(&theme)
                         .on_click(on_close)
-                        .child(
-                            div()
-                                .text_size(theme.ui_px(14.))
-                                .text_color(theme.text_3)
-                                .child("×"),
-                        ),
+                        .child(glyph(
+                            "icons/x.svg",
+                            ButtonSize::Compact.icon_size().px(&theme),
+                            theme.text_muted,
+                        )),
                 ),
         )
         .child(
@@ -397,8 +432,8 @@ pub fn details_card(
                 .child(
                     div()
                         .flex_1()
-                        .text_size(theme.ui_px(13.))
-                        .text_color(theme.text)
+                        .text_size(TextSize::Default.px(&theme))
+                        .text_color(theme.text_primary)
                         .child(
                             percent
                                 .map(|p| tr!("context_meter.percent_full", percent = p))
@@ -407,8 +442,8 @@ pub fn details_card(
                 )
                 .children(totals.map(|label| {
                     div()
-                        .text_size(theme.ui_px(12.))
-                        .text_color(theme.text_3)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
                         .child(label)
                 })),
         )
@@ -422,30 +457,23 @@ pub fn details_card(
 /// label names the in-flight state while pi works, so the control is never
 /// a second click on a run that is already compacting.
 fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme) -> AnyElement {
-    let button = div()
-        .id("context-compact-now")
+    let button = button_frame(div().id("context-compact-now"), &theme, ButtonSize::Medium)
         .w_full()
-        .h(px(28.))
-        .rounded_lg()
         .border_1()
         .border_color(theme.border)
-        .bg(theme.bg_raised)
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(theme.ui_px(12.))
+        .raised(theme.surface_elevated, &theme)
         .font_weight(FontWeight::MEDIUM);
     if is_compacting {
         button
-            .text_color(theme.text_3)
+            .text_color(theme.text_muted)
             .cursor_default()
             .child(tr!("context_meter.compacting"))
             .into_any_element()
     } else {
         button
-            .text_color(theme.text_2)
+            .text_color(theme.text_secondary)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
+            .hover_state(&theme)
             .on_click(move |event, window, cx| on_compact(event, window, cx))
             .child(tr!("context_meter.compact_now"))
             .into_any_element()
@@ -458,7 +486,7 @@ fn segmented_bar(slices: &[ContextSlice], window: u64, theme: Theme) -> impl Int
         .h(px(6.))
         .rounded_full()
         .overflow_hidden()
-        .bg(theme.trough)
+        .bg(theme.surface_secondary)
         .flex();
     if window > 0 {
         for slice in slices {
@@ -476,32 +504,37 @@ fn segmented_bar(slices: &[ContextSlice], window: u64, theme: Theme) -> impl Int
 fn legend(slices: &[ContextSlice], theme: Theme) -> impl IntoElement + use<> {
     if slices.is_empty() {
         return div()
-            .text_size(theme.ui_px(12.))
-            .text_color(theme.text_3)
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_muted)
             .child(tr!("context_meter.no_usage_reported_for_this_session_yet"))
             .into_any_element();
     }
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .children(slices.iter().map(|slice| {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .child(div().size(px(8.)).rounded(px(2.)).bg(slice.color))
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(
+                    div()
+                        .size(px(8.))
+                        .rounded(Radius::Full.px(&theme))
+                        .bg(slice.color),
+                )
                 .child(
                     div()
                         .flex_1()
-                        .text_size(theme.ui_px(12.5))
-                        .text_color(theme.text_2)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
                         .child(slice.label.clone()),
                 )
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.5))
-                        .text_color(theme.text)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_primary)
                         .child(format_tokens(slice.tokens)),
                 )
         }))
@@ -518,12 +551,12 @@ pub fn session_usage_section(usage: &SessionUsage, theme: Theme) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .child(div().w_full().h(px(1.)).bg(theme.border))
         .child(
             div()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .child(tr!("context_meter.session_usage")),
         )
         .child(session_row(
@@ -594,32 +627,32 @@ fn session_row(
         .flex()
         .items_center()
         .gap(px(7.))
-        .child(glyph(icon_path, 13., theme.text_3))
+        .child(glyph(
+            icon_path,
+            IconSize::Small.px(&theme),
+            theme.text_muted,
+        ))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .whitespace_nowrap()
                 .child(label),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_primary)
                 .whitespace_nowrap()
                 .child(value),
         )
 }
 
 /// Inline stroke icon at a fixed size, tinted with `currentColor`.
-fn glyph(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
-    svg()
-        .path(path)
-        .flex_none()
-        .size(px(size))
-        .text_color(color)
+fn glyph(path: &'static str, size: Pixels, color: Hsla) -> impl IntoElement {
+    svg().path(path).flex_none().size(size).text_color(color)
 }
 
 /// Sit the card fully above the ring, right-aligned with it.
@@ -664,8 +697,9 @@ pub fn context_control<V: 'static>(
 ) -> impl IntoElement {
     let usage = data.usage;
     let session = data.session;
-    let fraction = usage.and_then(ContextUsage::fraction).unwrap_or(0.0);
-    let fill = fill_color(Some(fraction), &theme);
+    let measured_fraction = usage.and_then(ContextUsage::fraction);
+    let fraction = measured_fraction.unwrap_or(0.0);
+    let fill = fill_color(measured_fraction, &theme);
     let slices = usage
         .map(|u| usage_slices(u, data.conversation_est, &theme))
         .unwrap_or_default();
@@ -728,7 +762,7 @@ pub fn context_control<V: 'static>(
         .id("context-meter")
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .cursor_pointer()
         .on_hover(move |hovered, _, cx| {
             this.update(cx, |app, cx| on_hover(app, *hovered, cx));
@@ -738,7 +772,7 @@ pub fn context_control<V: 'static>(
         })
         .children(percent.map(|label| {
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(fill)
                 .whitespace_nowrap()
                 .child(label)
@@ -750,7 +784,11 @@ pub fn context_control<V: 'static>(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(context_ring(fraction, fill, theme.ring_track))
+                .child(context_ring(
+                    fraction,
+                    fill,
+                    ring_track(measured_fraction, &theme),
+                ))
                 .children(popup_el),
         )
 }
@@ -790,10 +828,42 @@ mod tests {
     #[test]
     fn fill_color_tracks_fraction() {
         let theme = Theme::dark();
-        assert_eq!(fill_color(Some(0.5), &theme), theme.ring_fill);
-        assert_eq!(fill_color(Some(0.75), &theme), theme.warn);
-        assert_eq!(fill_color(Some(0.95), &theme), theme.crit);
-        assert_eq!(fill_color(None, &theme), theme.ring_fill);
+        assert_eq!(fill_color(Some(0.5), &theme), theme.accent);
+        assert_eq!(fill_color(Some(0.75), &theme), theme.warning);
+        assert_eq!(fill_color(Some(0.95), &theme), theme.error);
+        assert_eq!(fill_color(None, &theme), theme.text_muted);
+    }
+
+    /// A window-only snapshot is not usage: the new-task footer must wait for
+    /// tokens (or a non-zero percentage) before painting a meter.
+    #[test]
+    fn zero_usage_is_not_a_measurement() {
+        assert!(!has_usage(None));
+        assert!(!has_usage(Some(&usage(Some(0), 128_000, Some(0.0)))));
+        assert!(!has_usage(Some(&usage(None, 128_000, Some(0.0)))));
+        assert!(has_usage(Some(&usage(Some(1), 128_000, Some(0.0)))));
+        assert!(has_usage(Some(&usage(Some(64_000), 128_000, None))));
+        assert!(has_usage(Some(&usage(None, 128_000, Some(0.5)))));
+    }
+
+    #[test]
+    fn ring_track_is_accent_only_for_a_real_measurement() {
+        let theme = Theme::dark();
+        let track = ring_track(Some(0.5), &theme);
+        assert_eq!(track.h, theme.accent.h);
+        assert_eq!(track.s, theme.accent.s);
+        assert_eq!(track.l, theme.accent.l);
+        assert!(track.a > 0.2, "track must stay visible on a dim display");
+        assert!(
+            track.a < theme.accent.a,
+            "track must stay under the fill so the used fraction reads first"
+        );
+
+        let unknown = ring_track(None, &theme);
+        assert_eq!(unknown.h, theme.text_muted.h);
+        assert_eq!(unknown.s, theme.text_muted.s);
+        assert_eq!(unknown.l, theme.text_muted.l);
+        assert_eq!(unknown.a, track.a);
     }
 
     #[test]
@@ -822,7 +892,7 @@ mod tests {
             total: 90_000,
             cost: None,
         };
-        assert_eq!(cache_read_label(&usage), "40K · 44%");
+        assert_eq!(cache_read_label(&usage), "40K · 44.4%");
 
         // A real cache miss reads `0%`, not `None` — the prompt had tokens.
         usage.cache_read = 0;
@@ -836,8 +906,11 @@ mod tests {
     #[test]
     fn slices_split_conversation_and_other() {
         let u = usage(Some(60_000), 200_000, Some(30.0));
-        let slices = usage_slices(&u, 50_000, &Theme::dark());
+        let theme = Theme::dark();
+        let slices = usage_slices(&u, 50_000, &theme);
         assert_eq!(slices.len(), 2);
+        assert_eq!(slices[0].color, theme.accent.opacity(0.55));
+        assert_eq!(slices[1].color, theme.accent);
         assert_eq!(slices[0].label.as_ref(), "Other context");
         assert_eq!(slices[0].tokens, 10_000);
         assert_eq!(slices[1].label.as_ref(), "Conversation");
@@ -856,8 +929,10 @@ mod tests {
     #[test]
     fn slices_single_in_use_without_conversation() {
         let u = usage(Some(8_000), 200_000, Some(4.0));
-        let slices = usage_slices(&u, 0, &Theme::dark());
+        let theme = Theme::dark();
+        let slices = usage_slices(&u, 0, &theme);
         assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].color, theme.accent);
         assert_eq!(slices[0].label.as_ref(), "In use");
         assert_eq!(slices[0].tokens, 8_000);
     }

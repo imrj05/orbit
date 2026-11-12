@@ -33,10 +33,11 @@ import tempfile
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
-# Feed name -> artifact globs, most specific first. macOS ships one universal
-# archive for both feeds; Windows feeds only exist once an installer is built.
+# Feed name -> artifact globs, most specific first. macOS feeds prefer the
+# arch-native archive and fall back to the universal one; Windows feeds only
+# exist once an installer is built.
 FEEDS = {
-    "macos-aarch64": ["*-universal.tar.gz", "*-arm64.tar.gz"],
+    "macos-aarch64": ["*-arm64.tar.gz", "*-universal.tar.gz"],
     "macos-x86_64": ["*-universal.tar.gz", "*-x86_64.tar.gz"],
     "linux-aarch64": ["orbit-pi-*-aarch64-unknown-linux-gnu.tar.gz"],
     "linux-x86_64": ["orbit-pi-*-x86_64-unknown-linux-gnu.tar.gz"],

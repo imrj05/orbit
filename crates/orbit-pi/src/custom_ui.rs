@@ -15,15 +15,16 @@
 
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    deferred, div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    Font, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, ScrollHandle,
+    deferred, div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, Font,
+    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, ScrollHandle,
     SharedString, StyledText, Window,
 };
 use serde_json::Value;
 
-use crate::app::{icon, PopoverSurface};
+use crate::app::{icon, icon_button_frame, modal_card, modal_scrim, ControlExt, TipExt};
 use crate::terminal::encode_key;
 use crate::theme;
+use crate::theme::tokens::{panel, ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::widgets;
 
 /// Column budget the host offers the component: the card is exactly this many
@@ -188,6 +189,11 @@ impl CustomUiSurfaces {
         self.entries.retain(|(entry_id, _)| entry_id != id);
     }
 
+    /// Drop every surface — the process that owned them is gone.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     /// The newest surface (top of the stack), which owns focus.
     pub fn last(&self) -> Option<Entity<CustomUi>> {
         self.entries.last().map(|(_, ui)| ui.clone())
@@ -287,12 +293,21 @@ impl Render for CustomUi {
         let viewport_h = f32::from(viewport.height);
         // Exactly `columns` monospace cells, but never wider than the shared
         // modal width or the window, and never a sliver.
-        let max_w = CARD_MAX_W.min((viewport_w - 48.).max(280.));
+        let max_w = CARD_MAX_W.min((viewport_w - 32.).max(0.));
         let desired = f32::from(cell) * columns as f32;
-        let card_w = px(desired.min(max_w).max(300_f32.min(max_w)));
+        // Include the body's inset and padding in the card width; the grid
+        // itself must still have the exact column budget offered to pi.
+        let card_w = px((desired + 52.).min(max_w).max(300_f32.min(max_w)));
 
         // ── the component's lines, in the grid the server laid out ──
-        let mut grid = div().relative().flex().flex_col();
+        let mut grid = div()
+            .id("custom-ui-grid")
+            .debug_selector(|| "custom-ui-grid".to_string())
+            .relative()
+            .w(px(desired))
+            .flex_none()
+            .flex()
+            .flex_col();
         for line in &self.surface.lines {
             let (text, runs) = widgets::styled_line(line, &theme, &font);
             grid = grid.child(
@@ -310,81 +325,103 @@ impl Render for CustomUi {
                     .top(line_height * cursor.row as f32)
                     .w(px(2.))
                     .h(line_height)
-                    .rounded(px(1.))
+                    .rounded_full()
                     .bg(theme.accent),
             );
         }
 
         // ── header: the surface's origin, its title, and a close control ──
-        let mut meta = div().flex().items_center().gap(px(8.)).child(
-            div()
-                .text_size(theme.ui_px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .child(SharedString::from("Extension UI")),
-        );
-        if let Some(title) = self
+        let title = self
             .surface
             .title
             .as_deref()
             .map(str::trim)
             .filter(|title| !title.is_empty())
-        {
-            meta = meta
-                .child(
-                    div()
-                        .text_color(theme.border_strong)
-                        .child(SharedString::from("·")),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(theme.ui_px(13.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text)
-                        .child(SharedString::from(title.to_string())),
-                );
-        }
-        let header = div()
-            .flex_none()
-            .h(px(42.))
-            .debug_selector(|| "custom-ui-header".to_string())
-            .px(px(14.))
+            .unwrap_or("Extension UI");
+        let meta = div()
+            .min_w_0()
             .flex()
-            .items_center()
-            .gap(px(10.))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(icon("icons/extensions.svg", 14., theme.text_3))
-            .child(div().flex_1().min_w_0().flex().items_center().child(meta))
+            .flex_col()
+            .gap(px(2.))
             .child(
                 div()
-                    .id("custom-ui-close")
+                    .truncate()
+                    .text_size(TextSize::Default.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .child(SharedString::from(title.to_string())),
+            )
+            .when(
+                self.surface
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| !title.trim().is_empty()),
+                |meta| {
+                    meta.child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from("Extension UI")),
+                    )
+                },
+            );
+        let header = div()
+            .flex_none()
+            .h(theme.ui_px(64.))
+            .debug_selector(|| "custom-ui-header".to_string())
+            .px(DynamicSpacing::Base16.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .border_b_1()
+            .border_color(theme.border_subtle)
+            .child(
+                div()
+                    .size(theme.ui_px(36.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(panel::RADIUS.px(&theme))
+                    .bg(theme.surface_secondary)
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(icon(
+                        "icons/extensions.svg",
+                        IconSize::Medium.px(&theme),
+                        theme.text_secondary,
+                    )),
+            )
+            .child(div().flex_1().min_w_0().flex().items_center().child(meta))
+            .child(
+                icon_button_frame(div().id("custom-ui-close"), &theme, ButtonSize::Default)
                     .debug_selector(|| "custom-ui-close".to_string())
-                    .p_1()
-                    .rounded_sm()
+                    .tip(tr!("common.close"))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.bg_hover))
+                    .hover_state(&theme)
                     .on_click(cx.listener(Self::on_close_click))
-                    .child(icon("icons/x.svg", 14., theme.text_3)),
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_muted,
+                    )),
             );
 
         // ── body: an inset code surface holding the server's grid ──
         let body = div()
             .id("custom-ui-body")
             .debug_selector(|| "custom-ui-body".to_string())
-            .mx(px(10.))
-            .my(px(10.))
-            .px(px(10.))
-            .py(px(8.))
-            .rounded(px(10.))
+            .mx(DynamicSpacing::Base12.px(&theme))
+            .my(DynamicSpacing::Base12.px(&theme))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
             .bg(theme.code_bg)
             .border_1()
             .border_color(theme.border)
             .min_h(px(f32::from(line_height)))
             .max_h(px((viewport_h * 0.68).max(f32::from(line_height) * 3.)))
-            .overflow_y_scroll()
+            .overflow_scroll()
             .track_scroll(&self.scroll)
             .font_family(theme::code_font_family())
             .text_size(font_size)
@@ -394,52 +431,50 @@ impl Render for CustomUi {
         // ── footer: name the keys once ──
         let footer = div()
             .flex_none()
-            .h(px(34.))
+            .h(theme.ui_px(42.))
             .debug_selector(|| "custom-ui-footer".to_string())
-            .px(px(14.))
+            .px(DynamicSpacing::Base16.px(&theme))
             .flex()
             .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
             .border_t_1()
-            .border_color(theme.border)
-            .text_size(theme.ui_px(11.))
-            .text_color(theme.text_3)
-            .child(SharedString::from("↑↓ Navigate · ⏎ Select · esc Back"));
+            .border_color(theme.border_subtle)
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_muted)
+            .child(icon(
+                "icons/keyboard.svg",
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+            ))
+            .child(SharedString::from(
+                "Keyboard input is sent to the extension",
+            ));
 
-        let card = div()
+        let card = modal_card(&theme)
             .id("custom-ui-card")
             .debug_selector(|| "custom-ui-card".to_string())
             .w(card_w)
-            .rounded(px(14.))
-            .popover_surface(theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
             // The component gets first crack at every key; only `CustomUiEscape`
             // is intercepted, so the global Escape → AbortRun never fires here.
             .key_context("CustomUi")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(Self::on_escape))
-            // Clicks inside must not reach the scrim's cancel.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(header)
             .child(body)
             .child(footer);
 
-        let scrim = theme.scrim_modal();
-        div()
+        modal_scrim(&theme)
             .id("custom-ui-layer")
             .debug_selector(|| "custom-ui-layer".to_string())
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(scrim)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_scrim_down))
-            .child(card)
+            .child(crate::motion::enter(
+                card,
+                "custom-ui-card-in",
+                &theme,
+                crate::theme::tokens::Motion::Layout,
+                None,
+            ))
     }
 }
 
@@ -692,6 +727,31 @@ mod render_tests {
         assert!(close.origin.y < body.origin.y, "close lives in the header");
     }
 
+    /// A narrow window constrains the chrome without shrinking the terminal
+    /// grid, which must stay scrollable at the width the extension rendered.
+    #[gpui::test]
+    fn narrow_window_keeps_the_grid_wide_enough_to_scroll(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let ui = cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(ThemeId::Orbit));
+            let mut surface = surface();
+            surface.width = Some(96);
+            cx.new(|cx| CustomUi::new(surface, Box::new(|_, _, _| {}), Box::new(|_, _| {}), cx))
+        });
+        let harness = cx.update(|_, cx| cx.new(|_| Harness { ui }));
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(320.), px(500.)), |_, _| {
+            harness.clone()
+        });
+        let card = cx.debug_bounds("custom-ui-card").expect("card painted");
+        let body = cx.debug_bounds("custom-ui-body").expect("body painted");
+        let grid = cx.debug_bounds("custom-ui-grid").expect("grid painted");
+        assert!(card.size.width <= px(320.), "card stays in the window");
+        assert!(
+            grid.size.width > body.size.width,
+            "wide grid remains scrollable"
+        );
+    }
+
     /// A blank line (or a line of only SGR codes) in the component's output
     /// must not abort the render. Regression: `styled_line` returned a fallback
     /// space with no runs, and `StyledText::with_runs` panicked with "invalid
@@ -733,9 +793,7 @@ mod render_tests {
 
     impl Render for Host {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .children(self.surfaces.iter().map(|ui| ui.clone()))
+            div().size_full().children(self.surfaces.iter().cloned())
         }
     }
 

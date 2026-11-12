@@ -17,4 +17,6 @@ pub mod viewer;
 pub mod walk;
 
 pub use panel::{ExplorerResize, FileOpRequest, ProjectPanel};
+#[cfg(test)]
+pub use panel::{PANEL_MAX_W, PANEL_MIN_W};
 pub use viewer::FileViewer;

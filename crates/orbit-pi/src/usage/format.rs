@@ -24,11 +24,6 @@ pub fn compact(n: u64) -> String {
     scaled(value / 1_000_000_000.0, 'B')
 }
 
-/// Same as [`compact`] — named for the places where the unit matters.
-pub fn compact_tokens(n: u64) -> String {
-    compact(n)
-}
-
 /// Three significant digits, trailing zeros trimmed: `1.28M`, `18.4M`, `842K`.
 fn scaled(value: f64, unit: char) -> String {
     let text = if value < 10.0 {
@@ -119,6 +114,10 @@ pub fn percent(value: f64) -> String {
     if magnitude < 1.0 {
         // Small rates live or die on their second decimal.
         return format!("{}%", trim_zeros(&format!("{value:.2}")));
+    }
+    // A share below the whole must never round up to a claimed 100%.
+    if value < 100.0 && format!("{value:.1}") == "100.0" {
+        return "99.9%".into();
     }
     format!("{}%", trim_zeros(&format!("{value:.1}")))
 }
@@ -274,6 +273,9 @@ mod tests {
         assert_eq!(percent(0.004), "<0.01%");
         assert_eq!(percent(52.0), "52%");
         assert_eq!(percent(100.0), "100%");
+        // A sub-100 share never rounds up to a claimed whole.
+        assert_eq!(percent(99.96), "99.9%");
+        assert_eq!(percent(99.999), "99.9%");
         assert_eq!(share(0.52), "52%");
         assert_eq!(delta(Some(12.4)), "+12.4%");
         assert_eq!(delta(Some(-8.2)), "-8.2%");

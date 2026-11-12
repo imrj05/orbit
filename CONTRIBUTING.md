@@ -44,14 +44,22 @@ cargo run -p orbit-pi
 cargo build --workspace      # must stay clean: zero warnings
 cargo test --workspace       # unit tests + live pi integration tests
 cargo clippy --workspace --all-targets
+
+# Three guards for the design system. They are checks, not lint: a violation is
+# a real defect (a component re-deciding a state colour, an animation typing its
+# own duration, a locale missing a key).
+python3 scripts/check_states.py
+python3 scripts/check_motion.py
+python3 scripts/check_i18n.py
 ```
 
 `cargo build` with zero warnings is a stated project invariant. CI runs build
-and clippy on macOS (`.github/workflows/ci.yml`); tests are run locally, not in
-CI.
+and clippy on macOS, and the four design guards above in a `design guards` job
+(`.github/workflows/ci.yml`); tests are run locally, not in CI.
 
-For UI changes, launch the app (`cargo run -p orbit-pi`) and confirm the
-affected surface works. Notifications need an app bundle — use
+For UI changes, read `DESIGN.md` first — it is the design system, and the state,
+motion and modal contracts in it are enforced by the guards above. Then launch the
+app (`cargo run -p orbit-pi`) and confirm the affected surface works. Notifications need an app bundle — use
 `scripts/run-bundled.sh`. For a rebuild-and-relaunch loop on save,
 `cargo install bacon && bacon run`.
 
@@ -96,11 +104,18 @@ fix/sidebar-watcher
 docs/open-source-files
 ```
 
-When a pull request from an outside contributor is merged into `main`,
-`.github/workflows/contributors.yml` appends them to the `### Contributors`
-list under `[Unreleased]` in `CHANGELOG.md`
-(`scripts/changelog-contributors.py`). `scripts/bump-version.sh` rolls that
-list into the release section, so the credit ships with the release notes.
+When a pull request from an outside contributor is merged into `main`, the
+maintainer credits them by adding a bullet to the `### Contributors` list under
+`[Unreleased]` in `CHANGELOG.md`:
+
+```
+python3 scripts/changelog-contributors.py \
+  --pr 63 --login bougieL --title "fix(macos): reopen the window from the Dock"
+```
+
+The script is idempotent (a PR already credited anywhere in the changelog is
+left alone), and `scripts/bump-version.sh` rolls the list into the release
+section, so the credit ships with the release notes.
 
 ## Pull requests
 
@@ -108,7 +123,11 @@ list into the release section, so the credit ships with the release notes.
 2. Keep the change focused; unrelated cleanup belongs in its own PR.
 3. Fill in the pull-request template checklist.
 4. Make sure build, tests, and clippy pass locally.
-5. Push and open the PR. Link the issue it addresses.
+5. Update the docs in the same PR: `INTENT.md` → *Implementation status* (and a `D#`
+   decision if the architecture changed), the `README.md` features/roadmap, and an
+   `[Unreleased]` `CHANGELOG.md` entry. A shipped feature is not done until the docs
+   describe it.
+6. Push and open the PR. Link the issue it addresses.
 
 A maintainer will review. Expect comments on architecture fit, performance, and
 the invariants above.
@@ -159,9 +178,9 @@ the release. Notes come from `CHANGELOG.md`.
 4. The workflow then:
 
    - resolves the version from `crates/orbit-pi/Cargo.toml` (the source of truth);
-   - **macOS** — builds the universal `.app`, signs it with your Developer ID,
-     notarizes and staples the `.app` and DMG, and emits the updater `.tar.gz`
-     (`scripts/make-dmg.sh`);
+   - **macOS** — builds the arm64 and universal `.app`s, signs them with your
+     Developer ID, notarizes and staples each `.app` and DMG, and emits an
+     updater `.tar.gz` for each (`scripts/make-dmg.sh`);
    - **Linux** — builds `orbit-pi` and packages a `.tar.gz` plus a native `.deb`
      (`scripts/bundle-linux.sh`);
    - **Windows** — builds `orbit-pi.exe` and ships it both bare and in a `.zip`
@@ -172,9 +191,10 @@ the release. Notes come from `CHANGELOG.md`.
      previous tag). The same notes ship as an `Orbit-Pi-0.0.2.md` release asset.
 
    Review the draft and publish it. macOS signing needs the Apple secrets listed
-   at the top of the workflow file; without them the macOS job builds an
-   unsigned DMG. Windows and Linux are `continue-on-error` while those platforms
-   are validated.
+   at the top of the workflow file; without them the macOS job builds unsigned
+   DMGs, and if Apple refuses the notary credentials it falls back to signed but
+   un-notarized DMGs with a warning. Windows and Linux are `continue-on-error`
+   while those platforms are validated.
 
 5. The same job signs each artifact and attaches the update feeds to the
    release itself (`scripts/appcast.py`), so a published release serves them at
@@ -190,25 +210,29 @@ The updater verifies every downloaded artifact against an Ed25519 public key
 compiled into the binary (`ORBIT_UPDATE_PUBLIC_KEY`). Generate the keypair once:
 
 ```bash
-openssl genpkey -algorithm ed25519 -out orbit-update.pem
+mkdir -p "$HOME/.config/orbit"
+openssl genpkey -algorithm ed25519 -out "$HOME/.config/orbit/orbit-update.pem"
 
 # Public key → repository secret ORBIT_UPDATE_PUBLIC_KEY
-openssl pkey -in orbit-update.pem -pubout -outform DER | tail -c 32 | base64
+openssl pkey -in "$HOME/.config/orbit/orbit-update.pem" -pubout -outform DER | tail -c 32 | base64
 
 # Private key → repository secret ORBIT_UPDATE_PRIVATE_KEY
-base64 -i orbit-update.pem
+base64 -i "$HOME/.config/orbit/orbit-update.pem"
 ```
 
-Add both under Settings → Secrets and variables → Actions, and keep
-`orbit-update.pem` somewhere safe — lose it and you can never sign another
-update. With no public key the updater stays dormant, and debug builds never
-update themselves.
+Add both under Settings → Secrets and variables → Actions, and keep that file
+somewhere safe — lose it and you can never sign another update. With no public
+key the updater stays dormant, and debug builds never update themselves.
+
+Never place the private key inside the repository tree: it is gitignored, but
+`git add -f` and backup/sync tools do not respect that. CI fails on any tracked
+`*.pem`/`*.key`, and the key belongs in `~/.config/orbit/` (mode `0600`).
 
 To exercise the flow from a dev build, compile the public key in and force the
 updater on:
 
 ```bash
-ORBIT_UPDATE_PUBLIC_KEY="$(openssl pkey -in orbit-update.pem -pubout -outform DER | tail -c 32 | base64)" \
+ORBIT_UPDATE_PUBLIC_KEY="$(openssl pkey -in "$HOME/.config/orbit/orbit-update.pem" -pubout -outform DER | tail -c 32 | base64)" \
 ORBIT_FORCE_UPDATER=1 cargo run
 ```
 

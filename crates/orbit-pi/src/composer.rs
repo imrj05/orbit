@@ -3,8 +3,9 @@
 //! inserts a newline, and ↑/↓ move the caret between visual rows.
 //!
 //! Built on gpui's `shape_text`/`WrappedLine` (the 0.2.2 text system caches
-//! shaped layouts, so re-shaping on keystrokes is cheap). IME is still
-//! approximated as plain replaces — flag for P2 polish.
+//! shaped layouts, so re-shaping on keystrokes is cheap). IME composition is
+//! tracked as a marked range: preedit updates replace the span in place and
+//! commits/cancellations clear it (see `EntityInputHandler` below).
 
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -43,6 +44,92 @@ const UNDO_BYTES: usize = 16 * 1024 * 1024;
 /// Edits within this window coalesce into one undo step (a typing run).
 const UNDO_COALESCE: Duration = Duration::from_millis(400);
 
+/// Sent-prompt recall for the composer (`up`/`down` walk it, terminal-style).
+/// The app records every submitted prompt; the composer previews entries,
+/// stashing the in-progress text on the first ↑ and restoring it when the
+/// user cycles back past the newest entry. Pure state — unit-tested below.
+pub struct PromptHistory {
+    entries: std::collections::VecDeque<String>,
+    /// Index previewed while cycling; `None` when not cycling.
+    nav: Option<usize>,
+    /// The composer's text before cycling started; restored past the newest.
+    stash: String,
+}
+
+impl PromptHistory {
+    const LIMIT: usize = 200;
+
+    fn new() -> Self {
+        Self {
+            entries: std::collections::VecDeque::new(),
+            nav: None,
+            stash: String::new(),
+        }
+    }
+
+    pub fn shared() -> SharedPromptHistory {
+        std::rc::Rc::new(std::cell::RefCell::new(Self::new()))
+    }
+
+    /// A submitted prompt joins the log (newest last); consecutive dupes
+    /// collapse, and any in-progress cycling ends.
+    pub fn record(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.reset();
+        if self.entries.back().is_some_and(|last| last == text) {
+            return;
+        }
+        self.entries.push_back(text.to_string());
+        while self.entries.len() > Self::LIMIT {
+            self.entries.pop_front();
+        }
+    }
+
+    /// The entry one step older than the preview (the newest on the first
+    /// step), stashing the composer's current text on the way in.
+    pub fn prev(&mut self, current: &str) -> Option<String> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let nav = match self.nav {
+            Some(nav) => nav.saturating_sub(1),
+            None => {
+                self.stash = current.to_string();
+                self.entries.len() - 1
+            }
+        };
+        self.nav = Some(nav);
+        self.entries.get(nav).cloned()
+    }
+
+    /// One step newer; past the newest the stash comes back and cycling ends.
+    pub fn next(&mut self) -> Option<String> {
+        let nav = self.nav?;
+        if nav + 1 < self.entries.len() {
+            self.nav = Some(nav + 1);
+            self.entries.get(nav + 1).cloned()
+        } else {
+            self.nav = None;
+            Some(std::mem::take(&mut self.stash))
+        }
+    }
+
+    /// True while ↑/↓ are cycling previews (an edit or caret move ends it).
+    pub fn is_navigating(&self) -> bool {
+        self.nav.is_some()
+    }
+
+    /// Stop cycling and drop the stash.
+    pub fn reset(&mut self) {
+        self.nav = None;
+    }
+}
+
+pub type SharedPromptHistory = std::rc::Rc<std::cell::RefCell<PromptHistory>>;
+
 /// One undo point: the buffer plus the caret/selection to restore.
 #[derive(Clone)]
 struct Snapshot {
@@ -55,14 +142,11 @@ pub struct ComposerInput {
     focus_handle: FocusHandle,
     content: String,
     placeholder: SharedString,
-    /// True while the field still uses the shared default placeholder, which
-    /// is resolved at paint time so a language change is picked up live.
-    placeholder_is_default: bool,
-    /// Translation key for the placeholder, resolved at paint time (like the
-    /// default placeholder) so switching the interface language updates the
-    /// field without rebuilding it. Preferred over [`Self::with_placeholder`]
-    /// for user-facing copy; `with_placeholder` stays for literal text such
-    /// as `sk-…` or a URL example.
+    /// Translation key for the placeholder, resolved at paint time so
+    /// switching the interface language updates the field without rebuilding
+    /// it. Preferred over [`Self::with_placeholder`] for user-facing copy;
+    /// `with_placeholder` stays for literal text such as `sk-…` or a URL
+    /// example. A field with neither paints no placeholder.
     placeholder_key: Option<SharedString>,
     /// Named `%{…}` values substituted into [`Self::placeholder_key`] at paint
     /// time. Empty for keys without interpolation.
@@ -78,6 +162,21 @@ pub struct ComposerInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     is_selecting: bool,
+    /// Active IME composition span (byte offsets into `content`), or `None`
+    /// outside a composition. Platform composition updates carry ranges
+    /// relative to the composition text and often pass no replacement range,
+    /// so the previous preedit span must be remembered to replace it in
+    /// place instead of appending a new copy each keystroke.
+    marked_range: Option<Range<usize>>,
+    /// Whether the IME owns the next keystrokes, tracked separately from
+    /// [`Self::marked_range`] because a composition session outlives its
+    /// preedit: Sogou keeps the session and its candidate window open while
+    /// the composition string is empty, e.g. once Backspace has deleted every
+    /// pinyin letter, and reports that as an empty preedit update. Equating
+    /// "composing" with "a marked span exists" ends the session there, so
+    /// Enter submits the draft and Backspace deletes committed text while the
+    /// IME is still waiting for them (issue #100).
+    composing: bool,
     /// Layout snapshot from the last prepaint, for hit-testing and IME
     /// bounds outside the paint pass.
     last_lines: Vec<WrappedLine>,
@@ -101,9 +200,17 @@ pub struct ComposerInput {
     /// open, ↑/↓ move the highlight instead of the caret (Enter/Escape are
     /// intercepted by the app, which owns those actions).
     autocomplete: Option<SharedAutocomplete>,
+    /// Shared sent-prompt log: ↑ on the first row recalls the previous
+    /// prompt, ↓ moves newer (or restores the in-progress text).
+    prompt_history: Option<SharedPromptHistory>,
     /// Images pasted (or attached) since the app last drained them — the
     /// app turns these into message attachments.
     pub pasted_images: Vec<Image>,
+    /// File URLs copied from the system file manager, awaiting attachment.
+    pub pasted_files: Vec<std::path::PathBuf>,
+    /// Long pasted text since the app last drained it — the app turns these
+    /// into collapsible pills instead of flooding the box.
+    pub pasted_texts: Vec<String>,
     /// Caret blink: whether the caret paints this frame, the epoch that
     /// invalidates superseded timers, and the pending timer task (dropped
     /// when a newer wake replaces it, which cancels it).
@@ -147,7 +254,6 @@ impl ComposerInput {
             focus_handle: cx_focus_handle(_cx),
             content: String::new(),
             placeholder: "".into(),
-            placeholder_is_default: true,
             placeholder_key: None,
             placeholder_vars: Vec::new(),
             element_id: "composer-input".into(),
@@ -155,6 +261,8 @@ impl ComposerInput {
             selected_range: 0..0,
             selection_reversed: false,
             is_selecting: false,
+            marked_range: None,
+            composing: false,
             last_lines: Vec::new(),
             last_line_starts: Vec::new(),
             last_line_height: px(18.),
@@ -165,7 +273,10 @@ impl ComposerInput {
             last_caret: 0,
             max_lines: MAX_LINES,
             autocomplete: None,
+            prompt_history: None,
+            pasted_texts: Vec::new(),
             pasted_images: Vec::new(),
+            pasted_files: Vec::new(),
             caret_visible: true,
             blink_active: false,
             blink_epoch: 0,
@@ -191,7 +302,6 @@ impl ComposerInput {
         self.placeholder = placeholder.into();
         self.placeholder_key = None;
         self.placeholder_vars.clear();
-        self.placeholder_is_default = false;
         self
     }
 
@@ -202,7 +312,6 @@ impl ComposerInput {
         self.placeholder_key = Some(key.into());
         self.placeholder = SharedString::default();
         self.placeholder_vars.clear();
-        self.placeholder_is_default = false;
         self
     }
 
@@ -217,12 +326,25 @@ impl ComposerInput {
         self
     }
 
-    /// The placeholder text to paint in the current locale. Default, keyed,
-    /// and literal placeholders all converge here so the paint path and tests
-    /// share one implementation.
+    /// Switch the placeholder key at runtime — the chat composer names what
+    /// Enter will do (describe the task / queue a follow-up / steer the live
+    /// turn). A no-op when the key is unchanged, so it is safe to call from
+    /// the heartbeat every tick.
+    pub fn set_placeholder_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.placeholder_key.as_ref().map(|k| k.as_ref()) == Some(key) {
+            return;
+        }
+        self.placeholder_key = Some(SharedString::from(key.to_string()));
+        self.placeholder = SharedString::default();
+        self.placeholder_vars.clear();
+        cx.notify();
+    }
+
+    /// The placeholder text to paint in the current locale. Keyed and literal
+    /// placeholders both converge here so the paint path and tests share one
+    /// implementation.
     pub(crate) fn resolved_placeholder(&self) -> SharedString {
         resolve_placeholder(
-            self.placeholder_is_default,
             self.placeholder_key.as_ref().map(|key| key.as_ref()),
             &self.placeholder,
             &self.placeholder_vars,
@@ -292,8 +414,47 @@ impl ComposerInput {
         self
     }
 
+    /// Attach the sent-prompt log ↑/↓ recall pages through (chat composer).
+    pub fn with_prompt_history(mut self, history: SharedPromptHistory) -> Self {
+        self.prompt_history = Some(history);
+        self
+    }
+
     pub fn text(&self) -> String {
         self.content.clone()
+    }
+
+    /// Whether an IME composition session is open. Submit-like handlers must
+    /// bail while this is set: Enter may be confirming an IME candidate, not
+    /// asking to submit the draft. True even when the preedit string is empty
+    /// — the session belongs to the IME, not to the span it currently marks.
+    pub fn is_composing(&self) -> bool {
+        self.composing
+    }
+
+    /// End the composition session: forget the preedit span and hand the keys
+    /// back to the composer. Every path that means "the composition is over"
+    /// (commit, cancel, `unmark_text`, a programmatic buffer replacement) goes
+    /// through here, so the flag cannot outlive the span.
+    fn end_composition(&mut self) {
+        self.marked_range = None;
+        self.composing = false;
+    }
+
+    /// Whether the IME has already let go of this field, from what the window
+    /// can tell us.
+    ///
+    /// Focus leaving always ends a composition: the IME targets one control,
+    /// so another one taking over means it is gone. A deactivated window ends
+    /// it too on Windows — the IME cancels the composition there and gpui
+    /// 0.2.2 drops `WM_IME_ENDCOMPOSITION` — where the flag would otherwise
+    /// keep claiming every key after the user comes back from another app.
+    /// macOS and X11 report the end themselves (`unmarkText`,
+    /// `handle_ime_unmark`), so the caller passes `false` for them.
+    fn composition_ended(&self, window: &Window, window_deactivation_ends: bool) -> bool {
+        self.composing
+            && (!self.focus_handle.is_focused(window)
+                || (window_deactivation_ends && !window.is_window_active()))
     }
 
     /// Monotonic text-revision counter; changes only on actual edits, not on
@@ -312,19 +473,27 @@ impl ComposerInput {
         !self.pasted_images.is_empty()
     }
 
+    pub fn has_pasted_texts(&self) -> bool {
+        !self.pasted_texts.is_empty()
+    }
+
     /// Replace `range` with `text` (used by autocomplete commits).
     pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        self.reset_prompt_nav();
         self.record_undo();
         let start = range.start.min(self.content.len());
         let end = range.end.min(self.content.len()).max(start);
         self.content = self.content[0..start].to_owned() + text + &self.content[end..];
         self.selected_range = start + text.len()..start + text.len();
+        self.end_composition();
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.reset_prompt_nav();
         self.content.clear();
         self.selected_range = 0..0;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -334,9 +503,11 @@ impl ComposerInput {
     /// Replace the whole content and place the caret at the end. Used to seed
     /// form fields from app state (session rename, restored queue text).
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.reset_prompt_nav();
         self.content = text.into();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -346,9 +517,11 @@ impl ComposerInput {
     /// Replace the whole content and place the caret at the start. The Explorer
     /// opens a file at the top, not scrolled to its last line.
     pub fn set_text_at_start(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.reset_prompt_nav();
         self.content = text.into();
         self.selected_range = 0..0;
         self.selection_reversed = false;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -427,6 +600,9 @@ impl ComposerInput {
     // ── movement ───────────────────────────────────────────────────────
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
         } else {
@@ -435,6 +611,9 @@ impl ComposerInput {
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.cursor_offset()), cx);
         } else {
@@ -443,19 +622,91 @@ impl ComposerInput {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         // While the autocomplete menu is open the arrows navigate it, not
         // the caret.
         if self.autocomplete_navigate(-1, cx) {
+            return;
+        }
+        if self.history_recall(-1, cx) {
             return;
         }
         self.move_vertically(-1., cx);
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.autocomplete_navigate(1, cx) {
             return;
         }
+        if self.history_recall(1, cx) {
+            return;
+        }
         self.move_vertically(1., cx);
+    }
+
+    /// ↑ recalls older prompts (from the first visual row), ↓ steps newer and
+    /// finally restores the text the user was writing. Returns true when the
+    /// keystroke was consumed by history.
+    fn history_recall(&mut self, delta: i32, cx: &mut Context<Self>) -> bool {
+        let Some(history) = self.prompt_history.clone() else {
+            return false;
+        };
+        if !self.selected_range.is_empty() {
+            return false;
+        }
+        if history.borrow().is_navigating() {
+            // Cycling: ↑/↓ keep paging regardless of where the caret sits.
+        } else if delta > 0 {
+            // Not cycling: ↓ is an ordinary caret move.
+            return false;
+        } else if self.caret_row() != 0 {
+            return false;
+        }
+        let recalled = {
+            let mut history = history.borrow_mut();
+            if delta < 0 {
+                history.prev(&self.content)
+            } else {
+                history.next()
+            }
+        };
+        let Some(text) = recalled else {
+            return false;
+        };
+        // One undo step back to the pre-cycling text (coalescing merges the
+        // paging itself), caret at the end, without touching history's nav.
+        self.record_undo();
+        self.content = text;
+        self.selected_range = self.content.len()..self.content.len();
+        self.selection_reversed = false;
+        self.end_composition();
+        self.scroll_offset = px(0.);
+        self.revision = self.revision.wrapping_add(1);
+        cx.notify();
+        true
+    }
+
+    /// The caret's visual row (0-based) from the last layout; 0 before the
+    /// first layout, which is only ever the single-line case.
+    fn caret_row(&self) -> usize {
+        if self.last_lines.is_empty() {
+            return 0;
+        }
+        let y: f32 = self.position_for_offset(self.cursor_offset()).y.into();
+        let line_height: f32 = self.last_line_height.into();
+        (y / line_height.max(1.)) as usize
+    }
+
+    /// End any prompt-history cycling (every edit or deliberate caret move).
+    fn reset_prompt_nav(&mut self) {
+        if let Some(history) = &self.prompt_history {
+            history.borrow_mut().reset();
+        }
     }
 
     /// Move the autocomplete highlight when the menu is open. Returns true
@@ -491,16 +742,25 @@ impl ComposerInput {
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.previous_boundary(self.cursor_offset()), cx)
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.next_boundary(self.selected_range.end), cx)
     }
 
     /// Option+Left / Option+Right: move one word at a time (macOS text-field
     /// convention).
     fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
         } else {
@@ -509,6 +769,9 @@ impl ComposerInput {
     }
 
     fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
         } else {
@@ -517,16 +780,25 @@ impl ComposerInput {
     }
 
     fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.previous_word_boundary(self.cursor_offset()), cx)
     }
 
     fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.next_word_boundary(self.selected_range.end), cx)
     }
 
     /// Cmd+Left / Cmd+Right: jump to the start/end of the wrapped row the
     /// caret is on (a logical line's edge when it doesn't wrap).
     fn line_left(&mut self, _: &LineLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.line_start(self.cursor_offset()), cx);
         } else {
@@ -535,6 +807,9 @@ impl ComposerInput {
     }
 
     fn line_right(&mut self, _: &LineRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.line_end(self.cursor_offset()), cx);
         } else {
@@ -543,10 +818,16 @@ impl ComposerInput {
     }
 
     fn select_line_left(&mut self, _: &SelectLineLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.line_start(self.cursor_offset()), cx)
     }
 
     fn select_line_right(&mut self, _: &SelectLineRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.line_end(self.selected_range.end), cx)
     }
 
@@ -556,14 +837,23 @@ impl ComposerInput {
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.move_to(0, cx);
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.move_to(self.content.len(), cx);
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.replace_text_in_range(None, "\n", window, cx);
     }
 
@@ -617,6 +907,7 @@ impl ComposerInput {
         self.content = snapshot.content;
         self.selected_range = snapshot.selected_range;
         self.selection_reversed = snapshot.selection_reversed;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.last_edit = None;
@@ -624,6 +915,9 @@ impl ComposerInput {
     }
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         let Some(snapshot) = self.undo_stack.pop() else {
             return;
         };
@@ -634,6 +928,9 @@ impl ComposerInput {
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         let Some(snapshot) = self.redo_stack.pop() else {
             return;
         };
@@ -644,6 +941,14 @@ impl ComposerInput {
     // ── editing ────────────────────────────────────────────────────────
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        // Backspace in a live composition deletes a pinyin letter, and the IME
+        // keeps the session open with an empty preedit once the buffer runs
+        // out. Acting on it here would delete committed text and kill the
+        // composition (issue #100); the same guard sits at the top of the other
+        // editing and movement actions.
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor_offset()), cx)
         }
@@ -651,6 +956,9 @@ impl ComposerInput {
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.next_boundary(self.cursor_offset()), cx)
         }
@@ -722,27 +1030,64 @@ impl ComposerInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = cx.read_from_clipboard() else {
+        if self.is_composing() {
             return;
-        };
+        }
+        // Finder also supplies a generic file icon as an image; use the
+        // actual file URL before considering that preview.
+        let files = crate::platform::clipboard_file_paths();
+        if !files.is_empty() {
+            self.pasted_files.extend(files);
+            cx.notify();
+            return;
+        }
+        let item = cx.read_from_clipboard();
         // Pasted images become message attachments ("Show pasted
         // images as attachments") — the app drains `pasted_images` and
         // renders chips above the composer.
-        let images: Vec<Image> = item
-            .entries()
-            .iter()
-            .filter_map(|entry| match entry {
-                ClipboardEntry::Image(image) => Some(image.clone()),
-                ClipboardEntry::String(_) => None,
+        let mut images: Vec<Image> = item
+            .as_ref()
+            .map(|item| {
+                item.entries()
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        ClipboardEntry::Image(image) => Some(image.clone()),
+                        ClipboardEntry::String(_) => None,
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
+        // GPUI misses the formats screenshot tools actually write: a CF_DIB
+        // bitmap on Windows, and a TIFF that it never reaches on macOS once
+        // the pasteboard also carries a path or caption. Read that image
+        // before the text branch, or the shortcut pastes the caption and
+        // drops the picture.
+        if images.is_empty() {
+            if let Some(bytes) = crate::platform::clipboard_image_png() {
+                images.push(Image::from_bytes(gpui::ImageFormat::Png, bytes));
+            }
+        }
         if !images.is_empty() {
             self.pasted_images.extend(images);
             cx.notify();
             return;
         }
-        if let Some(text) = item.text() {
-            self.replace_text_in_range(None, &text, window, cx)
+        if let Some(text) = item.as_ref().and_then(|item| item.text()) {
+            #[cfg(target_os = "linux")]
+            if let Some(files) = crate::platform::clipboard_uri_list(&text) {
+                self.pasted_files.extend(files);
+                cx.notify();
+                return;
+            }
+            // A long paste collapses into a pill above the composer — pasting
+            // 200 lines of log must not turn the box into a scroll trap. The
+            // app drains `pasted_texts` and folds the text back in on send.
+            if should_pill_paste(&text) {
+                self.pasted_texts.push(text);
+                cx.notify();
+            } else {
+                self.replace_text_in_range(None, &text, window, cx)
+            }
         }
     }
 
@@ -755,6 +1100,9 @@ impl ComposerInput {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -766,6 +1114,7 @@ impl ComposerInput {
     // ── geometry ───────────────────────────────────────────────────────
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.reset_prompt_nav();
         self.selected_range = offset..offset;
         // A caret move ends the current undo run.
         self.last_edit = None;
@@ -859,16 +1208,55 @@ impl ComposerInput {
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
+        utf16_offset_to_utf8(&self.content, offset)
+    }
+
+    /// The document span a platform text replacement targets: the explicit
+    /// range when the platform supplies one, else the active composition
+    /// span, else the current selection. Windows IME passes `None` for both
+    /// incremental updates and the final commit, so the marked range is what
+    /// keeps those edits from landing on the wrong span.
+    fn replacement_range(&self, range_utf16: Option<Range<usize>>) -> Range<usize> {
+        if let Some(range) = range_utf16 {
+            return clamp_range(&self.content, self.range_from_utf16(&range));
         }
-        utf8_offset
+        if let Some(marked) = self.marked_range.clone() {
+            return marked;
+        }
+        clamp_range(&self.content, self.selected_range.clone())
+    }
+
+    /// The marked span handed to the platform, in UTF-16.
+    ///
+    /// `ime_gate` is true on Windows, the one place where this value is read
+    /// purely as gpui's "does the keystroke belong to the IME?" test
+    /// (`handle_keydown_msg`). There an open session with an empty preedit
+    /// reports the caret as an empty marked span, so gpui calls
+    /// `translate_message` and hands Enter/Backspace to the IME instead of
+    /// dispatching `Submit`/`Backspace` — an empty preedit is exactly Sogou's
+    /// state after Backspace emptied the pinyin buffer, and gpui 0.2.2 exposes
+    /// no other way to say "composing" (issue #100). Everywhere else the
+    /// value *is* the marked text (AppKit's `hasMarkedText`, X11/Wayland's IME
+    /// delete), so the substitution must stay off there.
+    fn platform_marked_range(&self, ime_gate: bool) -> Option<Range<usize>> {
+        let marked = self
+            .marked_range
+            .as_ref()
+            .map(|range| self.range_to_utf16(range));
+        if marked.is_none() && ime_gate && self.composing {
+            let caret = self.offset_to_utf16(self.cursor_offset());
+            return Some(caret..caret);
+        }
+        marked
+    }
+
+    /// Splice `new_text` over `range` and return the inserted byte span.
+    /// The range is clamped to character boundaries first, so a stale or
+    /// malformed platform range can never slice mid-character.
+    fn splice(&mut self, range: Range<usize>, new_text: &str) -> Range<usize> {
+        let range = clamp_range(&self.content, range);
+        self.content.replace_range(range.clone(), new_text);
+        range.start..range.start + new_text.len()
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
@@ -990,6 +1378,18 @@ fn cx_focus_handle(cx: &mut Context<ComposerInput>) -> FocusHandle {
     cx.focus_handle()
 }
 
+/// Longest source edge — no wait, the paste gate: at this many lines (or
+/// characters on one line) a paste collapses into a removable pill rather
+/// than landing inline in the composer.
+pub(crate) const PASTE_PILL_MIN_LINES: usize = 10;
+pub(crate) const PASTE_PILL_MIN_CHARS: usize = 1000;
+
+/// True when pasted `text` is long enough to become an attachment-style pill
+/// instead of flooding the box (see `paste` above).
+pub(crate) fn should_pill_paste(text: &str) -> bool {
+    text.lines().count() >= PASTE_PILL_MIN_LINES || text.chars().count() >= PASTE_PILL_MIN_CHARS
+}
+
 impl Focusable for ComposerInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1026,10 +1426,16 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        None
+        // The trait's ranges are UTF-16 (see `text_for_range` and
+        // `replace_text_in_range`), and Linux platforms feed this value back
+        // into those methods, so `platform_marked_range` converts the tracked
+        // byte span and keeps the Windows key-gate substitution local to it.
+        self.platform_marked_range(cfg!(target_os = "windows"))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.end_composition();
+    }
 
     fn replace_text_in_range(
         &mut self,
@@ -1038,14 +1444,17 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A plain replacement ends any active composition. On Windows the
+        // commit (`GCS_RESULTSTR`) and cancel (`lparam == 0`) paths both route
+        // here with `None`, so the marked span — not the selection — is what
+        // gets replaced; otherwise the preedit text would be left behind and
+        // the final text duplicated.
+        let range = self.replacement_range(range_utf16);
+        self.reset_prompt_nav();
         self.record_undo();
-        let range = range_utf16
-            .as_ref()
-            .map(|range| self.range_from_utf16(range))
-            .unwrap_or(self.selected_range.clone());
-        self.content =
-            self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
-        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
+        let inserted = self.splice(range, new_text);
+        self.selected_range = inserted.end..inserted.end;
+        self.end_composition();
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
@@ -1058,19 +1467,39 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // IME composition is stubbed; treat as a plain replace.
+        let range = self.replacement_range(range_utf16);
+        self.reset_prompt_nav();
         self.record_undo();
-        let range = range_utf16
-            .as_ref()
-            .map(|range| self.range_from_utf16(range))
-            .unwrap_or(self.selected_range.clone());
-        self.content =
-            self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
-        self.selected_range = new_selected_range_utf16
-            .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .map(|r| r.start + new_text.len()..r.end + new_text.len())
-            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        let inserted = self.splice(range, new_text);
+        // Any composition update opens the session, an empty one included: the
+        // IME keeps the session (and its candidate window) alive when its
+        // preedit is emptied, so ending the session here would hand the next
+        // Enter/Backspace to the composer's bindings (issue #100). Only the
+        // span is cleared below; `end_composition` is what closes the session.
+        self.composing = true;
+        if new_text.is_empty() {
+            // An empty composition clears the preedit text rather than
+            // leaving an empty marked span behind.
+            self.selected_range = inserted.start..inserted.start;
+            self.marked_range = None;
+        } else {
+            // The IME's selection is relative to the composition text, so map
+            // it against `new_text` and offset by the splice start. Converting
+            // it against the whole document and offsetting by `new_text.len()`
+            // (the old stub) produced ranges past the end of the buffer — for
+            // example, composing "n" with selection 1..1 gave a 2..2 selection
+            // on a one-byte document — which the next update then sliced and
+            // panicked on.
+            self.selected_range = new_selected_range_utf16
+                .map(|selection| {
+                    let start = inserted.start + utf16_offset_to_utf8(new_text, selection.start);
+                    let end = inserted.start + utf16_offset_to_utf8(new_text, selection.end);
+                    start..end.max(start)
+                })
+                .unwrap_or_else(|| inserted.end..inserted.end);
+            self.selection_reversed = false;
+            self.marked_range = Some(inserted);
+        }
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
@@ -1142,6 +1571,42 @@ fn prev_char_boundary(text: &str, offset: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Clamp `offset` to `text.len()` and walk back to the nearest character
+/// boundary, so it is always safe to slice `text` there.
+fn floor_char_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+/// Clamp a byte range to `text` and snap its ends to character boundaries.
+/// Platform IME ranges are UTF-16 conversions that can go stale between a
+/// preedit update and the next key event; this keeps them from slicing
+/// mid-character (or out of bounds) and panicking.
+fn clamp_range(text: &str, range: Range<usize>) -> Range<usize> {
+    let start = floor_char_boundary(text, range.start);
+    let end = floor_char_boundary(text, range.end).max(start);
+    start..end
+}
+
+/// Convert a UTF-16 offset within `text` to a UTF-8 byte offset. Offsets past
+/// the end (or landing inside a surrogate pair) clamp to the nearest scalar
+/// boundary, so the result always slices `text` safely.
+fn utf16_offset_to_utf8(text: &str, offset: usize) -> usize {
+    let mut utf8_offset = 0;
+    let mut utf16_count = 0;
+    for ch in text.chars() {
+        if utf16_count >= offset {
+            break;
+        }
+        utf16_count += ch.len_utf16();
+        utf8_offset += ch.len_utf8();
+    }
+    utf8_offset
+}
+
 /// The byte after the char at `offset`, or the end. `offset` must be a char
 /// boundary.
 fn next_char_boundary(text: &str, offset: usize) -> usize {
@@ -1156,7 +1621,7 @@ fn next_char_boundary(text: &str, offset: usize) -> usize {
 /// (word / punctuation / whitespace) around `offset`. Returning the class run
 /// rather than only a word means double-clicking punctuation selects it too,
 /// matching native text views.
-fn word_range_at(text: &str, offset: usize) -> Range<usize> {
+pub(crate) fn word_range_at(text: &str, offset: usize) -> Range<usize> {
     if text.is_empty() {
         return 0..0;
     }
@@ -1223,22 +1688,27 @@ fn scrollbar_thumb_height(track: Pixels, visible_rows: usize, total_rows: usize)
     (track * ratio).clamp(min_thumb, track)
 }
 
+/// Horizontal scroll that keeps the caret inside a `visible_width`-wide field
+/// of non-wrapping text, like a native single-line input. Capped so it never
+/// scrolls past the line's end, and zero once the caret is back in view.
+fn horizontal_scroll(caret_x: Pixels, line_width: Pixels, visible_width: Pixels) -> Pixels {
+    let max_scroll = (line_width - visible_width).max(px(0.));
+    if caret_x > visible_width {
+        (caret_x - visible_width).min(max_scroll)
+    } else {
+        px(0.)
+    }
+}
+
 /// Resolve a placeholder for `locale` (or the active locale when `locale` is
 /// `None`). Shared by the paint path and tests so both agree on precedence:
-/// default key → explicit key (+ interpolated vars) → literal.
+/// explicit key (+ interpolated vars) → literal.
 fn resolve_placeholder(
-    placeholder_is_default: bool,
     placeholder_key: Option<&str>,
     placeholder: &str,
     vars: &[(SharedString, SharedString)],
     locale: Option<&str>,
 ) -> String {
-    if placeholder_is_default {
-        return match locale {
-            Some(locale) => crate::i18n::translate_in(locale, "composer.placeholder"),
-            None => tr!("composer.placeholder"),
-        };
-    }
     let Some(key) = placeholder_key else {
         return placeholder.to_owned();
     };
@@ -1278,9 +1748,17 @@ fn mention_runs(text: &str, base: &TextRun, theme: &theme::Theme) -> Vec<TextRun
             MentionKind::Command => theme.mention_command(),
             MentionKind::File => theme.mention_file(),
         };
+        // A whisper of the token's own hue behind it: enough that a `/command`
+        // or `@file` reads as one object instead of loose colored words,
+        // quiet enough to stay text and not become a chip.
+        let tint = match span.kind {
+            MentionKind::Command => 0.10,
+            MentionKind::File => 0.07,
+        };
         runs.push(TextRun {
             len: span.range.end - span.range.start,
             color,
+            background_color: Some(color.opacity(tint)),
             ..base.clone()
         });
         cursor = span.range.end;
@@ -1366,6 +1844,9 @@ struct PrepaintState {
     /// y offset of each logical line in content coordinates.
     line_y: Vec<Pixels>,
     scroll_offset: Pixels,
+    /// Horizontal content offset: keeps the caret on screen in a
+    /// non-wrapping (single-line) field, like a native text input.
+    scroll_x: Pixels,
     /// Selection wash quads, painted under the text.
     selection: Vec<PaintQuad>,
     /// Caret quad, painted over the text (focused only).
@@ -1469,7 +1950,7 @@ impl Element for TextElement {
             let placeholder = self.input.read(cx).resolved_placeholder();
             let mut run = base.clone();
             run.len = placeholder.len();
-            run.color = theme.text_3;
+            run.color = theme.text_muted;
             (placeholder, vec![run])
         } else if let Some(lang) = syntax {
             // Code files: paint the whole buffer with the same lexer the
@@ -1551,17 +2032,48 @@ impl Element for TextElement {
             }
         }
 
-        // Window-coordinate mapping of a content point.
-        let map = |x: Pixels, y: Pixels| -> gpui::Point<Pixels> {
-            point(
-                bounds.origin.x + gutter_width + x,
-                bounds.origin.y + y - scroll_offset,
-            )
-        };
         let caret_fallback = |line: &WrappedLine| -> gpui::Point<Pixels> {
             point(
                 line.width(),
                 line.wrap_boundaries().len() as f32 * line_height,
+            )
+        };
+
+        // Caret anchor in content coordinates. Computed before `map` so the
+        // horizontal scroll below can keep it on screen.
+        let mut caret_pos: Option<gpui::Point<Pixels>> = None;
+        if !lines.is_empty() {
+            if content.is_empty() {
+                caret_pos = Some(point(px(0.), px(0.)));
+            } else if let Some((i, local)) = line_at_offset(&line_starts, &line_lens, cursor) {
+                let line = &lines[i];
+                let raw = line
+                    .position_for_index(local, line_height)
+                    .unwrap_or_else(|| caret_fallback(line));
+                caret_pos = Some(point(raw.x, line_y[i] + raw.y));
+            }
+        }
+
+        // Non-wrapping text can overflow its width, so slide it left until
+        // the caret is inside the field — a native single-line input. Wrapping
+        // text never overflows, so its scroll stays at 0.
+        let visible_width = (bounds.size.width - gutter_width).max(px(0.));
+        let mut scroll_x = px(0.);
+        if !wrap {
+            if let Some(caret) = caret_pos {
+                let line_width = line_at_offset(&line_starts, &line_lens, cursor)
+                    .and_then(|(i, _)| lines.get(i))
+                    .map(|line| line.width())
+                    .unwrap_or(px(0.));
+                scroll_x = horizontal_scroll(caret.x, line_width, visible_width);
+            }
+        }
+
+        // Window-coordinate mapping of a content point.
+        let map = |x: Pixels, y: Pixels| -> gpui::Point<Pixels> {
+            point(
+                bounds.origin.x + gutter_width + x - scroll_x,
+                bounds.origin.y + y - scroll_offset,
             )
         };
 
@@ -1608,18 +2120,6 @@ impl Element for TextElement {
         }
 
         // Caret: 2px accent bar spanning the visual row.
-        let mut caret_pos: Option<gpui::Point<Pixels>> = None;
-        if !lines.is_empty() {
-            if content.is_empty() {
-                caret_pos = Some(point(px(0.), px(0.)));
-            } else if let Some((i, local)) = line_at_offset(&line_starts, &line_lens, cursor) {
-                let line = &lines[i];
-                let raw = line
-                    .position_for_index(local, line_height)
-                    .unwrap_or_else(|| caret_fallback(line));
-                caret_pos = Some(point(raw.x, line_y[i] + raw.y));
-            }
-        }
         let caret = if caret_visible {
             caret_pos.map(|caret| {
                 let origin = map(caret.x, caret.y);
@@ -1628,7 +2128,7 @@ impl Element for TextElement {
                         point(origin.x, origin.y + px(2.)),
                         size(px(2.), line_height - px(4.)),
                     ),
-                    theme.accent,
+                    theme.accent_text,
                 )
             })
         } else {
@@ -1655,7 +2155,7 @@ impl Element for TextElement {
                     ),
                     size(width, thumb_height),
                 ),
-                theme.text_3.opacity(0.45),
+                theme.text_muted.opacity(0.45),
             )
         });
 
@@ -1676,7 +2176,7 @@ impl Element for TextElement {
                     .join("\n");
                 let mut run = base.clone();
                 run.len = text.len();
-                run.color = theme.text_3.opacity(0.7);
+                run.color = theme.text_muted.opacity(0.7);
                 window
                     .text_system()
                     .shape_text(text.into(), font_size, &[run], None, None)
@@ -1713,6 +2213,7 @@ impl Element for TextElement {
             lines,
             line_y,
             scroll_offset,
+            scroll_x,
             selection,
             caret,
             scrollbar,
@@ -1741,62 +2242,101 @@ impl Element for TextElement {
 
         let focused = focus_handle.is_focused(window);
         let scroll = prepaint.scroll_offset;
+        let scroll_x = prepaint.scroll_x;
+        let gutter = prepaint.gutter;
         let line_height = window.line_height();
+        let selection = std::mem::take(&mut prepaint.selection);
+        let caret = prepaint.caret.take();
+        let scrollbar = prepaint.scrollbar.take();
+        // Text lives right of the gutter and clips there, so a horizontal
+        // scroll never slides the text under the line numbers.
+        let text_bounds = Bounds {
+            origin: point(bounds.origin.x + gutter, bounds.origin.y),
+            size: size((bounds.size.width - gutter).max(px(0.)), bounds.size.height),
+        };
 
         // Clip everything to the element: wrapping keeps text inside, the
         // mask handles the scrolled state past `max_lines`.
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            // Selection wash under the text.
-            for quad in prepaint.selection.drain(..) {
-                window.paint_quad(quad);
-            }
-            for (i, line) in prepaint.lines.iter().enumerate() {
-                line.paint(
-                    point(
-                        bounds.origin.x + prepaint.gutter,
-                        bounds.origin.y + prepaint.line_y[i] - scroll,
-                    ),
-                    line_height,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                )
-                .unwrap();
-            }
-            // Line numbers, right-aligned in the gutter.
+            // Line numbers, right-aligned in the gutter (never x-scrolled).
             for (k, number) in prepaint.numbers.iter().enumerate() {
                 let i = prepaint.number_first + k;
                 if let Some(y) = prepaint.line_y.get(i).copied() {
-                    let x = bounds.origin.x + prepaint.gutter - px(9.) - number.width();
-                    let _ = number.paint(
+                    let x = bounds.origin.x + gutter - px(9.) - number.width();
+                    if let Err(error) = number.paint(
                         point(x, bounds.origin.y + y - scroll),
                         line_height,
                         TextAlign::Left,
                         None,
                         window,
                         cx,
-                    );
+                    ) {
+                        eprintln!("Orbit composer: could not paint a line number: {error}");
+                    }
                 }
             }
-            // Caret over the text.
-            if focused {
-                if let Some(caret) = prepaint.caret.take() {
-                    window.paint_quad(caret);
-                }
-            }
+            window.with_content_mask(
+                Some(ContentMask {
+                    bounds: text_bounds,
+                }),
+                |window| {
+                    // Selection wash under the text.
+                    for quad in selection {
+                        window.paint_quad(quad);
+                    }
+                    for (i, line) in prepaint.lines.iter().enumerate() {
+                        if let Err(error) = line.paint(
+                            point(
+                                bounds.origin.x + gutter - scroll_x,
+                                bounds.origin.y + prepaint.line_y[i] - scroll,
+                            ),
+                            line_height,
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        ) {
+                            eprintln!("Orbit composer: could not paint a text line: {error}");
+                        }
+                    }
+                    // Caret over the text.
+                    if focused {
+                        if let Some(caret) = caret {
+                            window.paint_quad(caret);
+                        }
+                    }
+                },
+            );
             // Scroll thumb last, so it sits above the text and caret.
-            if let Some(scrollbar) = prepaint.scrollbar.take() {
+            if let Some(scrollbar) = scrollbar {
                 window.paint_quad(scrollbar);
             }
         });
     }
 }
 
+/// Whether any of a form's fields is mid-composition.
+///
+/// Confirm actions read [`ComposerInput::text`], which includes the preedit, so
+/// a Save clicked while an IME candidate window is open would store text the
+/// user is still choosing. Keyboard confirms call `is_composing` at their own
+/// action; this is the same rule for the mouse path (issue #100).
+pub(crate) fn any_composing(cx: &App, fields: &[&Entity<ComposerInput>]) -> bool {
+    fields.iter().any(|field| field.read(cx).is_composing())
+}
+
 impl Render for ComposerInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Keep the caret blink in step with focus and this frame's edit.
         self.sync_caret_blink(window, cx);
+        // A composition cannot outlive focus: once another control takes over,
+        // the IME has ended the session and gpui 0.2.2 never says so (it never
+        // handles `WM_IME_ENDCOMPOSITION`), so the flag would keep claiming
+        // keystrokes — on Windows, every one of them (`platform_marked_range`).
+        // Close it on the first frame the window says the IME is done with it.
+        if self.composition_ended(window, cfg!(target_os = "windows")) {
+            self.end_composition();
+        }
         // Transparent: the floating composer box in app.rs provides the
         // background/border; this is just the editable (auto-growing) area.
         let debug_selector = self.element_id.to_string();
@@ -1845,46 +2385,141 @@ impl Render for ComposerInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        line_at_offset, line_range_at, resolve_placeholder, scrollbar_thumb_height, word_range_at,
+        horizontal_scroll, line_at_offset, line_range_at, mention_runs, resolve_placeholder,
+        scrollbar_thumb_height, word_range_at, PromptHistory,
     };
-    use gpui::{px, SharedString};
+    use gpui::{px, SharedString, TextRun};
+
+    /// `/command` and `@file` tokens carry a whisper of their own hue behind
+    /// them, so each reads as one object rather than loose colored words —
+    /// and the base text between them stays untinted.
+    #[test]
+    fn mentions_carry_a_tint_and_plain_text_does_not() {
+        use crate::theme::{Theme, ThemeId};
+
+        let theme = Theme::for_id(ThemeId::Orbit);
+        let base = TextRun {
+            len: 0,
+            font: gpui::font("Test"),
+            color: theme.text_primary,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let text = "refactor @src/main.rs now";
+        let runs = mention_runs(text, &base, &theme);
+
+        // Runs cover the text byte-for-byte, so the shaped layout stays valid.
+        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
+
+        let tinted = runs
+            .iter()
+            .filter(|run| run.background_color.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(tinted.len(), 1, "only the @file token is tinted");
+        assert_eq!(tinted[0].len, "@src/main.rs".len());
+
+        // A whisper: present, but never a solid chip behind the words.
+        let alpha = tinted[0].background_color.expect("tint").a;
+        assert!(alpha > 0. && alpha <= 0.10, "tint alpha {alpha} too loud");
+
+        // Plain prose keeps the base ink and no background.
+        assert!(runs[0].background_color.is_none());
+        assert_eq!(runs[0].len, "refactor ".len());
+    }
+
+    /// The placeholder names what Enter does: the idle key normally, a
+    /// send-mode key while a turn is in flight.
+    #[test]
+    fn running_placeholders_name_the_send_mode() {
+        let idle = resolve_placeholder(Some("composer.placeholder"), "", &[], Some("en"));
+        let queue =
+            resolve_placeholder(Some("composer.placeholder_follow_up"), "", &[], Some("en"));
+        let steer = resolve_placeholder(Some("composer.placeholder_steer"), "", &[], Some("en"));
+        assert_eq!(idle, "Describe the task…");
+        assert_eq!(queue, "Queue a follow-up…");
+        assert_eq!(steer, "Steer the current task…");
+        assert_ne!(idle, queue);
+        assert_ne!(queue, steer);
+    }
 
     /// A placeholder built from a translation key must follow the locale it is
     /// painted in, so switching the interface language updates search fields
     /// that were constructed long before (the provider/model/settings filters).
     #[test]
     fn placeholder_keys_follow_the_locale() {
-        let en = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("en"));
-        let zh = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("zh-CN"));
+        let en = resolve_placeholder(Some("app.search_providers"), "", &[], Some("en"));
+        let zh = resolve_placeholder(Some("app.search_providers"), "", &[], Some("zh-CN"));
         assert_eq!(en, "Search providers…");
         assert_ne!(en, zh, "keyed placeholder still renders English in zh-CN");
         assert!(!zh.is_empty());
 
         // A literal placeholder (`sk-…`, a URL example) is never translated.
         assert_eq!(
-            resolve_placeholder(false, None, "sk-…", &[], Some("zh-CN")),
+            resolve_placeholder(None, "sk-…", &[], Some("zh-CN")),
             "sk-…"
         );
 
-        // The shared default placeholder follows the locale too.
+        // A field with neither a key nor literal text paints nothing.
+        assert_eq!(resolve_placeholder(None, "", &[], Some("en")), "");
+
+        // The chat composer's idle key follows the locale too.
         assert_ne!(
-            resolve_placeholder(true, None, "", &[], Some("en")),
-            resolve_placeholder(true, None, "", &[], Some("zh-CN")),
+            resolve_placeholder(Some("composer.placeholder"), "", &[], Some("en")),
+            resolve_placeholder(Some("composer.placeholder"), "", &[], Some("zh-CN")),
         );
     }
 
-    /// `%{…}` values in a keyed placeholder are substituted at paint time, so
-    /// the branch picker's "Search <workspace> branches" stays translated.
+    /// Prompt history: ↑ pages older (stashing the draft), ↓ pages newer and
+    /// finally hands the draft back.
+    #[test]
+    fn prompt_history_recalls_and_restores_the_draft() {
+        let mut history = PromptHistory::new();
+        history.record("first");
+        history.record("second");
+        history.record("third");
+
+        // ↑ from a half-written draft: newest first, then older, then stuck
+        // at the oldest (like a terminal).
+        assert_eq!(history.prev("draft in progress"), Some("third".into()));
+        assert!(history.is_navigating());
+        assert_eq!(history.prev("third"), Some("second".into()));
+        assert_eq!(history.prev("second"), Some("first".into()));
+        assert_eq!(history.prev("first"), Some("first".into()));
+
+        // ↓ pages back and finally restores the stash, ending the cycle.
+        assert_eq!(history.next(), Some("second".into()));
+        assert_eq!(history.next(), Some("third".into()));
+        assert_eq!(history.next(), Some("draft in progress".into()));
+        assert!(!history.is_navigating());
+        assert_eq!(history.next(), None);
+    }
+
+    /// Recording ends any cycle and collapses consecutive duplicates.
+    #[test]
+    fn prompt_history_dedupes_and_caps() {
+        let mut history = PromptHistory::new();
+        history.record("same");
+        history.record("same");
+        history.record("");
+        assert_eq!(history.entries.len(), 1);
+        for ix in 0..(PromptHistory::LIMIT + 50) {
+            history.record(&format!("prompt {ix}"));
+        }
+        assert_eq!(history.entries.len(), PromptHistory::LIMIT);
+        // A mid-cycle send drops the cycle, not the log.
+        history.prev("x");
+        history.record("newest");
+        assert!(!history.is_navigating());
+        assert_eq!(history.prev("y"), Some("newest".into()));
+    }
+
+    /// `%{…}` values in a keyed placeholder are interpolated at paint time.
     #[test]
     fn keyed_placeholder_vars_are_interpolated() {
         let vars = [(SharedString::from("workspace"), SharedString::from("orbit"))];
-        let text = resolve_placeholder(
-            false,
-            Some("branch_picker.search_branches"),
-            "",
-            &vars,
-            Some("en"),
-        );
+        let text =
+            resolve_placeholder(Some("branch_picker.search_branches"), "", &vars, Some("en"));
         assert!(text.contains("orbit"), "{text}");
         assert!(!text.contains("%{workspace}"), "{text}");
     }
@@ -1894,8 +2529,8 @@ mod tests {
     /// locale, so the active one is English here.
     #[test]
     fn resolved_placeholder_uses_the_active_locale() {
-        let live = resolve_placeholder(false, Some("app.search_providers"), "", &[], None);
-        let en = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("en"));
+        let live = resolve_placeholder(Some("app.search_providers"), "", &[], None);
+        let en = resolve_placeholder(Some("app.search_providers"), "", &[], Some("en"));
         assert_eq!(live, en);
     }
 
@@ -1976,6 +2611,20 @@ mod tests {
         assert_eq!(scrollbar_thumb_height(px(0.), 1, 8), px(0.));
         assert_eq!(scrollbar_thumb_height(px(100.), 1, 8), px(24.));
         assert_eq!(scrollbar_thumb_height(px(100.), 8, 8), px(100.));
+    }
+
+    /// A long single-line value scrolls so the caret stays inside the field,
+    /// capped at the line's own width and zero once the caret is back in view.
+    #[test]
+    fn horizontal_scroll_follows_the_caret() {
+        // Caret already inside the field: no scroll.
+        assert_eq!(horizontal_scroll(px(40.), px(80.), px(100.)), px(0.));
+        // Caret past the right edge: scroll by exactly the overflow.
+        assert_eq!(horizontal_scroll(px(150.), px(200.), px(100.)), px(50.));
+        // Capped so the line's end lands on the field's right edge.
+        assert_eq!(horizontal_scroll(px(150.), px(120.), px(100.)), px(20.));
+        // Nothing to scroll.
+        assert_eq!(horizontal_scroll(px(0.), px(0.), px(100.)), px(0.));
     }
 }
 
@@ -2426,6 +3075,433 @@ mod geometry_tests {
             assert_eq!(input.read(cx).text(), "abcd");
             input.update(cx, |input, cx| input.redo(&Redo, window, cx));
             assert_eq!(input.read(cx).text(), "Xabcd");
+        });
+    }
+
+    fn ime_input(cx: &mut VisualTestContext) -> Entity<ComposerInput> {
+        cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.new(ComposerInput::new)
+        })
+    }
+
+    /// Issue #51 regression: incremental IME composition ("n" → "ni" → "你")
+    /// replaces the previous preedit in place. The old stub mapped the
+    /// composition-relative selection against the whole document, producing
+    /// out-of-range selections that the next update sliced and panicked on.
+    #[gpui::test]
+    fn ime_composition_replaces_the_previous_preedit_in_place(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            // Windows sends `GCS_COMPSTR` updates with no replacement range and
+            // a selection relative to the composition text.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "n", Some(1..1), window, cx);
+                input.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+                input.replace_and_mark_text_in_range(None, "你", Some(1..1), window, cx);
+            });
+            let (text, marked, selected, composing) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                    input.is_composing(),
+                )
+            });
+            assert_eq!(text, "你", "each update replaced the previous preedit");
+            assert_eq!(marked, Some(0..1), "marked range is UTF-16");
+            assert_eq!(selected, "你".len().."你".len());
+            assert!(composing);
+
+            // The commit path (`GCS_RESULTSTR`) replaces the marked span, not
+            // the selection, and ends the composition.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            let (text, marked, composing) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.is_composing(),
+                )
+            });
+            assert_eq!(text, "你好", "commit replaced the preedit, not appended");
+            assert_eq!(marked, None);
+            assert!(!composing, "submit works again once composition ends");
+        });
+    }
+
+    /// Composing inside existing text splices over the marked span, and the
+    /// IME's selection — relative to the preedit — maps into the document.
+    #[gpui::test]
+    fn ime_composition_splices_inside_existing_text(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("hello world", cx);
+                input.move_to(6, cx); // before "world"
+            });
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "n", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "ni", Some(1..1), window, cx);
+            });
+            let (text, marked, selected, composing) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                    input.is_composing(),
+                )
+            });
+            assert_eq!(text, "hello niworld");
+            assert_eq!(marked, Some(6..8));
+            assert_eq!(selected, 7..7, "selection is relative to the preedit");
+            assert!(composing);
+
+            // Cancel: the platform replaces the marked span with an empty
+            // string, removing the preedit without touching the rest.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "", window, cx)
+            });
+            let (text, marked, composing) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.is_composing(),
+                )
+            });
+            assert_eq!(text, "hello world", "cancellation removed the preedit");
+            assert_eq!(marked, None);
+            assert!(!composing);
+        });
+    }
+
+    /// An empty platform range and an empty composition both clamp instead of
+    /// slicing, and `unmark_text` ends the composition without dropping text.
+    #[gpui::test]
+    fn ime_stale_ranges_clamp_and_unmark_clears(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            // A selection that overruns the short preedit clamps to its end
+            // instead of setting an invalid document selection.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "n", Some(99..120), window, cx)
+            });
+            let (text, marked, selected) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                )
+            });
+            assert_eq!(text, "n");
+            assert_eq!(marked, Some(0..1));
+            assert_eq!(selected, 1..1);
+
+            // An out-of-bounds replacement range clamps to the buffer rather
+            // than panicking: 0..900 covers the preedit and commits "ok".
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..900), "ok", window, cx)
+            });
+            assert_eq!(input.read(cx).text(), "ok");
+            assert!(!input.read(cx).is_composing());
+
+            // A range entirely past the end clamps to the end (append).
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(400..900), "!", window, cx)
+            });
+            assert_eq!(input.read(cx).text(), "ok!");
+
+            // `unmark_text` ends composition but keeps the text, like
+            // NSTextView. An empty composition clears the preedit and keeps the
+            // session open: the IME still owns the next keystroke, and only
+            // `unmark_text` or a commit hands it back (issue #100).
+            input.update(cx, |input, cx| {
+                input.clear(cx);
+                input.replace_and_mark_text_in_range(None, "n", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert_eq!(input.read(cx).text(), "", "empty composition cleared");
+            assert!(
+                input.read(cx).is_composing(),
+                "an empty preedit keeps the composition session"
+            );
+
+            input.update(cx, |input, cx| {
+                input.clear(cx);
+                input.replace_and_mark_text_in_range(None, "ni", None, window, cx);
+                input.unmark_text(window, cx);
+            });
+            assert_eq!(input.read(cx).text(), "ni", "unmark keeps the text");
+            assert!(!input.read(cx).is_composing());
+        });
+    }
+
+    /// Non-BMP characters are two UTF-16 units; a selection inside a surrogate
+    /// pair clamps to the scalar's end and commit spans all four bytes.
+    #[gpui::test]
+    fn ime_non_bmp_composition_tracks_utf16_offsets(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "😀", Some(1..1), window, cx);
+            });
+            let (marked, selected) = input.update(cx, |input, cx| {
+                (
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                )
+            });
+            assert_eq!(marked, Some(0..2));
+            assert_eq!(selected, 4..4, "a surrogate-half selection clamps");
+
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "😀!", Some(3..3), window, cx);
+            });
+            let (text, marked, selected) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                )
+            });
+            assert_eq!(text, "😀!");
+            assert_eq!(marked, Some(0..3));
+            assert_eq!(selected, 5..5, "3 UTF-16 units = 5 bytes");
+
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "😀!", window, cx)
+            });
+            assert_eq!(input.read(cx).text(), "😀!");
+            assert!(!input.read(cx).is_composing());
+        });
+    }
+
+    /// Issue #100 regression: Sogou keeps the composition session — and its
+    /// candidate window — open after Backspace has emptied the pinyin buffer,
+    /// which it reports as an empty preedit update. Enter and Backspace belong
+    /// to the IME there, so they must not reach the composer's bindings: the
+    /// draft was being submitted and committed text deleted while the IME was
+    /// still waiting for the keystroke.
+    #[gpui::test]
+    fn ime_empty_preedit_keeps_the_keys_away_from_the_composer(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.set_text("draft", cx));
+            input.update(cx, |input, cx| {
+                // "nihao", then Backspace down to an empty pinyin buffer.
+                input.replace_and_mark_text_in_range(None, "nihao", Some(5..5), window, cx);
+            });
+            // Backspace inside the composition deletes the preedit, not the
+            // buffer: the guard holds even though a marked span exists.
+            input.update(cx, |input, cx| input.backspace(&Backspace, window, cx));
+            assert_eq!(input.read(cx).text(), "draftnihao");
+
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "", None, window, cx)
+            });
+            assert!(
+                input.read(cx).is_composing(),
+                "the session outlives its span"
+            );
+
+            // Every key the IME owns is a no-op for the composer.
+            input.update(cx, |input, cx| {
+                input.newline(&Newline, window, cx);
+                input.backspace(&Backspace, window, cx);
+                input.delete(&Delete, window, cx);
+                input.left(&Left, window, cx);
+                input.up(&Up, window, cx);
+            });
+            let (text, selected) =
+                input.update(cx, |input, _| (input.text(), input.selected_range.clone()));
+            assert_eq!(text, "draft", "no edit reached the buffer");
+            assert_eq!(selected, text.len()..text.len(), "the caret did not move");
+
+            // The commit (`GCS_RESULTSTR`) ends the session; the composer owns
+            // the keys again.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            assert!(!input.read(cx).is_composing());
+            input.update(cx, |input, cx| input.backspace(&Backspace, window, cx));
+            assert_eq!(input.read(cx).text(), "draft你");
+        });
+    }
+
+    /// The composer guard alone would swallow Enter and Backspace; the IME has
+    /// to receive them. On Windows gpui decides that by asking for the marked
+    /// span, so a session with an empty preedit reports one at the caret —
+    /// while other platforms, where the value is the real marked text, keep
+    /// saying `None` (issue #100).
+    #[gpui::test]
+    fn ime_empty_preedit_is_marked_for_the_windows_key_gate(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.set_text("draft", cx));
+            assert_eq!(
+                input.read(cx).platform_marked_range(true),
+                None,
+                "no session, nothing marked"
+            );
+
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx)
+            });
+            assert_eq!(
+                input.read(cx).platform_marked_range(true),
+                Some(5..10),
+                "a real preedit is its own span"
+            );
+
+            // Sogou after Backspace emptied the pinyin buffer: the candidate
+            // window stays open, the preedit is empty.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "", None, window, cx)
+            });
+            assert_eq!(
+                input.read(cx).platform_marked_range(true),
+                Some(5..5),
+                "Windows hands the key to the IME instead of submitting"
+            );
+            assert_eq!(
+                input.read(cx).platform_marked_range(false),
+                None,
+                "other platforms keep AppKit's hasMarkedText contract"
+            );
+
+            // The commit ends the session, so the gate closes with it.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            assert_eq!(input.read(cx).platform_marked_range(true), None);
+        });
+    }
+
+    /// gpui 0.2.2 never reports `WM_IME_ENDCOMPOSITION`, so a session the IME
+    /// abandoned on focus loss would keep claiming keys — every key, once the
+    /// Windows gate reports an empty marked span. The first unfocused frame
+    /// closes it.
+    #[gpui::test]
+    fn ime_session_ends_when_the_composer_loses_focus(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.new(ComposerInput::new)
+        });
+        let harness = cx.update(|_, cx| {
+            cx.new(|_| Harness {
+                input: input.clone(),
+            })
+        });
+        draw(cx, &harness);
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("draft", cx);
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert!(input.read(cx).is_composing());
+            window.focus(&input.read(cx).focus_handle(cx));
+            // gpui's test window reports itself inactive until it is asked to
+            // activate, and on Windows an inactive window ends the session on
+            // the next frame (the IME cancels the composition there, which is
+            // the separate case below). Activate it so this test exercises the
+            // focus rule instead of the deactivation rule, on every platform.
+            window.activate_window();
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, _| window.is_window_active()),
+            "the window activation reached the window"
+        );
+
+        draw(cx, &harness);
+        assert!(
+            cx.update(|_, cx| input.read(cx).is_composing()),
+            "a focused session outlives a frame"
+        );
+
+        cx.update(|window, _| window.blur());
+        draw(cx, &harness);
+        assert!(
+            !cx.update(|_, cx| input.read(cx).is_composing()),
+            "an abandoned session must not keep claiming keys"
+        );
+    }
+
+    /// Deactivating the window is the other way a Windows composition is
+    /// abandoned: Alt-Tab mid-composition, come back, and the IME's own
+    /// `WM_IME_ENDCOMPOSITION` was never reported. Focus is still on the field
+    /// there, so only the window's activation says the session is over.
+    #[gpui::test]
+    fn ime_session_ends_with_the_windows_window(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            window.focus(&input.read(cx).focus_handle(cx));
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert!(input.read(cx).is_composing());
+
+            // The test platform reports its window as inactive, which is a
+            // deactivated window on Windows: the IME has cancelled the
+            // composition there, so the flag must not survive.
+            assert!(
+                input.read(cx).composition_ended(window, true),
+                "a deactivated window ends the session on Windows"
+            );
+            // macOS and X11 end it through `unmarkText` instead, and the
+            // inactive test window must not end it for them.
+            assert!(
+                !input.read(cx).composition_ended(window, false),
+                "the other platforms keep the session until the IME unmarks"
+            );
+        });
+    }
+
+    /// The mouse path needs the same rule as the keyboard: a form's Save reads
+    /// `text()`, which still holds the preedit, so one field mid-composition
+    /// holds the whole form (issue #100).
+    #[gpui::test]
+    fn a_form_confirm_waits_while_any_field_composes(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let title = ime_input(cx);
+        let body = ime_input(cx);
+        cx.update(|window, cx| {
+            assert!(!super::any_composing(cx, &[&title, &body]));
+
+            title.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert!(
+                super::any_composing(cx, &[&title, &body]),
+                "one field mid-composition holds the form"
+            );
+            assert!(
+                !super::any_composing(cx, &[&body]),
+                "fields that are not on the form do not"
+            );
+
+            title.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            assert!(
+                !super::any_composing(cx, &[&title, &body]),
+                "the commit releases the form"
+            );
         });
     }
 }

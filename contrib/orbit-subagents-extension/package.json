@@ -1,0 +1,11 @@
+{
+  "name": "orbit-subagents-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Orbit's subagent tool: a pi extension loaded with --extension that delegates a scoped task to a child pi process and returns only its report.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -23,6 +23,98 @@ use crate::transcript_view::{self, TranscriptView};
 use orbit_rpc::{AssistantMessageEvent, Event, MessageUsage};
 use serde_json::Value;
 
+/// A snapshot of one PDF section and its attached images.
+pub(crate) struct PdfSection {
+    pub markdown: String,
+    pub images: Vec<Arc<Image>>,
+}
+
+/// Extra detail an export may carry beyond the visible answer text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExportOptions {
+    /// Append each assistant turn's reasoning and tool calls — including the
+    /// output pi recorded — to the exported Markdown. Off by default: the
+    /// visible projection is what the conversation reads as.
+    pub include_thinking_and_tools: bool,
+}
+
+/// Longest recorded tool output one call contributes to an export. Exports
+/// are read by people; an unbounded tool log buries the conversation, and the
+/// full text stays in the session.
+const EXPORT_TOOL_OUTPUT_CHARS: usize = 4000;
+
+/// One line naming a tool call in an export: what ran, where, and whether it
+/// failed. Raw arguments stay out — they can be whole files, and the recorded
+/// output already reports what came back.
+fn export_tool_heading(tool: &ToolCall) -> String {
+    let mut label = format!("**{}**", tool.name);
+    let detail = tool
+        .args
+        .as_ref()
+        .filter(|_| {
+            matches!(
+                tool.name.as_str(),
+                "bash" | "shell" | "terminal" | "exec" | "run"
+            )
+        })
+        .and_then(|args| args.get("command"))
+        .and_then(Value::as_str)
+        .map(export_inline_code)
+        .or_else(|| tool.path.as_ref().map(|path| export_inline_code(path)))
+        .unwrap_or_else(|| tool.summary.clone());
+    label.push_str(" — ");
+    label.push_str(&detail);
+    if tool.added > 0 || tool.removed > 0 {
+        label.push_str(&format!(" (+{} −{})", tool.added, tool.removed));
+    }
+    if tool.failed {
+        label.push_str(" · failed");
+    }
+    label
+}
+
+/// Inline code a backtick inside `text` cannot break: the delimiter grows
+/// past the longest run, with the padding CommonMark requires when the text
+/// itself starts or ends with a backtick.
+fn export_inline_code(text: &str) -> String {
+    let longest = text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+    let ticks = "`".repeat(longest + 1);
+    if text.starts_with('`') || text.ends_with('`') {
+        format!("{ticks} {text} {ticks}")
+    } else {
+        format!("{ticks}{text}{ticks}")
+    }
+}
+
+/// A fenced code block whose fence is longer than any backtick run in `body`,
+/// so tool output that itself contains fences cannot close the block early.
+fn export_code_block(body: &str) -> String {
+    let longest = body.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat((longest + 1).max(3));
+    format!("{fence}\n{body}\n{fence}")
+}
+
+/// The reasoning-and-tools appendix for one row, or empty when the export did
+/// not opt in or the row has none.
+fn export_work(message: &ChatMessage, options: ExportOptions) -> String {
+    if !options.include_thinking_and_tools {
+        return String::new();
+    }
+    message.export_work_markdown()
+}
+
+/// A single response's exported body: the answer opens the section, the
+/// appendix follows it when the export opted in.
+fn export_response_body(message: &ChatMessage, options: ExportOptions) -> String {
+    let text = message.text();
+    let work = export_work(message, options);
+    match (text.is_empty(), work.is_empty()) {
+        (_, true) => text,
+        (true, false) => work,
+        (false, false) => format!("{text}\n\n{work}"),
+    }
+}
+
 /// One streaming step of an assistant turn: the reasoning it did, the tool
 /// calls it made, and the text it produced — rendered in sequence.
 #[derive(Clone, Default)]
@@ -39,10 +131,40 @@ pub struct Step {
     /// pi's per-step message timestamp (epoch millis), when supplied — the
     /// fallback for estimating reasoning time on reload.
     pub timestamp: Option<i64>,
+    /// Active generation time measured client-side while this step
+    /// streamed: text, thinking, and tool-call argument deltas, excluding
+    /// gaps for tool execution, round-trips, and first-token latency.
+    /// Reloaded sessions leave this `None` — pi does not persist per-step
+    /// generation timing.
+    pub generation_time: Option<Duration>,
+    /// pi's own `durationMs` for this call: wall time from the provider
+    /// request starting to the stream finishing, so prefill and decode are
+    /// both included. The authoritative generation clock, preferred over
+    /// the client-measured [`Step::generation_time`] (which only sees the
+    /// bursts pi emits and so reads far too high). `None` on reload — pi
+    /// does not persist it — and for user rows.
+    pub duration: Option<Duration>,
+}
+
+/// A context-boundary summary row: pi compacted the conversation (or
+/// summarized an abandoned branch on `/tree` navigation). It sits where the
+/// summarized turns were — its own row, never merged into a user/assistant
+/// turn.
+#[derive(Clone)]
+pub struct SummaryRow {
+    /// `true` for a `/tree` branch summary, `false` for a compaction.
+    pub branch: bool,
+    /// The markdown summary pi generated.
+    pub summary: String,
+    /// Context tokens before compaction replaced them. Compaction only; pi
+    /// does not report a token count for branch summaries.
+    pub tokens_before: Option<u64>,
 }
 
 pub struct ChatMessage {
     pub user: bool,
+    /// A compaction/branch-summary boundary card instead of a turn.
+    pub summary: Option<SummaryRow>,
     /// A turn's steps in sequence — thinking/tools/text per step.
     pub steps: Vec<Step>,
     /// Images attached to a user message (live prompt or session reload).
@@ -62,6 +184,26 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    /// A compaction/branch-summary boundary row.
+    pub fn is_summary(&self) -> bool {
+        self.summary.is_some()
+    }
+
+    /// A real assistant turn — the counterpart of [`Self::user`], and false
+    /// for summary rows (which are also not user messages).
+    pub fn is_assistant(&self) -> bool {
+        !self.user && self.summary.is_none()
+    }
+
+    /// Whether the message has any visible text, without joining it.
+    ///
+    /// `text()` allocates the whole joined turn; the render path asks whether
+    /// there is any text at all on every visible row on every frame, so that
+    /// question gets its own allocation-free answer.
+    pub fn has_text(&self) -> bool {
+        self.steps.iter().any(|step| !step.text.is_empty())
+    }
+
     /// The concatenated answer text (steps in sequence).
     pub fn text(&self) -> String {
         self.steps
@@ -75,6 +217,45 @@ impl ChatMessage {
     /// Every tool call of the turn, in order.
     pub fn tools(&self) -> impl Iterator<Item = &ToolCall> {
         self.steps.iter().flat_map(|step| step.tools.iter())
+    }
+
+    /// The reasoning-and-tools appendix for this assistant turn, as Markdown.
+    ///
+    /// The answer text comes first in an exported section — this is appended
+    /// after it — so a response export still opens with the response. Empty
+    /// for user and summary rows and for turns that did no work; the caller
+    /// decides whether the export opted in.
+    fn export_work_markdown(&self) -> String {
+        if !self.is_assistant() {
+            return String::new();
+        }
+        let mut out = String::new();
+        let reasoning: Vec<&str> = self
+            .steps
+            .iter()
+            .map(|step| step.thinking.trim())
+            .filter(|thinking| !thinking.is_empty())
+            .collect();
+        if !reasoning.is_empty() {
+            out.push_str("### Reasoning\n\n");
+            out.push_str(&reasoning.join("\n\n"));
+            out.push_str("\n\n");
+        }
+        let tools: Vec<&ToolCall> = self.tools().collect();
+        if !tools.is_empty() {
+            out.push_str("### Tool calls\n\n");
+            for tool in tools {
+                out.push_str(&export_tool_heading(tool));
+                out.push('\n');
+                if let Some(output) = tool.export_output() {
+                    out.push('\n');
+                    out.push_str(&export_code_block(&output));
+                    out.push('\n');
+                }
+                out.push('\n');
+            }
+        }
+        out.trim_end().to_string()
     }
 
     pub fn has_hidden_work(&self) -> bool {
@@ -95,6 +276,22 @@ impl ChatMessage {
             }
         }
         total
+    }
+
+    /// Generation clock for this turn — the sum of its steps' values,
+    /// preferring pi's own `durationMs` ([`Step::duration`]) over the
+    /// client-measured fallback. `None` when no step carries either
+    /// (reloaded sessions, or providers that deliver whole blocks).
+    pub fn generation_time(&self) -> Option<Duration> {
+        let mut total = Duration::ZERO;
+        let mut any = false;
+        for step in &self.steps {
+            if let Some(duration) = step.duration.or(step.generation_time) {
+                total += duration;
+                any = true;
+            }
+        }
+        any.then_some(total)
     }
 }
 
@@ -174,9 +371,57 @@ pub struct ToolCall {
     /// Structured result facts (`details`) — surfaced at a glance on the
     /// card header instead of hiding inside the expanded output.
     pub facts: ToolFacts,
+    /// The result's full `details` payload, kept only when small enough to
+    /// hold (see [`DETAILS_MAX_BYTES`]). Bespoke cards — the subagent card
+    /// today — parse it; everything else ignores it and keeps showing
+    /// [`Self::facts`]. `None` for tools that send none.
+    pub details: Option<Value>,
 }
 
 impl ToolCall {
+    /// The result text an export may carry: pi's envelope is unwrapped the way
+    /// the detail card shows it, non-text payloads are pretty-printed, and very
+    /// long output is cut with an explicit note rather than silently shortened.
+    fn export_output(&self) -> Option<String> {
+        let output = self.output.as_ref()?;
+        let envelope = output.get("content").and_then(Value::as_array).is_some();
+        let text = if envelope {
+            match tool_result_output(output) {
+                Some(value) => value,
+                // An envelope that carried only images: say so instead of
+                // pretending the call returned nothing.
+                None if output
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| {
+                        blocks
+                            .iter()
+                            .any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+                    }) =>
+                {
+                    Value::String("[Tool output images omitted from export.]".to_string())
+                }
+                None => return None,
+            }
+        } else {
+            output.clone()
+        };
+        let text = match text {
+            Value::String(text) => text,
+            other => serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string()),
+        };
+        let text = text.trim_end();
+        if text.is_empty() {
+            return None;
+        }
+        let mut text = text.to_string();
+        if text.chars().count() > EXPORT_TOOL_OUTPUT_CHARS {
+            text = text.chars().take(EXPORT_TOOL_OUTPUT_CHARS).collect();
+            text.push_str("\n[Tool output truncated for export.]");
+        }
+        Some(text)
+    }
+
     fn from_value(name: &str, args: Option<&Value>) -> Self {
         let empty = Value::Null;
         let args = args.unwrap_or(&empty);
@@ -196,6 +441,7 @@ impl ToolCall {
             output: None,
             failed: false,
             facts: ToolFacts::default(),
+            details: None,
         }
     }
 }
@@ -204,6 +450,7 @@ impl ChatMessage {
     fn empty_assistant() -> Self {
         Self {
             user: false,
+            summary: None,
             steps: vec![Step::default()],
             images: Vec::new(),
             elapsed: None,
@@ -219,20 +466,26 @@ impl ChatMessage {
     fn from_value(value: &Value) -> Option<ChatMessage> {
         let value = value.get("message").unwrap_or(value);
         let role = value.get("role")?.as_str()?;
-        // Only user and assistant messages are conversation rows. pi
+        // Compaction and branch summaries are real boundary rows (pi's TUI
+        // renders both): keep them visible in the conversation.
+        if role == "compactionSummary" || role == "branchSummary" {
+            return Some(Self::summary_row(role, value));
+        }
+        // Only user and assistant turns are conversational rows. pi
         // interleaves context-only entries — the `system` loadout/tool-change
-        // update it emits right before a prompt's user echo, extension
-        // `custom` messages, summaries. Parsed as rows they would land
-        // between the optimistic prompt and pi's echo, defeating the
-        // identical-echo dedupe and showing the prompt twice.
+        // update it emits right before a prompt's user echo, and extension
+        // `custom` messages. Parsed as rows they would land between the
+        // optimistic prompt and pi's echo, defeating the identical-echo
+        // dedupe and showing the prompt twice.
         if role != "user" && role != "assistant" {
             return None;
         }
         let user = role == "user";
         let error = message_error(value);
-        let aborted = !user && value.get("stopReason").and_then(Value::as_str) == Some("aborted");
+        let aborted = !user && is_user_stop(value);
         let mut message = ChatMessage {
             user,
+            summary: None,
             steps: vec![Step::default()],
             images: Vec::new(),
             elapsed: None,
@@ -240,7 +493,9 @@ impl ChatMessage {
             error,
             aborted,
         };
-        let step = message.steps.last_mut().expect("one step");
+        // Borrow the step field directly so image pushes below can touch
+        // `message.images` without a whole-struct mutable borrow.
+        let step = message.steps.first_mut()?;
 
         match value.get("content") {
             Some(Value::String(text)) => step.text = text.clone(),
@@ -306,7 +561,41 @@ impl ChatMessage {
         message.steps[0].usage = MessageUsage::from_value(value.get("usage"));
         let timestamp = message.finished_at;
         message.steps[0].timestamp = timestamp;
+        // pi measures the whole call (`durationMs`) — prefill plus decode —
+        // which is the honest generation clock. Use it when it lands.
+        message.steps[0].duration = value
+            .get("durationMs")
+            .and_then(|millis| {
+                millis
+                    .as_u64()
+                    .or_else(|| millis.as_f64().map(|f| f.round() as u64))
+            })
+            .map(Duration::from_millis);
         Some(message)
+    }
+
+    /// One compaction/branch-summary boundary row. The step stays empty: the
+    /// summary renders as its own card, and `text()` must stay clear of turn
+    /// navigation, search, and answer-copy paths.
+    fn summary_row(role: &str, value: &Value) -> Self {
+        Self {
+            user: false,
+            summary: Some(SummaryRow {
+                branch: role == "branchSummary",
+                summary: value
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                tokens_before: value.get("tokensBefore").and_then(Value::as_u64),
+            }),
+            steps: vec![Step::default()],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: parse_timestamp(value.get("timestamp")),
+            error: None,
+            aborted: false,
+        }
     }
 }
 
@@ -394,7 +683,7 @@ fn injected_skill_message(value: &Value) -> bool {
 /// Decode an image content block — `{"type":"image","data":<base64>,
 /// "mimeType":"image/png"}`, the shape this app prompts with — into a
 /// renderable image. Covers pi echoes and session reloads from disk.
-fn image_from_block(block: &Value) -> Option<Arc<Image>> {
+pub(crate) fn image_from_block(block: &Value) -> Option<Arc<Image>> {
     let mime = block
         .get("mimeType")
         .or_else(|| block.get("mime_type"))
@@ -419,23 +708,46 @@ fn image_from_block(block: &Value) -> Option<Arc<Image>> {
     Some(Arc::new(Image::from_bytes(format, bytes)))
 }
 
-/// Extract a tool result message: `(toolCallId, output, isError, facts)`.
+/// The largest `details` payload the transcript will hold. A card parses a
+/// bounded structure; a runaway payload is dropped rather than kept alive for
+/// the session's lifetime.
+const DETAILS_MAX_BYTES: usize = 128 * 1024;
+
+/// A result's `details`, kept only when it is present and within
+/// [`DETAILS_MAX_BYTES`]. Never invented: absent stays `None`.
+fn bounded_details(value: &Value) -> Option<Value> {
+    let details = value.get("details").filter(|details| !details.is_null())?;
+    match serde_json::to_vec(details) {
+        Ok(bytes) if bytes.len() <= DETAILS_MAX_BYTES => Some(details.clone()),
+        _ => None,
+    }
+}
+
+type ToolResultParts = (String, Option<Value>, bool, ToolFacts, Option<Value>);
+
+/// Extract a tool result message: `(toolCallId, output, isError, facts, details)`.
 /// pi sends `role: "toolResult"` messages — not chat rows; their output and
 /// structured `details` belong on the matching tool call (rendered on the
 /// activity card and inside its detail).
-fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool, ToolFacts)> {
+fn tool_result_parts(value: &Value) -> Option<ToolResultParts> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("toolResult") {
         return None;
     }
     let id = value.get("toolCallId").and_then(Value::as_str)?.to_string();
-    let output = tool_result_output(value);
+    let output = match normalize_tool_result(value) {
+        Value::Object(output) if output.get("content").is_some_and(Value::is_array) => {
+            Some(Value::Object(output))
+        }
+        _ => tool_result_output(value),
+    };
     let failed = value
         .get("isError")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let facts = ToolFacts::from_result(value);
-    Some((id, output, failed, facts))
+    let details = bounded_details(value);
+    Some((id, output, failed, facts, details))
 }
 
 /// Normalize a `tool_execution_*` result payload for display. pi wraps
@@ -450,6 +762,17 @@ fn normalize_tool_result(value: &Value) -> Value {
     match value {
         Value::String(_) => value.clone(),
         Value::Object(map) => match tool_result_output(value) {
+            _ if map
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| {
+                    blocks
+                        .iter()
+                        .any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+                }) =>
+            {
+                value.clone()
+            }
             Some(text) => text,
             // Only pi's envelope — an *array* `content` that carries no text
             // yet (the empty array that streams before the first chunk) — is
@@ -463,7 +786,7 @@ fn normalize_tool_result(value: &Value) -> Value {
 }
 
 /// Tool result payloads: joined text blocks; images are skipped.
-fn tool_result_output(value: &Value) -> Option<Value> {
+pub(crate) fn tool_result_output(value: &Value) -> Option<Value> {
     let blocks = value.get("content").and_then(Value::as_array)?;
     let mut text = String::new();
     for block in blocks {
@@ -492,6 +815,7 @@ fn attach_tool_output(
     output: Option<Value>,
     failed: bool,
     facts: ToolFacts,
+    details: Option<Value>,
 ) {
     for message in messages.iter_mut().rev() {
         let Some(tool) = message
@@ -508,6 +832,9 @@ fn attach_tool_output(
         }
         tool.failed = failed;
         tool.facts = facts;
+        if details.is_some() {
+            tool.details = details;
+        }
         return;
     }
 }
@@ -552,19 +879,27 @@ fn merge_step(slot: &mut ChatMessage, step: ChatMessage) {
     if finished_at.is_some() {
         slot.finished_at = finished_at;
     }
-    // A step that ended in an error labels the whole row.
-    if error.is_some() {
-        slot.error = error;
-    }
-    if aborted {
-        slot.aborted = true;
-    }
+    // A step landing on the row retires its error: pi only continues a turn
+    // by retrying an attempt that failed, so the row no longer stopped there.
+    // A turn that really ended on the error keeps the card (issue #96).
+    slot.error = error;
+    slot.aborted = aborted;
 }
 
 impl ChatMessage {
     /// A parsed message carries exactly one step — take it.
     fn into_step(mut self) -> Step {
-        self.steps.pop().expect("parsed messages carry one step")
+        self.steps.pop().unwrap_or_default()
+    }
+
+    /// The step streamed text and tool calls append to. Parsed rows always
+    /// carry one; a fresh default keeps a malformed stream from panicking.
+    fn current_step_mut(&mut self) -> &mut Step {
+        if self.steps.is_empty() {
+            self.steps.push(Step::default());
+        }
+        let last = self.steps.len() - 1;
+        &mut self.steps[last]
     }
 }
 
@@ -582,17 +917,50 @@ fn message_role(value: &Value) -> Option<&str> {
 /// pi sets `stopReason: "error"` and `errorMessage` when the LLM call fails
 /// (e.g. an unsupported model). The app raises the error banner from this and
 /// the transcript renders the same text inline.
+///
+/// A user abort is not an agent failure: pi's `createAbortedMessage` marks the
+/// message `stopReason: "aborted"` but still carries `errorMessage`
+/// ("Request was aborted"). Treating that as an error would render both the
+/// inline error card and the app banner on top of the transcript's own quiet
+/// "Stopped" marker. An aborted turn therefore reports no error here.
+///
+/// A stop that lands while a provider request is in flight never reaches pi as
+/// an aborted message — the SDK throws and pi records `stopReason: "error"`
+/// with the abort text ("This operation was aborted"). Cancellation text is
+/// the same stop regardless of which layer recorded it, so it reports no error
+/// either (issue #96).
 pub fn message_error(value: &Value) -> Option<String> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("assistant") {
         return None;
     }
+    if value.get("stopReason").and_then(Value::as_str) == Some("aborted") {
+        return None;
+    }
+    let message = value.get("errorMessage").and_then(Value::as_str)?.trim();
+    if message.is_empty() || is_cancellation_text(message) {
+        return None;
+    }
+    Some(message.to_string())
+}
+
+/// Whether the finalized assistant message records a stop the user asked for:
+/// pi's own `stopReason: "aborted"`, or the provider throwing on a request the
+/// user interrupted, which pi records as an `error` carrying abort text.
+fn is_user_stop(value: &Value) -> bool {
+    if value.get("stopReason").and_then(Value::as_str) == Some("aborted") {
+        return true;
+    }
     value
         .get("errorMessage")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|message| !message.is_empty())
-        .map(str::to_string)
+        .is_some_and(is_cancellation_text)
+}
+
+/// Provider/SDK text that names a cancellation rather than a failure.
+fn is_cancellation_text(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    text.contains("abort") || text.contains("cancel")
 }
 
 fn summarize_value(value: &Value) -> String {
@@ -688,35 +1056,17 @@ pub(crate) fn diff_from_message(value: &Value) -> (u64, u64) {
     (added, removed)
 }
 
-/// Merge edit/write tools by path for the per-message changed-files card.
-pub(crate) fn changed_files(message: &ChatMessage) -> Vec<(String, u64, u64)> {
-    let mut files: Vec<(String, u64, u64)> = Vec::new();
-    for tool in message.tools() {
-        if tool.added == 0 && tool.removed == 0 {
-            continue;
-        }
-        let Some(path) = tool.path.as_deref() else {
-            continue;
-        };
-        if let Some(entry) = files.iter_mut().find(|(existing, _, _)| existing == path) {
-            entry.1 += tool.added;
-            entry.2 += tool.removed;
-        } else {
-            files.push((path.to_string(), tool.added, tool.removed));
-        }
-    }
-    files
-}
-
 type ExpandedActivities = Rc<RefCell<HashMap<(usize, usize), bool>>>;
 type ExpandedTools = Rc<RefCell<HashSet<(usize, usize)>>>;
+/// Which child's log is open on a delegation card, keyed `(message_ix, tool_ix)`.
+type OpenChildLogs = Rc<RefCell<HashMap<(usize, usize), usize>>>;
 type CopiedSections = Rc<RefCell<HashMap<(usize, usize, u8), Instant>>>;
 /// Tool detail sections expanded past their collapsed preview, keyed
 /// `(message_ix, flat_tool_ix, section)`.
 type ExpandedSections = Rc<RefCell<HashSet<(usize, usize, u8)>>>;
 /// Code blocks expanded past their collapsed preview, keyed
-/// `(message_ix, prose_salt, block_ix)` — the salt scopes the block index to
-/// the step/user prose run it was parsed from.
+/// `(message_ix, prose_namespace, block_ix)` — the namespace scopes the block
+/// index to the step/user prose run it was parsed from.
 type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
 /// `toolCallId` -> `(message_ix, tool_ix, flat_tool_ix)` so tool results land
 /// on the right row.
@@ -725,38 +1075,52 @@ type ToolPositions = Rc<RefCell<HashMap<String, (usize, usize, usize)>>>;
 /// How long the one-time rail hint stays up before dismissing itself.
 const RAIL_HINT_TTL: Duration = Duration::from_secs(10);
 
-/// `~/.orbit-pi/hints.json` — one-time affordance hints, per install. The
-/// rail hint shows once the conversation rail first appears, then never
-/// again (dismissed by use or timeout).
+/// `~/.orbit-pi/hints.json` — one-time affordance hints, per install. Each
+/// hint is a named boolean; the rail hint shows once the conversation rail
+/// first appears, the sidebar star banner until it is dismissed.
 fn hints_path() -> PathBuf {
     crate::platform::home_dir()
         .join(".orbit-pi")
         .join("hints.json")
 }
 
-fn load_rail_hint_seen() -> bool {
-    let Ok(raw) = std::fs::read_to_string(hints_path()) else {
+/// The rail hint's key in `hints.json`.
+const RAIL_HINT_KEY: &str = "rail_hint_seen";
+
+/// Read one named hint. A missing file or key reads as false (not yet seen).
+pub(crate) fn hint_seen(key: &str) -> bool {
+    hint_seen_at(&hints_path(), key)
+}
+
+fn hint_seen_at(path: &Path, key: &str) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
         return false;
     };
     serde_json::from_str::<serde_json::Value>(&raw)
         .ok()
-        .and_then(|value| {
-            value
-                .get("rail_hint_seen")
-                .and_then(serde_json::Value::as_bool)
-        })
+        .and_then(|value| value.get(key).and_then(serde_json::Value::as_bool))
         .unwrap_or(false)
 }
 
-fn persist_rail_hint_seen() {
-    let path = hints_path();
+/// Persist one named hint as seen, preserving every other key in the file.
+/// The whole file is a single JSON object shared by every affordance hint, so
+/// dismissing one must never wipe another.
+pub(crate) fn persist_hint(key: &str) {
+    persist_hint_at(&hints_path(), key);
+}
+
+fn persist_hint_at(path: &Path, key: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(
-        &path,
-        serde_json::json!({ "rail_hint_seen": true }).to_string(),
-    );
+    let mut map = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).ok()
+        })
+        .unwrap_or_default();
+    map.insert(key.to_string(), serde_json::Value::Bool(true));
+    let _ = std::fs::write(path, serde_json::Value::Object(map).to_string());
 }
 
 /// Shared rail-hint dismissal for the model and the view layer (the view
@@ -769,7 +1133,7 @@ pub(crate) fn dismiss_rail_hint_state(
         return false;
     }
     shown_at.set(None);
-    persist_rail_hint_seen();
+    persist_hint(RAIL_HINT_KEY);
     true
 }
 
@@ -783,8 +1147,19 @@ pub struct Transcript {
     streaming: Rc<Cell<Option<usize>>>,
     /// When the current assistant turn started (for the live Working clock).
     stream_started: Rc<Cell<Option<Instant>>>,
+    /// When the current turn's provider request began (`turn_start`). This
+    /// is the same clock basis as pi's `durationMs`, so the live rate does
+    /// not read the bursty gap between deltas as the whole generation.
+    turn_started: Rc<Cell<Option<Instant>>>,
     /// When the current step's reasoning began (the per-thought clock).
     thinking_started: Rc<Cell<Option<Instant>>>,
+    /// Active generation time for the step currently streaming — the sum
+    /// of inter-delta gaps short enough to be decode rather than a stall.
+    generation_time: Rc<Cell<Duration>>,
+    /// When the last content delta arrived (text/thinking/tool-call args);
+    /// `None` after a reset or a tool begins, so the following gap is not
+    /// counted as generation.
+    last_delta_at: Rc<Cell<Option<Instant>>>,
     /// Settled turns whose thinking/tools are disclosed (turn fold).
     expanded_turns: Rc<RefCell<HashSet<usize>>>,
     /// Messages whose changed-files list is fully expanded.
@@ -795,8 +1170,12 @@ pub struct Transcript {
     copied: Rc<RefCell<HashMap<usize, Instant>>>,
     /// Per-tool detail-card open state, keyed `(message_ix, tool_ix)`.
     expanded_tools: ExpandedTools,
+    /// Which child's log a delegation card shows, keyed `(message_ix, tool_ix)`.
+    open_child_logs: OpenChildLogs,
     /// Per detail-section copy feedback, keyed `(message_ix, tool_ix, section)`.
     copied_sections: CopiedSections,
+    /// Per detail-section hover transition, keyed `(message_ix, tool_ix, section)`.
+    hovered_sections: transcript_view::HoveredSections,
     /// Tool output sections expanded past their collapsed preview.
     expanded_sections: ExpandedSections,
     /// Code blocks expanded past their collapsed preview.
@@ -842,9 +1221,28 @@ pub struct Transcript {
     seed_text: Rc<Cell<bool>>,
     seed_thinking: Rc<Cell<bool>>,
     /// Whether the list currently carries the end-of-task summary row (an
-    /// extra slot after the last message). Spliced in when a run settles
-    /// with file edits; removed when a new turn begins.
+    /// extra slot after the last message). Shown once the latest turn has
+    /// landed an `edit` / `write`; removed when that turn has none.
     tail_summary: Rc<Cell<bool>>,
+    /// Message index where the latest turn starts. `None` until the app's
+    /// turn clock says which turn the card should describe.
+    review_card_start: Option<usize>,
+    /// Whether the app's latest turn is still open, including agent boundaries.
+    review_turn_open: bool,
+    /// Workspace used to normalize the card's paths the same way Review does.
+    review_workspace: Option<PathBuf>,
+    /// Latest-turn file list. Same paths and counts as that turn's Review.
+    review_card_files: Vec<(String, u64, u64)>,
+    /// A prompt is out and no assistant step has streamed yet. Drives the
+    /// same tail slot as the summary card, showing the live "Working for…"
+    /// row from the moment the user hits send instead of from the first
+    /// token — otherwise a slow provider looks like a dropped keystroke.
+    awaiting_reply: Rc<Cell<bool>>,
+    /// Cached user-turn row indices, rebuilt only when the message count
+    /// changes (messages only append or are rebuilt wholesale). The rail
+    /// renders every frame; this keeps that O(message-count) pass off the
+    /// hot path.
+    user_turns: Rc<RefCell<(usize, Rc<Vec<usize>>)>>,
 }
 
 impl Transcript {
@@ -856,13 +1254,18 @@ impl Transcript {
             scroller: MessageScrollerState::new(0),
             streaming: Rc::new(Cell::new(None)),
             stream_started: Rc::new(Cell::new(None)),
+            turn_started: Rc::new(Cell::new(None)),
             thinking_started: Rc::new(Cell::new(None)),
+            generation_time: Rc::new(Cell::new(Duration::ZERO)),
+            last_delta_at: Rc::new(Cell::new(None)),
             expanded_turns: Rc::new(RefCell::new(HashSet::new())),
             expanded_files: Rc::new(RefCell::new(HashSet::new())),
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
             expanded_tools: Rc::new(RefCell::new(HashSet::new())),
+            open_child_logs: Rc::new(RefCell::new(HashMap::new())),
             copied: Rc::new(RefCell::new(HashMap::new())),
             copied_sections: Rc::new(RefCell::new(HashMap::new())),
+            hovered_sections: Rc::new(RefCell::new(HashMap::new())),
             expanded_sections: Rc::new(RefCell::new(HashSet::new())),
             expanded_blocks: Rc::new(RefCell::new(HashSet::new())),
             thinking_scrolls: Rc::new(RefCell::new(HashMap::new())),
@@ -871,7 +1274,7 @@ impl Transcript {
             tool_positions: Rc::new(RefCell::new(HashMap::new())),
             hovered_turn: Rc::new(Cell::new(None)),
             hovered_usage: Rc::new(Cell::new(None)),
-            rail_hint_dismissed: Rc::new(Cell::new(load_rail_hint_seen())),
+            rail_hint_dismissed: Rc::new(Cell::new(hint_seen(RAIL_HINT_KEY))),
             rail_hint_shown_at: Rc::new(Cell::new(None)),
             rail_scroll: ScrollHandle::new(),
             rail_autoscroll: Rc::new(Cell::new(None)),
@@ -880,13 +1283,264 @@ impl Transcript {
             seed_text: Rc::new(Cell::new(false)),
             seed_thinking: Rc::new(Cell::new(false)),
             tail_summary: Rc::new(Cell::new(false)),
+            review_card_start: None,
+            review_turn_open: false,
+            review_workspace: None,
+            review_card_files: Vec::new(),
+            awaiting_reply: Rc::new(Cell::new(false)),
+            user_turns: Rc::new(RefCell::new((0, Rc::new(Vec::new())))),
         }
+    }
+
+    /// User-turn row indices for the navigation rail, recomputed only when
+    /// the message list actually changes. Messages only ever append (or are
+    /// rebuilt wholesale via `load_from`/`clear`), so the message count is a
+    /// sufficient cache key once those two paths invalidate it.
+    fn cached_user_turns(&self) -> Rc<Vec<usize>> {
+        let messages = self.messages.borrow();
+        let mut cache = self.user_turns.borrow_mut();
+        if cache.0 == messages.len() {
+            return cache.1.clone();
+        }
+        let turns = Rc::new(
+            messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.user)
+                .map(|(ix, _)| ix)
+                .collect::<Vec<usize>>(),
+        );
+        *cache = (messages.len(), turns.clone());
+        turns
+    }
+
+    /// Force the user-turn cache to rebuild on the next read (`load_from`
+    /// and `clear` replace the message list wholesale, so a matching length
+    /// is not proof the cached indices are still valid).
+    fn invalidate_user_turns(&self) {
+        self.user_turns.borrow_mut().0 = usize::MAX;
+    }
+
+    /// Message indices of real user prompts, in order. Summary rows are not turns.
+    pub(crate) fn user_message_indices(&self) -> Vec<usize> {
+        self.messages
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| message.user)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// `edit` / `write` calls in `messages[start..end]` that Last Turn can show.
+    pub(crate) fn recorded_calls(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> Vec<crate::turn_review::RecordedCall> {
+        let messages = self.messages.borrow();
+        let end = end.min(messages.len());
+        let start = start.min(end);
+        let tools = messages[start..end].iter().flat_map(|message| {
+            let message_failed = message.aborted || message.error.is_some();
+            message
+                .tools()
+                .map(move |tool| crate::turn_review::ToolView {
+                    message_failed,
+                    failed: tool.failed,
+                    has_output: tool.output.is_some(),
+                    name: tool.name.as_str(),
+                    args: tool.args.as_ref(),
+                })
+        });
+        crate::turn_review::recorded_calls(tools)
     }
 
     /// The current transcript text selection, if any — the keyboard copy
     /// path (`cmd-c`) reads it without stealing the composer's own copy.
     pub fn selected_text(&self) -> Option<String> {
         self.text_selection.borrow().selected_text()
+    }
+
+    /// The text of every user turn, in transcript order.
+    ///
+    /// This is the pairing key for pi's fork points: `get_fork_messages` names
+    /// an entry id per message and no index, so a rewind started from a row is
+    /// matched by its words (see `rewind::point_for_turn`).
+    /// Translate a displayed row index to its user-turn ordinal, rejecting
+    /// assistant and summary rows instead of guessing a fork point.
+    pub fn user_turn_ordinal(&self, row: usize) -> Option<usize> {
+        self.cached_user_turns()
+            .iter()
+            .position(|&index| index == row)
+    }
+
+    /// The prompt for a clicked user or assistant row, without crossing a
+    /// summary boundary where the corresponding prompt may no longer be visible.
+    pub(crate) fn rewind_user_turn_ordinal(&self, row: usize) -> Option<usize> {
+        let messages = self.messages.borrow();
+        let message = messages.get(row)?;
+        let prompt_row = if message.user {
+            row
+        } else if message.is_assistant() {
+            (0..row)
+                .rev()
+                .take_while(|&ix| !messages[ix].is_summary())
+                .find(|&ix| messages[ix].user)?
+        } else {
+            return None;
+        };
+        drop(messages);
+        self.user_turn_ordinal(prompt_row)
+    }
+
+    /// The images attached to the `ordinal`-th visible user turn.
+    ///
+    /// These are the bytes pi stored for that prompt (or the previews appended
+    /// when Orbit sent it), so sending them again reproduces the prompt rather
+    /// than a text-only copy of it.
+    pub(crate) fn user_turn_images(&self, ordinal: usize) -> Vec<Arc<Image>> {
+        let Some(row) = self.cached_user_turns().get(ordinal).copied() else {
+            return Vec::new();
+        };
+        self.messages
+            .borrow()
+            .get(row)
+            .map(|message| message.images.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn user_turn_texts(&self) -> Vec<String> {
+        let turns = self.cached_user_turns();
+        let messages = self.messages.borrow();
+        turns
+            .iter()
+            .filter_map(|&ix| messages.get(ix).map(|message| message.text()))
+            .collect()
+    }
+
+    /// Export the latest visible assistant response as its Markdown source,
+    /// with its reasoning-and-tools appendix when the export opted in.
+    pub fn export_last_response_markdown(&self, options: ExportOptions) -> Option<String> {
+        let messages = self.messages.borrow();
+        let message = messages
+            .iter()
+            .rev()
+            .find(|message| message.is_assistant() && message.has_text())?;
+        Some(export_response_body(message, options))
+    }
+
+    /// The text of one response, by transcript row, for the footer's save.
+    pub(crate) fn export_response_markdown(
+        &self,
+        row: usize,
+        text: &str,
+        options: ExportOptions,
+    ) -> Option<String> {
+        let messages = self.messages.borrow();
+        let message = messages.get(row)?;
+        (message.is_assistant() && message.text() == text)
+            .then(|| export_response_body(message, options))
+    }
+
+    /// Snapshot only the selected assistant response and its attachments.
+    pub(crate) fn export_response_pdf(
+        &self,
+        row: usize,
+        text: &str,
+        options: ExportOptions,
+    ) -> Option<PdfSection> {
+        let messages = self.messages.borrow();
+        let message = messages.get(row)?;
+        (message.is_assistant() && message.text() == text).then(|| PdfSection {
+            markdown: export_response_body(message, options),
+            images: message.images.clone(),
+        })
+    }
+
+    /// Snapshot the latest visible assistant response and its attachments.
+    pub(crate) fn export_last_response_pdf(&self, options: ExportOptions) -> Option<PdfSection> {
+        let messages = self.messages.borrow();
+        let message = messages.iter().rev().find(|message| {
+            message.is_assistant() && (message.has_text() || !message.images.is_empty())
+        })?;
+        Some(PdfSection {
+            markdown: export_response_body(message, options),
+            images: message.images.clone(),
+        })
+    }
+
+    /// Snapshot the visible projection, preserving each message's attachments.
+    pub(crate) fn export_visible_pdf(&self, options: ExportOptions) -> Option<Vec<PdfSection>> {
+        let messages = self.messages.borrow();
+        let mut sections = Vec::new();
+        for message in messages.iter() {
+            if let Some(summary) = &message.summary {
+                sections.push(PdfSection {
+                    markdown: format!("## Context summary\n\n{}", summary.summary.trim_end()),
+                    images: Vec::new(),
+                });
+                continue;
+            }
+            let text = message.text();
+            let work = export_work(message, options);
+            if text.is_empty() && message.images.is_empty() && work.is_empty() {
+                continue;
+            }
+            let role = if message.user { "User" } else { "Assistant" };
+            let mut markdown = format!("## {role}\n\n{text}");
+            if !work.is_empty() {
+                if !text.is_empty() {
+                    markdown.push_str("\n\n");
+                }
+                markdown.push_str(&work);
+            }
+            sections.push(PdfSection {
+                markdown,
+                images: message.images.clone(),
+            });
+        }
+        (!sections.is_empty()).then_some(sections)
+    }
+
+    /// Export the currently displayed conversation as Markdown. This is the
+    /// visible projection, not the entire pre-compaction session history.
+    /// Reasoning and tool calls are left out unless `options` asks for them.
+    /// Images are noted rather than silently represented as if their content
+    /// had been exported.
+    pub fn export_visible_markdown(&self, options: ExportOptions) -> Option<String> {
+        let messages = self.messages.borrow();
+        let mut out = String::new();
+        for message in messages.iter() {
+            if let Some(summary) = &message.summary {
+                out.push_str("## Context summary\n\n");
+                out.push_str(summary.summary.trim_end());
+                out.push_str("\n\n");
+                continue;
+            }
+            let text = message.text();
+            let work = export_work(message, options);
+            if text.is_empty() && message.images.is_empty() && work.is_empty() {
+                continue;
+            }
+            out.push_str(if message.user {
+                "## User\n\n"
+            } else {
+                "## Assistant\n\n"
+            });
+            if !text.is_empty() {
+                out.push_str(&text);
+                out.push_str("\n\n");
+            }
+            if !work.is_empty() {
+                out.push_str(&work);
+                out.push_str("\n\n");
+            }
+            if !message.images.is_empty() {
+                out.push_str("[Image attachments omitted from export.]\n\n");
+            }
+        }
+        (!out.is_empty()).then_some(out)
     }
 
     /// Rebuild the whole transcript from a `get_messages` response payload.
@@ -897,8 +1551,8 @@ impl Transcript {
             for message in messages {
                 // Tool results are not chat rows — attach the output to the
                 // matching tool call (by id) and keep the transcript clean.
-                if let Some((id, output, failed, facts)) = tool_result_parts(message) {
-                    attach_tool_output(&mut parsed, &id, output, failed, facts);
+                if let Some((id, output, failed, facts, details)) = tool_result_parts(message) {
+                    attach_tool_output(&mut parsed, &id, output, failed, facts, details);
                     continue;
                 }
                 if let Some(parsed_message) = ChatMessage::from_value(message) {
@@ -908,30 +1562,36 @@ impl Transcript {
                     // always begins a new turn — never merged into the run
                     // before it (the whole trail used to collapse into one
                     // assistant blob when prompts followed a tool-heavy run).
-                    let continues_run = !parsed_message.user
-                        && parsed.last().map(|last| !last.user).unwrap_or(false);
-                    if continues_run {
-                        merge_step(parsed.last_mut().expect("checked"), parsed_message);
-                    } else {
-                        parsed.push(parsed_message);
+                    match parsed.last_mut() {
+                        Some(previous)
+                            if parsed_message.is_assistant() && previous.is_assistant() =>
+                        {
+                            merge_step(previous, parsed_message);
+                        }
+                        _ => parsed.push(parsed_message),
                     }
                 }
             }
         }
         let count = parsed.len();
         *self.messages.borrow_mut() = parsed;
+        self.invalidate_user_turns();
         self.scroller.reset(count);
         self.streaming.set(None);
         self.seed_text.set(false);
         self.seed_thinking.set(false);
         self.stream_started.set(None);
+        self.turn_started.set(None);
         self.thinking_started.set(None);
+        self.reset_generation();
         self.expanded_turns.borrow_mut().clear();
         self.expanded_files.borrow_mut().clear();
         self.expanded_activities.borrow_mut().clear();
         self.expanded_tools.borrow_mut().clear();
+        self.open_child_logs.borrow_mut().clear();
         self.copied.borrow_mut().clear();
         self.copied_sections.borrow_mut().clear();
+        self.hovered_sections.borrow_mut().clear();
         self.expanded_sections.borrow_mut().clear();
         self.expanded_blocks.borrow_mut().clear();
         self.thinking_scrolls.borrow_mut().clear();
@@ -943,29 +1603,37 @@ impl Transcript {
         self.rail_autoscroll.set(None);
         self.step_mark.set(None);
         self.toolcall_args.borrow_mut().clear();
-        // Rebuild resets the list to the message count; re-add the summary
-        // row when the loaded session touched files.
-        self.tail_summary.set(false);
-        let touched_files = !self.changed_files_summary().is_empty();
-        self.set_tail_row(touched_files);
+        // The app rebuilds the turn clock after this and points the card at
+        // the latest turn. Until then the previous session's files must not
+        // stay on screen.
+        self.review_card_start = None;
+        self.review_turn_open = false;
+        self.review_card_files.clear();
+        self.awaiting_reply.set(false);
+        self.set_tail_row(false);
     }
 
     /// Clear for a fresh session.
     pub fn clear(&mut self) {
         *self.messages.borrow_mut() = Vec::new();
+        self.invalidate_user_turns();
         self.text_selection.borrow_mut().clear();
         self.scroller.reset(0);
         self.streaming.set(None);
         self.seed_text.set(false);
         self.seed_thinking.set(false);
         self.stream_started.set(None);
+        self.turn_started.set(None);
         self.thinking_started.set(None);
+        self.reset_generation();
         self.expanded_turns.borrow_mut().clear();
         self.expanded_files.borrow_mut().clear();
         self.expanded_activities.borrow_mut().clear();
         self.expanded_tools.borrow_mut().clear();
+        self.open_child_logs.borrow_mut().clear();
         self.copied.borrow_mut().clear();
         self.copied_sections.borrow_mut().clear();
+        self.hovered_sections.borrow_mut().clear();
         self.expanded_sections.borrow_mut().clear();
         self.expanded_blocks.borrow_mut().clear();
         self.thinking_scrolls.borrow_mut().clear();
@@ -977,26 +1645,61 @@ impl Transcript {
         self.rail_autoscroll.set(None);
         self.step_mark.set(None);
         self.toolcall_args.borrow_mut().clear();
+        self.review_card_start = None;
+        self.review_turn_open = false;
+        self.review_workspace = None;
+        self.review_card_files.clear();
         self.tail_summary.set(false);
+        self.awaiting_reply.set(false);
     }
 
     /// Apply one protocol event; returns `true` if the transcript changed.
     pub fn apply_event(&mut self, event: &Event) -> bool {
         match event {
-            Event::MessageStart { value } => self.on_message_boundary(value),
-            Event::MessageUpdate { assistant, .. } => self.on_message_update(assistant),
-            Event::MessageEnd { value } => self.on_message_end(value),
+            Event::MessageStart { value } => {
+                let changed = self.on_message_boundary(value);
+                self.refresh_review_card();
+                changed
+            }
+            Event::MessageUpdate { assistant, usage } => {
+                let changed = self.on_message_update(assistant, usage);
+                if matches!(assistant, Some(AssistantMessageEvent::ToolcallEnd { .. })) {
+                    self.refresh_review_card();
+                }
+                changed
+            }
+            Event::MessageEnd { value } => {
+                let changed = self.on_message_end(value);
+                self.refresh_review_card();
+                changed
+            }
             Event::ToolExecutionStart { value } => self.on_tool_execution(value, false),
             Event::ToolExecutionUpdate { value } => self.on_tool_execution_update(value),
-            Event::ToolExecutionEnd { value } => self.on_tool_execution(value, true),
-            // A settled run closes its working clock; the next run re-arms it.
-            Event::AgentSettled => {
-                self.end_live_run();
+            Event::ToolExecutionEnd { value } => {
+                let changed = self.on_tool_execution(value, true);
+                self.refresh_review_card();
+                changed
+            }
+            // The provider request began: start the clock the live rate
+            // divides by, matching pi's settled `durationMs`.
+            Event::TurnStart => {
+                self.turn_started.set(Some(Instant::now()));
                 false
+            }
+            // A settled run closes its working clock; the next run re-arms it.
+            Event::AgentSettled { aborted } => {
+                self.end_live_run();
+                // A run the user stopped is not a failed turn: an error card
+                // left by an attempt it was in the middle of (a cancelled
+                // retry, a request that threw on the abort) retires with the
+                // stop (issue #96).
+                let changed = *aborted && self.mark_turn_aborted();
+                self.refresh_review_card();
+                changed
             }
             // `agent_end` fires between loop iterations while queued
             // steering/follow-ups keep the run going — clear the live
-            // stream state but leave the summary card until the settle.
+            // stream state but keep the turn open until the settle.
             Event::AgentEnd { will_retry } => {
                 if !*will_retry {
                     self.clear_live_state();
@@ -1020,11 +1723,27 @@ impl Transcript {
         let Some(message) = ChatMessage::from_value(value) else {
             return false;
         };
+        // A summary boundary is not a streamed turn: land it as its own row
+        // (it cannot continue a run, and nothing may stream into it).
+        if message.is_summary() {
+            self.set_tail_row(false);
+            let mut messages = self.messages.borrow_mut();
+            messages.push(message);
+            drop(messages);
+            self.insert_row();
+            return true;
+        }
         let injected = injected_skill_message(value);
         if message.user {
             // A new turn begins: the previous run's end-of-task summary row
             // steps aside before the prompt row lands.
             self.set_tail_row(false);
+        } else {
+            // A streamed answer retires the pending row — the live message row
+            // is the indicator now. Done before the list grows below so the
+            // slot count stays exact. A user echo keeps the row: the answer is
+            // still on its way.
+            self.retire_pending_row();
         }
         let mut messages = self.messages.borrow_mut();
         if message.user {
@@ -1044,6 +1763,7 @@ impl Transcript {
                 messages.push(message);
                 self.streaming.set(None);
                 self.stream_started.set(None);
+                self.reset_generation();
                 drop(messages);
                 self.insert_row();
                 return true;
@@ -1064,10 +1784,11 @@ impl Transcript {
         // Each step starts a fresh reasoning clock; a buffered start snapshot
         // that already carries reasoning begins it now.
         self.thinking_started.set(None);
+        self.reset_generation();
         if seed.is_some_and(|s| !s.thinking.is_empty()) {
             self.begin_thinking();
         }
-        let continues_run = messages.last().map(|m| !m.user).unwrap_or(false);
+        let continues_run = messages.last().is_some_and(ChatMessage::is_assistant);
         if continues_run {
             let ix = messages.len() - 1;
             let slot = &mut messages[ix];
@@ -1094,8 +1815,18 @@ impl Transcript {
         true
     }
 
-    fn on_message_update(&mut self, assistant: &Option<AssistantMessageEvent>) -> bool {
+    fn on_message_update(
+        &mut self,
+        assistant: &Option<AssistantMessageEvent>,
+        usage: &Option<Value>,
+    ) -> bool {
         use AssistantMessageEvent as Am;
+        // `message_update.usage` is the provider's latest cumulative usage
+        // for the response; keep it on the streaming step so the live tok/s
+        // indicator reads real output counts when the provider reports them.
+        if let Some(reported) = MessageUsage::from_value(usage.as_ref()) {
+            self.store_live_usage(reported);
+        }
         let Some(assistant) = assistant else {
             return false;
         };
@@ -1105,13 +1836,15 @@ impl Transcript {
                 let mark = self.step_mark.get().map(|k| k.text).unwrap_or(0);
                 // The step moved on from reasoning to its answer.
                 let thinking = self.finish_thinking();
+                let generation = self.note_generation();
                 self.with_streaming(move |m| {
-                    let step = m.steps.last_mut().expect("step");
+                    let step = m.current_step_mut();
                     if let Some(duration) = thinking {
                         if !step.thinking.is_empty() {
                             step.thinking_duration = Some(duration);
                         }
                     }
+                    step.generation_time = Some(generation);
                     drop_seed(&mut step.text, mark, delta, seeded);
                     step.text.push_str(delta);
                 })
@@ -1120,8 +1853,10 @@ impl Transcript {
                 let seeded = self.seed_thinking.replace(false);
                 let mark = self.step_mark.get().map(|k| k.thinking).unwrap_or(0);
                 let started = self.begin_thinking();
+                let generation = self.note_generation();
                 self.with_streaming(move |m| {
-                    let step = m.steps.last_mut().expect("step");
+                    let step = m.current_step_mut();
+                    step.generation_time = Some(generation);
                     drop_seed(&mut step.thinking, mark, delta, seeded);
                     step.thinking.push_str(delta);
                     // Keep the per-thought clock ticking while it streams.
@@ -1149,7 +1884,7 @@ impl Transcript {
                 // Reasoning is done once the step starts emitting tool calls.
                 let thinking = self.finish_thinking();
                 let (changed, created) = self.with_streaming(|m| {
-                    let step = m.steps.last_mut().expect("step");
+                    let step = m.current_step_mut();
                     if let Some(duration) = thinking {
                         if !step.thinking.is_empty() {
                             step.thinking_duration = Some(duration);
@@ -1178,6 +1913,7 @@ impl Transcript {
                 // row as soon as the accumulated buffer parses, so a command
                 // or file path shows while the model is still writing it.
                 if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    let generation = self.note_generation();
                     let mut buffer = self.toolcall_args.borrow_mut();
                     buffer.push_str(delta);
                     // Only a buffer that looks like a complete JSON object
@@ -1190,7 +1926,8 @@ impl Transcript {
                     drop(buffer);
                     match parsed {
                         Some(args) => self.with_streaming(move |m| {
-                            let step = m.steps.last_mut().expect("step");
+                            let step = m.current_step_mut();
+                            step.generation_time = Some(generation);
                             let Some(tool) = step.tools.last_mut() else {
                                 return;
                             };
@@ -1236,7 +1973,7 @@ impl Transcript {
                     // already captured. Without an id, adopt the newest
                     // id-less row for the same tool before falling back to
                     // the newest row at all.
-                    let step = m.steps.last_mut().expect("step");
+                    let step = m.current_step_mut();
                     let position = id
                         .as_deref()
                         .and_then(|id| step.tools.iter().position(|t| t.id.as_deref() == Some(id)))
@@ -1286,7 +2023,7 @@ impl Transcript {
                             // reasoning when it delivers this block.
                             let thinking = self.finish_thinking();
                             self.with_streaming(move |m| {
-                                let step = m.steps.last_mut().expect("step");
+                                let step = m.current_step_mut();
                                 if let Some(duration) = thinking {
                                     if !step.thinking.is_empty() {
                                         step.thinking_duration = Some(duration);
@@ -1335,6 +2072,10 @@ impl Transcript {
         let Some(mut final_message) = ChatMessage::from_value(value) else {
             return false;
         };
+        // A summary boundary is never a streamed turn; land it as its own row.
+        if final_message.is_summary() {
+            return self.on_message_boundary(value);
+        }
         if final_message.user {
             // A new turn arriving as a settled message (no live boundary):
             // the previous run's summary row steps aside first.
@@ -1402,6 +2143,17 @@ impl Transcript {
                     .steps
                     .get(mark.step)
                     .and_then(|step| step.thinking_duration);
+                // A provider that reports usage only while streaming (and
+                // omits it from the final message) still leaves the
+                // turn's token count intact.
+                let live_usage = slot
+                    .steps
+                    .get(mark.step)
+                    .and_then(|step| step.usage.clone());
+                let live_generation = slot
+                    .steps
+                    .get(mark.step)
+                    .and_then(|step| step.generation_time);
                 // The settled step carries the run's wall clock — keep it
                 // on the row (merge_step does this for non-stream paths).
                 let step_elapsed = final_message.elapsed.take();
@@ -1412,6 +2164,12 @@ impl Transcript {
                 // them).
                 if settled_step.thinking_duration.is_none() {
                     settled_step.thinking_duration = live_thinking;
+                }
+                if settled_step.usage.is_none() {
+                    settled_step.usage = live_usage;
+                }
+                if settled_step.generation_time.is_none() {
+                    settled_step.generation_time = live_generation;
                 }
                 for tool in &mut settled_step.tools {
                     if tool.output.is_some() {
@@ -1435,12 +2193,12 @@ impl Transcript {
                 if let Some(elapsed) = step_elapsed {
                     slot.elapsed = Some(elapsed);
                 }
-                if settled_error.is_some() {
-                    slot.error = settled_error;
-                }
-                if settled_aborted {
-                    slot.aborted = true;
-                }
+                // The settled attempt replaces the row's error: a retried
+                // attempt that succeeded retires the failed one's card, and
+                // an attempt that ended on an error still labels the row
+                // (issue #96).
+                slot.error = settled_error;
+                slot.aborted = settled_aborted;
                 if slot.finished_at.is_none() {
                     slot.finished_at = Some(now_millis());
                 }
@@ -1452,7 +2210,7 @@ impl Transcript {
             return true;
         }
         // Settled without a stream target — continue the run's last row.
-        let continues_run = messages.last().map(|m| !m.user).unwrap_or(false);
+        let continues_run = messages.last().is_some_and(ChatMessage::is_assistant);
         if continues_run {
             let ix = messages.len() - 1;
             merge_step(&mut messages[ix], final_message);
@@ -1474,7 +2232,7 @@ impl Transcript {
     /// `tool_execution_start`; otherwise scan backwards through the loaded
     /// messages.
     fn attach_tool_result(&mut self, value: &Value) -> bool {
-        let Some((id, output, failed, facts)) = tool_result_parts(value) else {
+        let Some((id, output, failed, facts, details)) = tool_result_parts(value) else {
             return false;
         };
         let position = self.tool_positions.borrow().get(&id).copied();
@@ -1487,13 +2245,27 @@ impl Transcript {
                     .and_then(|step| step.tools.get_mut(tool_ix))
                 {
                     Some(tool) => {
-                        let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+                        let before = (
+                            tool.output.clone(),
+                            tool.failed,
+                            tool.facts.clone(),
+                            tool.details.clone(),
+                        );
                         if tool.output.is_none() {
                             tool.output = output;
                         }
                         tool.failed = failed;
                         tool.facts = facts;
-                        before != (tool.output.clone(), tool.failed, tool.facts.clone())
+                        if details.is_some() {
+                            tool.details = details;
+                        }
+                        before
+                            != (
+                                tool.output.clone(),
+                                tool.failed,
+                                tool.facts.clone(),
+                                tool.details.clone(),
+                            )
                     }
                     None => false,
                 }
@@ -1514,13 +2286,27 @@ impl Transcript {
             else {
                 continue;
             };
-            let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+            let before = (
+                tool.output.clone(),
+                tool.failed,
+                tool.facts.clone(),
+                tool.details.clone(),
+            );
             if tool.output.is_none() {
                 tool.output = output;
             }
             tool.failed = failed;
             tool.facts = facts;
-            return before != (tool.output.clone(), tool.failed, tool.facts.clone());
+            if details.is_some() {
+                tool.details = details;
+            }
+            return before
+                != (
+                    tool.output.clone(),
+                    tool.failed,
+                    tool.facts.clone(),
+                    tool.details.clone(),
+                );
         }
         false
     }
@@ -1548,17 +2334,27 @@ impl Transcript {
                 else {
                     return false;
                 };
-                let result = value
-                    .get("result")
-                    .or_else(|| value.get("partialResult"));
-                let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+                let result = value.get("result").or_else(|| value.get("partialResult"));
+                let before = (
+                    tool.output.clone(),
+                    tool.failed,
+                    tool.facts.clone(),
+                    tool.details.clone(),
+                );
                 tool.facts = result.map(ToolFacts::from_result).unwrap_or_default();
                 tool.output = result.map(normalize_tool_result);
+                tool.details = result.and_then(bounded_details);
                 tool.failed = value
                     .get("isError")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                before != (tool.output.clone(), tool.failed, tool.facts.clone())
+                before
+                    != (
+                        tool.output.clone(),
+                        tool.failed,
+                        tool.facts.clone(),
+                        tool.details.clone(),
+                    )
             };
             if changed {
                 self.remeasure_row(mix);
@@ -1567,6 +2363,8 @@ impl Transcript {
         }
         // Start: upsert on the streaming message (creating it if a tool
         // execution begins before any `message_start`).
+        // The gap until the next delta is execution, not decode.
+        self.pause_generation();
         let name = value
             .get("toolName")
             .and_then(Value::as_str)
@@ -1579,7 +2377,7 @@ impl Transcript {
             None => {
                 // Execution starts after the assistant step settled — adopt
                 // the run's merged row instead of stacking a new one.
-                if messages.last().is_some_and(|m| !m.user) {
+                if messages.last().is_some_and(ChatMessage::is_assistant) {
                     let ix = messages.len() - 1;
                     self.step_mark.set(Some(StepMark {
                         step: messages[ix].steps.len().saturating_sub(1),
@@ -1660,6 +2458,7 @@ impl Transcript {
         };
         let output = normalize_tool_result(partial);
         let facts = ToolFacts::from_result(partial);
+        let details = bounded_details(partial);
         let mut messages = self.messages.borrow_mut();
         let Some(message) = messages.get_mut(mix) else {
             return false;
@@ -1680,11 +2479,12 @@ impl Transcript {
         else {
             return false;
         };
-        if tool.output.as_ref() == Some(&output) && tool.facts == facts {
+        if tool.output.as_ref() == Some(&output) && tool.facts == facts && tool.details == details {
             return false;
         }
         tool.output = Some(output);
         tool.facts = facts;
+        tool.details = details;
         let detail_open = self.expanded_tools.borrow().contains(&(mix, flat_ix));
         drop(messages);
         if detail_open {
@@ -1702,7 +2502,7 @@ impl Transcript {
         let (ix, created) = match self.streaming.get() {
             Some(ix) => (ix, false),
             None => {
-                if messages.last().is_some_and(|m| !m.user) {
+                if messages.last().is_some_and(ChatMessage::is_assistant) {
                     // Continue the settled step's row with a fresh step.
                     let ix = messages.len() - 1;
                     self.step_mark.set(Some(StepMark {
@@ -1711,6 +2511,7 @@ impl Transcript {
                         thinking: 0,
                         tools: 0,
                     }));
+                    self.reset_generation();
                     self.streaming.set(Some(ix));
                     (ix, false)
                 } else {
@@ -1718,6 +2519,7 @@ impl Transcript {
                     let ix = messages.len() - 1;
                     self.streaming.set(Some(ix));
                     self.step_mark.set(Some(StepMark::default()));
+                    self.reset_generation();
                     (ix, true)
                 }
             }
@@ -1735,6 +2537,52 @@ impl Transcript {
             })
             .unwrap_or(false);
         (changed, created)
+    }
+
+    /// Keep the provider's latest cumulative `message_update.usage` on the
+    /// step currently streaming. Never opens a row: a usage-only update is
+    /// not a reason to create one.
+    fn store_live_usage(&self, usage: MessageUsage) {
+        let Some(ix) = self.streaming.get() else {
+            return;
+        };
+        let mut messages = self.messages.borrow_mut();
+        if let Some(step) = messages
+            .get_mut(ix)
+            .and_then(|message| message.steps.last_mut())
+        {
+            step.usage = Some(usage);
+        }
+    }
+
+    /// Longest inter-delta gap still counted as generation. Tool execution,
+    /// provider stalls, and the round-trip before a step's first token all
+    /// exceed this, so they stay out of the rate.
+    const GENERATION_GAP: Duration = Duration::from_millis(1_000);
+
+    /// Begin a fresh step's generation clock.
+    fn reset_generation(&self) {
+        self.generation_time.set(Duration::ZERO);
+        self.last_delta_at.set(None);
+    }
+
+    /// Stop counting until the next delta — a tool is running, so the gap
+    /// is execution, not decode.
+    fn pause_generation(&self) {
+        self.last_delta_at.set(None);
+    }
+
+    /// Account for one content delta (text, thinking, or tool-call
+    /// arguments) and return the step's accumulated generation time.
+    fn note_generation(&self) -> Duration {
+        let now = Instant::now();
+        if let Some(previous) = self.last_delta_at.replace(Some(now)) {
+            let gap = now.saturating_duration_since(previous);
+            if gap <= Self::GENERATION_GAP {
+                self.generation_time.set(self.generation_time.get() + gap);
+            }
+        }
+        self.generation_time.get()
     }
 
     fn mark_stream_start(&self) {
@@ -1760,7 +2608,11 @@ impl Transcript {
     }
 
     fn insert_row(&self) {
-        self.scroller.append(1);
+        // The tail slot, when present, is the last list item. The new message
+        // was already pushed, so it belongs at that index and the card's
+        // measured height stays on the tail.
+        let at = self.messages.borrow().len().saturating_sub(1);
+        self.scroller.splice(at..at, 1);
         self.scroller.note_activity();
     }
 
@@ -1772,29 +2624,107 @@ impl Transcript {
 
     /// Recover if stream updates previously inserted extra list slots.
     fn resync_list(&self) {
-        let count = self.messages.borrow().len() + self.tail_summary.get() as usize;
+        let count = self.messages.borrow().len() + self.wants_tail_row() as usize;
         if self.scroller.item_count() != count {
             self.scroller.reset(count);
         }
     }
 
-    /// Every file the task changed, across all turns, merged by path with
-    /// summed +/− line counts — the end-of-task summary card's data.
-    pub fn changed_files_summary(&self) -> Vec<(String, u64, u64)> {
-        let messages = self.messages.borrow();
-        let mut files: Vec<(String, u64, u64)> = Vec::new();
-        for message in messages.iter() {
-            for (path, added, removed) in changed_files(message) {
-                match files.iter_mut().find(|(existing, _, _)| *existing == path) {
-                    Some(entry) => {
-                        entry.1 += added;
-                        entry.2 += removed;
-                    }
-                    None => files.push((path, added, removed)),
-                }
+    /// One slot after the last message serves two ends: the pending-reply row
+    /// while a prompt is out, and the end-of-task changed-files card once the
+    /// run settles. Both are "a row after the last message", so they share the
+    /// slot instead of leaving an empty row between them.
+    fn wants_tail_row(&self) -> bool {
+        self.tail_summary.get() || self.awaiting_reply.get()
+    }
+
+    /// Add or remove the tail slot to match [`Self::wants_tail_row`], leaving
+    /// the message rows alone (a pending reply must not re-scroll the reader).
+    fn sync_tail_row(&self) {
+        let present = self.wants_tail_row();
+        let count = self.scroller.item_count();
+        let occupied = count > self.messages.borrow().len();
+        match (present, occupied) {
+            (true, false) => {
+                self.scroller.append(1);
             }
+            (false, true) => {
+                self.scroller.splice(count.saturating_sub(1)..count, 0);
+            }
+            _ => {}
         }
-        files
+    }
+
+    /// Take the pending row down. Called *before* the message list grows, so
+    /// the slot bookkeeping (row count == messages + tail) stays exact.
+    fn retire_pending_row(&self) {
+        if !self.awaiting_reply.get() {
+            return;
+        }
+        self.awaiting_reply.set(false);
+        self.sync_tail_row();
+    }
+
+    /// The prompt is away: show the live row now, and start the turn's clock
+    /// at the send rather than at the first token, so the indicator cannot sit
+    /// silent while the provider is thinking (or the process is still booting).
+    pub fn expect_reply(&mut self) {
+        self.awaiting_reply.set(true);
+        self.mark_stream_start();
+        self.sync_tail_row();
+    }
+
+    /// The turn never started (pi rejected the prompt) or the run is over:
+    /// drop the pending row and its clock.
+    pub fn abandon_reply(&mut self) {
+        if !self.awaiting_reply.get() && self.stream_started.get().is_none() {
+            return;
+        }
+        self.awaiting_reply.set(false);
+        if self.streaming.get().is_none() {
+            self.stream_started.set(None);
+        }
+        self.sync_tail_row();
+    }
+
+    /// Files the latest turn edited or wrote, with the same paths and +/−
+    /// counts Review shows for that turn. Empty until [`Self::set_review_card_scope`]
+    /// names the turn, and empty when that turn has no such calls.
+    pub fn changed_files_summary(&self) -> Vec<(String, u64, u64)> {
+        self.review_card_files.clone()
+    }
+
+    /// Point the changed-files card at the latest turn. `start` is that
+    /// turn's first message index; `None` hides the card.
+    pub(crate) fn set_review_card_scope(
+        &mut self,
+        start: Option<usize>,
+        workspace: Option<&Path>,
+        turn_open: bool,
+    ) {
+        self.review_card_start = start;
+        self.review_turn_open = turn_open;
+        self.review_workspace = workspace.map(Path::to_path_buf);
+        self.refresh_review_card();
+    }
+
+    /// Rebuild the card from calls that have already landed in the latest turn.
+    pub(crate) fn set_review_turn_open(&mut self, open: bool) {
+        self.review_turn_open = open;
+        self.refresh_review_card();
+    }
+
+    fn refresh_review_card(&mut self) {
+        let Some(start) = self.review_card_start else {
+            self.review_card_files.clear();
+            self.set_tail_row(false);
+            return;
+        };
+        let calls = self.recorded_calls(start, self.message_count());
+        let files = crate::turn_review::file_counts(&calls, self.review_workspace.as_deref());
+        let show = !self.review_turn_open && !files.is_empty();
+        self.review_card_files = files;
+        self.set_tail_row(show);
     }
 
     /// Add or remove the end-of-task summary row (the extra list slot after
@@ -1804,13 +2734,11 @@ impl Transcript {
         if present == self.tail_summary.get() {
             return;
         }
-        if present {
-            self.scroller.append(1);
-        } else {
-            let count = self.scroller.item_count();
-            self.scroller.splice(count.saturating_sub(1)..count, 0);
-        }
         self.tail_summary.set(present);
+        // A pending prompt owns the slot in between: adding the summary while
+        // the live row is up must not double it, and removing it must not take
+        // the live row down with it.
+        self.sync_tail_row();
     }
 
     /// True when no messages are loaded (drives the empty state).
@@ -1855,8 +2783,47 @@ impl Transcript {
         let messages = self.messages.borrow();
         let ix = messages
             .iter()
-            .rposition(|message| !message.user && !message.text().trim().is_empty())?;
+            .rposition(|message| message.is_assistant() && !message.text().trim().is_empty())?;
         Some((ix, messages[ix].text()))
+    }
+
+    /// The settled run's last assistant message usage, for the debug-build
+    /// per-turn diagnostic log.
+    #[cfg(debug_assertions)]
+    pub fn last_message_usage(&self) -> Option<MessageUsage> {
+        self.messages.borrow().last().and_then(ChatMessage::usage)
+    }
+
+    /// The settled run's last message generation clock — pi's `durationMs`
+    /// (prefill plus decode), or the client-measured fallback.
+    #[cfg(debug_assertions)]
+    pub fn last_message_duration(&self) -> Option<Duration> {
+        self.messages
+            .borrow()
+            .last()
+            .and_then(ChatMessage::generation_time)
+    }
+
+    /// Mark the settled turn as a user stop: the last assistant row keeps the
+    /// quiet "Stopped" marker instead of an error card an earlier attempt left
+    /// behind (a retry cancelled before it produced a message).
+    pub fn mark_turn_aborted(&mut self) -> bool {
+        let ix = {
+            let mut messages = self.messages.borrow_mut();
+            match messages.last_mut() {
+                Some(row) if row.is_assistant() => {
+                    if row.aborted && row.error.is_none() {
+                        return false;
+                    }
+                    row.aborted = true;
+                    row.error = None;
+                    messages.len() - 1
+                }
+                _ => return false,
+            }
+        };
+        self.remeasure_row(ix);
+        true
     }
 
     /// Summarize the turn that just settled for a background notification:
@@ -1866,7 +2833,7 @@ impl Transcript {
     /// rather than reporting the previous turn's text.
     pub fn latest_turn_summary(&self) -> Option<TurnSummary> {
         let messages = self.messages.borrow();
-        let Some(ix) = messages.iter().rposition(|message| !message.user) else {
+        let Some(ix) = messages.iter().rposition(ChatMessage::is_assistant) else {
             // A settle with no assistant message at all (the run failed
             // before any text); still worth a quiet "turn finished" ping.
             return Some(TurnSummary::default());
@@ -1914,7 +2881,15 @@ impl Transcript {
             if user_turns.is_empty() {
                 return false;
             }
-            let current = self.scroller.first_visible_index();
+            // At the live edge the reader is on the newest turn; the
+            // viewport hint only anchors a reader who scrolled away. Without
+            // this, ⌘↑ from the tail compared against a stale row 0 and never
+            // moved.
+            let current = if self.scroller.is_following_tail() {
+                self.scroller.item_count()
+            } else {
+                self.scroller.first_visible_index()
+            };
             // The turn the viewport is reading: the newest user turn at or
             // above the first visible row (same rule the rail uses).
             let pos = user_turns
@@ -1926,7 +2901,7 @@ impl Transcript {
             } else {
                 (pos + 1).min(user_turns.len() - 1)
             };
-            if next_pos == pos && user_turns.len() > 1 {
+            if next_pos == pos {
                 return false;
             }
             user_turns[next_pos]
@@ -1950,6 +2925,7 @@ impl Transcript {
         }
         messages.push(ChatMessage {
             user: true,
+            summary: None,
             steps: vec![Step {
                 text: trimmed.to_string(),
                 ..Step::default()
@@ -1971,21 +2947,32 @@ impl Transcript {
         self.streaming.set(None);
         self.step_mark.set(None);
         self.stream_started.set(None);
+        self.turn_started.set(None);
         self.thinking_started.set(None);
+        self.reset_generation();
+        // A run that ends without ever streaming (an aborted first request, a
+        // provider that answered with an error) stops waiting too.
+        self.awaiting_reply.set(false);
+        self.sync_tail_row();
     }
 
-    /// Turn end (or abort): drop live streaming state, then — once the run
-    /// has settled — pin the whole-task changed-files summary at the end of
-    /// the transcript (when the task touched files).
+    /// Turn end (or abort): drop live streaming state, then pin the latest
+    /// turn's changed-files card when that turn edited or wrote a file.
     fn end_live_run(&mut self) {
         self.clear_live_state();
-        let touched_files = !self.changed_files_summary().is_empty();
-        self.set_tail_row(touched_files);
+        self.refresh_review_card();
     }
 
     /// True while an assistant message is still streaming.
     pub fn is_streaming(&self) -> bool {
         self.streaming.get().is_some()
+    }
+
+    /// True from the moment a prompt is sent until its first step streams (or
+    /// the turn is abandoned). A turn is in flight across that whole window, so
+    /// the app's `is_running` — and every gate built on it — must see it.
+    pub fn is_awaiting_reply(&self) -> bool {
+        self.awaiting_reply.get()
     }
 
     /// Message indices whose text contains `needle` (already lowercased), in
@@ -2062,8 +3049,12 @@ impl Transcript {
         workspace: Option<&Path>,
         viewport_height: Pixels,
         main_width: Pixels,
+        agent_calls: crate::agent_call_display::AgentCallDisplay,
         review_changes: Option<crate::transcript_view::ReviewOpener>,
         image_opener: Option<crate::transcript_view::ImageOpener>,
+        rewind: Option<crate::transcript_view::RewindOpener>,
+        regenerate: Option<crate::transcript_view::RegenerateOpener>,
+        export_response: Option<crate::transcript_view::ResponseExporter>,
         search_hits: Option<HashSet<usize>>,
         search_active: Option<usize>,
         cx: &gpui::App,
@@ -2091,16 +3082,22 @@ impl Transcript {
         transcript_view::render_transcript(
             TranscriptView {
                 messages: self.messages.clone(),
+                user_turns: self.cached_user_turns(),
                 text_selection: self.text_selection.clone(),
                 scroller: self.scroller.clone(),
                 streaming: self.streaming.clone(),
                 stream_started: self.stream_started.clone(),
+                awaiting_reply: self.awaiting_reply.clone(),
+                turn_started: self.turn_started.clone(),
                 expanded_turns: self.expanded_turns.clone(),
                 expanded_files: self.expanded_files.clone(),
+                agent_calls,
                 expanded_activities: self.expanded_activities.clone(),
                 expanded_tools: self.expanded_tools.clone(),
+                open_child_logs: self.open_child_logs.clone(),
                 copied: self.copied.clone(),
                 copied_sections: self.copied_sections.clone(),
+                hovered_sections: self.hovered_sections.clone(),
                 expanded_sections: self.expanded_sections.clone(),
                 expanded_blocks: self.expanded_blocks.clone(),
                 thinking_scrolls: self.thinking_scrolls.clone(),
@@ -2120,6 +3117,9 @@ impl Transcript {
                 summary_usage,
                 review_changes,
                 image_opener,
+                rewind,
+                regenerate,
+                export_response,
                 search_hits: search_hits.map(|hits| Rc::new(RefCell::new(hits))),
                 search_active: search_active.map(|ix| Rc::new(Cell::new(Some(ix)))),
             },
@@ -2132,6 +3132,401 @@ impl Transcript {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rewind_prompt_for_response_does_not_cross_summary_boundaries() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role":"user", "content":"first prompt"},
+            {"role":"assistant", "content":"first answer"},
+            {"role":"compactionSummary", "summary":"earlier work", "tokensBefore":100},
+            {"role":"assistant", "content":"orphan answer"},
+            {"role":"user", "content":"second prompt"},
+            {"role":"assistant", "content":"second answer"}
+        ]}));
+        assert_eq!(transcript.rewind_user_turn_ordinal(0), Some(0));
+        assert_eq!(transcript.rewind_user_turn_ordinal(1), Some(0));
+        assert_eq!(transcript.rewind_user_turn_ordinal(2), None);
+        assert_eq!(transcript.rewind_user_turn_ordinal(3), None);
+        assert_eq!(transcript.rewind_user_turn_ordinal(4), Some(1));
+        assert_eq!(transcript.rewind_user_turn_ordinal(5), Some(1));
+        assert_eq!(transcript.rewind_user_turn_ordinal(6), None);
+    }
+
+    #[test]
+    fn the_images_of_a_user_turn_are_kept_for_a_regenerate() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "look at this"},
+                {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}
+            ]},
+            {"role": "assistant", "content": "seen"}
+        ]}));
+        let images = transcript.user_turn_images(0);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].format, gpui::ImageFormat::Png);
+        assert_eq!(images[0].bytes, b"hello");
+        assert!(
+            transcript.user_turn_images(1).is_empty(),
+            "an out-of-range turn has no images"
+        );
+    }
+
+    #[test]
+    fn markdown_export_preserves_text_and_excludes_thinking_and_tools() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "user", "content": "Explain this"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "secret command"}},
+                {"type": "text", "text": "Answer:\n\n```rust\nfn main() {}\n```"}
+            ]}
+        ]}));
+        let exported = transcript
+            .export_visible_markdown(ExportOptions::default())
+            .unwrap();
+        assert!(exported.contains("## User\n\nExplain this"));
+        assert!(exported.contains("## Assistant\n\nAnswer:\n\n```rust\nfn main() {}\n```"));
+        assert!(!exported.contains("private reasoning"));
+        assert!(!exported.contains("secret command"));
+        assert!(!exported.contains("### Reasoning"));
+    }
+
+    fn include_work() -> ExportOptions {
+        ExportOptions {
+            include_thinking_and_tools: true,
+        }
+    }
+
+    /// The opt-in appendix follows the answer, so a response export still
+    /// opens with the response, and the tool's recorded output rides along.
+    #[test]
+    fn markdown_export_can_include_reasoning_tools_and_their_output() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "user", "content": "Explain this"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "ls -la"}},
+                {"type": "text", "text": "Answer"}
+            ]},
+            {"role": "toolResult", "toolCallId": "x", "isError": false, "content": [
+                {"type": "text", "text": "total 8"}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported
+            .starts_with("## User\n\nExplain this\n\n## Assistant\n\nAnswer\n\n### Reasoning"));
+        assert!(exported.contains("### Reasoning\n\nprivate reasoning"));
+        assert!(exported.contains("### Tool calls\n\n**bash** — `ls -la`"));
+        assert!(exported.contains("```\ntotal 8\n```"));
+    }
+
+    /// A response export appends the appendix after the answer and keeps the
+    /// clicked response as the section head.
+    #[test]
+    fn response_export_appends_work_after_the_answer() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "planned it"},
+                {"type": "text", "text": "first answer"}
+            ]},
+            {"role": "user", "content": "next"}
+        ]}));
+        let body = transcript
+            .export_response_markdown(0, "first answer", include_work())
+            .unwrap();
+        assert!(body.starts_with("first answer\n\n### Reasoning\n\nplanned it"));
+        assert!(transcript
+            .export_response_markdown(0, "stale text", include_work())
+            .is_none());
+        assert_eq!(
+            transcript
+                .export_response_markdown(0, "first answer", ExportOptions::default())
+                .as_deref(),
+            Some("first answer")
+        );
+        assert_eq!(
+            transcript
+                .export_response_pdf(0, "first answer", include_work())
+                .unwrap()
+                .markdown,
+            body
+        );
+    }
+
+    /// Opting in must not turn a hundred-thousand-character tool log into the
+    /// export; the cut is explicit, not silent.
+    #[test]
+    fn markdown_export_truncates_tool_output_with_a_note() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "yes"}},
+                {"type": "text", "text": "Answer"}
+            ]},
+            {"role": "toolResult", "toolCallId": "x", "content": [
+                {"type": "text", "text": "y".repeat(EXPORT_TOOL_OUTPUT_CHARS + 100)}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported.contains("[Tool output truncated for export.]"));
+        assert!(!exported.contains(&"y".repeat(EXPORT_TOOL_OUTPUT_CHARS + 1)));
+    }
+
+    /// Tool output that itself contains a code fence must not be able to end
+    /// the block early and leak the rest as prose.
+    #[test]
+    fn markdown_export_grows_the_fence_past_backticks_in_output() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "cat notes.md"}},
+                {"type": "text", "text": "Answer"}
+            ]},
+            {"role": "toolResult", "toolCallId": "x", "content": [
+                {"type": "text", "text": "before\n```\ninside\n```\nafter"}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported.contains("````\nbefore\n```\ninside\n```\nafter\n````"));
+    }
+
+    /// A command containing backticks must stay inline code rather than leave
+    /// a broken delimiter in the exported heading.
+    #[test]
+    fn markdown_export_keeps_a_backticked_command_inline() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "echo `date`"}},
+                {"type": "text", "text": "Answer"}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported.contains("**bash** — `` echo `date` ``"));
+    }
+
+    /// A tool that returned only an image cannot be exported, and must say so
+    /// instead of reading as a call that produced nothing.
+    #[test]
+    fn markdown_export_notes_tool_output_images() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "read", "arguments": {"path": "shot.png"}},
+                {"type": "text", "text": "Answer"}
+            ]},
+            {"role": "toolResult", "toolCallId": "x", "content": [
+                {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported.contains("[Tool output images omitted from export.]"));
+    }
+
+    /// A turn that only reasoned and ran tools is skipped by default. Opting
+    /// in exports it instead of dropping the evidence entirely.
+    #[test]
+    fn reasoning_only_turns_export_only_when_opted_in() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "checked the files"},
+                {"type": "toolCall", "id": "x", "name": "read", "arguments": {"path": "src/main.rs"}}
+            ]},
+            {"role": "user", "content": "continue"}
+        ]}));
+        let plain = transcript
+            .export_visible_markdown(ExportOptions::default())
+            .unwrap();
+        assert_eq!(plain, "## User\n\ncontinue\n\n");
+        let full = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(full.contains("### Reasoning\n\nchecked the files"));
+        assert!(full.contains("**read** — `src/main.rs`"));
+        assert!(!transcript
+            .export_visible_pdf(ExportOptions::default())
+            .unwrap()
+            .iter()
+            .any(|section| section.markdown.contains("checked the files")));
+        assert!(transcript
+            .export_visible_pdf(include_work())
+            .unwrap()
+            .iter()
+            .any(|section| section.markdown.contains("checked the files")));
+    }
+
+    #[test]
+    fn markdown_export_of_empty_transcript_is_none() {
+        assert!(Transcript::new()
+            .export_visible_markdown(ExportOptions::default())
+            .is_none());
+        assert!(Transcript::new()
+            .export_last_response_markdown(ExportOptions::default())
+            .is_none());
+    }
+
+    #[test]
+    fn markdown_export_of_last_response_uses_only_assistant_text() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "next question"},
+            {"role": "assistant", "content": [{"type":"text", "text":"last **answer**"}]}
+        ]}));
+        assert_eq!(
+            transcript
+                .export_last_response_markdown(ExportOptions::default())
+                .as_deref(),
+            Some("last **answer**")
+        );
+    }
+
+    #[test]
+    fn last_response_export_includes_work_only_when_asked() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "weighed options"},
+                {"type": "text", "text": "last **answer**"}
+            ]}
+        ]}));
+        assert!(!transcript
+            .export_last_response_markdown(ExportOptions::default())
+            .unwrap()
+            .contains("weighed options"));
+        let full = transcript
+            .export_last_response_markdown(include_work())
+            .unwrap();
+        assert!(full.starts_with("last **answer**\n\n### Reasoning\n\nweighed options"));
+        assert!(transcript
+            .export_last_response_pdf(include_work())
+            .unwrap()
+            .markdown
+            .contains("weighed options"));
+    }
+
+    /// The plan's missing large-session case: a long conversation exports every
+    /// turn in order, and each appendix stays with the answer it belongs to.
+    #[test]
+    fn large_session_markdown_export_keeps_every_turn_and_appendix_in_order() {
+        let mut messages = Vec::new();
+        for turn in 0..300 {
+            messages.push(json!({"role": "user", "content": format!("question {turn}")}));
+            messages.push(json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": format!("reasoning {turn}")},
+                {"type": "toolCall", "id": format!("t{turn}"), "name": "bash", "arguments": {"command": format!("echo {turn}")}},
+                {"type": "text", "text": format!("answer {turn}")}
+            ]}));
+            messages.push(
+                json!({"role": "toolResult", "toolCallId": format!("t{turn}"), "content": [
+                    {"type": "text", "text": format!("output {turn}")}
+                ]}),
+            );
+        }
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({ "messages": messages }));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert_eq!(exported.matches("### Reasoning").count(), 300);
+        assert_eq!(exported.matches("### Tool calls").count(), 300);
+        let first = exported
+            .find("answer 0\n\n### Reasoning\n\nreasoning 0")
+            .expect("the first turn and its appendix are in order");
+        let last = exported
+            .find("answer 299\n\n### Reasoning\n\nreasoning 299")
+            .expect("the last turn and its appendix are in order");
+        assert!(first < last);
+        assert!(exported.contains("**bash** — `echo 150`"));
+        assert!(exported.contains("```\noutput 150\n```"));
+    }
+
+    /// Sending a prompt must put the live row up at once — the regression is a
+    /// transcript that stays silent from Enter until the first token lands.
+    #[test]
+    fn sending_a_prompt_shows_the_live_row_immediately() {
+        let mut transcript = Transcript::new();
+        transcript.append_user_message("ship it", Vec::new());
+        assert!(!transcript.awaiting_reply.get(), "nothing is in flight yet");
+        assert_eq!(transcript.scroller.item_count(), 1);
+
+        transcript.expect_reply();
+        assert!(transcript.awaiting_reply.get(), "the tail row goes up now");
+        assert!(
+            transcript.stream_started.get().is_some(),
+            "the Working clock starts at the send, not at the first token"
+        );
+        // The row is the list's tail slot: messages + 1.
+        assert_eq!(transcript.scroller.item_count(), 2);
+    }
+
+    /// The first streamed step takes the pending row down and leaves exactly
+    /// one row per message (no phantom slot between the live row and the
+    /// assistant turn).
+    #[test]
+    fn the_first_streamed_step_retires_the_pending_row() {
+        let mut transcript = Transcript::new();
+        transcript.append_user_message("ship it", Vec::new());
+        transcript.expect_reply();
+
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({
+                "type": "message_start",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": "On it" }] },
+            }),
+        });
+
+        assert!(!transcript.awaiting_reply.get());
+        assert!(transcript.is_streaming());
+        assert_eq!(transcript.message_count(), 2);
+        assert_eq!(
+            transcript.scroller.item_count(),
+            transcript.message_count(),
+            "the tail slot closed as the live row became a message row"
+        );
+    }
+
+    /// A rejected prompt (or a run that ends without streaming) must stop
+    /// waiting: otherwise the composer stays on Stop and the row spins forever.
+    #[test]
+    fn abandoning_a_prompt_closes_the_pending_row() {
+        let mut transcript = Transcript::new();
+        transcript.append_user_message("ship it", Vec::new());
+        transcript.expect_reply();
+        assert_eq!(transcript.scroller.item_count(), 2);
+
+        transcript.abandon_reply();
+        assert!(!transcript.awaiting_reply.get());
+        assert!(transcript.stream_started.get().is_none());
+        assert_eq!(transcript.scroller.item_count(), 1);
+        // Idempotent: unwinding twice is not a second row operation.
+        transcript.abandon_reply();
+        assert_eq!(transcript.scroller.item_count(), 1);
+    }
+
+    /// The end-of-task summary and the pending row share the tail slot, so a
+    /// settled task's card does not sit below an empty pending row.
+    #[test]
+    fn the_summary_and_the_pending_row_share_the_tail_slot() {
+        let mut transcript = Transcript::new();
+        transcript.append_user_message("ship it", Vec::new());
+        transcript.expect_reply();
+        assert_eq!(transcript.scroller.item_count(), 2);
+
+        transcript.set_tail_row(true);
+        assert_eq!(transcript.scroller.item_count(), 2, "no second tail row");
+        transcript.retire_pending_row();
+        assert_eq!(
+            transcript.scroller.item_count(),
+            2,
+            "the card keeps the slot"
+        );
+
+        transcript.set_tail_row(false);
+        assert_eq!(transcript.scroller.item_count(), 1);
+    }
 
     #[test]
     fn assistant_error_message_surfaces_stop_reason_error() {
@@ -2164,6 +3559,26 @@ mod tests {
         // User messages never surface a provider error.
         let user = json!({"role": "user", "content": "hi", "errorMessage": "ignored"});
         assert!(message_error(&user).is_none());
+    }
+
+    #[test]
+    fn aborted_message_carries_no_agent_error() {
+        // pi's `createAbortedMessage`: a user stop marks the message aborted
+        // but still carries `errorMessage`. The transcript must show only its
+        // "Stopped" marker, never an error card or the app banner.
+        let value = json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "partial"}],
+                "stopReason": "aborted",
+                "errorMessage": "Request was aborted"
+            }
+        });
+        assert!(message_error(&value).is_none());
+        let parsed = ChatMessage::from_value(&value).expect("assistant message");
+        assert!(parsed.aborted);
+        assert!(parsed.error.is_none());
     }
 
     #[test]
@@ -2217,7 +3632,11 @@ mod tests {
         }
         let cards: Vec<_> = messages
             .iter()
-            .filter(|m| !changed_files(m).is_empty())
+            .filter(|message| {
+                message
+                    .tools()
+                    .any(|tool| tool.path.is_some() && (tool.added > 0 || tool.removed > 0))
+            })
             .collect();
         assert!(
             !cards.is_empty(),
@@ -2330,6 +3749,137 @@ mod tests {
         let messages = t.messages.borrow();
         assert_eq!(messages[0].text(), "hello");
         assert!(messages[0].finished_at.is_some());
+    }
+
+    /// Deltas accrue a client-measured generation clock, and the settled
+    /// replacement must carry it forward so the footer's tok/s does not
+    /// vanish when the turn ends.
+    #[test]
+    fn live_deltas_accrue_generation_time_and_survive_settle() {
+        let mut t = Transcript::new();
+        t.apply_event(&Event::MessageStart {
+            value: json!({"type": "message_start", "message": {
+                "role": "assistant", "content": [], "stopReason": "pending"
+            }}),
+        });
+        for delta in ["Hel", "lo"] {
+            t.apply_event(&Event::MessageUpdate {
+                usage: None,
+                assistant: Some(AssistantMessageEvent::TextDelta {
+                    delta: delta.to_string(),
+                }),
+            });
+        }
+        {
+            let messages = t.messages.borrow();
+            assert_eq!(messages[0].text(), "Hello");
+            assert!(
+                messages[0].steps[0].generation_time.is_some(),
+                "the live step must carry a generation clock"
+            );
+        }
+        t.apply_event(&Event::MessageEnd {
+            value: json!({"type": "message_end", "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Hello"}],
+                "stopReason": "stop"
+            }}),
+        });
+        let messages = t.messages.borrow();
+        assert!(
+            messages[0].generation_time().is_some(),
+            "generation time must survive the settled replacement"
+        );
+        assert!(!t.is_streaming());
+    }
+
+    /// pi's own `durationMs` rides the settled step and wins over any
+    /// client-measured value — the client only ever saw pi's bursts, so its
+    /// clock reads far too short (and the rate far too high).
+    #[test]
+    fn pi_duration_ms_wins_the_generation_clock() {
+        let parsed = ChatMessage::from_value(&json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+                "stopReason": "stop",
+                "durationMs": 5237,
+                "usage": {"input": 10, "output": 4, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 14}
+            }
+        }))
+        .expect("assistant message");
+        assert_eq!(parsed.steps[0].duration, Some(Duration::from_millis(5237)));
+
+        // When pi supplies a duration it wins; without it, the client
+        // measurement is still used as the fallback.
+        let mut message = ChatMessage {
+            user: false,
+            summary: None,
+            steps: vec![Step {
+                generation_time: Some(Duration::from_secs(3)),
+                duration: Some(Duration::from_secs(9)),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        assert_eq!(message.generation_time(), Some(Duration::from_secs(9)));
+        message.steps[0].duration = None;
+        assert_eq!(message.generation_time(), Some(Duration::from_secs(3)));
+    }
+
+    /// `turn_start` arms the live rate's clock — the same basis as pi's
+    /// `durationMs` — so a bursty stream is not mistaken for the whole
+    /// generation. Clearing live state disarms it for the next run.
+    #[test]
+    fn turn_start_arms_the_live_rate_clock() {
+        let mut t = Transcript::new();
+        assert!(t.turn_started.get().is_none());
+        assert!(!t.apply_event(&Event::TurnStart));
+        assert!(t.turn_started.get().is_some());
+        t.clear_live_state();
+        assert!(t.turn_started.get().is_none());
+    }
+
+    /// `generation_time()` sums the turn's per-step clocks (multi-step
+    /// turns), and reports nothing when no step measured one.
+    #[test]
+    fn generation_time_sums_every_step() {
+        let message = ChatMessage {
+            user: false,
+            summary: None,
+            steps: vec![
+                Step {
+                    generation_time: Some(Duration::from_millis(400)),
+                    ..Step::default()
+                },
+                Step {
+                    generation_time: Some(Duration::from_millis(600)),
+                    ..Step::default()
+                },
+            ],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        assert_eq!(message.generation_time(), Some(Duration::from_secs(1)));
+        let bare = ChatMessage {
+            user: false,
+            summary: None,
+            steps: vec![Step::default()],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        assert_eq!(bare.generation_time(), None);
     }
 
     #[test]
@@ -2591,6 +4141,74 @@ mod tests {
         assert_eq!(t.message_count(), 3);
         assert_eq!(t.find_messages("login"), vec![0, 2]);
         assert!(t.find_messages("missing").is_empty());
+    }
+
+    #[test]
+    fn summary_roles_parse_as_boundary_rows() {
+        let compaction = json!({
+            "role": "compactionSummary",
+            "summary": "## Goal\nShip the fix",
+            "tokensBefore": 150_700,
+            "timestamp": 1_733_234_400_000i64
+        });
+        let parsed = ChatMessage::from_value(&compaction).expect("compaction row");
+        assert!(parsed.is_summary());
+        assert!(!parsed.is_assistant());
+        assert!(!parsed.user);
+        let row = parsed.summary.as_ref().expect("summary");
+        assert!(!row.branch);
+        assert_eq!(row.tokens_before, Some(150_700));
+        assert_eq!(row.summary, "## Goal\nShip the fix");
+        // The summary stays out of answer/navigation/search text paths.
+        assert!(parsed.text().is_empty());
+
+        let branch = json!({
+            "role": "branchSummary",
+            "summary": "Explored approach A",
+            "fromId": "abc123",
+            "timestamp": 1_733_234_500_000i64
+        });
+        let parsed = ChatMessage::from_value(&branch).expect("branch row");
+        let row = parsed.summary.as_ref().expect("summary");
+        assert!(row.branch);
+        assert_eq!(row.tokens_before, None);
+        assert!(parsed.text().is_empty());
+    }
+
+    #[test]
+    fn summaries_stay_their_own_rows_on_load() {
+        let payload = json!({"messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "compactionSummary", "summary": "earlier work", "tokensBefore": 90_000},
+            {"role": "user", "content": "kept prompt"},
+            {"role": "assistant", "content": [{"type": "text", "text": "kept answer"}]}
+        ]});
+        let mut t = Transcript::new();
+        t.load_from(&payload);
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 5);
+        // The summary is not merged into the assistant before it…
+        assert!(messages[1].is_assistant());
+        assert!(messages[2].is_summary());
+        // …and the settled turn after it is a fresh row, not a summary step.
+        assert!(messages[4].is_assistant());
+        assert!(messages[4].summary.is_none());
+        assert_eq!(messages[4].text(), "kept answer");
+    }
+
+    #[test]
+    fn assistant_after_summary_starts_a_new_row() {
+        let payload = json!({"messages": [
+            {"role": "compactionSummary", "summary": "boundary", "tokensBefore": 1_000},
+            {"role": "assistant", "content": [{"type": "text", "text": "resumed"}]}
+        ]});
+        let mut t = Transcript::new();
+        t.load_from(&payload);
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 2);
+        assert!(messages[1].is_assistant());
+        assert_eq!(messages[1].text(), "resumed");
     }
 
     #[test]
@@ -3061,66 +4679,13 @@ mod tests {
     }
 
     #[test]
-    fn changed_files_merges_same_path() {
-        let tools = vec![
-            ToolCall {
-                name: "edit".into(),
-                summary: String::new(),
-                path: Some("a.rs".into()),
-                added: 2,
-                removed: 1,
-                ..ToolCall::from_value("edit", None)
-            },
-            ToolCall {
-                name: "edit".into(),
-                summary: String::new(),
-                path: Some("a.rs".into()),
-                added: 3,
-                removed: 0,
-                ..ToolCall::from_value("edit", None)
-            },
-            ToolCall {
-                name: "write".into(),
-                summary: String::new(),
-                path: Some("b.rs".into()),
-                added: 4,
-                removed: 0,
-                ..ToolCall::from_value("write", None)
-            },
-            ToolCall {
-                name: "read".into(),
-                summary: String::new(),
-                path: Some("c.rs".into()),
-                added: 0,
-                removed: 0,
-                ..ToolCall::from_value("read", None)
-            },
-        ];
-        let message = ChatMessage {
-            user: false,
-            steps: vec![Step {
-                tools,
-                ..Step::default()
-            }],
-            images: Vec::new(),
-            elapsed: None,
-            finished_at: None,
-            error: None,
-            aborted: false,
-        };
-        assert_eq!(
-            changed_files(&message),
-            vec![("a.rs".into(), 5, 1), ("b.rs".into(), 4, 0)]
-        );
-    }
-
-    #[test]
     fn settled_run_pins_changed_files_summary() {
         let edit_args = json!({
             "path": "a.rs",
             "edits": [{ "oldText": "x", "newText": "y\nz" }]
         });
         let mut t = Transcript::new();
+        t.set_review_card_scope(Some(0), None, true);
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "user", "content": "build it"}),
         });
@@ -3148,35 +4713,37 @@ mod tests {
                 ]
             }),
         });
+        // A landed edit is not a settled turn.
+        assert!(!t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), 2);
-        // Settle: the whole-task summary pins itself after the last message.
-        t.apply_event(&Event::AgentSettled);
-        assert!(t.tail_summary.get());
-        assert_eq!(t.scroller.item_count(), 3);
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
-        // A new turn removes the summary slot again (prompt takes its place).
+        t.apply_event(&Event::AgentSettled { aborted: false });
+        t.set_review_turn_open(false);
+        assert!(t.tail_summary.get());
+        assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
+        // The next send opens a new turn before its user row is appended.
+        // That turn has no edit yet, so the previous turn leaves the card.
+        t.set_review_card_scope(Some(t.message_count()), None, true);
+        assert!(!t.tail_summary.get());
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "user", "content": "more"}),
         });
         assert!(!t.tail_summary.get());
+        t.apply_event(&Event::AgentSettled { aborted: false });
+        assert!(!t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), 3);
-        // Settling again re-pins the summary — it aggregates the whole
-        // task, which still includes the first turn's edit.
-        t.apply_event(&Event::AgentSettled);
-        assert!(t.tail_summary.get());
-        assert_eq!(t.scroller.item_count(), 4);
     }
 
-    /// Screenshot regression: `agent_end` fires between loop iterations
-    /// while the run continues (steering/follow-up queued) — the changed-files
-    /// card must stay hidden until the run truly settles.
+    /// `agent_end` fires between loop iterations while steering is queued.
+    /// A file already edited stays hidden until the whole run settles.
     #[test]
-    fn agent_end_mid_run_does_not_pin_summary() {
+    fn agent_end_mid_run_keeps_a_landed_edit_hidden() {
         let edit_args = json!({
             "path": "a.rs",
             "edits": [{ "oldText": "x", "newText": "y\nz" }]
         });
         let mut t = Transcript::new();
+        t.set_review_card_scope(Some(0), None, true);
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "user", "content": "build it"}),
         });
@@ -3191,21 +4758,55 @@ mod tests {
                 ]
             }),
         });
-        // First loop iteration ends, but the run keeps working (steering
-        // queued) — edits exist yet no summary card may appear.
+        assert!(!t.tail_summary.get());
         t.apply_event(&Event::AgentEnd { will_retry: false });
         assert!(!t.tail_summary.get());
-        assert_eq!(t.scroller.item_count(), 2);
-        // Run continues: a follow-up assistant message streams in.
+        assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "assistant", "content": "continuing"}),
         });
         assert!(t.is_streaming());
-        // Only the real settle pins the summary.
-        t.apply_event(&Event::AgentSettled);
+        assert!(!t.tail_summary.get());
+        t.apply_event(&Event::AgentSettled { aborted: false });
+        t.set_review_turn_open(false);
         assert!(t.tail_summary.get());
-        assert_eq!(t.scroller.item_count(), 3);
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
+    }
+
+    /// A follow-up delivered by pi becomes a user row between the previous
+    /// answer and the next assistant response, not just a queue-bar entry.
+    #[test]
+    fn delivered_follow_up_appears_inline_once() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "user", "content": "first"}),
+        });
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": "answer"}),
+        });
+        transcript.apply_event(&Event::AgentEnd { will_retry: false });
+        let follow_up = json!({"role": "user", "content": "next"});
+        transcript.apply_event(&Event::MessageStart {
+            value: follow_up.clone(),
+        });
+        transcript.apply_event(&Event::MessageEnd { value: follow_up });
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": "next answer"}),
+        });
+        let messages = transcript.messages.borrow();
+        let rows: Vec<_> = messages
+            .iter()
+            .map(|message| (message.user, message.text()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (true, "first".to_owned()),
+                (false, "answer".to_owned()),
+                (true, "next".to_owned()),
+                (false, "next answer".to_owned()),
+            ]
+        );
     }
 
     #[test]
@@ -3221,9 +4822,92 @@ mod tests {
         });
         let mut t = Transcript::new();
         t.load_from(&payload);
+        assert!(!t.tail_summary.get());
+        t.set_review_card_scope(Some(0), None, false);
         assert!(t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), 3, "2 messages + summary row");
         assert_eq!(t.changed_files_summary(), vec![("n.rs".into(), 3, 0)]);
+    }
+
+    #[test]
+    fn loaded_open_turn_stays_hidden_until_settled() {
+        let payload = json!({
+            "messages": [
+                {"role": "user", "content": "do it"},
+                {"role": "assistant", "content": [
+                    {"type": "toolCall", "id": "c1", "name": "write",
+                     "arguments": {"path": "n.rs", "content": "a\nb"}}
+                ]}
+            ]
+        });
+        let mut t = Transcript::new();
+        t.load_from(&payload);
+        t.set_review_card_scope(Some(0), None, true);
+        t.apply_event(&Event::AgentEnd { will_retry: true });
+        assert!(!t.tail_summary.get());
+        t.set_review_turn_open(false);
+        assert!(t.tail_summary.get());
+        assert_eq!(t.changed_files_summary(), vec![("n.rs".into(), 2, 0)]);
+    }
+
+    #[test]
+    fn the_changed_files_card_lists_only_the_latest_turn() {
+        let payload = json!({
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": [
+                    {"type": "toolCall", "id": "c1", "name": "write",
+                     "arguments": {"path": "a.rs", "content": "a\n"}}
+                ]},
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": [
+                    {"type": "toolCall", "id": "c2", "name": "write",
+                     "arguments": {"path": "b.rs", "content": "b\n"}}
+                ]}
+            ]
+        });
+        let mut t = Transcript::new();
+        t.load_from(&payload);
+        t.set_review_card_scope(Some(2), None, false);
+        assert_eq!(t.changed_files_summary(), vec![("b.rs".into(), 1, 0)]);
+    }
+
+    /// Steering stays inside the open turn and must not reveal its card.
+    #[test]
+    fn a_steer_user_row_keeps_the_card_hidden_until_settle() {
+        let edit_args = json!({
+            "path": "a.rs",
+            "edits": [{ "oldText": "x", "newText": "y" }]
+        });
+        let mut t = Transcript::new();
+        t.set_review_card_scope(Some(0), None, true);
+        t.apply_event(&Event::MessageStart {
+            value: json!({"role": "user", "content": "build it"}),
+        });
+        t.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        t.apply_event(&Event::MessageEnd {
+            value: json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "toolCall", "id": "c1", "name": "edit", "arguments": edit_args}
+                ]
+            }),
+        });
+        assert!(!t.tail_summary.get());
+        t.apply_event(&Event::MessageStart {
+            value: json!({"role": "user", "content": "steer"}),
+        });
+        assert!(!t.tail_summary.get());
+        t.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": "continuing"}),
+        });
+        assert!(!t.tail_summary.get());
+        assert_eq!(t.scroller.item_count(), t.message_count());
+        t.set_review_turn_open(false);
+        assert!(t.tail_summary.get());
+        assert_eq!(t.scroller.item_count(), t.message_count() + 1);
     }
 
     #[test]
@@ -3237,6 +4921,31 @@ mod tests {
         assert!(!dismiss_rail_hint_state(&dismissed, &shown_at));
     }
 
+    /// `hints.json` is one JSON object shared by every affordance hint:
+    /// persisting one must preserve the others, and a missing file reads as
+    /// "not seen".
+    #[test]
+    fn hints_round_trip_without_clobbering_siblings() {
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-hints-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("hints.json");
+        assert!(!hint_seen_at(&path, RAIL_HINT_KEY));
+        persist_hint_at(&path, RAIL_HINT_KEY);
+        assert!(hint_seen_at(&path, RAIL_HINT_KEY));
+        persist_hint_at(&path, "another_hint");
+        assert!(hint_seen_at(&path, "another_hint"));
+        assert!(
+            hint_seen_at(&path, RAIL_HINT_KEY),
+            "persisting a hint must not wipe its siblings"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn jump_turn_walks_and_refuses_edges() {
         let payload = json!({
@@ -3248,10 +4957,17 @@ mod tests {
         });
         let mut t = Transcript::new();
         t.load_from(&payload);
-        // Viewport starts at the first row: previous has nowhere to go.
+        // The transcript opens at the live edge, so the reader is on the
+        // newest turn: previous jumps back to the first user turn.
+        assert!(t.jump_turn(-1));
+        assert_eq!(t.scroller.first_visible_index(), 0);
+        // Already on the first user turn: previous has nowhere to go.
         assert!(!t.jump_turn(-1));
-        // Next jumps to the second user turn.
+        // Next walks forward to the second user turn.
         assert!(t.jump_turn(1));
+        assert_eq!(t.scroller.first_visible_index(), 2);
+        // Past the last user turn: next has nowhere to go.
+        assert!(!t.jump_turn(1));
         // Empty transcripts have nothing to jump to.
         let t = Transcript::new();
         assert!(!t.jump_turn(1));
@@ -3299,6 +5015,69 @@ mod tests {
     }
 
     #[test]
+    fn mcp_tool_execution_keeps_the_wire_name_and_attaches_the_result() {
+        // Pi names MCP tools `mcp__<server>__<tool>`; the transcript must
+        // preserve the exact wire name (the card parses it) and still attach
+        // the result by call id like any other tool.
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({
+                "toolCallId": "m1",
+                "toolName": "mcp__github__search_repositories",
+                "args": {"query": "rust gpui"}
+            }),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "m1",
+                "toolName": "mcp__github__search_repositories",
+                "result": {"content": [{"type": "text", "text": "3 results"}]},
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert_eq!(tool.name, "mcp__github__search_repositories");
+        assert!(!tool.failed);
+        assert!(tool.output.is_some());
+        assert_eq!(
+            crate::transcript_view::mcp_tool_parts(&tool.name),
+            Some(("github", "search_repositories"))
+        );
+        drop(messages);
+
+        // A failed MCP call keeps the same wire name and marks the row.
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({
+                "toolCallId": "m2",
+                "toolName": "mcp__sentry__create_issue",
+                "args": {"title": "boom"}
+            }),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "m2",
+                "toolName": "mcp__sentry__create_issue",
+                "result": {"content": [{"type": "text", "text": "401 Unauthorized"}]},
+                "isError": true
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let failed = messages[0]
+            .tools()
+            .find(|tool| tool.name == "mcp__sentry__create_issue")
+            .unwrap();
+        assert!(failed.failed);
+        assert_eq!(
+            crate::transcript_view::mcp_tool_parts(&failed.name),
+            Some(("sentry", "create_issue"))
+        );
+    }
+
+    #[test]
     fn tool_execution_events_attach_results_by_id() {
         let mut transcript = Transcript::new();
         assert!(transcript.apply_event(&Event::MessageStart {
@@ -3330,6 +5109,108 @@ mod tests {
             Some("contents")
         );
         assert!(!tool.failed);
+    }
+
+    #[test]
+    fn tool_details_are_retained_on_end_and_on_partial() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "subagent", "args": {}}),
+        });
+        // A streaming partial carries the run state too — the card is live.
+        transcript.apply_event(&Event::ToolExecutionUpdate {
+            value: json!({
+                "toolCallId": "t1",
+                "toolName": "subagent",
+                "partialResult": {
+                    "content": [{"type": "text", "text": "1 of 1 running"}],
+                    "details": {"orbit": "subagent/1", "mode": "single", "children": []}
+                }
+            }),
+        });
+        {
+            let messages = transcript.messages.borrow();
+            let tool = messages[0].tools().next().unwrap();
+            let details = tool.details.as_ref().expect("details from the partial");
+            assert_eq!(
+                details.get("orbit").and_then(Value::as_str),
+                Some("subagent/1")
+            );
+        }
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {
+                    "content": [{"type": "text", "text": "done"}],
+                    "details": {"orbit": "subagent/1", "mode": "single", "children": [{"agent": "scout"}]}
+                },
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        let details = tool.details.as_ref().expect("details from the result");
+        assert_eq!(
+            details
+                .get("children")
+                .and_then(Value::as_array)
+                .and_then(|children| children.first())
+                .and_then(|child| child.get("agent"))
+                .and_then(Value::as_str),
+            Some("scout")
+        );
+        // The envelope's text still lands in `output`, not in `details`.
+        assert!(tool.output.is_some());
+    }
+
+    #[test]
+    fn oversize_tool_details_are_dropped() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "subagent", "args": {}}),
+        });
+        let big = "x".repeat(DETAILS_MAX_BYTES + 1024);
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {
+                    "content": [{"type": "text", "text": "done"}],
+                    "details": {"orbit": "subagent/1", "blob": big}
+                },
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert!(tool.details.is_none());
+        assert!(tool.output.is_some());
+    }
+
+    #[test]
+    fn absent_tool_details_stay_none() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "read", "args": {"path": "a"}}),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {"content": [{"type": "text", "text": "ok"}], "details": null},
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert!(tool.details.is_none());
     }
 
     #[test]
@@ -3406,6 +5287,33 @@ mod tests {
     }
 
     #[test]
+    fn image_tool_results_survive_live_and_snapshot_parsing() {
+        let content = json!([
+            {"type": "text", "text": "image read"},
+            {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}
+        ]);
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "image1", "toolName": "read", "args": {"path": "image.png"}}),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({"toolCallId": "image1", "result": {"content": content}, "isError": false}),
+        });
+        let messages = transcript.messages.borrow();
+        let output = messages[0].tools().next().unwrap().output.as_ref().unwrap();
+        assert_eq!(output["content"], content);
+        assert_eq!(tool_result_output(output), Some(json!("image read")));
+        let (_, snapshot, _, _, _) = tool_result_parts(&json!({
+            "role": "toolResult", "toolCallId": "image1", "content": content
+        }))
+        .unwrap();
+        assert_eq!(snapshot.unwrap()["content"], content);
+    }
+
+    #[test]
     fn tool_facts_read_pi_details() {
         // read/bash attach a `truncation` object only when the output was cut.
         let facts = ToolFacts::from_result(&json!({
@@ -3419,7 +5327,10 @@ mod tests {
         assert!(ToolFacts::from_result(&json!({"details": {"matchLimitReached": true}})).truncated);
         assert!(ToolFacts::from_result(&json!({"details": {"entryLimitReached": true}})).truncated);
         // No details is no facts — never invented.
-        assert_eq!(ToolFacts::from_result(&json!("plain")), ToolFacts::default());
+        assert_eq!(
+            ToolFacts::from_result(&json!("plain")),
+            ToolFacts::default()
+        );
         assert_eq!(
             ToolFacts::from_result(&json!({"content": [], "details": {}})),
             ToolFacts::default()
@@ -3618,11 +5529,11 @@ mod tests {
         // detail card hides empty sections — never render the raw envelope.
         let value = normalize_tool_result(&json!({"content": [], "details": {}}));
         assert_eq!(value, json!(""));
-        // An image-only envelope (no text blocks) reads the same way.
-        let value = normalize_tool_result(
-            &json!({"content": [{"type": "image", "data": "…"}], "details": {}}),
-        );
-        assert_eq!(value, json!(""));
+        // An image-only envelope keeps its blocks so the card can paint the
+        // image; the detail section still never prints the envelope itself.
+        let images = json!({"content": [{"type": "image", "data": "…"}], "details": {}});
+        assert_eq!(normalize_tool_result(&images), images);
+        assert_eq!(tool_result_output(&images), None);
         // Structured payloads without pi's `content` envelope are untouched.
         let value = normalize_tool_result(&json!({"rows": []}));
         assert_eq!(value, json!({"rows": []}));
@@ -3726,6 +5637,102 @@ mod tests {
         }))
         .unwrap();
         assert!(!settled.aborted);
+    }
+
+    #[test]
+    fn a_recovered_retry_does_not_leave_the_turn_failed() {
+        // Case 1 of issue #96: pi retries a transient provider failure by
+        // streaming the next attempt into the same row. The failed attempt's
+        // card must retire with the retry, not label a turn that finished.
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::MessageEnd {
+            value: json!({
+                "role": "assistant",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": "Stream ended without finish_reason"
+            }),
+        });
+        assert!(transcript.messages.borrow()[0].error.is_some());
+        // The retry lands on the same row and succeeds.
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::MessageUpdate {
+            usage: None,
+            assistant: Some(AssistantMessageEvent::TextDelta {
+                delta: "the answer".into(),
+            }),
+        });
+        transcript.apply_event(&Event::MessageEnd {
+            value: json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "the answer"}],
+                "stopReason": "stop"
+            }),
+        });
+        transcript.apply_event(&Event::AgentSettled { aborted: false });
+        let summary = transcript.latest_turn_summary().expect("summary");
+        assert_eq!(summary.body, "the answer");
+        assert!(!summary.failed, "a recovered retry is not a failed turn");
+        assert!(!summary.aborted);
+        assert!(transcript.messages.borrow()[0].error.is_none());
+    }
+
+    #[test]
+    fn an_in_flight_abort_recorded_as_an_error_is_still_a_stop() {
+        // Case 2 of issue #96: a stop that lands while the provider request is
+        // in flight throws in the SDK, so pi records `stopReason: "error"`
+        // with the abort text rather than its own aborted message.
+        for text in [
+            "This operation was aborted",
+            "Request aborted",
+            "Operation aborted",
+            "Retry cancelled",
+        ] {
+            let value = json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "partial"}],
+                "stopReason": "error",
+                "errorMessage": text
+            });
+            assert!(message_error(&value).is_none(), "{text} is a cancel");
+            let parsed = ChatMessage::from_value(&value).expect("assistant message");
+            assert!(parsed.aborted, "{text} must read as a stop");
+            assert!(parsed.error.is_none(), "{text} is not an error card");
+        }
+    }
+
+    #[test]
+    fn a_cancelled_retry_settles_into_a_quiet_stop() {
+        // A failed attempt put a card on the row, then the user cancelled the
+        // retry before it produced a message: the settle marks a stop, so the
+        // turn is not reported as failed.
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::MessageEnd {
+            value: json!({
+                "role": "assistant",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": "provider 500"
+            }),
+        });
+        assert!(transcript.apply_event(&Event::AgentSettled { aborted: true }));
+        let messages = transcript.messages.borrow();
+        assert!(messages[0].aborted);
+        assert!(
+            messages[0].error.is_none(),
+            "a stop retires the card the cancelled attempt left"
+        );
+        drop(messages);
+        let summary = transcript.latest_turn_summary().expect("summary");
+        assert!(summary.aborted && !summary.failed);
     }
 
     #[test]

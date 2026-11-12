@@ -51,7 +51,7 @@ fn probe_switch_session_mid_run() {
         for event in client.drain_events() {
             if matches!(event, Event::AgentStart) {
                 eprintln!(">>> agent_start seen, sending switch_session");
-                let rx = client
+                let (_, rx) = client
                     .send(CommandBody::SwitchSession {
                         session_path: "/tmp/orbit-switch-probe/other-session.jsonl".into(),
                     })
@@ -84,7 +84,7 @@ fn probe_switch_session_mid_run() {
                     deltas_after_switch += 1;
                     eprint!("{delta}");
                 }
-                Event::AgentSettled => {
+                Event::AgentSettled { .. } => {
                     settled_after_switch = true;
                     eprintln!("\n>>> agent_settled after switch");
                 }

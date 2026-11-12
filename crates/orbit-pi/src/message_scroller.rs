@@ -12,11 +12,12 @@
 use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rems, svg, ElementId, ListAlignment,
-    ListOffset, ListScrollEvent, ListState, Pixels,
+    div, linear_color_stop, linear_gradient, prelude::*, px, rems, svg, ElementId, Hsla,
+    ListAlignment, ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
-use crate::app::BUTTON_GROUP;
+use crate::app::{button_frame, icon_button_frame, ControlExt, TipExt, BUTTON_GROUP};
+use crate::theme::tokens::{ButtonSize, StyledExt};
 use crate::theme::Theme;
 
 const LIST_OVERDRAW: f32 = 400.0;
@@ -73,8 +74,21 @@ impl MessageScrollerState {
     }
 
     /// First row currently in view (viewport-top hint for the rail).
+    ///
+    /// Kept current by the wheel handler and by every programmatic scroll
+    /// ([`Self::scroll_to_item`], [`Self::scroll_by`], [`Self::scroll_to_end`],
+    /// [`Self::reset`]); gpui only fires the scroll handler for wheel and
+    /// scrollbar gestures, so those paths must refresh it by hand or the rail
+    /// keeps highlighting the turn the reader left behind.
     pub fn first_visible_index(&self) -> usize {
         self.visible_start.get()
+    }
+
+    /// Point the reader hint at `ix` without waiting for the list's scroll
+    /// handler — programmatic scrolls never invoke it.
+    fn note_visible_start(&self, ix: usize) {
+        self.visible_start
+            .set(ix.min(self.item_count().saturating_sub(1)));
     }
 
     pub fn list_state(&self) -> ListState {
@@ -123,12 +137,6 @@ impl MessageScrollerState {
     pub fn append(&self, count: usize) -> bool {
         let item_count = self.item_count();
         self.splice(item_count..item_count, count)
-    }
-
-    /// Prepend `count` rows while preserving the current scroll anchor.
-    #[allow(dead_code)]
-    pub fn prepend(&self, count: usize) -> bool {
-        self.splice(0..0, count)
     }
 
     /// Mark rows in `range` for remeasurement (streaming growth).
@@ -214,6 +222,9 @@ impl MessageScrollerState {
             item_ix: index,
             offset_in_item: px(0.),
         });
+        // A programmatic scroll skips the list's handler; without this the
+        // rail (and repeated ⌘↑/⌘↓ jumps) would read a stale viewport top.
+        self.note_visible_start(index);
         true
     }
 
@@ -225,6 +236,9 @@ impl MessageScrollerState {
             item_ix: self.item_count(),
             offset_in_item: px(0.),
         });
+        // The live edge is the newest content; a follow-up jump uses the
+        // reader hint, so keep it pointing at the tail rather than a stale row.
+        self.note_visible_start(self.item_count());
     }
 
     /// Scroll the transcript by `distance` pixels — positive moves toward the
@@ -248,8 +262,7 @@ impl MessageScrollerState {
             self.list
                 .set_offset_from_scrollbar(gpui::point(px(0.), -target));
             // Programmatic scrolling does not invoke the list's scroll handler.
-            self.visible_start
-                .set(self.list.logical_scroll_top().item_ix);
+            self.note_visible_start(self.list.logical_scroll_top().item_ix);
         }
     }
 
@@ -295,8 +308,37 @@ pub fn render_scroller(
         })
 }
 
+/// How much of the page's own fill a frosted scroller edge lays over its
+/// blurred strip. The blur is what hides the content, so the wash only has to
+/// keep the page's colour: a thicker one would pull the strip toward the
+/// palette canvas again, which is the band this replaces.
+const FROST_WASH: f32 = 0.35;
+
+/// The two colours a scroller edge fades between.
+///
+/// The page is translucent over a wallpaper, so a fade that ends *opaque* can
+/// never match it: every extra layer pulls the strip toward the palette canvas
+/// and leaves a darker band with a hard edge right above the composer. With a
+/// backdrop pass the strip therefore blurs instead — a blur keeps the picture's
+/// own brightness, so the band reads as the page it sits on while the text
+/// under it stops being text. Without one, the strip falls back to the page's
+/// composited appearance ([`Theme::page_appearance`]).
+pub(crate) fn fade_stops(theme: Theme) -> (Hsla, Hsla) {
+    match theme.glass_sigma() {
+        Some(_) => {
+            let page = theme.panel_fill(theme.background);
+            (page.opacity(0.), page.opacity(FROST_WASH))
+        }
+        None => {
+            let page = theme.page_appearance();
+            (page.opacity(0.), page)
+        }
+    }
+}
+
 fn render_bottom_fade(theme: Theme) -> impl IntoElement {
-    div()
+    let (clear, end) = fade_stops(theme);
+    let fade = div()
         .id(ElementId::Name("message-scroller-fade".into()))
         .absolute()
         .left_0()
@@ -305,9 +347,17 @@ fn render_bottom_fade(theme: Theme) -> impl IntoElement {
         .h(rems(3.))
         .bg(linear_gradient(
             180.,
-            linear_color_stop(theme.bg_main.opacity(0.), 0.),
-            linear_color_stop(theme.bg_main, 1.),
-        ))
+            linear_color_stop(clear, 0.),
+            linear_color_stop(end, 1.),
+        ));
+    match theme.glass_sigma() {
+        // The marker rides the quad's border colour; a hairline of it paints
+        // nothing, it only asks the renderer to frost the strip.
+        Some(sigma) => fade
+            .border_1()
+            .border_color(gpui::backdrop_blur_marker(sigma)),
+        None => fade,
+    }
 }
 
 fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoElement {
@@ -315,6 +365,14 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
     // affordance grows a "New activity" label so the stream's continued
     // progress is visible from anywhere in the transcript.
     let unread = state.has_unread();
+    let button = div()
+        .id(ElementId::Name("message-scroller-jump".into()))
+        .group(BUTTON_GROUP);
+    let button = if unread {
+        button_frame(button, &theme, ButtonSize::Large)
+    } else {
+        icon_button_frame(button, &theme, ButtonSize::Large)
+    };
     div()
         .id(ElementId::Name("message-scroller-jump-layer".into()))
         .absolute()
@@ -325,24 +383,15 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
         .flex()
         .justify_center()
         .child(
-            // Floating round scroll-to-bottom affordance.
-            div()
-                .id(ElementId::Name("message-scroller-jump".into()))
-                .group(BUTTON_GROUP)
-                .h(px(32.))
-                .when(unread, |button| button.px(px(12.)))
-                .when(!unread, |button| button.w(px(32.)))
+            // Floating round scroll-to-bottom affordance: the elevated
+            // surface, kept round and on the composer's fill.
+            button
+                .elevation_2(&theme)
                 .rounded_full()
-                .border_1()
-                .border_color(theme.border_strong)
-                .bg(theme.bg_composer)
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(6.))
+                .tip(tr!("message_scroller.jump_to_latest"))
+                .bg(theme.surface_secondary)
                 .cursor_pointer()
-                .shadow(theme.card_shadow())
-                .hover(|style| style.bg(theme.bg_raised))
+                .hover_elevated(&theme)
                 .on_click(move |_, _, cx| {
                     state.scroll_to_end();
                     cx.refresh_windows();
@@ -351,15 +400,14 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
                     svg()
                         .path("icons/arrow-down.svg")
                         .flex_none()
-                        .size(px(16.))
-                        .text_color(theme.text),
+                        .size(ButtonSize::Large.icon_size().px(&theme))
+                        .text_color(theme.text_primary),
                 )
                 .when(unread, |button| {
                     button.child(
                         div()
-                            .text_size(theme.ui_px(11.5))
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(tr!("message_scroller.new_activity")),
                     )
                 }),
@@ -369,6 +417,59 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The transcript's bottom fade must never print a band the page does not
+    /// have. Over a wallpaper the page is translucent, so an opaque stop is
+    /// always darker than the page beside it; with a backdrop pass the strip
+    /// frosts instead and only lays a thin wash of the page's own fill, which
+    /// keeps the picture's brightness. Without one it falls back to the page's
+    /// composited appearance.
+    #[test]
+    fn the_scroller_fade_matches_the_page_instead_of_printing_a_band() {
+        use crate::theme::{SurfaceTreatment, ThemeId};
+
+        let plain = Theme::for_id(ThemeId::OrbitOnyx);
+        let (clear, end) = fade_stops(plain);
+        assert_eq!(clear.a, 0., "the near stop is fully cleared");
+        assert_eq!(
+            end, plain.background,
+            "no wallpaper: the canvas is the page"
+        );
+
+        let page: gpui::Hsla = gpui::Rgba {
+            r: 0.09,
+            g: 0.1,
+            b: 0.14,
+            a: 1.,
+        }
+        .into();
+        let frosted = plain.with_wallpaper(SurfaceTreatment {
+            active: true,
+            full_window: true,
+            glass: true,
+            card_alpha: 0.65,
+            panel_alpha: 0.88,
+            page: Some(page),
+            ..SurfaceTreatment::OPAQUE
+        });
+        let (clear, end) = fade_stops(frosted);
+        assert_eq!(clear.a, 0.);
+        let fill = frosted.panel_fill(plain.background);
+        assert_eq!(end, fill.opacity(FROST_WASH), "the wash is the page's fill");
+        assert!(
+            end.a < 0.4,
+            "a frosted strip washes, it does not cover: {}",
+            end.a
+        );
+
+        let unfrosted = frosted.with_wallpaper(SurfaceTreatment {
+            glass: false,
+            ..frosted.wallpaper
+        });
+        let (_, end) = fade_stops(unfrosted);
+        assert_eq!(end, unfrosted.page_appearance());
+        assert_eq!(end.a, 1., "without a backdrop pass it has to cover");
+    }
 
     type RowHeights = Rc<std::cell::RefCell<std::collections::HashMap<usize, f32>>>;
 
@@ -639,6 +740,27 @@ mod tests {
     }
 
     #[test]
+    fn programmatic_scroll_updates_the_viewport_hint() {
+        let state = MessageScrollerState::new(40);
+        assert_eq!(state.first_visible_index(), 0);
+        // A rail tick / ⌘↑ jump moves the reader hint without a wheel event.
+        assert!(state.scroll_to_item(12));
+        assert!(!state.is_following_tail());
+        assert_eq!(state.first_visible_index(), 12);
+        // A second jump from the same state must advance the hint, so
+        // repeated keyboard jumps keep walking instead of re-reading row 12.
+        assert!(state.scroll_to_item(30));
+        assert_eq!(state.first_visible_index(), 30);
+        // Resuming the tail repoints the hint at the newest content.
+        state.scroll_to_end();
+        assert!(state.is_following_tail());
+        assert_eq!(state.first_visible_index(), 39);
+        // A refused scroll must not move the hint.
+        assert!(!state.scroll_to_item(40));
+        assert_eq!(state.first_visible_index(), 39);
+    }
+
+    #[test]
     fn state_starts_following_tail() {
         let state = MessageScrollerState::new(3);
         assert_eq!(state.item_count(), 3);
@@ -651,7 +773,7 @@ mod tests {
         let state = MessageScrollerState::new(3);
         assert!(state.append(2));
         assert_eq!(state.item_count(), 5);
-        assert!(state.prepend(1));
+        assert!(state.splice(0..0, 1));
         assert_eq!(state.item_count(), 6);
         assert!(!state.splice(5..7, 0));
         assert!(state.remeasure_items(0..6));

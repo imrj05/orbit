@@ -26,6 +26,13 @@ pub const ASSET: &str = "alpha-app-icon.png";
 #[cfg(not(all(debug_assertions, target_os = "macos")))]
 pub const ASSET: &str = "app-icon.png";
 
+/// The production mark's monogram, for the new-task page's halftone backdrop.
+///
+/// Deliberately not [`PNG`]: the debug Alpha plate is the same monogram with an
+/// "Alpha" pill appended, and a Dock affordance must not change the shape the
+/// workbench draws. One byte array, one shape, in every build.
+pub const MARK_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
+
 /// The "Orbit Pi" wordmark, shown as the sidebar brand header. Source of
 /// truth: workspace `assets/icons/logo.png`; the copy in this crate is what
 /// the running binary embeds. White ink, for dark sidebars.
@@ -45,17 +52,23 @@ pub fn set_dock_icon() {
     // Keep the PNG in the binary on every OS so About / tests share one embed.
     let _png = PNG;
     #[cfg(target_os = "macos")]
-    unsafe {
-        use cocoa::appkit::{NSApp, NSApplication, NSImage};
-        use cocoa::base::{id, nil};
-        use cocoa::foundation::NSData;
-        use std::ffi::c_void;
+    {
+        use objc2::{AnyThread, MainThreadMarker};
+        use objc2_app_kit::{NSApplication, NSImage};
+        use objc2_foundation::NSData;
 
-        let data: id =
-            NSData::dataWithBytes_length_(nil, _png.as_ptr() as *const c_void, _png.len() as u64);
-        let image = NSImage::initWithData_(NSImage::alloc(nil), data);
-        if image != nil {
-            NSApp().setApplicationIconImage_(image);
+        // `Some` on the main thread only — app startup always is, inside the
+        // gpui run loop; off the main thread the icon simply is not set.
+        if let Some(mtm) = MainThreadMarker::new() {
+            let data = NSData::with_bytes(_png);
+            if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+                // SAFETY: `image` is a live AppKit object, used on the main
+                // thread that owns it, which is the only requirement AppKit
+                // puts on the application's icon.
+                unsafe {
+                    NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image));
+                }
+            }
         }
     }
 }

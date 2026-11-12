@@ -5,30 +5,172 @@ on:
     branches: [main, "redesign/**"]
   pull_request:
 
-# The GPUI app links Metal and macOS APIs, so the build runs on macOS.
-# Windows/Linux support is out of scope until the macOS app ships (INTENT.md D5).
+permissions:
+  contents: read
+
+# GPUI renders through each platform's native graphics API (Metal on macOS,
+# DXGI on Windows, X11/Wayland on Linux), so every change is built on all three
+# shipped platforms. Linux needs the same system libraries the release bundle
+# installs (`scripts/bundle-linux.sh`).
+#
+# The "Protect Main Branch" ruleset requires one status check named `build`.
+# The matrix legs report `build (<os>)`, so the `build` fan-in job below is
+# what reports the required context — and it succeeds only when every
+# platform leg did.
 jobs:
   check:
-    name: build
-    runs-on: macos-latest
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: clippy
 
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            clang cmake pkg-config \
+            libfontconfig-dev libvulkan1 \
+            libwayland-dev libx11-xcb-dev libxi-dev libxtst-dev \
+            libxkbcommon-x11-dev libssl-dev
+
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # Zero warnings from `cargo build` is a stated project invariant
       # (AGENT.md → Verification). Tests are no longer run in CI; run them
-      # locally with `cargo test --workspace`.
+      # locally with `cargo test --workspace`. The one exception is the
+      # platform-specific clone/worktree modules below.
       - name: Build
         run: cargo build --workspace
 
-      # Informational: the repo carries pre-existing clippy lints, so this
-      # step reports rather than gates.
+      # Gating: the workspace is clippy-clean, so a new lint is a regression
+      # rather than noise. One all-targets pass is enough — the per-platform
+      # builds above are the check that the app ships everywhere.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        if: runner.os == 'macOS'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Tests stay out of CI (see the Build step), with one exception: the Git
+      # clone's process-tree cancellation is platform-specific code with no
+      # coverage on a maintainer machine. On Unix it kills a process group; on
+      # Windows it wraps Git in a job object (`repository_clone.rs`). The
+      # working-folder modules that clone and worktree creation touch also
+      # create real directories and repositories in a temp folder, so they run
+      # with it on every leg. The Windows job-object case is exercised only
+      # here.
+      - name: Clone and worktree tests
+        run: |
+          cargo test -p orbit-pi --bin orbit-pi repository_clone::
+          cargo test -p orbit-pi --bin orbit-pi working_folder::
+          cargo test -p orbit-pi --bin orbit-pi worktree::
+
+  # Signing key material must never enter the repository. `.gitignore` covers
+  # the common extensions, but `git add -f` and new key formats do not respect
+  # it, so the tree itself is checked on every push and pull request.
+  keyguard:
+    name: no committed secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Reject committed key material
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -Ei '\.(pem|key|p12|pfx|jks|keystore)$'; then
+            echo "::error::Signing key material must never be committed. Remove the file above and rotate the key."
+            exit 1
+          fi
+          echo "No committed key material"
+
+  # The design system's four guards, plus the extension test suites. They are
+  # checks, not lint: each failure is a real defect the design doc calls out —
+  # a component re-deciding a state colour, an animation typing its own duration
+  # or skipping the Reduce Motion guard, a locale missing a key, or a key binding
+  # with no declared context. They need no Rust build, so they run in seconds on
+  # every push.
+  design-guards:
+    name: design guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: "3.x"
+
+      - name: Interaction states come from the contract
+        run: python3 scripts/check_states.py
+
+      - name: Animations use a motion primitive
+        run: python3 scripts/check_motion.py
+
+      - name: Every key binding lands in a declared context
+        run: python3 scripts/check_keyboard.py
+
+      - name: Translations cover every English key
+        run: python3 scripts/check_i18n.py
+
+      # The extensions are loaded with `--extension` by every Orbit session, and
+      # the guard's access policy is a security boundary. Every `*.test.mjs` in
+      # the tree runs with the Node test runner (the same command as each
+      # package's `npm test`); the glob is listed by `find` so directories that
+      # ship no `package.json` are covered too. No Rust build is needed.
+      - name: Extension tests
+        run: node --test $(find contrib -name '*.test.mjs' | sort)
+
+  # Rust advisories, independent of GitHub's scheduled Dependabot sweep. This
+  # is what caught quinn-proto, rustls-webpki and webpki-roots, none of which
+  # Dependabot reported. Blocking: the lockfile is clean. It tracks RustSec
+  # only — GHSA-38c5-483c-4qqp (grid) is not in that database.
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit
+
+  # The required `build` status check. `always()` keeps this context
+  # reporting even when a matrix leg fails or the matrix is cancelled, so
+  # branch protection can never hang on "Expected — Waiting for status to be
+  # reported"; the first step then turns a non-success into a red `build`.
+  build:
+    name: build
+    needs: [check, keyguard, design-guards]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every platform build
+        if: needs.check.result != 'success'
+        run: |
+          echo "::error::the platform build matrix did not pass: ${{ needs.check.result }}"
+          exit 1
+
+      - name: Require no committed key material
+        if: needs.keyguard.result != 'success'
+        run: |
+          echo "::error::the secret guard did not pass: ${{ needs.keyguard.result }}"
+          exit 1
+
+      - name: All platforms built
+        run: echo "macOS, Linux, and Windows builds passed"

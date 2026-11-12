@@ -9,16 +9,22 @@
 
 use super::helpers::*;
 use super::*;
+use crate::motion::Hover;
+use crate::theme::tokens::{
+    button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
+};
 use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
 use crate::usage::tooltip::Tooltip;
 
-/// The sidebar updater pill: 20×20 at rest (the download icon), expanding
-/// sideways to reveal the "Update" label while hovered — the reference app's
-/// pattern. `UPDATER_PILL_COLLAPSED_W` is shared with `OrbitApp::new` so the
-/// animation state starts parked at the right width.
-pub(super) const UPDATER_PILL_COLLAPSED_W: f32 = 20.;
+/// The sidebar updater pill: a `ButtonSize::Compact` disc at rest (the
+/// download icon), expanding sideways to reveal the "Update" label while
+/// hovered — the reference app's pattern. `UPDATER_PILL_COLLAPSED_W` is
+/// shared with `OrbitApp::new` so the animation state starts parked at the
+/// right width. Widths are unscaled px resolved through `theme.ui_px`, like
+/// the button tokens, so the collapsed width (Compact's 18px) keeps the
+/// resting pill a disc at every UI font size.
+pub(super) const UPDATER_PILL_COLLAPSED_W: f32 = 18.;
 pub(super) const UPDATER_PILL_EXPANDED_W: f32 = 58.;
-const UPDATER_PILL_H: f32 = 20.;
 
 impl OrbitApp {
     /// Whether this build can update itself at all (release, managed install,
@@ -96,7 +102,18 @@ impl OrbitApp {
             match event {
                 UpdaterEvent::StatusChanged(status) => {
                     self.updater_status = status;
+                    // A bar only belongs to a download in flight.
+                    if status != UpdateStatus::Downloading {
+                        self.updater_progress = None;
+                    }
                     self.reset_updater_pill_animation();
+                }
+                UpdaterEvent::Progress { downloaded, total } => {
+                    let next = Some((downloaded, total));
+                    if self.updater_progress != next {
+                        self.updater_progress = next;
+                        cx.notify();
+                    }
                 }
                 UpdaterEvent::UpToDate => {
                     self.updater_status = UpdateStatus::Idle;
@@ -117,32 +134,62 @@ impl OrbitApp {
                 #[cfg(unix)]
                 UpdaterEvent::QuitAndInstall => {
                     // The helper has the staged build and is waiting for this
-                    // process to finish its normal quit handlers.
-                    cx.quit();
+                    // process to finish its normal quit handlers. A fork still
+                    // in flight is waited for exactly like Cmd-Q: the reply
+                    // moves the process onto the branch, and quitting first
+                    // would leave that branch unadopted until the next launch.
+                    self.request_quit(crate::app::QuitRequest::Update, cx);
                     return;
                 }
             }
         }
-        // A finished check reports its status before its event, and a staged
-        // release names its version; re-read both so the controls stay in
-        // step, then carry a check that found a release into the modal.
+        // A finished check reports its status before its event, and an offered
+        // or downloaded release names its version; re-read both so the
+        // controls stay in step, then carry the modal forward.
         self.sync_staged_release(cx);
-        if self.updater_status == UpdateStatus::Available
-            && matches!(self.updater_dialog, Some(UpdateDialog::Checking))
-        {
-            self.updater_dialog = Some(UpdateDialog::Available {
-                version: self.updater_version.clone().unwrap_or_default(),
-                notes: self.updater_notes.clone(),
-                from_check: true,
-            });
+        match self.updater_status {
+            // The download finished: the same card, now offering a restart.
+            UpdateStatus::Ready
+                if matches!(
+                    self.updater_dialog,
+                    Some(UpdateDialog::Checking) | Some(UpdateDialog::Downloading { .. })
+                ) =>
+            {
+                self.updater_dialog = Some(UpdateDialog::Available {
+                    version: self.updater_version.clone().unwrap_or_default(),
+                    notes: self.updater_notes.clone(),
+                    from_check: false,
+                });
+            }
+            // A check that found a release lands on its details, and a
+            // download that failed (or was cancelled) returns to them so it
+            // can be tried again.
+            UpdateStatus::Available
+                if matches!(
+                    self.updater_dialog,
+                    Some(UpdateDialog::Checking) | Some(UpdateDialog::Downloading { .. })
+                ) =>
+            {
+                let from_check = matches!(self.updater_dialog, Some(UpdateDialog::Checking));
+                self.updater_dialog = Some(UpdateDialog::Available {
+                    version: self.updater_version.clone().unwrap_or_default(),
+                    notes: self.updater_notes.clone(),
+                    from_check,
+                });
+            }
+            _ => {}
         }
         cx.notify();
     }
 
-    /// Open the modal on the staged release. The download control calls this
-    /// instead of installing immediately.
-    pub(super) fn open_staged_update_dialog(&mut self, cx: &mut Context<Self>) {
-        if self.updater_status != UpdateStatus::Available {
+    /// Open the modal on the release the last check found: its version and
+    /// changelog, whether or not it has been downloaded yet. The download and
+    /// settings controls call this instead of installing immediately.
+    pub(super) fn open_update_details(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.updater_status,
+            UpdateStatus::Available | UpdateStatus::Ready
+        ) {
             return;
         }
         self.sync_staged_release(cx);
@@ -188,10 +235,49 @@ impl OrbitApp {
         }
     }
 
-    /// Stage the available update; the shell quits when the helper
+    /// Fetch and stage the offered release, with the modal showing real
+    /// progress. Nothing has been downloaded before this point.
+    pub(super) fn download_available_update(&mut self, cx: &mut Context<Self>) {
+        if self.updater_status != UpdateStatus::Available {
+            return;
+        }
+        let started = cx
+            .try_global::<UpdaterState>()
+            .and_then(|state| state.0.as_ref())
+            .is_some_and(|updater| updater.download_available_update());
+        if started {
+            self.updater_progress = None;
+            self.updater_dialog = Some(UpdateDialog::Downloading {
+                version: self.updater_version.clone().unwrap_or_default(),
+            });
+            self.updater_dialog_focus_pending = true;
+            self.reset_updater_pill_animation();
+            cx.notify();
+        }
+    }
+
+    /// Stop the download and go back to the release's details. The offer
+    /// survives, so Download can be pressed again.
+    pub(super) fn cancel_update_download(&mut self, cx: &mut Context<Self>) {
+        if let Some(updater) = cx
+            .try_global::<UpdaterState>()
+            .and_then(|state| state.0.as_ref())
+        {
+            updater.cancel_download();
+        }
+        self.updater_progress = None;
+        self.updater_dialog = Some(UpdateDialog::Available {
+            version: self.updater_version.clone().unwrap_or_default(),
+            notes: self.updater_notes.clone(),
+            from_check: false,
+        });
+        cx.notify();
+    }
+
+    /// Install the staged release; the shell quits when the helper
     /// acknowledges the handoff.
     pub(super) fn install_available_update(&mut self, cx: &mut Context<Self>) {
-        if self.updater_status != UpdateStatus::Available {
+        if self.updater_status != UpdateStatus::Ready {
             return;
         }
         let started = cx
@@ -211,9 +297,25 @@ impl OrbitApp {
     /// the Settings button both land here. The modal reports the search and
     /// its outcome; an already-staged release opens straight away.
     pub(super) fn begin_update_check(&mut self, cx: &mut Context<Self>) {
-        if self.updater_status == UpdateStatus::Available {
-            self.open_staged_update_dialog(cx);
-            return;
+        match self.updater_status {
+            UpdateStatus::Available | UpdateStatus::Ready => {
+                self.open_update_details(cx);
+                return;
+            }
+            // A download is already the answer a check would give; show it
+            // rather than starting a second request.
+            UpdateStatus::Downloading => {
+                self.updater_dialog = Some(UpdateDialog::Downloading {
+                    version: self.updater_version.clone().unwrap_or_default(),
+                });
+                self.updater_dialog_focus_pending = true;
+                self.reset_updater_pill_animation();
+                cx.notify();
+                return;
+            }
+            // The helper owns the app now; there is nothing to check for.
+            UpdateStatus::Updating => return,
+            UpdateStatus::Idle => {}
         }
         if let Some(updater) = cx
             .try_global::<UpdaterState>()
@@ -316,47 +418,45 @@ impl OrbitApp {
         if status == UpdateStatus::Idle {
             return None;
         }
-        if status != UpdateStatus::Available {
-            // The install is in flight: a spinner in the pill's footprint,
-            // with the label in its tooltip.
-            let label = tr!("updater_ui.updating");
-            let button = div()
-                .id("sidebar-update")
-                .size(px(UPDATER_PILL_COLLAPSED_W))
-                .flex_none()
+        if status != UpdateStatus::Available && status != UpdateStatus::Ready {
+            // A download or an install is in flight: a spinner in the pill's
+            // footprint, with the label in its tooltip.
+            let label = if status == UpdateStatus::Downloading {
+                tr!("updater_ui.downloading")
+            } else {
+                tr!("updater_ui.updating")
+            };
+            let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
                 .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(theme.accent)
+                .raised(theme.action, &theme)
                 .cursor_default()
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
                 .child(crate::app::spinner(
                     ElementId::NamedInteger("update-spin".into(), 0),
-                    14.,
-                    theme.bg_main,
+                    ButtonSize::Compact.icon_size().px(&theme),
+                    theme.action_fg,
                     theme,
                 ));
             return Some(button.into_any_element());
         }
 
-        let label = tr!("updater_ui.update");
-        let button = div()
-            .id("sidebar-update")
-            .h(px(UPDATER_PILL_H))
-            .flex_none()
+        // The glyph says what the click will do: a download arrow while the
+        // release is only offered, a restart arrow once it is on disk.
+        let (label, glyph) = if status == UpdateStatus::Ready {
+            (tr!("updater_ui.restart"), "icons/rotate-ccw.svg")
+        } else {
+            (tr!("updater_ui.update"), "icons/arrow-down.svg")
+        };
+        let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
             .overflow_hidden()
             .rounded_full()
             .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme.accent)
-            .text_color(theme.bg_main)
-            .text_size(theme.ui_px(11.5))
+            .raised(theme.action, &theme)
+            .text_color(theme.action_fg)
+            .text_size(button::label_size(ButtonSize::Compact).px(&theme))
             .font_weight(FontWeight::MEDIUM)
             .cursor_pointer()
-            .hover(|s| s.opacity(0.9))
+            .hover_dimmed()
             .tooltip({
                 let label = label.clone();
                 move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -367,15 +467,15 @@ impl OrbitApp {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _window, cx| {
-                    this.open_staged_update_dialog(cx);
+                    this.open_update_details(cx);
                 }),
             );
 
         let generation = self.updater_button_animation_generation;
         let button = if generation == 0 {
             button
-                .w(px(UPDATER_PILL_COLLAPSED_W))
-                .child(updater_pill_content(theme, label, 0.0))
+                .w(theme.ui_px(UPDATER_PILL_COLLAPSED_W))
+                .child(updater_pill_content(theme, label, glyph, 0.0))
                 .into_any_element()
         } else {
             let from_width = self.updater_button_animation_from_width;
@@ -386,16 +486,17 @@ impl OrbitApp {
             button
                 .with_animation(
                     ElementId::NamedInteger("sidebar-update-expand".into(), generation),
-                    Animation::new(Duration::from_millis(150))
-                        .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                    Animation::new(Motion::Interaction.duration(&theme))
+                        .with_easing(Motion::Interaction.easing()),
                     move |button, delta| {
                         let width = from_width + (target_width - from_width) * delta;
                         let reveal = from_reveal + (target_reveal - from_reveal) * delta;
                         width_cell.set(width);
                         reveal_cell.set(reveal);
-                        button.w(px(width)).child(updater_pill_content(
+                        button.w(theme.ui_px(width)).child(updater_pill_content(
                             theme,
                             label.clone(),
+                            glyph,
                             reveal,
                         ))
                     },
@@ -457,9 +558,14 @@ impl OrbitApp {
         }
         let desc = match (self.updater_status, self.updater_version.as_deref()) {
             (UpdateStatus::Available, Some(version)) => {
+                tr!("updater_ui.available_with_version", version = version)
+            }
+            (UpdateStatus::Available, None) => tr!("updater_ui.available"),
+            (UpdateStatus::Downloading, _) => tr!("updater_ui.downloading"),
+            (UpdateStatus::Ready, Some(version)) => {
                 tr!("updater_ui.ready_with_version", version = version)
             }
-            (UpdateStatus::Available, None) => tr!("updater_ui.ready"),
+            (UpdateStatus::Ready, None) => tr!("updater_ui.ready"),
             (UpdateStatus::Updating, _) => tr!("updater_ui.installing"),
             (UpdateStatus::Idle, _) => tr!("updater_ui.check_hint"),
         };
@@ -478,97 +584,152 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
-        let on = self.automatic_updates_enabled;
-        div()
-            .id("settings-automatic-updates")
-            .w(px(36.))
-            .h(px(20.))
-            .rounded_full()
-            .p(px(2.))
-            .border_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .when(on, |track| track.bg(theme.accent).justify_end())
-            .when(!on, |track| track.bg(theme.bg_raised).justify_start())
-            .hover(|track| track.border_color(theme.border_strong))
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        switch(
+            "settings-automatic-updates",
+            self.automatic_updates_enabled,
+            &theme,
+            move |_, _, cx| {
                 this.update(cx, |app, cx| {
                     let next = !app.automatic_updates_enabled;
                     app.set_automatic_updates(next, cx);
                 });
-            })
-            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-            .into_any_element()
+            },
+        )
     }
 
-    /// The settings update control shared by General and About: a check
-    /// button at rest, an icon-only download button once a release is ready
-    /// (it opens the update modal), and a quiet label while the install helper
-    /// owns the swap.
+    /// The settings update control shared by General and About: a check button
+    /// at rest, a download button while a release is on offer, a restart button
+    /// once it is staged (both open the update modal), a quiet label while the
+    /// download runs, and a quiet label while the install helper owns the swap.
     pub(super) fn update_action_button(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
         match self.updater_status {
-            UpdateStatus::Available => {
-                let label = tr!("updater_ui.update");
+            UpdateStatus::Available | UpdateStatus::Ready => {
+                let ready = self.updater_status == UpdateStatus::Ready;
+                let (label, glyph) = if ready {
+                    (tr!("updater_ui.restart"), "icons/rotate-ccw.svg")
+                } else {
+                    (tr!("updater_ui.update"), "icons/arrow-down.svg")
+                };
+                icon_button_frame(
+                    div().id("settings-update-action"),
+                    &theme,
+                    ButtonSize::Medium,
+                )
+                .group(BUTTON_GROUP)
+                .raised(theme.action, &theme)
+                .cursor_pointer()
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action)
+                .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.open_update_details(cx));
+                })
+                .child(icon(
+                    glyph,
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    theme.action_fg,
+                ))
+                .into_any_element()
+            }
+            UpdateStatus::Downloading => button_frame(
+                div().id("settings-update-action"),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .font_weight(FontWeight::MEDIUM)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface_elevated)
+            .text_color(theme.text_muted)
+            .cursor_default()
+            .child(tr!("updater_ui.downloading"))
+            .into_any_element(),
+            UpdateStatus::Updating => button_frame(
+                div().id("settings-update-action"),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .font_weight(FontWeight::MEDIUM)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface_elevated)
+            .text_color(theme.text_muted)
+            .cursor_default()
+            .child(tr!("updater_ui.updating"))
+            .into_any_element(),
+            UpdateStatus::Idle => button_frame(
+                div().id("settings-update-action"),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .font_weight(FontWeight::MEDIUM)
+            .border_1()
+            .border_color(theme.border)
+            .raised(theme.surface_elevated, &theme)
+            .text_color(theme.text_secondary)
+            .cursor_pointer()
+            .hover_state(&theme)
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| app.begin_update_check(cx));
+            })
+            .child(tr!("updater_ui.check_for_updates"))
+            .into_any_element(),
+        }
+    }
+
+    /// The modal's version row: the target version, the build it replaces,
+    /// and the link to the release page whose body is the changelog below.
+    /// `fallback` is the sentence shown when the feed carried no version.
+    fn update_version_row(
+        &self,
+        version: &str,
+        fallback: &str,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let link = self.changelog_link(version, theme, cx);
+        version_row(theme, version, fallback, link)
+    }
+
+    /// "Changelog ↗": opens the release page for `version` in the browser.
+    /// The notes are already rendered in the modal, so this is the full page
+    /// rather than a substitute for them.
+    fn changelog_link(
+        &self,
+        version: &str,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let url = crate::updater::changelog_url(version)?;
+        Some(
+            crate::motion::hover(
                 div()
-                    .id("settings-update-action")
-                    .group(BUTTON_GROUP)
-                    .size(px(26.))
+                    .id("update-changelog-link")
                     .flex_none()
-                    .rounded_lg()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .bg(theme.send_bg)
+                    .gap(DynamicSpacing::Base04.px(&theme))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.send_bg_hover))
-                    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        this.update(cx, |app, cx| app.open_staged_update_dialog(cx));
-                    })
-                    .child(icon("icons/arrow-down.svg", 14., theme.send_fg))
-                    .into_any_element()
-            }
-            UpdateStatus::Updating => div()
-                .id("settings-update-action")
-                .h(px(26.))
-                .px(px(12.))
-                .rounded_lg()
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .text_size(theme.ui_px(12.))
-                .font_weight(FontWeight::MEDIUM)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .text_color(theme.text_3)
-                .cursor_default()
-                .child(tr!("updater_ui.updating"))
-                .into_any_element(),
-            UpdateStatus::Idle => div()
-                .id("settings-update-action")
-                .h(px(26.))
-                .px(px(12.))
-                .rounded_lg()
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .text_size(theme.ui_px(12.))
-                .font_weight(FontWeight::MEDIUM)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .text_color(theme.text_2)
-                .cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover))
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| app.begin_update_check(cx));
-                })
-                .child(tr!("updater_ui.check_for_updates"))
-                .into_any_element(),
-        }
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                            cx.open_url(&url);
+                        }),
+                    )
+                    .child(tr!("updater_ui.view_changelog"))
+                    .child(icon(
+                        "icons/arrow-up-right.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.accent_text,
+                    )),
+                "update-changelog-link",
+                &theme,
+                Hover::ink(theme.accent_text, theme.accent),
+            )
+            .into_any_element(),
+        )
     }
 
     /// The update modal: a scrim and a centered card shared by every update
@@ -586,6 +747,7 @@ impl OrbitApp {
         let mut title = match dialog {
             UpdateDialog::Checking => tr!("updater_ui.checking_for_updates"),
             UpdateDialog::Available { .. } => tr!("updater_ui.update_available"),
+            UpdateDialog::Downloading { .. } => tr!("updater_ui.update_available"),
             UpdateDialog::UpToDate => tr!("updater_ui.up_to_date_title"),
             UpdateDialog::Failed(_) => tr!("updater_ui.failed_title"),
             UpdateDialog::Unavailable => tr!("updater_ui.update_unavailable"),
@@ -594,33 +756,26 @@ impl OrbitApp {
             title = tr!("updater_ui.version_history");
         }
 
-        let mut card = div()
+        let mut card = modal_card(&theme)
             .id("update-dialog-card")
             .w(card_width)
             .max_h(card_max_height)
-            .rounded(px(14.))
-            .popover_surface(theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            // Clicks inside the card must not reach the scrim's dismiss.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .px(px(18.))
-                    .pt(px(16.))
-                    .pb(px(10.))
+                    .px(modal::header_padding_x(&theme))
+                    .pt(modal::header_padding_top(&theme))
+                    .pb(modal::header_padding_bottom(&theme))
                     .flex_none()
-                    .text_size(theme.ui_px(14.5))
+                    .text_size(modal::HEADLINE.px(&theme))
+                    .line_height(modal::HEADLINE.line_height(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(title),
             );
 
         let mut body: AnyElement = match dialog {
             UpdateDialog::Checking => update_dialog_body(
+                theme,
                 div()
                     .flex_1()
                     .min_w_0()
@@ -629,11 +784,11 @@ impl OrbitApp {
                     .gap(px(10.))
                     .child(
                         div()
-                            .text_size(theme.ui_px(13.))
-                            .text_color(theme.text_2)
+                            .text_size(TextSize::Default.px(&theme))
+                            .text_color(theme.text_secondary)
                             .child(tr!("updater_ui.searching_for_new_version")),
                     )
-                    .child(update_progress_bar(theme))
+                    .child(update_progress_bar(theme, None))
                     .into_any_element(),
             ),
             UpdateDialog::Available { version, notes, .. } => {
@@ -645,8 +800,8 @@ impl OrbitApp {
                 let notes: AnyElement = match notes.as_deref() {
                     Some(notes) if !notes.trim().is_empty() => release_notes_view(notes, theme),
                     _ => div()
-                        .text_size(theme.ui_px(12.5))
-                        .text_color(theme.text_3)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
                         .child(tr!("updater_ui.no_release_notes"))
                         .into_any_element(),
                 };
@@ -656,29 +811,24 @@ impl OrbitApp {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(
-                        div()
-                            .whitespace_normal()
-                            .text_size(theme.ui_px(13.))
-                            .text_color(theme.text_2)
-                            .child(intro),
-                    );
+                    .child(self.update_version_row(version, &intro, theme, cx));
                 if !can_install {
                     column = column.child(
                         div()
                             .whitespace_normal()
-                            .text_size(theme.ui_px(12.5))
-                            .text_color(theme.text_3)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
                             .child(tr!("updater_ui.check_only")),
                     );
                 }
                 update_dialog_body(
+                    theme,
                     column
                         .child(
                             div()
-                                .text_size(theme.ui_px(11.))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.text_3)
+                                .text_color(theme.text_muted)
                                 .child(tr!("updater_ui.whats_new")),
                         )
                         .child(
@@ -691,13 +841,56 @@ impl OrbitApp {
                         .into_any_element(),
                 )
             }
+            UpdateDialog::Downloading { version } => {
+                let (done, total) = self.updater_progress.unwrap_or((0, 0));
+                let fraction = (total > 0).then(|| done as f32 / total as f32);
+                let detail = if version.is_empty() {
+                    tr!("updater_ui.downloading")
+                } else {
+                    tr!("updater_ui.downloading_version", version = version.clone())
+                };
+                let size = if total == 0 {
+                    crate::attachments::human_bytes(done as usize)
+                } else {
+                    tr!(
+                        "updater_ui.download_progress",
+                        done = crate::attachments::human_bytes(done as usize),
+                        total = crate::attachments::human_bytes(total as usize)
+                    )
+                };
+                update_dialog_body(
+                    theme,
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .whitespace_normal()
+                                .text_size(TextSize::Default.px(&theme))
+                                .text_color(theme.text_secondary)
+                                .child(detail),
+                        )
+                        .child(update_progress_bar(theme, fraction))
+                        .child(
+                            div()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_muted)
+                                .child(size),
+                        )
+                        .into_any_element(),
+                )
+            }
             UpdateDialog::UpToDate => update_dialog_body(
+                theme,
                 div()
                     .flex_1()
                     .min_w_0()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(13.))
-                    .text_color(theme.text_2)
+                    .text_size(TextSize::Default.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(tr!(
                         "updater_ui.up_to_date_detail",
                         version = env!("CARGO_PKG_VERSION")
@@ -705,22 +898,24 @@ impl OrbitApp {
                     .into_any_element(),
             ),
             UpdateDialog::Failed(error) => update_dialog_body(
+                theme,
                 div()
                     .flex_1()
                     .min_w_0()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(13.))
-                    .text_color(theme.text_2)
+                    .text_size(TextSize::Default.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(error.clone())
                     .into_any_element(),
             ),
             UpdateDialog::Unavailable => update_dialog_body(
+                theme,
                 div()
                     .flex_1()
                     .min_w_0()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(13.))
-                    .text_color(theme.text_2)
+                    .text_size(TextSize::Default.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(tr!("updater_ui.update_unavailable_detail"))
                     .into_any_element(),
             ),
@@ -730,27 +925,29 @@ impl OrbitApp {
         }
         card = card.child(body);
 
+        // A staged release turns the primary button from a download into the
+        // restart that installs it.
+        let ready = self.updater_status == UpdateStatus::Ready;
         let secondary_label = if self.updater_history_open {
             tr!("view.back")
         } else {
             match dialog {
                 UpdateDialog::Checking => tr!("view.cancel"),
+                UpdateDialog::Downloading { .. } => tr!("view.cancel"),
                 UpdateDialog::Available {
                     from_check: true, ..
-                } if can_install => tr!("view.cancel"),
-                UpdateDialog::Available {
-                    from_check: false, ..
-                } if can_install => tr!("updater_ui.later"),
+                } if can_install && !ready => tr!("view.cancel"),
+                UpdateDialog::Available { .. } if can_install => tr!("updater_ui.later"),
                 _ => tr!("settings.close"),
             }
         };
         let mut footer = div()
-            .px(px(18.))
-            .py(px(14.))
+            .px(modal::footer_padding(&theme))
+            .py(modal::footer_padding(&theme))
             .flex_none()
             .flex()
             .justify_end()
-            .gap(px(8.));
+            .gap(modal::footer_gap(&theme));
         if !self.updater_history_open
             && !self.updater_history.is_empty()
             && matches!(
@@ -774,6 +971,8 @@ impl OrbitApp {
             cx.listener(|this, _: &MouseUpEvent, window, cx| {
                 if this.updater_history_open {
                     this.close_update_history(cx);
+                } else if matches!(this.updater_dialog, Some(UpdateDialog::Downloading { .. })) {
+                    this.cancel_update_download(cx);
                 } else {
                     this.dismiss_update_dialog(window, cx);
                 }
@@ -783,29 +982,31 @@ impl OrbitApp {
             && can_install
             && matches!(dialog, UpdateDialog::Available { .. })
         {
+            let (label, install) = if ready {
+                (tr!("updater_ui.restart_and_update"), true)
+            } else {
+                (tr!("updater_ui.download"), false)
+            };
             footer = footer.child(dialog_button(
                 "update-dialog-primary",
                 theme,
                 true,
-                tr!("updater_ui.update_now"),
-                cx.listener(|this, _: &MouseUpEvent, _, cx| this.install_available_update(cx)),
+                label,
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if install {
+                        this.install_available_update(cx);
+                    } else {
+                        this.download_available_update(cx);
+                    }
+                }),
             ));
         }
         card = card.child(footer);
 
         // ── scrim: dimmed backdrop; a click outside dismisses the modal ──
-        let scrim = theme.scrim_modal();
         Some(
-            div()
+            modal_scrim(&theme)
                 .id("update-dialog-layer")
-                .absolute()
-                .inset_0()
-                .occlude()
-                .bg(scrim)
-                .px(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
                 .key_context("UpdateDialog")
                 .track_focus(&self.updater_dialog_focus)
                 .on_action(cx.listener(Self::on_update_dialog_close))
@@ -815,7 +1016,13 @@ impl OrbitApp {
                         this.dismiss_update_dialog(window, cx)
                     }),
                 )
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "update-dialog-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -912,42 +1119,45 @@ fn inline_notes_text(text: &str) -> String {
 
 /// The changelog column in the update modal.
 fn release_notes_view(notes: &str, theme: Theme) -> AnyElement {
-    let mut column = div().flex().flex_col().gap(px(6.));
+    let mut column = div()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base06.px(&theme));
     for block in parse_release_notes(notes) {
         column = column.child(match block {
             NoteBlock::Heading(text) => div()
-                .pt(px(6.))
-                .text_size(theme.ui_px(11.))
+                .pt(DynamicSpacing::Base06.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(inline_notes_text(&text))
                 .into_any_element(),
             NoteBlock::Bullet(text) => div()
                 .flex()
                 .items_start()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
-                        .mt(px(6.))
+                        .mt(DynamicSpacing::Base06.px(&theme))
                         .size(px(4.))
                         .flex_none()
                         .rounded_full()
-                        .bg(theme.text_3),
+                        .bg(theme.text_muted),
                 )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .whitespace_normal()
-                        .text_size(theme.ui_px(12.5))
-                        .text_color(theme.text_2)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
                         .child(inline_notes_text(&text)),
                 )
                 .into_any_element(),
             NoteBlock::Paragraph(text) => div()
                 .whitespace_normal()
-                .text_size(theme.ui_px(12.5))
-                .text_color(theme.text_2)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_secondary)
                 .child(inline_notes_text(&text))
                 .into_any_element(),
         });
@@ -965,31 +1175,35 @@ fn version_history_view(
 ) -> AnyElement {
     let mut entries = div().flex().flex_col().gap(px(14.));
     for release in history {
-        let mut heading = div().flex().items_center().gap(px(8.)).child(
-            div()
-                .text_size(theme.ui_px(13.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text)
-                .child(format!("v{}", release.version)),
-        );
+        let mut heading = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(
+                div()
+                    .text_size(TextSize::Default.px(&theme))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_primary)
+                    .child(format!("v{}", release.version)),
+            );
         if release.version == current {
             heading = heading.child(
                 div()
-                    .px(px(6.))
+                    .px(DynamicSpacing::Base06.px(&theme))
                     .py(px(1.))
                     .rounded_full()
-                    .bg(theme.bg_hover)
-                    .text_size(theme.ui_px(10.5))
+                    .bg(theme.surface_hover)
+                    .text_size(TextSize::XSmall.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(tr!("updater_ui.current")),
             );
         }
         let notes: AnyElement = match release.notes.as_deref() {
             Some(notes) if !notes.trim().is_empty() => release_notes_view(notes, theme),
             _ => div()
-                .text_size(theme.ui_px(12.5))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .child(tr!("updater_ui.no_release_notes"))
                 .into_any_element(),
         };
@@ -997,7 +1211,7 @@ fn version_history_view(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .child(heading)
                 .child(notes),
         );
@@ -1007,9 +1221,51 @@ fn version_history_view(
         .max_h(px(360.))
         .overflow_y_scroll()
         .px(px(18.))
-        .pb(px(16.))
+        .pb(DynamicSpacing::Base16.px(&theme))
         .child(entries)
         .into_any_element()
+}
+
+/// The update modal's version row: `v0.2.15 → v0.2.16` with the changelog
+/// link pushed to the card's right edge. A release with no version falls back
+/// to a sentence, and then there is nothing to link to.
+fn version_row(
+    theme: Theme,
+    version: &str,
+    fallback: &str,
+    link: Option<AnyElement>,
+) -> AnyElement {
+    let row = div()
+        .id("update-version-row")
+        .debug_selector(|| "update-version-row".to_string())
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme));
+    if version.is_empty() {
+        return row
+            .whitespace_normal()
+            .text_size(TextSize::Default.px(&theme))
+            .text_color(theme.text_secondary)
+            .child(fallback.to_owned())
+            .into_any_element();
+    }
+    let row = row.child(
+        div()
+            .flex_none()
+            .whitespace_nowrap()
+            .text_size(TextSize::Default.px(&theme))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_primary)
+            .child(tr!(
+                "updater_ui.version_change",
+                current = env!("CARGO_PKG_VERSION"),
+                version = version.to_owned()
+            )),
+    );
+    match link {
+        Some(link) => row.child(div().flex_1()).child(link).into_any_element(),
+        None => row.into_any_element(),
+    }
 }
 
 /// The modal's one button shape, tinted primary (Update now) or quiet
@@ -1021,38 +1277,36 @@ fn dialog_button(
     label: String,
     on_mouse_up: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let button = div()
-        .id(id)
+    let button = button_frame(div().id(id), &theme, ButtonSize::Large)
         .group(BUTTON_GROUP)
-        .h(px(32.))
-        .px(px(14.))
-        .rounded(px(8.))
-        .flex()
-        .items_center()
-        .justify_center()
         .cursor_pointer()
-        .text_size(theme.ui_px(12.5))
         .font_weight(FontWeight::MEDIUM)
         .on_mouse_up(MouseButton::Left, on_mouse_up);
     let button = if primary {
         button
-            .bg(theme.send_bg)
-            .text_color(theme.send_fg)
-            .hover(|s| s.bg(theme.send_bg_hover))
+            .raised(theme.action, &theme)
+            .text_color(theme.action_fg)
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
     } else {
         button
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .text_color(theme.text_2)
-            .hover(|s| s.bg(theme.bg_hover))
+            .raised(theme.surface_elevated, &theme)
+            .text_color(theme.text_secondary)
+            .hover_state(&theme)
     };
     press(button).child(label).into_any_element()
 }
 
-/// The sidebar pill's two layers: the download icon and the "Update" label,
+/// The sidebar pill's two layers: the action's glyph and its label,
 /// cross-faded by `reveal` while the pill expands.
-fn updater_pill_content(theme: Theme, label: String, reveal: f32) -> impl IntoElement {
+fn updater_pill_content(
+    theme: Theme,
+    label: String,
+    glyph: &'static str,
+    reveal: f32,
+) -> impl IntoElement {
     div()
         .relative()
         .size_full()
@@ -1064,7 +1318,7 @@ fn updater_pill_content(theme: Theme, label: String, reveal: f32) -> impl IntoEl
                 .items_center()
                 .justify_center()
                 .opacity(1.0 - reveal)
-                .child(icon("icons/arrow-down.svg", 12., theme.bg_main)),
+                .child(icon(glyph, IconSize::XSmall.px(&theme), theme.background)),
         )
         .child(
             div()
@@ -1095,52 +1349,83 @@ fn update_dialog_card_size(viewport: gpui::Size<gpui::Pixels>) -> (gpui::Pixels,
 /// The body of an update dialog: the app icon at the leading edge, then the
 /// state's content. Shared by every state, so the icon lands in the same
 /// place whichever dialog is open.
-fn update_dialog_body(content: AnyElement) -> AnyElement {
+fn update_dialog_body(theme: Theme, content: AnyElement) -> AnyElement {
     div()
         .id("update-dialog-body")
         .debug_selector(|| "update-dialog-body".to_string())
-        .px(px(18.))
-        .pb(px(16.))
+        .px(modal::section_padding_x(&theme, false))
+        .pb(modal::section_padding_bottom(&theme))
         .flex()
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
         .items_start()
-        .gap(px(12.))
-        .child(embedded_image(crate::app_icon::ASSET, 48.))
+        .gap(DynamicSpacing::Base12.px(&theme))
+        .child(embedded_image(
+            crate::app_icon::ASSET,
+            f32::from(IconSize::XLarge.px(&theme)),
+        ))
         .child(content)
         .into_any_element()
 }
 
 /// A thin indeterminate bar, for the modal's search state. The moving segment
 /// is a fraction of the track, so the sweep scales with the card.
-fn update_progress_bar(theme: Theme) -> impl IntoElement {
+fn update_progress_bar(theme: Theme, fraction: Option<f32>) -> AnyElement {
+    // A download knows its bytes, so the bar fills instead of sweeping.
+    if let Some(fraction) = fraction {
+        let fraction = fraction.clamp(0., 1.);
+        return div()
+            .relative()
+            .w_full()
+            .h(px(3.))
+            .rounded_full()
+            .bg(theme.surface_hover)
+            .overflow_hidden()
+            .child(
+                div()
+                    .h_full()
+                    .w(gpui::relative(fraction))
+                    .rounded_full()
+                    .bg(theme.accent),
+            )
+            .into_any_element();
+    }
     const SEGMENT: f32 = 0.28;
+    let segment = div()
+        .absolute()
+        .top_0()
+        .left(gpui::relative(-SEGMENT))
+        .h_full()
+        .w(gpui::relative(SEGMENT))
+        .rounded_full()
+        .bg(theme.accent);
+    // Indeterminate progress: the segment sweeps the track. Reduce Motion
+    // parks it inside the track — the bar still says "work in flight", it
+    // just does not loop.
+    let segment = if theme.reduce_motion() {
+        segment.left(gpui::relative(0.36)).into_any_element()
+    } else {
+        segment
+            .with_animation(
+                ElementId::Name("update-progress".into()),
+                Animation::new(looping::PROGRESS).repeat(),
+                move |bar, delta| {
+                    // Travel from just off the left edge to just off the right.
+                    bar.left(gpui::relative(-SEGMENT + (1.0 + SEGMENT) * delta))
+                },
+            )
+            .into_any_element()
+    };
     div()
         .relative()
         .w_full()
         .h(px(3.))
         .rounded_full()
-        .bg(theme.bg_hover)
+        .bg(theme.surface_hover)
         .overflow_hidden()
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left(gpui::relative(-SEGMENT))
-                .h_full()
-                .w(gpui::relative(SEGMENT))
-                .rounded_full()
-                .bg(theme.accent)
-                .with_animation(
-                    ElementId::Name("update-progress".into()),
-                    Animation::new(Duration::from_millis(1100)).repeat(),
-                    move |bar, delta| {
-                        // Travel from just off the left edge to just off the right.
-                        bar.left(gpui::relative(-SEGMENT + (1.0 + SEGMENT) * delta))
-                    },
-                ),
-        )
+        .child(segment)
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -1182,6 +1467,97 @@ mod tests {
     }
 
     #[test]
+    fn the_version_row_names_both_the_target_and_the_running_build() {
+        let text = tr!(
+            "updater_ui.version_change",
+            current = "0.2.15",
+            version = "0.2.16"
+        );
+        assert!(text.contains("0.2.15"), "{text}");
+        assert!(text.contains("0.2.16"), "{text}");
+    }
+
+    /// The version row and its changelog link share one line inside the card,
+    /// so a long link label can never spill past the card's right edge.
+    #[gpui::test]
+    fn the_version_row_keeps_its_changelog_link_inside_the_card(cx: &mut gpui::TestAppContext) {
+        struct Probe;
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let theme = Theme::dark();
+                div()
+                    .id("probe-version-card")
+                    .debug_selector(|| "probe-version-card".to_string())
+                    .w(px(520.))
+                    .p(px(18.))
+                    .child(version_row(
+                        theme,
+                        "9.9.9",
+                        "A signed release is ready.",
+                        Some(
+                            div()
+                                .id("update-changelog-link")
+                                .debug_selector(|| "update-changelog-link".to_string())
+                                .flex_none()
+                                .child(tr!("updater_ui.view_changelog"))
+                                .into_any_element(),
+                        ),
+                    ))
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        let _ = cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(800.), px(400.)),
+            |_, cx| cx.new(|_| Probe),
+        );
+        let card = cx
+            .debug_bounds("probe-version-card")
+            .expect("card laid out");
+        let link = cx
+            .debug_bounds("update-changelog-link")
+            .expect("the link is on the row");
+        assert!(
+            link.right() <= card.right(),
+            "the link must stay inside the card: link {link:?}, card {card:?}"
+        );
+    }
+
+    /// A release the feed named without a version renders the fallback
+    /// sentence, and there is no release page to link to.
+    #[gpui::test]
+    fn a_release_without_a_version_has_no_changelog_link(cx: &mut gpui::TestAppContext) {
+        struct Probe;
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(520.)).child(version_row(
+                    Theme::dark(),
+                    "",
+                    &tr!("updater_ui.a_signed_release_is_ready"),
+                    None,
+                ))
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        let _ = cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(800.), px(400.)),
+            |_, cx| cx.new(|_| Probe),
+        );
+        assert!(
+            cx.debug_bounds("update-version-row").is_some(),
+            "the fallback still renders a version row"
+        );
+        assert!(
+            cx.debug_bounds("update-changelog-link").is_none(),
+            "there is no release page to open"
+        );
+        assert!(crate::updater::changelog_url("").is_none());
+    }
+
+    #[test]
     fn up_to_date_copy_names_the_version_it_checked() {
         let text = tr!("updater_ui.up_to_date_detail", version = "9.9.9");
         assert!(text.contains("9.9.9"), "{text}");
@@ -1199,6 +1575,7 @@ mod tests {
                     .debug_selector(|| "probe-update-card".to_string())
                     .w(px(520.))
                     .child(update_dialog_body(
+                        Theme::dark(),
                         div()
                             .id("probe-update-copy")
                             .debug_selector(|| "probe-update-copy".to_string())
@@ -1228,7 +1605,7 @@ mod tests {
             "the probe stands in for the modal card"
         );
         assert!(
-            copy.right() <= card.right() - px(18.),
+            copy.right() <= card.right() - modal::section_padding_x(&Theme::dark(), false),
             "long copy must wrap inside the card padding: copy {copy:?}, card {card:?}"
         );
     }
@@ -1260,13 +1637,9 @@ mod tests {
                             .flex()
                             .flex_col()
                             .overflow_hidden()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .p(px(12.))
-                                    .child("Update available"),
-                            )
+                            .child(div().flex_none().p(px(12.)).child("Update available"))
                             .child(update_dialog_body(
+                                theme,
                                 div()
                                     .flex_1()
                                     .min_w_0()
@@ -1276,7 +1649,7 @@ mod tests {
                                     .child("Orbit Pi v0.0.11 is available.")
                                     .child(
                                         div()
-                                            .text_size(theme.ui_px(11.))
+                                            .text_size(TextSize::Small.px(&theme))
                                             .child("What's new"),
                                     )
                                     .child(

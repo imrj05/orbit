@@ -41,6 +41,35 @@ const buttonIntents = {
   text: "ghost",
 } as const;
 
+export type ButtonIntent = keyof typeof buttonIntents;
+
+/**
+ * The link-button styles on their own, so a control that is one visual button
+ * split into two segments (a primary action plus its options menu) can style
+ * both halves from the same intent.
+ */
+export function buttonLinkClass(
+  variant: ButtonIntent = "primary",
+  className = "",
+) {
+  return cn(
+    buttonVariants({
+      variant: buttonIntents[variant],
+      size: variant === "nav" ? "sm" : "lg",
+    }),
+    /* Primary: the highest-contrast element on the page. */
+    variant === "primary" &&
+      "min-h-11 gap-2.5 rounded-[10px] px-5 text-[13px] font-semibold shadow-[var(--elev-button)] dark:border-white/20 light:border-black/10",
+    variant === "secondary" &&
+      "min-h-11 gap-2.5 rounded-[10px] border-edge-default px-5 text-[13px]",
+    variant === "nav" &&
+      "h-9 min-h-9 rounded-[10px] px-4 text-[13px] font-semibold",
+    variant === "text" &&
+      "px-0 text-[13px] text-ink-2 hover:bg-transparent hover:text-ink",
+    className,
+  );
+}
+
 export function ButtonLink({
   href,
   children,
@@ -50,29 +79,14 @@ export function ButtonLink({
 }: {
   href: string;
   children: ReactNode;
-  variant?: keyof typeof buttonIntents;
+  variant?: ButtonIntent;
   className?: string;
   external?: boolean;
 }) {
   return (
     <a
       href={href}
-      className={cn(
-        buttonVariants({
-          variant: buttonIntents[variant],
-          size: variant === "nav" ? "sm" : "lg",
-        }),
-        /* Primary: the highest-contrast element on the page. */
-        variant === "primary" &&
-          "min-h-11 gap-2.5 rounded-[10px] px-5 text-[13px] font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.18)] dark:border-white/20 light:border-black/10",
-        variant === "secondary" &&
-          "min-h-11 gap-2.5 rounded-[10px] border-edge-default px-5 text-[13px]",
-        variant === "nav" &&
-          "h-9 min-h-9 rounded-[10px] px-4 text-[13px] font-semibold",
-        variant === "text" &&
-          "px-0 text-[13px] text-ink-2 hover:bg-transparent hover:text-ink",
-        className,
-      )}
+      className={buttonLinkClass(variant, className)}
       {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
     >
       {children}
@@ -88,10 +102,7 @@ export function SectionLabel({
   className?: string;
 }) {
   return (
-    <p
-      className={`flex items-center gap-[9px] font-mono text-[10px] uppercase leading-[1.4] tracking-[0.065em] text-ink-2 ${className}`}
-    >
-      <i className="pulse-dot size-[5px] shrink-0 rounded-full bg-brand" />
+    <p className={`text-[11px] leading-[1.4] font-medium text-ink-2 ${className}`}>
       {children}
     </p>
   );
@@ -105,9 +116,7 @@ export function Eyebrow({
   className?: string;
 }) {
   return (
-    <p
-      className={`font-mono text-[11.5px] uppercase leading-normal tracking-[0.16em] text-ink-3 ${className}`}
-    >
+    <p className={`text-[11.5px] leading-normal text-ink-3 ${className}`}>
       {children}
     </p>
   );

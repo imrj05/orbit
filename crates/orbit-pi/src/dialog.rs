@@ -12,25 +12,22 @@
 //! the entity — the same entity-with-callbacks shape as `CommandPalette`.
 
 use gpui::{
-    deferred, div, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity,
-    FocusHandle, Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, Render,
-    ScrollHandle, SharedString, Window,
+    deferred, div, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity, FocusHandle,
+    Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, Render, ScrollHandle,
+    SharedString, Window,
 };
 
-use crate::app::PopoverSurface;
+use crate::app::{modal_card, modal_scrim, PressedRamp, StatefulControlExt};
 use crate::composer::ComposerInput;
+use crate::theme::tokens::{button, input, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
 
 /// Card width — a question plus its options without owning the window.
 const CARD_W: f32 = 560.;
 /// Option row height (label + inline description).
 const OPTION_H: f32 = 44.;
-/// Button row height for the confirm dialog.
-const BUTTON_H: f32 = 38.;
 /// Largest option-list height before it scrolls (≈ 7 rows).
 const LIST_MAX_H: f32 = 320.;
-/// Footer hint row.
-const FOOTER_H: f32 = 32.;
 
 /// Response callback: the answer plus the ambient window.
 type DialogRespond = Box<dyn Fn(DialogResponse, &mut Window, &mut App)>;
@@ -194,6 +191,7 @@ impl Dialog {
                     .with_element_id("dialog-input")
                     .with_placeholder(placeholder.clone())
                     .with_max_lines(1)
+                    .with_wrap(false)
                     .with_key_context("Composer DialogInput")
             })),
             DialogKind::Editor { prefill } => Some(cx.new(|cx| {
@@ -249,6 +247,16 @@ impl Dialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // In an input/editor dialog, Enter is often the key confirming an IME
+        // candidate; the field still holds half-composed text, which must not
+        // become the dialog's answer (issue #100).
+        if self
+            .input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).is_composing())
+        {
+            return;
+        }
         let response = match &self.request.kind {
             DialogKind::Select { options } => match options.get(self.highlighted) {
                 Some(option) => DialogResponse::Value(option.clone()),
@@ -321,58 +329,53 @@ impl Render for Dialog {
         let theme = *theme::get(cx);
         let this = cx.entity();
 
-        let mut card = div()
+        let mut card = modal_card(&theme)
             .id("dialog-card")
             .debug_selector(|| "dialog-card".to_string())
             .w_full()
             .max_w(px(CARD_W))
-            .rounded(px(14.))
-            .popover_surface(theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
-            .on_action(cx.listener(Self::on_prev))
-            // Clicks inside the card must not reach the scrim's dismiss.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            .on_action(cx.listener(Self::on_prev));
 
         // ── header: origin, title, and (confirm) the message body ──
+        // Zed's `ModalHeader` insets, with its Small headline for the title.
         let mut header = div()
-            .px(px(18.))
-            .pt(px(16.))
-            .pb(px(12.))
+            .px(modal::header_padding_x(&theme))
+            .pt(modal::header_padding_top(&theme))
+            .pb(modal::header_padding_bottom(&theme))
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(DynamicSpacing::Base04.px(&theme))
             .child(
                 div()
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(SharedString::from("Question")),
             )
             .child(
                 div()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(14.5))
+                    .text_size(modal::HEADLINE.px(&theme))
+                    .line_height(modal::HEADLINE.line_height(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(SharedString::from(self.request.title.clone())),
             );
         if let Some(body) = self.request.body.clone() {
             if !body.trim().is_empty() {
                 header = header.child(
+                    // Zed's header description closes with `mb_2`.
                     div()
+                        .mb(theme.rems(0.5))
                         .whitespace_normal()
-                        .text_size(theme.ui_px(13.))
-                        .text_color(theme.text_2)
+                        .text_size(TextSize::Default.px(&theme))
+                        .text_color(theme.text_secondary)
                         .child(SharedString::from(body)),
                 );
             }
@@ -389,16 +392,23 @@ impl Render for Dialog {
             }
             DialogKind::Input { .. } | DialogKind::Editor { .. } => {
                 if let Some(input) = &self.input {
+                    // A modal section holding a Zed `InputField`-sized box.
                     card = card.child(
                         div()
-                            .px(px(18.))
-                            .pb(px(14.))
+                            .px(modal::section_padding_x(&theme, false))
+                            .pb(modal::section_padding_bottom(&theme))
                             .flex_none()
-                            .rounded(px(10.))
-                            .border_1()
-                            .border_color(theme.border_strong)
-                            .bg(theme.bg_raised)
-                            .child(input.clone()),
+                            .child(
+                                div()
+                                    .min_h(input::min_height(&theme))
+                                    .px(input::padding_x(&theme))
+                                    .py(input::padding_y(&theme))
+                                    .rounded(input::RADIUS.px(&theme))
+                                    .border_1()
+                                    .border_color(theme.border_strong)
+                                    .bg(theme.surface_elevated)
+                                    .child(input.clone()),
+                            ),
                     );
                 }
             }
@@ -410,35 +420,38 @@ impl Render for Dialog {
             DialogKind::Confirm => "⏎ Confirm · esc Cancel",
             DialogKind::Input { .. } | DialogKind::Editor { .. } => "⏎ Submit · esc Cancel",
         };
+        // Zed's `ModalFooter` pads Base08 all round because its slots hold
+        // buttons, whose own padding brings their labels in line with the
+        // header; a bare hint takes the header's inset directly.
         card = card.child(
             div()
-                .h(px(FOOTER_H))
-                .px(px(16.))
+                .py(modal::footer_padding(&theme))
+                .px(modal::header_padding_x(&theme))
                 .flex_none()
                 .flex()
                 .items_center()
+                .gap(modal::footer_gap(&theme))
                 .border_t_1()
                 .border_color(theme.border)
-                .text_size(theme.ui_px(11.))
-                .text_color(theme.text_3)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
                 .child(hint),
         );
 
         // ── scrim: dimmed backdrop; a click outside cancels the dialog ──
-        let scrim = theme.scrim_modal();
-        div()
+        modal_scrim(&theme)
             .id("dialog-layer")
             .debug_selector(|| "dialog-layer".to_string())
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(scrim)
-            .px(px(24.))
-            .flex()
-            .items_center()
-            .justify_center()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_scrim_down))
-            .child(card)
+            // The layer's dialog entrance: fade on the Layout role. gpui has no
+            // box transform, so the card cannot scale — see DESIGN.md.
+            .child(crate::motion::enter(
+                card,
+                "dialog-card-in",
+                &theme,
+                crate::theme::tokens::Motion::Layout,
+                None,
+            ))
     }
 }
 
@@ -453,10 +466,10 @@ impl Dialog {
     ) -> AnyElement {
         if options.is_empty() {
             return div()
-                .px(px(18.))
-                .pb(px(14.))
-                .text_size(theme.ui_px(13.))
-                .text_color(theme.text_3)
+                .px(modal::section_padding_x(&theme, false))
+                .pb(modal::section_padding_bottom(&theme))
+                .text_size(TextSize::Default.px(&theme))
+                .text_color(theme.text_muted)
                 .child(tr!("dialog.no_options_were_provided"))
                 .into_any_element();
         }
@@ -468,8 +481,10 @@ impl Dialog {
             .flex_none()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .px(px(8.))
-            .pb(px(8.))
+            // Rows are inset like Zed's list items, and pad their labels
+            // back out to the header's inset.
+            .px(list_item::inset(&theme))
+            .pb(modal::section_padding_bottom(&theme))
             .flex()
             .flex_col();
         for (ix, option) in options.iter().enumerate() {
@@ -480,9 +495,9 @@ impl Dialog {
                     .id(ElementId::NamedInteger("dialog-option".into(), ix as u64))
                     .w_full()
                     .min_h(px(OPTION_H))
-                    .px(px(12.))
+                    .px(modal::header_padding_x(&theme) - list_item::inset(&theme))
                     .py(px(9.))
-                    .rounded(px(8.))
+                    .rounded(list_item::RADIUS.px(&theme))
                     .border_1()
                     .border_color(if highlighted {
                         theme.border_strong
@@ -490,17 +505,18 @@ impl Dialog {
                         gpui::transparent_black()
                     })
                     .cursor_pointer()
-                    .on_hover({
+                    .pressed_state(&theme, PressedRamp::Wash)
+                    // Pointer movement moves the highlight; a scroll sliding a
+                    // row under a stationary pointer must not hijack ↑/↓ nav.
+                    .on_mouse_move({
                         let this = this.clone();
-                        move |hovering, _, cx| {
-                            if *hovering {
-                                this.update(cx, |dialog, cx| {
-                                    if dialog.highlighted != ix {
-                                        dialog.highlighted = ix;
-                                        cx.notify();
-                                    }
-                                });
-                            }
+                        move |_, _, cx| {
+                            this.update(cx, |dialog, cx| {
+                                if dialog.highlighted != ix {
+                                    dialog.highlighted = ix;
+                                    cx.notify();
+                                }
+                            });
                         }
                     })
                     .on_click({
@@ -512,15 +528,15 @@ impl Dialog {
                             });
                         }
                     })
-                    .when(highlighted, |row| row.bg(theme.overlay_strong))
+                    .when(highlighted, |row| row.bg(theme.surface_selected))
                     .child(
                         div()
                             .whitespace_normal()
-                            .text_size(theme.ui_px(13.))
+                            .text_size(TextSize::Default.px(&theme))
                             .text_color(if highlighted {
-                                theme.text
+                                theme.text_primary
                             } else {
-                                theme.text_2
+                                theme.text_secondary
                             })
                             .child(SharedString::from(option.clone())),
                     ),
@@ -534,19 +550,20 @@ impl Dialog {
     fn render_confirm(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let this = cx.entity();
         div()
-            .px(px(18.))
-            .pb(px(14.))
+            .px(modal::section_padding_x(&theme, false))
+            .pb(modal::section_padding_bottom(&theme))
             .flex_none()
             .flex()
-            .gap(px(8.))
+            .gap(DynamicSpacing::Base08.px(&theme))
             .children([false, true].into_iter().enumerate().map(|(ix, value)| {
                 let highlighted = self.confirmed == value;
                 let this = this.clone();
                 div()
                     .id(ElementId::NamedInteger("dialog-button".into(), ix as u64))
-                    .h(px(BUTTON_H))
+                    .h(ButtonSize::Large.height(&theme))
+                    .px(ButtonSize::Large.padding_x(&theme))
                     .flex_1()
-                    .rounded(px(9.))
+                    .rounded(button::RADIUS.px(&theme))
                     .border_1()
                     .border_color(if highlighted {
                         theme.border_strong
@@ -557,7 +574,8 @@ impl Dialog {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .text_size(theme.ui_px(13.))
+                    .pressed_state(&theme, PressedRamp::Wash)
+                    .text_size(TextSize::Default.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .on_hover({
                         let this = this.clone();
@@ -582,9 +600,13 @@ impl Dialog {
                         }
                     })
                     .when(highlighted, |button| {
-                        button.bg(theme.overlay_strong).text_color(theme.text)
+                        button
+                            .bg(theme.overlay_strong)
+                            .text_color(theme.text_primary)
                     })
-                    .when(!highlighted, |button| button.text_color(theme.text_2))
+                    .when(!highlighted, |button| {
+                        button.text_color(theme.text_secondary)
+                    })
                     .child(if value { "Yes" } else { "No" })
             }))
             .into_any_element()
@@ -752,5 +774,66 @@ mod tests {
         assert!(card.size.width > px(0.), "card collapsed to zero width");
         assert!(card.size.width <= px(CARD_W));
         assert!(card.size.height > px(0.), "card collapsed to zero height");
+    }
+
+    /// Issue #100: Enter confirming an IME candidate must not answer the
+    /// dialog with the preedit still in the field — the same rule the chat
+    /// composer, the queue editor and the pickers follow.
+    #[gpui::test]
+    fn enter_during_an_ime_composition_does_not_answer_the_dialog(cx: &mut gpui::TestAppContext) {
+        use gpui::EntityInputHandler as _;
+
+        let cx = cx.add_empty_window();
+        let answered = std::rc::Rc::new(std::cell::Cell::new(false));
+        let request = DialogRequest {
+            id: "ime".into(),
+            title: "Name the branch".into(),
+            body: None,
+            kind: DialogKind::Input {
+                placeholder: "type".into(),
+            },
+        };
+        let dialog = {
+            let answered = answered.clone();
+            cx.update(|_, cx| {
+                cx.new(|cx| {
+                    Dialog::new(
+                        request,
+                        Box::new(move |_: DialogResponse, _: &mut Window, _: &mut App| {
+                            answered.set(true);
+                        }),
+                        cx,
+                    )
+                })
+            })
+        };
+
+        cx.update(|window, cx| {
+            let input = dialog
+                .read(cx)
+                .input
+                .clone()
+                .expect("an input dialog has a field");
+            // Sogou with the pinyin buffer emptied: session open, preedit empty.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+
+            dialog.update(cx, |dialog, cx| {
+                dialog.on_confirm(&crate::DialogConfirm, window, cx)
+            });
+            assert!(!answered.get(), "the IME owns that Enter");
+            assert!(!dialog.read(cx).responded, "the dialog is still open");
+
+            // The commit ends the session, and Enter answers as usual.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            dialog.update(cx, |dialog, cx| {
+                dialog.on_confirm(&crate::DialogConfirm, window, cx)
+            });
+            assert!(answered.get(), "a committed value answers the dialog");
+        });
     }
 }

@@ -30,3 +30,20 @@ orbit-update.pem
 *.key
 *.p12
 *.pfx
+# Orbit worktrees (local only)
+.wt/
+
+# Design-tool state: critique archives and run snapshots are generated locally
+# and are specific to one machine's review history, like the editor directories
+# above. `git add -f` one if a particular archive is worth keeping.
+.impeccable/
+# Hallmark redesign state (before/after screenshots, linter records, the run
+# log): generated per machine during a build, same policy as .impeccable/.
+.hallmark/
+# Installed agent skills are machine-local; Orbit's design specification is
+# repository-owned and shared with every contributor.
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/orbit-design/
+!.agents/skills/orbit-design/SKILL.md

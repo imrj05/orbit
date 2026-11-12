@@ -15,8 +15,16 @@ use ignore::WalkBuilder;
 
 /// Hard caps so a pathological tree stays bounded. The panel surfaces
 /// [`Snapshot::truncated`] honestly rather than silently dropping files.
-pub const MAX_ENTRIES: usize = 50_000;
+pub const MAX_ENTRIES: usize = 200_000;
 pub const MAX_DEPTH: usize = 24;
+
+/// Version-control and OS metadata that is never workspace content.
+///
+/// `.git` is not in `.gitignore` (git treats it specially), so a walk that
+/// includes hidden entries — which `@` needs — would otherwise drag tens of
+/// thousands of object files in and spend the entry cap on them. Compared
+/// case-insensitively: Windows and macOS filesystems are.
+const METADATA_NAMES: &[&str] = &[".git", ".svn", ".hg", ".jj", ".DS_Store", "Thumbs.db"];
 
 /// Workspace-relative paths (always `/`-separated) for every visible entry.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -51,11 +59,26 @@ pub fn snapshot(root: &Path, show_hidden: bool) -> Snapshot {
         .git_global(true)
         .git_exclude(true)
         .ignore(true)
-        .parents(true)
+        // Only this directory's ignore files (and its children's) count. `fd`,
+        // which `@` used to call, never read an ancestor's ignore file, so a
+        // `~/.gitignore` containing `*` must not blank the tree.
+        .parents(false)
         // Honor `.gitignore` in a plain folder too, not only inside a repo.
         .require_git(false)
         .follow_links(false)
-        .max_depth(Some(MAX_DEPTH));
+        .max_depth(Some(MAX_DEPTH))
+        .filter_entry(|entry| {
+            // The predicate sees the walk root as well; never prune it.
+            if entry.depth() == 0 {
+                return true;
+            }
+            let Some(name) = entry.file_name().to_str() else {
+                return true;
+            };
+            !METADATA_NAMES
+                .iter()
+                .any(|skip| skip.eq_ignore_ascii_case(name))
+        });
 
     for result in builder.build() {
         let Ok(entry) = result else { continue };

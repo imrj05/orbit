@@ -6,8 +6,9 @@
 //! state, and per-turn checkpoints are represented exactly.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{anyhow, bail};
@@ -60,22 +61,55 @@ pub fn current_branch(cwd: &Path) -> Option<String> {
         .or_else(|| read_head_branch(cwd))
 }
 
+/// A local branch plus the date of its tip commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchEntry {
+    pub name: String,
+    /// RFC 3339 committer date of the branch tip; `None` when git prints no
+    /// date for the ref, in which case the picker simply omits the age.
+    pub commit_date: Option<String>,
+}
+
 /// Local branches, newest commit first.
 pub fn list_branches(cwd: &Path) -> Result<Vec<String>, String> {
+    Ok(list_branch_entries(cwd)?
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect())
+}
+
+/// Local branches with their tip commit date, newest commit first. Feeds the
+/// branch picker's "last active" column; [`list_branches`] reuses it so the
+/// two can never disagree on ordering.
+pub fn list_branch_entries(cwd: &Path) -> Result<Vec<BranchEntry>, String> {
     let out = run_git(
         cwd,
         &[
             "for-each-ref",
             "--sort=-committerdate",
             "refs/heads/",
-            "--format=%(refname:short)",
+            // A tab separator can't collide with a ref name: git forbids
+            // whitespace in refs. `run_git` trims the output, so a branch
+            // with no date arrives without its trailing tab.
+            "--format=%(refname:short)%09%(committerdate:iso-strict)",
         ],
     )?;
     Ok(out
         .lines()
         .filter(|line| !line.is_empty())
-        .map(str::to_string)
+        .map(parse_branch_entry)
         .collect())
+}
+
+fn parse_branch_entry(line: &str) -> BranchEntry {
+    let (name, date) = match line.split_once('\t') {
+        Some((name, date)) => (name, Some(date.trim())),
+        None => (line, None),
+    };
+    BranchEntry {
+        name: name.to_string(),
+        commit_date: date.filter(|date| !date.is_empty()).map(str::to_string),
+    }
 }
 
 /// Switch to an existing branch, keeping the working tree when possible.
@@ -84,6 +118,47 @@ pub fn checkout_branch(cwd: &Path, branch: &str) -> Result<(), String> {
         return Ok(());
     }
     run_git(cwd, &["checkout", branch]).map(|_| ())
+}
+
+/// Branches most recently checked out, newest first. Derived from the HEAD
+/// reflog (so it survives restarts); only names that still exist are returned.
+pub fn recent_branches(cwd: &Path) -> Vec<String> {
+    let out = run_git(cwd, &["reflog", "--format=%gs", "-n", "200"]).unwrap_or_default();
+    let known: HashSet<String> = list_branches(cwd).unwrap_or_default().into_iter().collect();
+    let mut seen = HashSet::new();
+    let mut recent = Vec::new();
+    for line in out.lines() {
+        let Some(rest) = line.strip_prefix("checkout: moving from ") else {
+            continue;
+        };
+        let Some((_, to)) = rest.rsplit_once(" to ") else {
+            continue;
+        };
+        let to = to.trim();
+        if to.is_empty() || !known.contains(to) {
+            continue;
+        }
+        if seen.insert(to.to_string()) {
+            recent.push(to.to_string());
+        }
+    }
+    recent
+}
+
+/// Switch to the local branch that tracks `remote_ref` (e.g. `origin/feat/x`),
+/// creating it if it does not exist yet. A lone name falls back to a plain
+/// checkout.
+pub fn checkout_remote_branch(cwd: &Path, remote_ref: &str) -> Result<(), String> {
+    let Some((_, short)) = remote_ref.split_once('/') else {
+        return checkout_branch(cwd, remote_ref);
+    };
+    if list_branches(cwd)?.iter().any(|b| b == short) {
+        return checkout_branch(cwd, short);
+    }
+    if run_git(cwd, &["switch", "--track", "-c", short, remote_ref]).is_ok() {
+        return Ok(());
+    }
+    run_git(cwd, &["checkout", "-b", short, "--track", remote_ref]).map(|_| ())
 }
 
 /// Create a branch from HEAD and check it out, carrying uncommitted changes.
@@ -190,6 +265,28 @@ pub fn fetch(cwd: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Bring the current branch level with its upstream in one step: fetch, then
+/// fast-forward (or merge, when diverged) if behind, then push if ahead. The
+/// branch row's Sync button.
+pub fn sync(cwd: &Path) -> Result<String, String> {
+    run_git(cwd, &["fetch", "--quiet"])?;
+    let Some((ahead, behind)) = ahead_behind(cwd) else {
+        // No upstream yet: fetching is all there is to do.
+        return Ok(tr!("git.fetched"));
+    };
+    if behind > 0 {
+        if ahead > 0 {
+            merge_upstream(cwd)?;
+        } else {
+            pull(cwd)?;
+        }
+    }
+    if ahead_behind(cwd).is_some_and(|(ahead, _)| ahead > 0) {
+        push(cwd)?;
+    }
+    Ok(tr!("git.synced"))
+}
+
 fn read_head_branch(cwd: &Path) -> Option<String> {
     let head = std::fs::read_to_string(cwd.join(".git/HEAD")).ok()?;
     let head = head.trim();
@@ -266,6 +363,59 @@ fn collect_review_diff_inner(
     })
 }
 
+/// Files the turn changed in the worktree that no `edit` / `write` call named.
+///
+/// `recorded` holds that turn's recorded call paths; a repository path counts
+/// as recorded when it equals one or sits beneath it, so a session opened in a
+/// subdirectory still lines up with Git's repository-relative paths. Returns
+/// `None` when the turn changed nothing outside its tool calls, or when the
+/// turn's checkpoints are unavailable.
+pub fn changed_outside_calls(
+    cwd: &Path,
+    session: &str,
+    turn: usize,
+    recorded: &[String],
+) -> anyhow::Result<Option<(Vec<String>, ReviewDiff)>> {
+    if turn == 0 {
+        return Ok(None);
+    }
+    ensure_repository(cwd)?;
+    let (from, to) = resolve_range(cwd, Source::LastTurn { turn_count: turn }, Some(session))?;
+    let names = diff_output_paths(cwd, &from, &to, &["--name-only"], &["."])?;
+    let extras: Vec<String> = names
+        .lines()
+        .filter(|path| !path.is_empty())
+        .filter(|path| {
+            !recorded
+                .iter()
+                .any(|recorded| path == recorded || path.ends_with(&format!("/{recorded}")))
+        })
+        .map(str::to_owned)
+        .collect();
+    if extras.is_empty() {
+        return Ok(None);
+    }
+    let paths: Vec<&str> = extras.iter().map(String::as_str).collect();
+    let numstat = diff_output_paths(cwd, &from, &to, &["--numstat"], &paths)?;
+    let hydrated = diff_output_paths(cwd, &from, &to, &["--unified=2147483647"], &paths)?;
+    let (patch, complete_context) = if hydrated.len() <= MAX_HYDRATED_PATCH_BYTES {
+        (hydrated, true)
+    } else {
+        (
+            diff_output_paths(cwd, &from, &to, &["--unified=3"], &paths)?,
+            false,
+        )
+    };
+    Ok(Some((
+        extras,
+        ReviewDiff {
+            numstat,
+            patch,
+            complete_context,
+        },
+    )))
+}
+
 fn resolve_range(
     cwd: &Path,
     source: Source,
@@ -296,16 +446,27 @@ fn resolve_range(
         Source::Staged => (head, index_tree(cwd)?),
         Source::Committed => (branch_base(cwd), head_or_empty(cwd)),
         Source::Branch => (branch_base(cwd), checkpoint::capture_worktree_commit(cwd)?),
+        Source::AllChanges => {
+            bail!("all changes are read from the conversation, not Git")
+        }
     })
 }
 
 /// The tree the index would write — the "staged" snapshot. Does not modify
 /// the index or the working tree.
 fn index_tree(cwd: &Path) -> anyhow::Result<String> {
+    // `git write-tree` rewrites the index (it records the cache-tree
+    // extension) even with `GIT_OPTIONAL_LOCKS=0`. The workspace watcher keeps
+    // `.git/index`, so writing the real one would retrigger the Git page's
+    // refresh forever. Point Git at a throwaway copy instead.
+    let copy = index_copy(cwd)?;
     let output = command(cwd)
+        .env("GIT_INDEX_FILE", &copy)
         .args(["write-tree"])
         .output()
         .map_err(|err| anyhow!("failed to snapshot the Git index: {err}"))?;
+    let _ = std::fs::remove_file(&copy);
+    let _ = std::fs::remove_file(copy.with_extension("lock"));
     if output.status.success() {
         let tree = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         if !tree.is_empty() {
@@ -317,6 +478,35 @@ fn index_tree(cwd: &Path) -> anyhow::Result<String> {
         bail!("{}", command_error(&output));
     }
     Ok(EMPTY_TREE.to_owned())
+}
+
+/// A throwaway copy of the repository's index under its Git directory, where
+/// the workspace watcher ignores every path it does not need. A missing index
+/// needs no copy: Git reads an empty one, matching the unborn-branch case.
+fn index_copy(cwd: &Path) -> anyhow::Result<PathBuf> {
+    let git_dir = run_git_ok(cwd, ["rev-parse", "--absolute-git-dir"])?;
+    let git_dir = PathBuf::from(git_dir.trim());
+    let copy = git_dir.join(format!("orbit-index-read-{}", next_temp_suffix()));
+    // A plain read + write, not `std::fs::copy`: on macOS the copy syscall
+    // emits an FSEvents notification for the *source* `.git/index`, and the
+    // workspace watcher keeps that path — so every Review load re-dirtied the
+    // watch and re-triggered itself, forever.
+    if let Ok(bytes) = std::fs::read(git_dir.join("index")) {
+        std::fs::write(&copy, bytes)
+            .map_err(|err| anyhow!("failed to snapshot the Git index: {err}"))?;
+    }
+    Ok(copy)
+}
+
+/// A per-process-unique suffix for temporary index copies (no `uuid` dep).
+fn next_temp_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// The merge base of `HEAD` and the repository's default branch (`main` /
@@ -342,6 +532,16 @@ fn head_or_empty(cwd: &Path) -> String {
 }
 
 fn diff_output(cwd: &Path, from: &str, to: &str, modes: &[&str]) -> anyhow::Result<String> {
+    diff_output_paths(cwd, from, to, modes, &["."])
+}
+
+fn diff_output_paths(
+    cwd: &Path,
+    from: &str,
+    to: &str,
+    modes: &[&str],
+    paths: &[&str],
+) -> anyhow::Result<String> {
     let output = command(cwd)
         .args([
             "-c",
@@ -354,7 +554,8 @@ fn diff_output(cwd: &Path, from: &str, to: &str, modes: &[&str]) -> anyhow::Resu
         .arg("--no-renames")
         .arg(from)
         .arg(to)
-        .args(["--", "."])
+        .arg("--")
+        .args(paths)
         .output()
         .map_err(|err| anyhow!("failed to generate Git diff: {err}"))?;
     if output.status.success() {
@@ -414,6 +615,7 @@ impl StatusRow {
     }
 
     /// Badge for the unstaged list (`U` for untracked).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn change_badge(&self) -> char {
         if self.untracked() {
             'U'
@@ -580,6 +782,17 @@ pub fn discard_paths(cwd: &Path, paths: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Discard every unstaged change: tracked files restore from the index and
+/// untracked files are removed. Staged changes are left untouched. The UI
+/// confirms before calling this.
+pub fn discard_unstaged(cwd: &Path) -> Result<(), String> {
+    // Restore the working tree from the index (so an unborn branch, whose
+    // tracked files have no committed copy, simply fails harmlessly) and drop
+    // the untracked files the working tree added.
+    let _ = run_git(cwd, &["checkout", "--", "."]);
+    run_git(cwd, &["clean", "-fdq"]).map(|_| ())
+}
+
 /// The staged patch text (for commit-message generation).
 pub fn staged_patch(cwd: &Path) -> Result<String, String> {
     run_git(
@@ -596,19 +809,22 @@ pub fn staged_patch(cwd: &Path) -> Result<String, String> {
     )
 }
 
-/// The unstaged patch text (for commit-message generation).
-pub fn unstaged_patch(cwd: &Path) -> Result<String, String> {
-    run_git(
-        cwd,
-        &[
-            "-c",
-            "core.quotePath=false",
-            "diff",
-            "--no-color",
-            "--no-renames",
-            "--",
-        ],
-    )
+/// The working tree against HEAD — staged and unstaged tracked changes
+/// together — for commit-message generation of everything the commit button
+/// records when *Include unstaged changes* is on.
+///
+/// Untracked files are absent by design: `git diff` never shows them, so
+/// `commit_message` synthesizes their diffs from the file contents.
+pub fn worktree_patch(cwd: &Path) -> Result<String, String> {
+    // An unborn branch has no HEAD to diff against; there is nothing staged
+    // either, so the untracked files are the whole change.
+    let against_head = run_git(cwd, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
+    let mut args = vec!["-c", "core.quotePath=false", "diff"];
+    if against_head {
+        args.push("HEAD");
+    }
+    args.extend(["--no-color", "--no-renames", "--"]);
+    run_git(cwd, &args)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1260,6 +1476,77 @@ mod tests {
     }
 
     #[test]
+    fn parses_branch_entry_lines() {
+        let dated = parse_branch_entry("feat/x\t2024-05-01T10:00:00+02:00");
+        assert_eq!(dated.name, "feat/x");
+        assert_eq!(
+            dated.commit_date.as_deref(),
+            Some("2024-05-01T10:00:00+02:00")
+        );
+
+        // `run_git` trims, so an undated branch loses its trailing tab.
+        let undated = parse_branch_entry("unborn");
+        assert_eq!(undated.name, "unborn");
+        assert_eq!(undated.commit_date, None);
+    }
+
+    /// The branch picker's "last active" column reads `list_branch_entries`,
+    /// so it must carry a tip date per branch and stay newest-first;
+    /// `list_branches` is the same ordering without dates.
+    #[test]
+    fn branch_entries_carry_the_tip_date_newest_first() {
+        let root = repository();
+        // Pin the committer date so ordering cannot depend on how fast the
+        // test ran.
+        let commit_at = |date: &str, message: &str| {
+            let status = command(&root)
+                .args(["commit", "--quiet", "-am", message])
+                .env("GIT_COMMITTER_DATE", date)
+                .env("GIT_AUTHOR_DATE", date)
+                .status()
+                .unwrap();
+            assert!(status.success(), "commit at {date} failed");
+        };
+
+        git_ok(&root, &["checkout", "--quiet", "-b", "feat/old"]);
+        fs::write(root.join("src/lib.rs"), "fn old() {}\n").unwrap();
+        commit_at("2020-01-01T00:00:00+00:00", "old");
+
+        git_ok(&root, &["checkout", "--quiet", "main"]);
+        git_ok(&root, &["checkout", "--quiet", "-b", "feat/new"]);
+        fs::write(root.join("src/lib.rs"), "fn new() {}\n").unwrap();
+        commit_at("2024-01-01T00:00:00+00:00", "new");
+
+        let entries = list_branch_entries(&root).unwrap();
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        let position = |name: &str| {
+            names
+                .iter()
+                .position(|candidate| *candidate == name)
+                .unwrap()
+        };
+        // The pinned dates order the two feature branches; `main` keeps the
+        // real baseline date, so the assertion is newest-first, not a fixed
+        // list.
+        assert!(position("feat/new") < position("feat/old"));
+        let dates: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.commit_date.as_deref().expect("dated branch"))
+            .collect();
+        let mut newest_first = dates.clone();
+        newest_first.sort_unstable();
+        newest_first.reverse();
+        assert_eq!(dates, newest_first);
+        assert!(entries[position("feat/new")]
+            .commit_date
+            .as_deref()
+            .is_some_and(|date| date.starts_with("2024-01-01")));
+        assert_eq!(list_branches(&root).unwrap(), names);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn status_rows_split_staged_and_unstaged_with_counts() {
         let root = repository();
         fs::write(root.join("src/lib.rs"), "fn staged() {}\n").unwrap();
@@ -1281,6 +1568,48 @@ mod tests {
         let rows = status_rows(&root).unwrap();
         assert!(rows.iter().all(StatusRow::staged));
         assert!(!rows.iter().any(StatusRow::unstaged));
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// The Git page's Changes tab reloads its diff on every `git status`
+    /// refresh; the staged/unstaged sources call `index_tree`. If that rewrote
+    /// `.git/index`, the workspace watcher would fire, reload the diff, and
+    /// rewrite the index again — forever. `git write-tree` does rewrite the
+    /// index (its cache-tree extension) even with `GIT_OPTIONAL_LOCKS=0`.
+    #[test]
+    fn index_tree_reads_without_rewriting_the_index() {
+        use std::time::{Duration, SystemTime};
+
+        let root = repository();
+        let index = root.join(".git/index");
+        // Pin the mtime so a rewrite is detectable regardless of clock or
+        // filesystem timestamp granularity.
+        let pinned = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        fs::File::options()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(pinned)
+            .unwrap();
+
+        let tree = index_tree(&root).unwrap();
+        assert!(!tree.is_empty());
+        assert_eq!(
+            fs::metadata(&index).unwrap().modified().unwrap(),
+            pinned,
+            "index_tree must read the index without rewriting it"
+        );
+        // The throwaway copy must not linger next to the real index.
+        let leftovers: Vec<_> = fs::read_dir(root.join(".git"))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("orbit-index-read-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary index left behind: {leftovers:?}"
+        );
         fs::remove_dir_all(root).ok();
     }
 
@@ -1543,6 +1872,62 @@ mod tests {
         assert_eq!(summary(&data), (1, 1, 0));
         assert!(data.patch.contains("from_turn"));
         assert!(!data.patch.contains("after_turn"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_bash_edit_is_reported_as_changed_outside_the_calls() {
+        let root = repository();
+        let session = "extras-session";
+        checkpoint::capture_turn(&root, session, 0).unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        // One file through a recorded `edit`, one through a shell command the
+        // turn never named in a tool call.
+        fs::write(root.join("src/lib.rs"), "fn baseline() {}\nfn named() {}\n").unwrap();
+        fs::write(root.join("src/formatted.rs"), "fn formatted() {}\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        let recorded = vec!["src/lib.rs".to_string()];
+        let (paths, diff) = changed_outside_calls(&root, session, 1, &recorded)
+            .unwrap()
+            .expect("the unrecorded file is a worktree change");
+        assert_eq!(paths, vec!["src/formatted.rs".to_string()]);
+        assert!(diff.patch.contains("formatted"));
+        assert!(!diff.patch.contains("named"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_turn_whose_worktree_changes_are_all_recorded_has_no_extras() {
+        let root = repository();
+        let session = "extras-covered-session";
+        checkpoint::capture_turn(&root, session, 0).unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn baseline() {}\nfn named() {}\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        let recorded = vec!["src/lib.rs".to_string()];
+        assert!(changed_outside_calls(&root, session, 1, &recorded)
+            .unwrap()
+            .is_none());
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// A session opened in a subdirectory records shorter paths than Git
+    /// reports; the longer one still counts as the same file.
+    #[test]
+    fn a_subdirectory_session_path_still_covers_its_repository_path() {
+        let root = repository();
+        let session = "extras-subdir-session";
+        checkpoint::capture_turn(&root, session, 0).unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn baseline() {}\nfn named() {}\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        let recorded = vec!["lib.rs".to_string()];
+        assert!(changed_outside_calls(&root, session, 1, &recorded)
+            .unwrap()
+            .is_none());
         fs::remove_dir_all(root).ok();
     }
 

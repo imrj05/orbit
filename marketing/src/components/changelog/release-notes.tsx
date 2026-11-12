@@ -22,13 +22,13 @@ export function ReleaseNotes({
     <div className={cn("flex flex-col gap-6", className)}>
       {populated.length === 0 ? (
         <p className="text-[14px] italic text-ink-3">
-          Maintenance release — no notes were published.
+          Maintenance release: no notes were published.
         </p>
       ) : (
         populated.map((group, index) => (
           <section key={`${group.kind}-${index}`}>
             {group.kind ? (
-              <h4 className="mb-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-3">
+              <h4 className="mb-3 flex items-center gap-2 text-[11.5px] font-medium text-ink-3">
                 <span
                   aria-hidden
                   className={cn(

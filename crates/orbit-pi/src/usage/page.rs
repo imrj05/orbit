@@ -18,11 +18,12 @@ use serde_json::Value;
 use crate::composer::ComposerInput;
 
 use super::aggregate::{
-    Breakdown, BucketRow, ChartMetric, GroupRow, LatencyMetric, SeriesPoint, SessionRow, ToolRow,
-    Totals, UsageSnapshot,
+    Breakdown, BucketRow, ChartMetric, GroupRow, LatencyMetric, SessionRow, ToolRow, Totals,
+    UsageSnapshot,
 };
 use super::collect::{now_ms, UsageScanner};
 use super::model::*;
+use super::sparkline;
 use super::table::{FailureRow, FailureSort, TableKind};
 
 /// Page sizes offered by the sessions table footer (§26).
@@ -466,105 +467,6 @@ pub fn query_failures(
     }
 }
 
-/// Which column the Usage-over-time data table sorts on.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SeriesSort {
-    Time,
-    Value,
-    Requests,
-    Tokens,
-}
-
-impl SeriesSort {
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Time => "time",
-            Self::Value => "value",
-            Self::Requests => "requests",
-            Self::Tokens => "tokens",
-        }
-    }
-
-    pub fn label(self) -> String {
-        match self {
-            Self::Time => tr!("usage.col_time"),
-            Self::Value => tr!("usage.col_metric"),
-            Self::Requests => tr!("usage.metric_requests"),
-            Self::Tokens => tr!("usage.metric_tokens"),
-        }
-    }
-
-    /// Hideable columns; Time is always shown.
-    pub const HIDEABLE: [Self; 3] = [Self::Value, Self::Requests, Self::Tokens];
-}
-
-/// One page of the usage-over-time table plus the metadata the footer needs.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SeriesQueryResult {
-    pub rows: Vec<SeriesPoint>,
-    pub total: usize,
-    pub page: usize,
-    pub page_size: usize,
-}
-
-impl SeriesQueryResult {
-    pub fn page_count(&self) -> usize {
-        self.total.div_ceil(self.page_size.max(1)).max(1)
-    }
-
-    pub fn first_row(&self) -> usize {
-        if self.total == 0 {
-            0
-        } else {
-            (self.page - 1) * self.page_size + 1
-        }
-    }
-
-    pub fn last_row(&self) -> usize {
-        (self.first_row() + self.rows.len()).saturating_sub(1)
-    }
-}
-
-/// Filter → search → sort → paginate the usage-over-time buckets. Pure, so
-/// the ordering is unit-tested without GPUI.
-pub fn query_series(
-    points: &[SeriesPoint],
-    search: &str,
-    sort: SeriesSort,
-    desc: bool,
-    metric: ChartMetric,
-    latency: LatencyMetric,
-    page: usize,
-    page_size: usize,
-) -> SeriesQueryResult {
-    let needle = search.trim().to_lowercase();
-    let mut points: Vec<SeriesPoint> = points
-        .iter()
-        .filter(|point| {
-            needle.is_empty()
-                || point.stamp.to_lowercase().contains(&needle)
-                || point.label.to_lowercase().contains(&needle)
-        })
-        .cloned()
-        .collect();
-    points.sort_by(|a, b| {
-        let left = series_point_key(sort, metric, latency, a);
-        let right = series_point_key(sort, metric, latency, b);
-        let order = left
-            .partial_cmp(&right)
-            .unwrap_or(std::cmp::Ordering::Equal);
-        let order = if desc { order.reverse() } else { order };
-        order.then(a.start_ms.cmp(&b.start_ms))
-    });
-    let (rows, page, total) = paginate(&points, page, page_size);
-    SeriesQueryResult {
-        rows,
-        total,
-        page,
-        page_size: page_size.max(1),
-    }
-}
-
 /// The open filter popover, if any. One at a time, like the app's other
 /// anchored menus.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -581,10 +483,6 @@ pub enum MenuKind {
     BreakdownColumns,
     /// The breakdown table's rows-per-page picker.
     BreakdownPageSize,
-    /// The usage-over-time table's column-visibility picker.
-    SeriesColumns,
-    /// The usage-over-time table's rows-per-page picker.
-    SeriesPageSize,
     /// The Daily records table's column-visibility picker.
     BucketColumns,
     /// The Daily records table's rows-per-page picker.
@@ -751,39 +649,6 @@ impl DetailTab {
     }
 }
 
-/// Simple is the scan: headline figures and the trend. Details is the audit:
-/// ranked breakdowns and the session tables. The two never share a viewport,
-/// so the page stays short and each reading has its own hierarchy.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum UsageMode {
-    Simple,
-    Details,
-}
-
-impl UsageMode {
-    pub const ALL: [Self; 2] = [Self::Simple, Self::Details];
-
-    pub fn label(self) -> String {
-        match self {
-            Self::Simple => tr!("usage.mode_simple"),
-            Self::Details => tr!("usage.mode_details"),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Simple => "simple",
-            Self::Details => "details",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|mode| mode.as_str() == raw.trim())
-    }
-}
-
 /// Per-tab view state for the breakdown table: each dimension remembers its
 /// own search, hidden columns, and page — parity with the sessions table,
 /// scoped per dimension because the columns and row sets differ.
@@ -844,29 +709,6 @@ fn paginate<T: Clone>(rows: &[T], page: usize, page_size: usize) -> (Vec<T>, usi
     (page_rows, page, total)
 }
 
-fn series_point_key(
-    sort: SeriesSort,
-    metric: ChartMetric,
-    latency: LatencyMetric,
-    point: &SeriesPoint,
-) -> f64 {
-    match sort {
-        SeriesSort::Time => point.start_ms as f64,
-        SeriesSort::Value => {
-            if metric == ChartMetric::Latency {
-                latency
-                    .value(&point.latency)
-                    .or_else(|| point.totals.avg_duration_ms())
-                    .unwrap_or(0.0)
-            } else {
-                metric.value(&point.totals)
-            }
-        }
-        SeriesSort::Requests => point.totals.requests as f64,
-        SeriesSort::Tokens => point.totals.tokens.total as f64,
-    }
-}
-
 /// Opens a session in the app's chat surface (installed by `OrbitApp`).
 pub type OpenSession = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 /// Leaves the usage page (installed by `OrbitApp`).
@@ -886,13 +728,6 @@ pub struct UsagePage {
     session_sort_desc: bool,
     bucket_sort: BucketSort,
     bucket_sort_desc: bool,
-    series_sort: SeriesSort,
-    series_sort_desc: bool,
-    /// 1-based usage-over-time table page and its size.
-    series_page: usize,
-    series_page_size: usize,
-    /// Usage-over-time columns the user hid; Time is never in this list.
-    series_hidden_columns: Vec<&'static str>,
     /// 1-based Daily table page and its size.
     bucket_page: usize,
     bucket_page_size: usize,
@@ -920,13 +755,10 @@ pub struct UsagePage {
     /// Per-tab breakdown table state: search, hidden columns, and page.
     breakdown_views: HashMap<BreakdownTab, BreakdownView>,
     breakdown_search: Entity<ComposerInput>,
-    series_search: Entity<ComposerInput>,
     bucket_search: Entity<ComposerInput>,
     failure_search: Entity<ComposerInput>,
     /// Which table the merged records section shows.
     detail_tab: DetailTab,
-    /// Simple (overview) vs Details (breakdown + records).
-    usage_mode: UsageMode,
 
     // ── controls ──
     /// The page's own scroll position. Opening the page always starts at the
@@ -954,6 +786,13 @@ pub struct UsagePage {
     hover_bucket: Option<usize>,
     /// The day under the pointer on the calendar heatmap, if any.
     hover_day: Option<usize>,
+    /// The bucket under the pointer on the Summary board's sparklines, shared
+    /// by all four cards so one hover reads the same day across the row.
+    kpi_hover: Option<usize>,
+    /// The board's previous sparkline shapes, and the generation that tells the
+    /// view to morph them into the current ones.
+    kpi_previous: Option<Vec<Vec<f64>>>,
+    kpi_serial: u64,
     loading: bool,
     refreshing: bool,
     last_request: Option<Instant>,
@@ -974,7 +813,6 @@ pub struct UsagePage {
     _search_sub: Subscription,
     _menu_query_sub: Subscription,
     _breakdown_search_sub: Subscription,
-    _series_search_sub: Subscription,
     _bucket_search_sub: Subscription,
     _failure_search_sub: Subscription,
     /// Width of the main area, refreshed by the shell each render.
@@ -1017,6 +855,7 @@ impl UsagePage {
                 .with_placeholder_key("page.search_sessions")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let menu_query = cx.new(|cx| {
             ComposerInput::new(cx)
@@ -1024,6 +863,7 @@ impl UsagePage {
                 .with_placeholder_key("page.filter")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let search_sub = cx.observe(&search, |page: &mut Self, _, cx| {
             // The search narrows the sessions table, so its rows are stale and
@@ -1038,25 +878,16 @@ impl UsagePage {
                 .with_placeholder_key("page.search_breakdown")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let breakdown_search_sub = cx.observe(&breakdown_search, |_, _, cx| cx.notify());
-        let series_search = cx.new(|cx| {
-            ComposerInput::new(cx)
-                .with_element_id("usage-series-search")
-                .with_placeholder_key("page.search_buckets")
-                .with_key_context("Composer Picker")
-                .with_max_lines(1)
-        });
-        let series_search_sub = cx.observe(&series_search, |page: &mut Self, _, cx| {
-            page.series_page = 1;
-            cx.notify();
-        });
         let bucket_search = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("usage-bucket-search")
                 .with_placeholder_key("page.search_buckets")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let bucket_search_sub = cx.observe(&bucket_search, |page: &mut Self, _, cx| {
             page.bucket_page = 1;
@@ -1068,6 +899,7 @@ impl UsagePage {
                 .with_placeholder_key("page.search_failures")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let failure_search_sub = cx.observe(&failure_search, |page: &mut Self, _, cx| {
             page.failure_page = 1;
@@ -1084,11 +916,6 @@ impl UsagePage {
             session_sort_desc: prefs.session_sort_desc,
             bucket_sort: BucketSort::Date,
             bucket_sort_desc: true,
-            series_sort: SeriesSort::Time,
-            series_sort_desc: false,
-            series_page: 1,
-            series_page_size: DEFAULT_BREAKDOWN_PAGE_SIZE,
-            series_hidden_columns: Vec::new(),
             bucket_page: 1,
             bucket_page_size: DEFAULT_PAGE_SIZE,
             bucket_hidden_columns: Vec::new(),
@@ -1109,11 +936,9 @@ impl UsagePage {
                 .unwrap_or(BreakdownTab::Models),
             breakdown_views: HashMap::new(),
             breakdown_search,
-            series_search,
             bucket_search,
             failure_search,
             detail_tab: DetailTab::parse(&prefs.detail_tab).unwrap_or(DetailTab::Sessions),
-            usage_mode: UsageMode::parse(&prefs.usage_mode).unwrap_or(UsageMode::Simple),
             scroll: ScrollHandle::new(),
             search,
             menu: None,
@@ -1127,6 +952,9 @@ impl UsagePage {
             dismissed_at: None,
             hover_bucket: None,
             hover_day: None,
+            kpi_hover: None,
+            kpi_previous: None,
+            kpi_serial: 0,
             loading: true,
             refreshing: false,
             last_request: None,
@@ -1139,7 +967,6 @@ impl UsagePage {
             _search_sub: search_sub,
             _menu_query_sub: menu_query_sub,
             _breakdown_search_sub: breakdown_search_sub,
-            _series_search_sub: series_search_sub,
             _bucket_search_sub: bucket_search_sub,
             _failure_search_sub: failure_search_sub,
             main_width: 1000.,
@@ -1173,6 +1000,7 @@ impl UsagePage {
         self.context_row = None;
         self.hover_bucket = None;
         self.hover_day = None;
+        self.clear_kpi_hover();
     }
 
     /// The user asked for fresh numbers.
@@ -1271,7 +1099,22 @@ impl UsagePage {
             self.snapshot = None;
             return;
         };
-        self.snapshot = Some(Rc::new(UsageSnapshot::compute(&index, &self.filter)));
+        // The board's lines morph from the shapes they are showing now, so the
+        // old snapshot is read before it is replaced (§18: motion follows the
+        // data, never a paint).
+        let previous = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| sparkline::kpi_values(&snapshot.series));
+        let snapshot = UsageSnapshot::compute(&index, &self.filter);
+        let next = sparkline::kpi_values(&snapshot.series);
+        if let Some(previous) = previous {
+            if !sparkline::same_values(&previous, &next) {
+                self.kpi_previous = Some(previous);
+                self.kpi_serial = self.kpi_serial.wrapping_add(1);
+            }
+        }
+        self.snapshot = Some(Rc::new(snapshot));
     }
 
     // ── reads used by the view ─────────────────────────────────────────────
@@ -1284,6 +1127,20 @@ impl UsagePage {
 
     pub fn snapshot(&self) -> Option<&Rc<UsageSnapshot>> {
         self.snapshot.as_ref()
+    }
+
+    /// Set by `OrbitApp` on every render: the main area's width in points.
+    pub fn set_main_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if (self.main_width - width).abs() > 0.5 {
+            self.main_width = width;
+            cx.notify();
+        }
+    }
+
+    /// The header's leading inset. The shell leaves it at the normal page
+    /// padding unless a page override widens it.
+    pub fn header_leading(&self) -> f32 {
+        self.header_leading
     }
 
     /// The width of the main area the shell gave us. The page lays itself out
@@ -1304,31 +1161,6 @@ impl UsagePage {
             - CARD_EDGE
             - super::view::SECTION_PAD * 2.)
             .max(360.)
-    }
-
-    /// Set by `OrbitApp` on every render: the main area's width in points.
-    pub fn set_main_width(&mut self, width: f32, cx: &mut Context<Self>) {
-        if (self.main_width - width).abs() > 0.5 {
-            self.main_width = width;
-            cx.notify();
-        }
-    }
-
-    /// The header's leading inset. `OrbitApp` sets it each render.
-    pub fn header_leading(&self) -> f32 {
-        self.header_leading
-    }
-
-    /// Set by `OrbitApp` on every render: how far the header's leading edge
-    /// sits from the page's left edge. It widens when the sessions sidebar is
-    /// collapsed, because the page then spans the window and its own Back
-    /// affordance would otherwise sit under the macOS traffic lights (and the
-    /// overlaid sidebar/history controls).
-    pub fn set_header_leading(&mut self, leading: f32, cx: &mut Context<Self>) {
-        if (self.header_leading - leading).abs() > 0.5 {
-            self.header_leading = leading;
-            cx.notify();
-        }
     }
 
     // ── tables ─────────────────────────────────────────────────────────────
@@ -1583,9 +1415,10 @@ impl UsagePage {
 
     pub fn set_filter(&mut self, filter: UsageFilter, cx: &mut Context<Self>) {
         self.filter = filter;
+        // The board's readout names a bucket of the old range.
+        self.clear_kpi_hover();
         // A narrower or different result set invalidates the current page (§28).
         self.page = 1;
-        self.series_page = 1;
         self.bucket_page = 1;
         self.failure_page = 1;
         self.dirty = true;
@@ -1617,6 +1450,34 @@ impl UsagePage {
             self.hover_bucket = bucket;
             cx.notify();
         }
+    }
+
+    /// The pointer entered a sparkline bucket on the Summary board (or left the
+    /// board). All four cards read the same bucket, the recipe's synced row.
+    /// Reading is immediate: the highlight and marker land on the bucket with
+    /// no transition.
+    pub fn set_kpi_hover(&mut self, bucket: Option<usize>, cx: &mut Context<Self>) {
+        if self.kpi_hover == bucket {
+            return;
+        }
+        self.kpi_hover = bucket;
+        cx.notify();
+    }
+
+    fn clear_kpi_hover(&mut self) {
+        self.kpi_hover = None;
+    }
+
+    pub fn kpi_hover(&self) -> Option<usize> {
+        self.kpi_hover
+    }
+
+    pub fn kpi_previous(&self) -> Option<&[Vec<f64>]> {
+        self.kpi_previous.as_deref()
+    }
+
+    pub fn kpi_serial(&self) -> u64 {
+        self.kpi_serial
     }
 
     /// The pointer entered a calendar day (or left the grid).
@@ -1799,8 +1660,6 @@ impl UsagePage {
             | MenuKind::Columns
             | MenuKind::BreakdownColumns
             | MenuKind::BreakdownPageSize
-            | MenuKind::SeriesColumns
-            | MenuKind::SeriesPageSize
             | MenuKind::BucketColumns
             | MenuKind::BucketPageSize
             | MenuKind::FailureColumns
@@ -1826,8 +1685,6 @@ impl UsagePage {
             | MenuKind::Columns
             | MenuKind::BreakdownColumns
             | MenuKind::BreakdownPageSize
-            | MenuKind::SeriesColumns
-            | MenuKind::SeriesPageSize
             | MenuKind::BucketColumns
             | MenuKind::BucketPageSize
             | MenuKind::FailureColumns
@@ -1848,8 +1705,6 @@ impl UsagePage {
             | MenuKind::Columns
             | MenuKind::BreakdownColumns
             | MenuKind::BreakdownPageSize
-            | MenuKind::SeriesColumns
-            | MenuKind::SeriesPageSize
             | MenuKind::BucketColumns
             | MenuKind::BucketPageSize
             | MenuKind::FailureColumns
@@ -1912,91 +1767,6 @@ impl UsagePage {
         self.bucket_sort_desc = desc;
         self.bucket_page = 1;
         cx.notify();
-    }
-
-    pub fn set_series_sort(&mut self, sort: SeriesSort, desc: bool, cx: &mut Context<Self>) {
-        if self.series_sort == sort && self.series_sort_desc == desc {
-            return;
-        }
-        self.series_sort = sort;
-        self.series_sort_desc = desc;
-        self.series_page = 1;
-        cx.notify();
-    }
-
-    pub fn series_search(&self) -> &Entity<ComposerInput> {
-        &self.series_search
-    }
-
-    pub fn series_page_size(&self) -> usize {
-        self.series_page_size
-    }
-
-    pub fn series_hidden_columns(&self) -> &[&'static str] {
-        &self.series_hidden_columns
-    }
-
-    pub fn series_column_visible(&self, column: SeriesSort) -> bool {
-        column == SeriesSort::Time || !self.series_hidden_columns.contains(&column.id())
-    }
-
-    pub fn toggle_series_column(&mut self, column: SeriesSort, cx: &mut Context<Self>) {
-        if column == SeriesSort::Time {
-            return;
-        }
-        let id = column.id();
-        match self
-            .series_hidden_columns
-            .iter()
-            .position(|hidden| *hidden == id)
-        {
-            Some(ix) => {
-                self.series_hidden_columns.remove(ix);
-            }
-            None => self.series_hidden_columns.push(id),
-        }
-        cx.notify();
-    }
-
-    pub fn show_all_series_columns(&mut self, cx: &mut Context<Self>) {
-        if self.series_hidden_columns.is_empty() {
-            return;
-        }
-        self.series_hidden_columns.clear();
-        cx.notify();
-    }
-
-    pub fn set_series_page(&mut self, page: usize, cx: &mut Context<Self>) {
-        let page = page.max(1);
-        if self.series_page == page {
-            return;
-        }
-        self.series_page = page;
-        cx.notify();
-    }
-
-    pub fn set_series_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
-        if !PAGE_SIZES.contains(&size) || self.series_page_size == size {
-            return;
-        }
-        self.series_page_size = size;
-        self.series_page = 1;
-        self.menu = None;
-        cx.notify();
-    }
-
-    /// Filter → sort → paginate the usage-over-time buckets.
-    pub fn series_result(&self, snapshot: &UsageSnapshot, cx: &App) -> SeriesQueryResult {
-        query_series(
-            &snapshot.series.points,
-            &self.series_search.read(cx).text(),
-            self.series_sort,
-            self.series_sort_desc,
-            self.metric,
-            self.latency_metric,
-            self.series_page,
-            self.series_page_size,
-        )
     }
 
     pub fn bucket_search(&self) -> &Entity<ComposerInput> {
@@ -2135,10 +1905,6 @@ impl UsagePage {
     /// The breakdown table's current sort key and direction.
     pub fn bucket_sort_state(&self) -> (BucketSort, bool) {
         (self.bucket_sort, self.bucket_sort_desc)
-    }
-
-    pub fn series_sort_state(&self) -> (SeriesSort, bool) {
-        (self.series_sort, self.series_sort_desc)
     }
 
     /// The failures table's current sort key and direction.
@@ -2423,20 +2189,6 @@ impl UsagePage {
         cx.notify();
     }
 
-    pub fn usage_mode(&self) -> UsageMode {
-        self.usage_mode
-    }
-
-    pub fn set_usage_mode(&mut self, mode: UsageMode, cx: &mut Context<Self>) {
-        if self.usage_mode == mode {
-            return;
-        }
-        self.usage_mode = mode;
-        self.scroll.set_offset(point(px(0.), px(0.)));
-        self.persist();
-        cx.notify();
-    }
-
     /// Open a session in the chat surface.
     pub fn open_session(&mut self, window: &mut Window, cx: &mut Context<Self>, session: u16) {
         let Some(index) = &self.index else {
@@ -2521,7 +2273,6 @@ impl UsagePage {
             breakdown_sort: self.breakdown_sort.as_str().to_string(),
             breakdown_sort_desc: self.breakdown_sort_desc,
             detail_tab: self.detail_tab.as_str().to_string(),
-            usage_mode: self.usage_mode.as_str().to_string(),
         }
         .persist();
     }
@@ -2543,7 +2294,6 @@ struct Prefs {
     breakdown_sort: String,
     breakdown_sort_desc: bool,
     detail_tab: String,
-    usage_mode: String,
 }
 
 impl Default for Prefs {
@@ -2562,7 +2312,6 @@ impl Default for Prefs {
             breakdown_sort: String::new(),
             breakdown_sort_desc: true,
             detail_tab: String::new(),
-            usage_mode: String::new(),
         }
     }
 }
@@ -2627,7 +2376,6 @@ impl Prefs {
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
             detail_tab: text("detail_tab").unwrap_or_default(),
-            usage_mode: text("usage_mode").unwrap_or_default(),
         }
     }
 
@@ -2654,7 +2402,6 @@ impl Prefs {
             "breakdown_sort": self.breakdown_sort,
             "breakdown_sort_desc": self.breakdown_sort_desc,
             "detail_tab": self.detail_tab,
-            "usage_mode": self.usage_mode,
         });
         let _ = std::fs::write(path, payload.to_string());
     }

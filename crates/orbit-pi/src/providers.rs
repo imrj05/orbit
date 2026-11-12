@@ -108,8 +108,10 @@ fn read_custom_at(path: &Path) -> Result<Vec<CustomProvider>, String> {
 }
 
 /// Write (or update) one provider entry, preserving every other key in the
-/// file. `models` is omitted when empty — for a built-in provider that keeps
-/// its catalog; for a custom provider the caller validates non-empty first.
+/// file. An empty `model_ids` removes the `models` key, which returns a
+/// built-in provider to pi's catalog and drops any previously saved override.
+/// Custom providers require at least one model id, so the caller rejects an
+/// empty list before reaching here.
 ///
 /// An empty `api_key` keeps whatever key the file already had, so re-saving
 /// a provider never wipes a stored secret.
@@ -183,7 +185,11 @@ fn write_provider_at(
         // Blank field: keep the stored key if one exists, otherwise leave it out.
         _ => {}
     }
-    if !model_ids.is_empty() {
+    if model_ids.is_empty() {
+        // An empty list means "use pi's built-in models", so drop the key
+        // instead of keeping a stale override the user just cleared.
+        entry.remove("models");
+    } else {
         let models: Vec<Value> = model_ids
             .iter()
             .map(|model_id| {
@@ -265,6 +271,11 @@ fn read_root_at(path: &Path) -> Result<Value, String> {
 
 /// Pretty-print and atomically replace the file (temp + rename), so a crash
 /// mid-write can never leave a truncated config behind.
+///
+/// Written owner-only, because this file holds provider `apiKey` values as well
+/// as addresses: the Providers editor stores them here, not in `auth.json`, and
+/// a config file that the process umask left at `0644` would expose them to
+/// every other account on the machine.
 fn write_root_at(path: &Path, root: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| {
@@ -277,22 +288,60 @@ fn write_root_at(path: &Path, root: &Value) -> Result<(), String> {
     }
     let pretty = serde_json::to_string_pretty(root)
         .map_err(|err| tr!("errors.could_not_serialize_models_json", error = err))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{pretty}\n")).map_err(|err| {
+    write_atomic_secure(path, &format!("{pretty}\n"), |err| {
         tr!(
             "errors.could_not_write",
-            path = tmp.display().to_string(),
-            error = err
-        )
-    })?;
-    std::fs::rename(&tmp, path).map_err(|err| {
-        let _ = std::fs::remove_file(&tmp);
-        tr!(
-            "errors.could_not_replace",
             path = path.display().to_string(),
             error = err
         )
     })
+}
+
+/// Write `contents` to a fresh temp file beside `path` with `0600` permissions,
+/// then rename it into place.
+///
+/// `create_new` means the temp file is created rather than truncated, so a
+/// symlink planted at that path — by another local user, or by a repository that
+/// contains one — cannot redirect the write. The mode is set before the rename,
+/// so the secret is never briefly readable under the process umask.
+fn write_atomic_secure(
+    path: &Path,
+    contents: &str,
+    on_error: impl Fn(std::io::Error) -> String,
+) -> Result<(), String> {
+    /// Distinguishes concurrent writers inside one process.
+    static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "models.json".into());
+    let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".{file_name}.orbit-{}-{seq}.tmp",
+        std::process::id()
+    ));
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(&on_error)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(&on_error)?;
+        }
+        use std::io::Write;
+        file.write_all(contents.as_bytes()).map_err(&on_error)?;
+        drop(file);
+        std::fs::rename(&temp, path).map_err(&on_error)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 /// `~/.pi/agent/auth.json`, pi's credential store (0600).
@@ -301,21 +350,6 @@ pub(crate) fn auth_path() -> PathBuf {
         .join(".pi")
         .join("agent")
         .join("auth.json")
-}
-
-/// `auth.json` key holding the Ollama Cloud session cookie. Deliberately not a
-/// provider id: pi treats any stored credential under a provider id as
-/// authoritative, so an unrecognized `ollama_cloud_session` type under `ollama`
-/// would shadow that provider's own (placeholder) key and make pi report
-/// `Provider is not configured: ollama`.
-const OLLAMA_SESSION_KEY: &str = "ollama-cloud-session";
-
-/// The provider ids Ollama Cloud usage attaches to: the local Ollama
-/// endpoint's id, and the `ollama-cloud` id used by the third-party
-/// `pi-ollama-cloud-provider` package. Orbit treats both as the same account
-/// for the session editor, sign-out, and quota display.
-pub(crate) fn is_ollama_cloud_provider(id: &str) -> bool {
-    id == "ollama" || id == "ollama-cloud"
 }
 
 /// A provider pi ships with, independent of whether it is authenticated.
@@ -621,9 +655,6 @@ fn read_catalog_counts(dir: &Path) -> Option<HashMap<String, usize>> {
 pub(crate) enum AuthKind {
     ApiKey,
     OAuth,
-    /// The Ollama Cloud settings-page cookie. Stored under a non-provider key
-    /// ([`OLLAMA_SESSION_KEY`]) and surfaced as provider `ollama` for the UI.
-    OllamaSession,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -658,16 +689,11 @@ fn read_auth_at(path: &Path) -> Result<HashMap<String, ProviderAuth>, String> {
         return Ok(HashMap::new());
     };
     let mut out = HashMap::new();
-    let mut has_ollama_session = false;
     for (id, entry) in entries {
         let Some(entry) = entry.as_object() else {
             continue;
         };
         let kind = match entry.get("type").and_then(Value::as_str) {
-            Some("ollama_cloud_session") => {
-                has_ollama_session = true;
-                continue;
-            }
             Some("oauth") => AuthKind::OAuth,
             Some("api_key") => AuthKind::ApiKey,
             // Older/partial entries: infer from the fields present.
@@ -676,17 +702,6 @@ fn read_auth_at(path: &Path) -> Result<HashMap<String, ProviderAuth>, String> {
             _ => continue,
         };
         out.insert(id.clone(), ProviderAuth { kind });
-    }
-    // The session cookie lives outside the provider credential; surface it
-    // under both Ollama ids so whichever card exists (the local `ollama`
-    // endpoint or the third-party `ollama-cloud` provider) shows it and
-    // offers Disconnect. A real credential under either id wins.
-    if has_ollama_session {
-        for id in ["ollama", "ollama-cloud"] {
-            out.entry(id.to_string()).or_insert(ProviderAuth {
-                kind: AuthKind::OllamaSession,
-            });
-        }
     }
     Ok(out)
 }
@@ -720,69 +735,6 @@ fn write_api_key_at(path: &Path, id: &str, key: &str) -> Result<(), String> {
 /// Remove a provider's stored credential (sign out).
 pub(crate) fn remove_auth(id: &str) -> Result<(), String> {
     remove_auth_at(&auth_path(), id)
-}
-
-/// Store an Ollama Cloud usage session (a `Cookie:` header the user pasted
-/// from their own signed-in browser) for provider id `ollama`. Written to
-/// `auth.json` under [`OLLAMA_SESSION_KEY`] with `0600`; the value is only ever
-/// sent to `ollama.com` by the pi-side quota handler and never logged or shown
-/// again.
-///
-/// The entry deliberately lives *outside* the `ollama` provider credential so
-/// it can never shadow the local endpoint's placeholder key in pi's auth
-/// resolver. It remains a distinct type from an API key, so the handler can
-/// tell the current monthly-credit API path (real key) from the legacy
-/// session/weekly settings-page path (session).
-pub(crate) fn write_ollama_cloud_session(session: &str) -> Result<(), String> {
-    write_ollama_cloud_session_at(&auth_path(), session)
-}
-
-fn write_ollama_cloud_session_at(path: &Path, session: &str) -> Result<(), String> {
-    let session = session.trim();
-    if session.is_empty() {
-        return Err(tr!("providers.session_cookie_required"));
-    }
-    // A pasted value must look like a cookie header, not an API key. Reject
-    // anything without a `name=value` pair so a stray key can't be stored as
-    // a session (and leak into a Cookie header).
-    if !session.contains('=') {
-        return Err("Paste the Cookie header (e.g. `__Secure-session=…`).".into());
-    }
-    let mut root = read_auth_root_at(path)?;
-    let entries = root
-        .as_object_mut()
-        .ok_or_else(|| tr!("providers.auth_json_not_object"))?;
-    // Repair a cookie written by an older build under the provider id; leaving
-    // it there keeps the local endpoint broken.
-    let legacy_session = entries
-        .get("ollama")
-        .and_then(Value::as_object)
-        .is_some_and(|entry| {
-            entry.get("type").and_then(Value::as_str) == Some("ollama_cloud_session")
-        });
-    if legacy_session {
-        entries.remove("ollama");
-    }
-    let mut entry = Map::new();
-    entry.insert("type".into(), Value::String("ollama_cloud_session".into()));
-    entry.insert("session".into(), Value::String(session.to_string()));
-    entries.insert(OLLAMA_SESSION_KEY.to_string(), Value::Object(entry));
-    write_json_secure(path, &root)
-}
-
-/// Remove only the Ollama Cloud session cookie entry, leaving any provider
-/// credential under `ollama` in place. Sign-out calls this because pi's own
-/// logout only knows the provider key.
-pub(crate) fn remove_ollama_session() -> Result<(), String> {
-    remove_ollama_session_at(&auth_path())
-}
-
-fn remove_ollama_session_at(path: &Path) -> Result<(), String> {
-    let mut root = read_auth_root_at(path)?;
-    if let Some(entries) = root.as_object_mut() {
-        entries.remove(OLLAMA_SESSION_KEY);
-    }
-    write_json_secure(path, &root)
 }
 
 fn remove_auth_at(path: &Path, id: &str) -> Result<(), String> {
@@ -830,23 +782,9 @@ fn write_json_secure(path: &Path, root: &Value) -> Result<(), String> {
     }
     let pretty = serde_json::to_string_pretty(root)
         .map_err(|err| tr!("errors.could_not_serialize_auth_json", error = err))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{pretty}\n")).map_err(|err| {
+    write_atomic_secure(path, &format!("{pretty}\n"), |err| {
         tr!(
             "errors.could_not_write",
-            path = tmp.display().to_string(),
-            error = err
-        )
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&tmp, path).map_err(|err| {
-        let _ = std::fs::remove_file(&tmp);
-        tr!(
-            "errors.could_not_replace",
             path = path.display().to_string(),
             error = err
         )
@@ -912,6 +850,67 @@ pub(crate) fn provider_display_name(id: &str) -> String {
         .join(" ")
 }
 
+/// The id a shared surface speaks for when `provider` names a sibling of
+/// another provider id. Ollama Cloud's third-party provider id and the local
+/// `ollama` id resolve the same [ollama.com](http://ollama.com) account, so a
+/// per-account surface (the usage popover) must key on one of them.
+///
+/// `None` means the id is its own account. Only true aliases belong here; a
+/// provider that merely resembles another keeps its own identity.
+pub(crate) fn provider_alias(provider: &str) -> Option<&'static str> {
+    Some(match provider {
+        "ollama-cloud" => "ollama",
+        _ => return None,
+    })
+}
+
+/// Brand ink for a provider's mark, as `(dark, light)` hex — the same
+/// per-mode shape as `mentions::file_type_badge`, so identity color reads on
+/// both canvases.
+///
+/// `None` means the brand *is* ink, not hue — OpenAI's wordmark, Ollama,
+/// opencode, xAI, Vercel, llama.cpp, and the rest — and the caller keeps its
+/// neutral. Marks are monochrome SVGs (GPUI rasterizes them as a single-color
+/// mask), so this is a tint, not a multi-color logo; only the identity hue
+/// comes through.
+pub(crate) fn provider_brand(provider: &str) -> Option<(u32, u32)> {
+    // The catalog-index filename is not a real provider id; Ollama Cloud
+    // shares Ollama's mark through the alias table above.
+    let provider = match provider_alias(provider) {
+        Some(alias) => alias,
+        None if provider == ".manifest" => "manifest",
+        None => provider,
+    };
+    Some(match provider {
+        "amazon-bedrock" => (0xFF9900, 0xC77700),
+        "ant-ling" => (0x1677FF, 0x0E5FCC),
+        "anthropic" => (0xD97757, 0xB55035),
+        "azure-openai-responses" => (0x0078D4, 0x005A9E),
+        "baseten" => (0x16A34A, 0x128040),
+        "cerebras" => (0xF15A29, 0xC7461C),
+        "cloudflare-ai-gateway" | "cloudflare-workers-ai" => (0xF38020, 0xC25E00),
+        "deepseek" => (0x4D6BFE, 0x3A52C9),
+        "fireworks" => (0x8B5CF6, 0x6D28D9),
+        "google" | "google-vertex" => (0x4285F4, 0x1A73E8),
+        "groq" => (0xF55036, 0xC93A22),
+        "huggingface" => (0xFFD21E, 0xA87800),
+        "kimi-coding" | "moonshotai" | "moonshotai-cn" => (0x3D5AFE, 0x2E45C9),
+        "minimax" | "minimax-cn" => (0xFF4D4F, 0xCC3B3D),
+        "mistral" => (0xFA520F, 0xC63D00),
+        "nvidia" => (0x76B900, 0x5A8C00),
+        "openrouter" => (0x6467F2, 0x5053C9),
+        "qwen-token-plan" | "qwen-token-plan-cn" | "qwen-token-plan-individual" => {
+            (0x615CED, 0x4E49C9)
+        }
+        "together" => (0x0F6FFF, 0x0B57CC),
+        "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" => {
+            (0xFF6900, 0xCC5400)
+        }
+        "zai" | "zai-coding-cn" => (0x3B5BFF, 0x2A43CC),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,6 +921,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("models.json")
+    }
+
+    #[test]
+    fn brand_aliases_and_skips_monochrome_brands() {
+        // Aliases share the underlying brand's ink.
+        assert_eq!(provider_brand("google-vertex"), provider_brand("google"));
+        assert_eq!(
+            provider_brand("moonshotai-cn"),
+            provider_brand("moonshotai")
+        );
+        assert_eq!(provider_brand("ollama-cloud"), provider_brand("ollama"));
+        // The mark follows the alias table, so a new sibling id needs one edit.
+        assert_eq!(provider_alias("ollama-cloud"), Some("ollama"));
+        assert_eq!(provider_alias("ollama"), None);
+        assert_eq!(provider_alias("deepseek"), None);
+        // Distinct brands get distinct hues…
+        assert!(provider_brand("deepseek").is_some());
+        assert_ne!(provider_brand("deepseek"), provider_brand("nvidia"));
+        // …and ink-only brands stay neutral. OpenAI's knot and Codex are
+        // black/white wordmarks: the theme ink, never a tinted hue.
+        assert!(provider_brand("openai").is_none());
+        assert!(provider_brand("openai-codex").is_none());
+        assert!(provider_brand("opencode-go").is_none());
+        assert!(provider_brand("my-gateway").is_none());
     }
 
     #[test]
@@ -1062,98 +1085,6 @@ mod tests {
     }
 
     #[test]
-    fn stores_ollama_cloud_session_outside_the_provider_credential() {
-        let dir = std::env::temp_dir().join(format!("orbit-ollama-session-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("auth.json");
-        // Keep an unrelated provider's credential intact.
-        write_api_key_at(&path, "anthropic", "sk-ant-test").unwrap();
-
-        write_ollama_cloud_session_at(&path, "__Secure-session=abc123; cf_clearance=xyz").unwrap();
-
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let root: Value = serde_json::from_str(&raw).unwrap();
-        // Never under the provider id: an unknown credential type there makes
-        // pi report the local endpoint as unconfigured.
-        assert!(
-            root.get("ollama").is_none(),
-            "session must not shadow the provider credential"
-        );
-        let session = root.get(OLLAMA_SESSION_KEY).expect("session entry");
-        assert_eq!(session.get("type").unwrap(), "ollama_cloud_session");
-        assert_eq!(
-            session.get("session").unwrap(),
-            "__Secure-session=abc123; cf_clearance=xyz"
-        );
-        // The UI surfaces it under both Ollama ids, distinct from a key.
-        let auth = read_auth_at(&path).unwrap();
-        assert_eq!(auth["ollama"].kind, AuthKind::OllamaSession);
-        assert_eq!(auth["ollama-cloud"].kind, AuthKind::OllamaSession);
-        // The unrelated key survives the write.
-        assert!(root.get("anthropic").is_some());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "auth.json must stay owner-only");
-        }
-
-        // Signing out of `ollama` clears the session without touching the key.
-        write_api_key_at(&path, "ollama", "real-cloud-key").unwrap();
-        remove_ollama_session_at(&path).unwrap();
-        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(root.get(OLLAMA_SESSION_KEY).is_none());
-        assert!(root.get("ollama").is_some());
-    }
-
-    #[test]
-    fn a_real_ollama_key_wins_over_the_session_in_the_ui() {
-        let dir = std::env::temp_dir().join(format!("orbit-ollama-key-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("auth.json");
-        write_api_key_at(&path, "ollama", "real-cloud-key").unwrap();
-        write_ollama_cloud_session_at(&path, "__Secure-session=abc123").unwrap();
-        // Both coexist; the provider credential stays the API key.
-        let auth = read_auth_at(&path).unwrap();
-        assert_eq!(auth["ollama"].kind, AuthKind::ApiKey);
-    }
-
-    #[test]
-    fn rewrites_a_legacy_session_stored_under_the_provider_id() {
-        let dir = std::env::temp_dir().join(format!("orbit-ollama-legacy-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("auth.json");
-        std::fs::write(
-            &path,
-            r#"{"ollama":{"type":"ollama_cloud_session","session":"__Secure-session=old"}}"#,
-        )
-        .unwrap();
-
-        write_ollama_cloud_session_at(&path, "__Secure-session=new").unwrap();
-
-        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(root.get("ollama").is_none(), "legacy entry removed");
-        assert_eq!(root[OLLAMA_SESSION_KEY]["session"], "__Secure-session=new");
-    }
-
-    #[test]
-    fn rejects_a_session_value_without_a_cookie_pair() {
-        let dir = std::env::temp_dir().join(format!("orbit-ollama-bad-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("auth.json");
-        // A bare API key has no `name=value` pair and must not be stored as a
-        // session (it would otherwise leak into a Cookie header).
-        assert!(write_ollama_cloud_session_at(&path, "abc123realkey").is_err());
-        assert!(write_ollama_cloud_session_at(&path, "   ").is_err());
-        assert!(!path.exists());
-    }
-
-    #[test]
     fn round_trips_and_preserves_unrelated_config() {
         let path = temp_models("roundtrip");
         std::fs::write(&path, r#"{"other":{"keep":true},"providers":{}}"#).unwrap();
@@ -1174,6 +1105,14 @@ mod tests {
         assert_eq!(list[0].name.as_deref(), Some("My Gateway"));
         assert_eq!(list[0].model_ids, vec!["m1", "m2"]);
         assert!(list[0].has_api_key);
+        // The editor stores provider keys in this file, so it is a credential
+        // store like auth.json and must not be readable by other accounts.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "models.json holds apiKey values: owner-only");
+        }
 
         // A blank key keeps the stored secret; other keys survive.
         write_provider_at(
@@ -1220,6 +1159,54 @@ mod tests {
         assert_eq!(models[0]["contextWindow"], Value::from(128000));
         assert_eq!(models[0]["reasoning"], Value::Bool(true));
         assert_eq!(models[1]["id"], Value::String("m2".into()));
+    }
+
+    /// Clearing the models field on a built-in provider must drop a previously
+    /// saved override so pi's catalog applies again, not keep the old list.
+    #[test]
+    fn clearing_models_drops_the_override_and_keeps_other_fields() {
+        let path = temp_models("clear-models");
+        std::fs::write(
+            &path,
+            r#"{"other":{"keep":true},"providers":{"anthropic":{"baseUrl":"https://proxy.example.com","apiKey":"sk-test","models":[{"id":"m1","contextWindow":1000},{"id":"m2"}]}}}"#,
+        )
+        .unwrap();
+
+        write_provider_at(
+            &path,
+            "anthropic",
+            Some("Anthropic"),
+            "https://proxy.example.com",
+            "anthropic-messages",
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(root["providers"]["anthropic"].get("models").is_none());
+        assert_eq!(
+            root["providers"]["anthropic"]["baseUrl"],
+            Value::String("https://proxy.example.com".into())
+        );
+        assert_eq!(
+            root["providers"]["anthropic"]["apiKey"],
+            Value::String("sk-test".into())
+        );
+        assert_eq!(root["other"]["keep"], Value::Bool(true));
+        assert!(read_custom_at(&path).unwrap()[0].model_ids.is_empty());
+
+        // Re-saving with every field blank still keeps the stored secret, and
+        // models stay cleared rather than coming back.
+        write_provider_at(&path, "anthropic", None, "", "", None, &[]).unwrap();
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let entry = root["providers"]["anthropic"].as_object().unwrap();
+        assert_eq!(entry.len(), 1, "only the preserved apiKey should remain");
+        assert_eq!(entry["apiKey"], Value::String("sk-test".into()));
+
+        remove_provider_at(&path, "anthropic").unwrap();
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(root["providers"].get("anthropic").is_none());
     }
 
     #[test]

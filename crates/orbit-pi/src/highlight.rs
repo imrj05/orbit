@@ -990,9 +990,7 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: Carry) -> (Vec<Token>, Carry
 /// Tokenize a whole block, one entry per line, threading the carry.
 ///
 /// The diff renderer tokenizes line by line because it interleaves additions
-/// and deletions; this whole-block entry point keeps the lexer usable for a
-/// future markdown/code-block caller (and is exercised by the tests).
-#[allow(dead_code)]
+/// and deletions; code blocks use this whole-block entry point.
 pub fn tokenize(lang: Lang, code: &str) -> Vec<Vec<Token>> {
     let mut carry = Carry::None;
     code.split('\n')

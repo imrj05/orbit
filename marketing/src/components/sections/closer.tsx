@@ -5,29 +5,35 @@ import { OrbitIcon } from "@/components/brand";
 import { OsDownloadButton } from "@/components/download-button";
 import { Band, ButtonLink, Shell } from "@/components/ui";
 import { getLatestRelease, LATEST_RELEASE_URL } from "@/lib/releases";
+import { NO_DOWNLOADS, preferredDownload } from "@/lib/downloads";
+import { getT } from "@/i18n/t";
+import { downloadLabels } from "@/i18n/labels";
+import type { Locale } from "@/i18n/config";
 
-export async function Closer() {
+export async function Closer({ locale }: { locale: Locale }) {
+  const t = getT(locale, "closer");
   const release = await getLatestRelease();
-  const assets = {
-    macos: release?.macos,
-    windows: release?.windows,
-    linux: release?.linux,
-  };
+  const downloads = release?.downloads ?? NO_DOWNLOADS;
   const platforms = [
-    { label: "macOS", href: release?.macos ?? LATEST_RELEASE_URL },
-    { label: "Windows", href: release?.windows ?? LATEST_RELEASE_URL },
-    { label: "Linux", href: release?.linux ?? LATEST_RELEASE_URL },
+    {
+      label: t("platforms.macos"),
+      href: preferredDownload(downloads, "macos")?.url ?? LATEST_RELEASE_URL,
+    },
+    {
+      label: t("platforms.windows"),
+      href: preferredDownload(downloads, "windows")?.url ?? LATEST_RELEASE_URL,
+    },
+    {
+      label: t("platforms.linux"),
+      href: preferredDownload(downloads, "linux")?.url ?? LATEST_RELEASE_URL,
+    },
   ];
 
   return (
     <Shell>
       <Band id="install" className="flex scroll-mt-20 flex-col items-center py-24 text-center sm:py-32">
-        {/* The mark, held in a quiet pocket of ambient light. */}
+        {/* The mark. */}
         <div className="relative mb-8">
-          <div
-            aria-hidden
-            className="pointer-events-none absolute left-1/2 top-1/2 h-[180px] w-[260px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(closest-side,rgba(91,157,255,0.08),transparent)]"
-          />
           <OrbitIcon
             alt=""
             className="relative h-12 w-12 rounded-[12px] shadow-card"
@@ -35,18 +41,18 @@ export async function Closer() {
         </div>
 
         <h2 className="max-w-[22ch] text-balance text-[clamp(30px,3.6vw,42px)] font-semibold leading-[1.14] tracking-[-0.026em] text-ink">
-          Build with Orbit.
+          {t("heading")}
         </h2>
         <p className="mt-4 max-w-[48ch] text-[15px] leading-[1.7] text-ink-2">
-          Point Orbit at the projects you already run pi on. Same sessions,
-          same models, same tools — drawn natively on the GPU.
+          {t("body")}
         </p>
 
         <div className="mt-9 flex w-full flex-col items-stretch justify-center gap-3 sm:w-auto sm:flex-row sm:items-center">
           <OsDownloadButton
-            assets={assets}
+            downloads={downloads}
             fallback={LATEST_RELEASE_URL}
             className="min-h-12 px-6 text-sm sm:min-w-[208px]"
+            labels={downloadLabels(locale)}
           />
           <ButtonLink
             href="https://github.com/imrj05/orbit"
@@ -55,7 +61,7 @@ export async function Closer() {
             external
           >
             <HugeiconsIcon icon={GithubIcon} data-icon="inline-start" />
-            View on GitHub
+            {t("github")}
           </ButtonLink>
         </div>
 
@@ -81,7 +87,7 @@ export async function Closer() {
               href={`/changelog/${release.tag}`}
               className="no-underline transition-colors hover:text-ink-2"
             >
-              Release notes · {release.tag}
+              {t("releaseNotes", { tag: release.tag })}
             </Link>
           ) : null}
         </div>

@@ -17,6 +17,17 @@ pub(super) struct AskReplay {
     pub(super) current_id: Option<String>,
 }
 
+impl AskReplay {
+    pub(super) fn reply(&mut self, id: &str, method: &str) -> ask::AskReplayReply {
+        self.current_id = Some(id.to_owned());
+        self.state.reply(method, &self.questions, &self.answers)
+    }
+
+    pub(super) fn is_finished(&self) -> bool {
+        self.state.ix >= self.questions.len()
+    }
+}
+
 impl OrbitApp {
     /// Record a running `ask_user_question` call and parse its questionnaire.
     /// Called from the event pump before the transcript applies the same
@@ -286,10 +297,7 @@ impl OrbitApp {
             let Some(replay) = self.ask_replay.as_mut() else {
                 return;
             };
-            replay.current_id = Some(id.to_string());
-            replay
-                .state
-                .reply(method, &replay.questions, &replay.answers)
+            replay.reply(id, method)
         };
 
         match reply {
@@ -301,11 +309,7 @@ impl OrbitApp {
                 self.respond_to_dialog(id, &DialogResponse::Cancelled);
             }
         }
-        if self
-            .ask_replay
-            .as_ref()
-            .is_some_and(|replay| replay.state.ix >= replay.questions.len())
-        {
+        if self.ask_replay.as_ref().is_some_and(AskReplay::is_finished) {
             self.ask_replay = None;
         }
     }
@@ -374,6 +378,15 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Enter may be confirming an IME candidate in the custom-answer
+        // field; that must not advance or commit the questionnaire.
+        if self
+            .ask
+            .as_ref()
+            .is_some_and(|prompt| prompt.input.read(cx).is_composing())
+        {
+            return;
+        }
         self.ask_next_question(window, cx);
     }
 

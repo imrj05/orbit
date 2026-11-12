@@ -39,8 +39,10 @@ node contrib/pi-custom-ui-rpc/apply.mjs
 
 Then restart the agent: **Settings → Runtime → Restart**, or reopen Orbit.
 
-The script resolves `pi` on `PATH` (override with `PI_BIN`), finds the bundled
-RPC-mode chunk, and splices the handler in at four verified-unique seams:
+The script resolves `pi` on `PATH` (override with `PI_BIN`), locates the pi
+package — an npm/pnpm/bun global or pi's managed installer (override with
+`PI_PACKAGE_ROOT`) — finds the bundled RPC-mode chunk, and splices the handler
+in at four verified-unique seams:
 before the command switch, at the command `default` case, at the `custom` stub,
 and at the `get_state` response. It is idempotent (re-running updates the
 injected block in place), and writes a `<file>.orbit-orig` backup next to the

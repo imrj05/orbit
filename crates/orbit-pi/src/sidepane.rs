@@ -2,8 +2,11 @@
 //! **Review** panel showing the workspace's git changes.
 //!
 //! The diff reads from a selectable [`review::Source`] — the last agent turn
-//! (from [`crate::checkpoint`] snapshots), uncommitted, unstaged, staged,
-//! committed, or the whole branch. The patch is parsed into a virtualized list
+//! (that turn's `edit` / `write` calls, plus any file the turn changed in the
+//! worktree with no call behind it), every turn in the session (All Changes),
+//! uncommitted, unstaged, staged, committed, or the whole branch. Git sources
+//! read the worktree; the conversation sources paint from records the app
+//! pushes. The patch is parsed into a virtualized list
 //! of rows with sticky file headers and expandable context gaps, colored from
 //! [`crate::highlight`] tokens. A filterable changed-files tree sits alongside
 //! it and hides on narrow panes.
@@ -17,33 +20,61 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, ClickEvent, Context,
-    CursorStyle, Entity, Font, FontFeatures, FontStyle, FontWeight, Hsla, KeyDownEvent,
-    ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, SharedString, StyledText,
-    TextRun, Window,
+    div, prelude::*, px, AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight,
+    ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, ScrollHandle,
+    StatefulInteractiveElement, Window,
 };
 
-use crate::app::{empty_state, file_glyph, icon, nerd_font_family, refresh_glyph, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM};
+use crate::app::{
+    button_frame, context_menu_separator, empty_state, file_glyph, icon, icon_button_frame,
+    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, AccentWash,
+    ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+};
 use crate::composer::ComposerInput;
+use crate::diff_view::{
+    diff_gutter_width, render_code_row, render_file_header, render_hunk_header, render_meta,
+    render_section_header, render_split_row, SplitPairing,
+};
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
+use crate::theme::tokens::RaisedExt;
+use crate::theme::tokens::{
+    context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
+    TextSize,
+};
 use crate::theme::{self, Theme, ThemeMode};
+use crate::usage::tooltip::Tooltip;
 
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
-const PANE_MIN_W: f32 = 300.;
+pub(crate) const PANE_MIN_W: f32 = 300.;
+/// Ceiling a left-edge drag can reach. Full width is exempt from this cap — it
+/// deliberately takes the whole column beside the sidebar.
+pub(crate) const PANE_MAX_W: f32 = 900.;
 /// Below this width the ±stats collapse out of the toolbar.
 const STATS_MIN_PANE_W: f32 = 380.;
+/// Below this width the file navigator collapses out of the toolbar. It needs
+/// its own, higher breakpoint than the stats: the arrows and their counter sit
+/// beside them, so a pane that just fits the stats has no room to walk files.
+const FILE_NAV_MIN_PANE_W: f32 = 440.;
+/// How much room the truncation warning takes from the toolbar row; while it
+/// shows, the file navigator needs that much more pane before it fits.
+const FILE_WARNING_W: f32 = 80.;
+/// Below this width the standalone changed-file count folds away. The
+/// navigator's counter still carries the total (`1/187`), so the count is never
+/// lost — only stated once, which is all a narrow toolbar can afford.
+const FILE_COUNT_MIN_PANE_W: f32 = 560.;
 /// Below this width the changed-files tree is hidden (responsive).
 const TREE_MIN_PANE_W: f32 = 440.;
 /// Directory tree column width range.
 const TREE_MIN_COL_W: f32 = 180.;
 const TREE_MAX_COL_W: f32 = 240.;
-/// Review diff row metrics.
-const DIFF_TEXT_SIZE: f32 = 12.5;
-const REVIEW_FILE_HEADER_HEIGHT: f32 = 36.;
-const REVIEW_HUNK_HEIGHT: f32 = 24.;
+/// Review diff row metrics. The row painters live in [`crate::diff_view`], so
+/// the pane and the Review page's preview share them; only the gap height is
+/// the pane's alone (the page's preview lists whole files).
 const REVIEW_GAP_HEIGHT: f32 = 32.;
+/// The pane's header and toolbar rows; the dropdowns hang off their buttons.
+const PANE_ROW_H: f32 = 40.;
 
 /// How long the Review refresh button spins after a click, so a fast diff
 /// read still reads as acknowledged (the same floor Settings uses).
@@ -52,18 +83,62 @@ const REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 /// Drag marker for the side-pane resize handle (gpui typed drag state).
 pub struct SidePaneResize;
 
+/// Callback an embedded host installs so a review file header carries
+/// per-file actions (stage / unstage / discard) beside the path. It is called
+/// during render and returns the action row, or `None` for a file with no
+/// actions.
+pub type FileActions = std::rc::Rc<dyn Fn(&review::File, Theme) -> Option<AnyElement>>;
+
+/// Callback an embedded host installs so a grouped section's strip carries
+/// its own bulk action (the Git page's Stage all on Changes, Unstage all on
+/// Staged). It is called during render with the section's label and whether
+/// the row is the sticky copy, so the host can mint unique element ids.
+pub type SectionActions = std::rc::Rc<dyn Fn(&str, bool, Theme) -> Option<AnyElement>>;
+
+/// Worktree changes a turn made that no `edit` / `write` call named, already
+/// rendered as `numstat` + patch text against the turn's start checkpoint.
+#[derive(Clone, Default)]
+struct TurnExtras {
+    numstat: String,
+    patch: String,
+    /// Repository-relative paths, so a file header can say where it came from.
+    paths: HashSet<String>,
+}
+
+/// How many settled turns keep their extra-worktree changes. Last Turn can be
+/// pointed at an older turn; this bounds what that costs in memory.
+const MAX_TURN_EXTRAS: usize = 8;
+/// Total patch text kept for those turns. A hydrated worktree diff can reach
+/// the tens of megabytes, so the oldest turns go once this is exceeded.
+const MAX_TURN_EXTRAS_BYTES: usize = 8 * 1024 * 1024;
+
 pub struct SidePane {
     /// Whether the pane is shown at all (toggled from the top bar).
     open: bool,
+    /// Render as an embedded review browser instead of a docked pane: the
+    /// chrome (width, resize handle, and the full-width/close controls) is
+    /// dropped and width decisions use [`SidePane::available_width`], so the
+    /// same view can fill another surface (the Git page's Changes tab).
+    embedded: bool,
     /// Pane width in pixels — adjusted by dragging its left edge.
     width: Pixels,
 
     /// Workspace the pane operates on (kept in sync by the app).
     workspace: Option<PathBuf>,
-    /// pi session id — keys the turn checkpoints behind `Last Turn`.
+    /// pi session id. Git sources still key checkpoints with it; Last Turn
+    /// does not.
     session: Option<String>,
-    /// Latest completed turn for this session, if any.
+    /// Latest turn the menu labels as Last Turn.
     latest_turn: Option<usize>,
+    /// Recorded `edit` / `write` calls per turn. Last Turn renders these
+    /// instead of a Git checkpoint diff.
+    turn_records: crate::turn_review::TurnRecords,
+    /// Files a turn changed in the worktree that no `edit` / `write` named,
+    /// as the turn's checkpoint range. Appended to Last Turn so a `bash` fix
+    /// or a formatter is not silently missing from the review.
+    turn_extras: Vec<(usize, TurnExtras)>,
+    /// A run is open: Last Turn is the state as of send, not the live turn.
+    turn_running: bool,
 
     // ── Review ──
     review: Option<Arc<Snapshot>>,
@@ -86,6 +161,31 @@ pub struct SidePane {
     menu_dismissed_at: Option<Instant>,
     /// Virtualized diff rows.
     diff_list: ListState,
+    /// The unwrapped diff's horizontal scroller. The pane reads it while
+    /// rendering to keep the file header fixed at the viewport's edges.
+    h_scroll: ScrollHandle,
+    /// Diff presentation: wrap long rows and side-by-side layout.
+    wrap: bool,
+    split: bool,
+    /// Files whose diff rows are hidden; only their headers draw. Empty means
+    /// every changed file is expanded (the loaded state).
+    collapsed_files: HashSet<usize>,
+    /// Unified-line → side-by-side mapping, rebuilt whenever the line stream
+    /// changes (load, gap expansion, file collapse).
+    split_pairing: SplitPairing,
+    /// Widest row in monospace cells, for an unwrapped row's scroll range.
+    content_cells: usize,
+    /// The window width Full width expands to — set by the app every render,
+    /// so it tracks a sidebar toggle or a window resize.
+    available_width: Pixels,
+    /// Per-file actions (stage / unstage / discard) an embedded host installs.
+    file_actions: Option<FileActions>,
+    /// Bulk actions an embedded host installs on each grouped section strip
+    /// (Stage all on Changes, Unstage all on Staged).
+    section_actions: Option<SectionActions>,
+    /// The width Full width returns to.
+    restore_width: Pixels,
+    full_width: bool,
 
     // ── Changed-files tree ──
     /// User toggle (still auto-hidden on narrow panes).
@@ -103,6 +203,10 @@ pub struct SidePane {
     tree_rows: Vec<review::TreeRow>,
     /// Keyboard cursor within the tree.
     tree_cursor: Option<usize>,
+    /// Keyboard cursor for hunk navigation (`]` / `[`) — the diff line the
+    /// next/previous hunk search starts from. `None` starts at the selected
+    /// file's header.
+    diff_cursor: Option<usize>,
     tree_focus: gpui::FocusHandle,
     /// Cached filter text + dirty flag so the tree rebuilds only on change.
     last_tree_filter: String,
@@ -116,14 +220,24 @@ impl SidePane {
                 .with_placeholder_key("sidepane.filter_files")
                 .with_key_context("Composer Picker")
         });
+        let width = px(crate::layout::sidepane_width()
+            .unwrap_or(PANE_DEFAULT_W)
+            .max(PANE_MIN_W));
         Self {
             open: false,
-            width: px(crate::layout::sidepane_width()
-                .unwrap_or(PANE_DEFAULT_W)
-                .max(PANE_MIN_W)),
+            embedded: false,
+            width,
+            available_width: width,
+            file_actions: None,
+            section_actions: None,
+            restore_width: width,
+            full_width: false,
             workspace: None,
             session: None,
             latest_turn: None,
+            turn_records: crate::turn_review::TurnRecords::default(),
+            turn_extras: Vec::new(),
+            turn_running: false,
             review: None,
             review_loading: false,
             review_stale: true,
@@ -134,6 +248,12 @@ impl SidePane {
             source_menu_open: false,
             menu_dismissed_at: None,
             diff_list: ListState::new(0, ListAlignment::Top, px(400.)),
+            h_scroll: ScrollHandle::new(),
+            wrap: true,
+            split: false,
+            collapsed_files: HashSet::new(),
+            split_pairing: SplitPairing::default(),
+            content_cells: 0,
             tree_open: true,
             tree_filter,
             tree_list: ListState::new(0, ListAlignment::Top, px(200.)),
@@ -142,7 +262,8 @@ impl SidePane {
             pending_select: None,
             tree_rows: Vec::new(),
             tree_cursor: None,
-            tree_focus: cx.focus_handle(),
+            diff_cursor: None,
+            tree_focus: cx.focus_handle().tab_stop(true),
             last_tree_filter: String::new(),
             tree_dirty: true,
         }
@@ -165,8 +286,70 @@ impl SidePane {
         self.open
     }
 
+    /// Mark this instance as an embedded review browser rather than the docked
+    /// pane. The caller (the Git page) owns its lifecycle; embedded mode keeps
+    /// itself open so `set_workspace` / `mark_review_stale` still load the
+    /// diff.
+    pub fn set_embedded(&mut self, embedded: bool, cx: &mut Context<Self>) {
+        if self.embedded == embedded {
+            return;
+        }
+        self.embedded = embedded;
+        if embedded {
+            self.source = Source::Uncommitted;
+        }
+        // The diff loads lazily through the normal `show_review` /
+        // `set_workspace` path, not here.
+        self.review_stale = true;
+        cx.notify();
+    }
+
+    /// Install the per-file action row an embedded host wants beside each
+    /// changed file's header (stage / unstage / discard). Called whenever the
+    /// host's status changes, so the row it builds reflects the latest state.
+    pub fn set_file_actions(&mut self, actions: FileActions, cx: &mut Context<Self>) {
+        self.file_actions = Some(actions);
+        cx.notify();
+    }
+
+    /// Install the per-section bulk actions an embedded host wants on the
+    /// grouped strips (the Git page's stage-all / unstage-all). Pass `None`
+    /// to clear them when the host has no changes to act on.
+    pub fn set_section_actions(&mut self, actions: Option<SectionActions>, cx: &mut Context<Self>) {
+        self.section_actions = actions;
+        cx.notify();
+    }
+
+    /// Whether the pane has taken the window's full width (the chat column
+    /// and the sessions sidebar yield to it).
+    pub fn is_full_width(&self) -> bool {
+        self.full_width
+    }
+
+    /// Leave Full width and restore the docked width. The app calls this when
+    /// a feature page opens or the sessions sidebar is toggled — both need the
+    /// window back.
+    pub fn leave_full_width(&mut self, cx: &mut Context<Self>) {
+        if !self.full_width {
+            return;
+        }
+        self.full_width = false;
+        let width = self.restore_width.max(px(PANE_MIN_W));
+        self.apply_width(width, cx);
+    }
+
     pub fn width(&self) -> Pixels {
         self.width
+    }
+
+    /// The width the pane's responsive decisions (stats, tree) use: its docked
+    /// width, or the host's available width when embedded.
+    fn pane_width(&self) -> Pixels {
+        if self.embedded {
+            self.available_width
+        } else {
+            self.width
+        }
     }
 
     /// Whether the source filter dropdown is open (Escape closes it before
@@ -184,14 +367,151 @@ impl SidePane {
         }
     }
 
-    /// Drag-resize from the pane's left edge.
+    /// Drag-resize from the pane's left edge. A drag leaves Full width and
+    /// becomes the width every later restore returns to, clamped to the drag
+    /// range. Full width itself is not a drag and is not capped here.
     pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
-        let clamped = width.max(px(PANE_MIN_W));
+        self.full_width = false;
+        let clamped = width.clamp(px(PANE_MIN_W), px(PANE_MAX_W));
         if clamped != self.width {
             self.width = clamped;
+            self.restore_width = clamped;
             crate::layout::set_sidepane_width(f32::from(clamped));
             cx.notify();
         }
+    }
+
+    /// The window width the pane may fill — the app sets it every render, so
+    /// Full width tracks a sidebar toggle or a window resize live, and a
+    /// docked pane never outgrows the space left beside the sidebar.
+    pub fn set_available_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        let width = width.max(px(PANE_MIN_W));
+        let changed = (self.available_width - width).abs() >= px(0.5);
+        if changed {
+            self.available_width = width;
+        }
+        if self.full_width {
+            // Full width fills the ceiling, so it follows a window resize.
+            if changed {
+                self.apply_width(width, cx);
+            }
+            return;
+        }
+        // A window that shrank under a docked pane tightens it to fit; the
+        // user's stored width is untouched and comes back with a wider window.
+        if self.width > self.available_width {
+            self.apply_width(self.available_width, cx);
+        }
+    }
+
+    fn apply_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        if width != self.width {
+            self.width = width;
+            cx.notify();
+        }
+    }
+
+    /// The width Full width returns to: the pane's width before the first
+    /// transient mode, not the transient width itself.
+    fn remember_restore_width(&mut self) {
+        if !self.full_width {
+            self.restore_width = self.width;
+        }
+    }
+
+    /// Expand the pane to the window's full width (the chat column and the
+    /// sessions sidebar yield to it), or restore the width the reader had
+    /// dialed in.
+    pub(crate) fn toggle_full_width(&mut self, cx: &mut Context<Self>) {
+        if self.full_width {
+            self.leave_full_width(cx);
+            return;
+        }
+        self.remember_restore_width();
+        self.full_width = true;
+        let width = self.available_width.max(px(PANE_MIN_W));
+        self.apply_width(width, cx);
+    }
+
+    /// Toggle wrapped and unwrapped diff rows.
+    fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        cx.notify();
+    }
+
+    /// Toggle unified and side-by-side rows. Heights change without a width
+    /// change, so the list must re-measure; the reader keeps their line.
+    fn toggle_split(&mut self, cx: &mut Context<Self>) {
+        self.split = !self.split;
+        self.remeasure_diff_rows();
+        cx.notify();
+    }
+
+    /// Collapse every changed file to its header, or expand them all back.
+    fn toggle_all_files(&mut self, cx: &mut Context<Self>) {
+        let Some(files) = self.review.as_ref().map(|review| review.files.len()) else {
+            return;
+        };
+        if files == 0 {
+            return;
+        }
+        if self.collapsed_files.is_empty() {
+            self.collapsed_files.extend(0..files);
+        } else {
+            self.collapsed_files.clear();
+        }
+        self.remeasure_diff_rows();
+        cx.notify();
+    }
+
+    /// Hide one file's diff rows, or bring them back.
+    fn toggle_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
+        if !self.collapsed_files.remove(&file_index) {
+            self.collapsed_files.insert(file_index);
+        }
+        self.remeasure_diff_rows();
+        cx.notify();
+    }
+
+    /// Force the virtualized list to re-measure every row after a height-only
+    /// change (collapsing files, switching layouts), keeping the reader's row.
+    fn remeasure_diff_rows(&mut self) {
+        let top = self.diff_list.logical_scroll_top();
+        self.diff_list.reset(self.diff_list.item_count());
+        self.diff_list.scroll_to(top);
+    }
+
+    /// Keep the selected file's header in view across a line-count change.
+    fn scroll_to_selected_file(&mut self) {
+        if let Some(line) = self
+            .selected_file
+            .and_then(|index| self.review.as_ref()?.files.get(index)?.diff_line)
+        {
+            self.diff_list.scroll_to(ListOffset {
+                item_ix: line,
+                offset_in_item: px(0.),
+            });
+        }
+    }
+
+    /// Rebuild the split pairing after the line stream changes.
+    fn rebuild_split_pairing(&mut self) {
+        self.split_pairing = self
+            .review
+            .as_ref()
+            .map_or_else(SplitPairing::default, |review| {
+                SplitPairing::for_lines(&review.lines)
+            });
+    }
+
+    /// Refresh what a view toggle reads: how wide an unwrapped row is and how
+    /// unified rows pair into side-by-side ones.
+    fn rebuild_view_metrics(&mut self) {
+        match self.review.as_ref() {
+            Some(review) => self.content_cells = review.max_content_cells(),
+            None => self.content_cells = 0,
+        }
+        self.rebuild_split_pairing();
     }
 
     /// Keep the pane's workspace in sync with the app (called every frame;
@@ -208,6 +528,9 @@ impl SidePane {
     }
 
     /// Keep the session id + latest turn in sync so `Last Turn` can resolve.
+    ///
+    /// The embedded Git page stores the same pair but does not reload: it
+    /// never shows Last Turn, and a turn-number change is not a new diff.
     pub fn set_turn_context(
         &mut self,
         session: Option<String>,
@@ -216,18 +539,49 @@ impl SidePane {
     ) {
         let session_changed = session != self.session;
         let latest_changed = latest_turn != self.latest_turn;
-        if !session_changed && !latest_changed {
+        if self.embedded {
+            if !session_changed && !latest_changed {
+                return;
+            }
+            self.session = session;
+            self.latest_turn = latest_turn;
+            return;
+        }
+        let previous_latest = self.latest_turn;
+        let retarget = match self.source {
+            // Turn 0 is the "no turn yet" placeholder. A session swap must
+            // leave Last Turn, but the previous session's turn number is not
+            // this session's. A source that was following the previous latest
+            // follows the new one. An explicitly chosen older turn stays put.
+            Source::LastTurn { turn_count } => {
+                turn_count == 0 || session_changed || previous_latest == Some(turn_count)
+            }
+            _ => false,
+        };
+        let next_turn = latest_turn.unwrap_or(0);
+        let source_changes = retarget
+            && matches!(self.source, Source::LastTurn { turn_count } if turn_count != next_turn);
+        if !session_changed && !latest_changed && !source_changes {
             return;
         }
         self.session = session;
         self.latest_turn = latest_turn;
-        // A session swap can strand the pane on `Last Turn`; fall back to the
-        // always-available uncommitted view rather than showing an error.
-        if session_changed
-            && matches!(self.source, Source::LastTurn { .. })
-            && self.last_turn_source().is_none()
-        {
-            self.source = Source::Uncommitted;
+        if session_changed {
+            // Another session's turn number names another session's files.
+            self.turn_extras.clear();
+        }
+        if source_changes {
+            self.source = Source::LastTurn {
+                turn_count: next_turn,
+            };
+            self.clear_diff();
+        }
+        // Git sources do not read the turn number. Reloading them here would
+        // diff the worktree on every send. Last Turn does. All Changes
+        // reloads from the records push that follows this call.
+        if !matches!(self.source, Source::LastTurn { .. }) {
+            cx.notify();
+            return;
         }
         self.review_stale = true;
         if self.open && !self.review_loading {
@@ -244,6 +598,15 @@ impl SidePane {
         }
     }
 
+    /// Reload a visible Git review after a turn settles. Conversation
+    /// sources were already painted from the records pushed with that settle.
+    pub fn mark_git_review_stale(&mut self, cx: &mut Context<Self>) {
+        if self.source.is_conversation() {
+            return;
+        }
+        self.mark_review_stale(cx);
+    }
+
     /// Close the pane if it is open. Used when the Explorer opens — the two
     /// right docks are mutually exclusive.
     pub fn close(&mut self, cx: &mut Context<Self>) {
@@ -252,22 +615,10 @@ impl SidePane {
         }
         self.open = false;
         self.source_menu_open = false;
-        cx.notify();
-    }
-
-    /// Open Review on the working tree's **Uncommitted** changes — the
-    /// top-bar `+N -M` diff-stat chip's action.
-    pub fn show_uncommitted(&mut self, cx: &mut Context<Self>) {
-        self.open = true;
-        if self.source != Source::Uncommitted {
-            self.source = Source::Uncommitted;
-            self.source_menu_open = false;
-            self.clear_diff();
-        }
-        self.review_stale = true;
-        if !self.review_loading {
-            self.load_review(cx);
-        }
+        // A pane that comes back later must not come back as a full-width
+        // sheet; restore the width the reader dialed in.
+        self.full_width = false;
+        self.width = self.restore_width.max(px(PANE_MIN_W));
         cx.notify();
     }
 
@@ -299,8 +650,131 @@ impl SidePane {
 
     // ── Review ─────────────────────────────────────────────────────────
 
-    /// Load the workspace's git diff off-thread.
+    /// Replace the recorded turns the conversation sources render. A visible
+    /// Last Turn or All Changes reloads immediately; Git sources keep their
+    /// own diff.
+    pub(crate) fn set_turn_records(
+        &mut self,
+        records: crate::turn_review::TurnRecords,
+        cx: &mut Context<Self>,
+    ) {
+        if records == self.turn_records {
+            return;
+        }
+        if records.turns.is_empty() {
+            self.turn_extras.clear();
+        }
+        // A new send appends an empty turn. All Changes folds the same calls,
+        // so reloading would retokenize the diff and jump the scroll position.
+        let unchanged_calls =
+            self.source == Source::AllChanges && records.same_calls(&self.turn_records);
+        self.turn_records = records;
+        if !self.embedded && self.source.is_conversation() && !unchanged_calls {
+            self.review_stale = true;
+            if self.open {
+                self.load_review(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Attach the worktree changes a settled turn made outside its tool
+    /// calls. A visible Last Turn for that turn reloads; other turns wait.
+    pub(crate) fn set_turn_extras(
+        &mut self,
+        turn: usize,
+        paths: Vec<String>,
+        numstat: String,
+        patch: String,
+        cx: &mut Context<Self>,
+    ) {
+        let extras = TurnExtras {
+            numstat,
+            patch,
+            paths: paths.into_iter().collect(),
+        };
+        match self
+            .turn_extras
+            .iter_mut()
+            .find(|(existing, _)| *existing == turn)
+        {
+            Some((_, slot)) => *slot = extras,
+            None => self.turn_extras.push((turn, extras)),
+        }
+        while self.turn_extras.len() > MAX_TURN_EXTRAS
+            || (self.turn_extras.len() > 1
+                && self
+                    .turn_extras
+                    .iter()
+                    .map(|(_, extras)| extras.numstat.len() + extras.patch.len())
+                    .sum::<usize>()
+                    > MAX_TURN_EXTRAS_BYTES)
+        {
+            self.turn_extras.remove(0);
+        }
+        if matches!(self.source, Source::LastTurn { turn_count } if turn_count == turn)
+            && self.open
+            && !self.review_loading
+        {
+            self.load_review(cx);
+        }
+        cx.notify();
+    }
+
+    /// Track whether a run is open. Last Turn paints the turn as of send, so
+    /// the header says so instead of showing a stale diff as current.
+    pub fn set_turn_running(&mut self, running: bool, cx: &mut Context<Self>) {
+        if self.turn_running == running {
+            return;
+        }
+        self.turn_running = running;
+        cx.notify();
+    }
+
+    /// True when the pane is showing the turn that is still running.
+    fn showing_running_turn(&self) -> bool {
+        self.turn_running
+            && matches!(self.source, Source::LastTurn { turn_count }
+                if Some(turn_count) == self.latest_turn)
+    }
+
+    /// The header names what is on screen, not the panel's name: the source is
+    /// otherwise only visible inside the menu.
+    fn header_title(&self) -> String {
+        let mut title = self.source_label(self.source);
+        if self.showing_running_turn() {
+            title.push_str(" · ");
+            title.push_str(&tr!("sidepane.turn_running"));
+        }
+        title
+    }
+
+    /// The note a file header carries: this file changed with no `edit` /
+    /// `write` behind it, so Review is showing the worktree, not the call.
+    fn outside_call_note(&self, path: &str) -> Option<String> {
+        let Source::LastTurn { turn_count } = self.source else {
+            return None;
+        };
+        let extras = self
+            .turn_extras
+            .iter()
+            .find(|(turn, _)| *turn == turn_count)
+            .map(|(_, extras)| extras)?;
+        extras
+            .paths
+            .contains(path)
+            .then(|| tr!("sidepane.no_tool_call"))
+    }
+
+    /// Load the workspace's git diff off-thread. Last Turn and All Changes
+    /// are the exception: they paint the conversation's `edit` / `write`
+    /// calls on this thread and never ask Git whether the folder is a
+    /// repository.
     fn load_review(&mut self, cx: &mut Context<Self>) {
+        if !self.embedded && self.source.is_conversation() {
+            self.load_conversation_review(cx);
+            return;
+        }
         let cwd = self
             .workspace
             .clone()
@@ -308,6 +782,10 @@ impl SidePane {
             .unwrap_or_default();
         let source = self.source;
         let session = self.session.clone();
+        // The embedded Git browser groups the working tree into a Staged
+        // section and a Changes (unstaged) section; picking a specific source
+        // from the filter narrows it to that one capture instead.
+        let grouped = self.embedded && source == Source::Uncommitted;
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
         self.review_loading = true;
@@ -319,8 +797,32 @@ impl SidePane {
             let parsed = cx
                 .background_executor()
                 .spawn(async move {
+                    if grouped {
+                        let staged = git::collect_review_diff(&cwd, Source::Staged, None)?;
+                        let unstaged = git::collect_review_diff(&cwd, Source::Unstaged, None)?;
+                        let sections = [
+                            review::SectionInput {
+                                label: tr!("git_panel.section_staged"),
+                                icon: Some("icons/minus.svg"),
+                                numstat: &staged.numstat,
+                                patch: &staged.patch,
+                                complete_context: staged.complete_context,
+                            },
+                            review::SectionInput {
+                                label: tr!("git_panel.section_changes"),
+                                icon: Some("icons/plus.svg"),
+                                numstat: &unstaged.numstat,
+                                patch: &unstaged.patch,
+                                complete_context: unstaged.complete_context,
+                            },
+                        ];
+                        return Ok::<_, String>(review::parse_sections(
+                            Source::Uncommitted,
+                            &sections,
+                        ));
+                    }
                     let data = git::collect_review_diff(&cwd, source, session.as_deref())?;
-                    Ok::<_, String>(review::parse_collected(
+                    Ok(review::parse_collected(
                         source,
                         &data.numstat,
                         &data.patch,
@@ -329,26 +831,75 @@ impl SidePane {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                // A newer load (e.g. the source changed while this ran) wins.
-                if this.load_generation != generation {
-                    return;
-                }
-                this.review_loading = false;
-                match parsed {
-                    Ok(snapshot) => {
-                        this.apply_snapshot(snapshot);
-                        this.review_error = None;
-                    }
-                    Err(error) => {
-                        if this.review.is_none() {
-                            this.review_error = Some(error);
-                        }
-                    }
-                }
-                cx.notify();
+                this.finish_review_load(generation, parsed, cx)
             });
         })
         .detach();
+    }
+
+    /// Paint Last Turn or All Changes from the records already on the pane.
+    /// Bumps the load generation so an in-flight Git read cannot overwrite
+    /// it, and clears any previous Git error.
+    fn load_conversation_review(&mut self, cx: &mut Context<Self>) {
+        self.load_generation = self.load_generation.wrapping_add(1);
+        self.review_loading = false;
+        self.review_stale = false;
+        self.review_error = None;
+        let calls = match self.source {
+            Source::LastTurn { turn_count } => self.turn_records.calls_for(turn_count).to_vec(),
+            Source::AllChanges => self.turn_records.all_calls(),
+            _ => return,
+        };
+        let (mut numstat, mut patch, clipped) = crate::turn_review::patch_from_calls(
+            &calls,
+            self.workspace.as_deref(),
+            review::MAX_RENDERED_DIFF_LINES,
+        );
+        // A turn can change the worktree without an `edit` / `write` behind
+        // it (a `bash` fix, a formatter, a subagent). Those files come from
+        // the turn's checkpoint range and land after the named ones.
+        if let Source::LastTurn { turn_count } = self.source {
+            if let Some((_, extras)) = self
+                .turn_extras
+                .iter()
+                .find(|(turn, _)| *turn == turn_count)
+            {
+                numstat.push_str(&extras.numstat);
+                patch.push_str(&extras.patch);
+            }
+        }
+        let mut snapshot = review::parse_collected(self.source, &numstat, &patch, true);
+        if clipped {
+            snapshot.truncated = true;
+        }
+        self.apply_snapshot(snapshot);
+        cx.notify();
+    }
+
+    fn finish_review_load(
+        &mut self,
+        generation: u64,
+        parsed: Result<Snapshot, String>,
+        cx: &mut Context<Self>,
+    ) {
+        // A newer load (e.g. a workspace or source change) wins.
+        if self.load_generation != generation {
+            return;
+        }
+        self.review_loading = false;
+        match parsed {
+            Ok(snapshot) => {
+                self.apply_snapshot(snapshot);
+                self.review_error = None;
+            }
+            Err(error) => self.review_error = Some(error),
+        }
+        // A file event or manual refresh that arrived during the read must
+        // trigger another read, rather than leaving this older snapshot visible.
+        if self.review_stale && self.open {
+            self.load_review(cx);
+        }
+        cx.notify();
     }
 
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
@@ -388,8 +939,19 @@ impl SidePane {
             }
         }
         self.tree_cursor = None;
+        self.diff_cursor = None;
         self.diff_list.reset(snapshot.lines.len());
+        let file_count = snapshot.files.len();
         self.review = Some(Arc::new(snapshot));
+        // The Git page's Changes tab opens collapsed — every file starts as a
+        // header row, so the list reads as an overview first. The docked
+        // Review pane still opens fully expanded.
+        if self.embedded {
+            self.collapsed_files = (0..file_count).collect();
+        } else {
+            self.collapsed_files.clear();
+        }
+        self.rebuild_view_metrics();
         self.mark_tree_dirty();
     }
 
@@ -421,14 +983,16 @@ impl SidePane {
     }
 
     fn refresh_review(&mut self, cx: &mut Context<Self>) {
-        if !self.review_loading {
+        if self.review_loading {
+            self.review_stale = true;
+        } else {
             self.load_review(cx);
         }
     }
 
     /// Refresh from the header button: same reload, plus a short minimum spin
     /// so the click is visibly acknowledged even when the diff is instant.
-    fn refresh_from_button(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_from_button(&mut self, cx: &mut Context<Self>) {
         self.refresh_review(cx);
         self.refresh_spin_until = Some(Instant::now() + REFRESH_FEEDBACK);
         cx.spawn(async move |this, cx| {
@@ -485,39 +1049,35 @@ impl SidePane {
         self.review = None;
         self.review_error = None;
         self.expanded_paths.clear();
+        self.collapsed_files.clear();
+        self.rebuild_view_metrics();
         self.mark_tree_dirty();
         self.set_tree_rows(Vec::new());
         self.diff_list.reset(0);
     }
 
-    /// Open Review on the **Last Turn** git diff — what the transcript's
-    /// changed-files cards' Review buttons call, so the panel shows only the
-    /// changes that turn made rather than the whole working tree.
+    /// Open Review on **Last Turn** — the `edit` / `write` calls from that
+    /// conversation turn, not a Git checkpoint. A missing turn stays on Last
+    /// Turn so a non-repo workspace does not fall through to Uncommitted.
     pub fn show_review_turn(&mut self, turn: Option<usize>, cx: &mut Context<Self>) {
         self.open = true;
-        let target = turn
-            .filter(|turn| *turn > 0)
-            .map(|turn_count| Source::LastTurn { turn_count });
-        match target {
-            Some(target) => {
+        match turn.filter(|turn| *turn > 0) {
+            Some(turn_count) => {
+                let target = Source::LastTurn { turn_count };
                 if self.source != target {
                     self.source = target;
                     self.clear_diff();
                 }
             }
             None => {
-                // No turn checkpoint yet — fall back to the working tree
-                // instead of stranding the panel on an unavailable source.
-                if matches!(self.source, Source::LastTurn { .. }) {
-                    self.source = Source::Uncommitted;
+                if !matches!(self.source, Source::LastTurn { .. }) {
+                    self.source = Source::LastTurn { turn_count: 0 };
                     self.clear_diff();
                 }
             }
         }
         self.review_stale = true;
-        if !self.review_loading {
-            self.load_review(cx);
-        }
+        self.load_review(cx);
         cx.notify();
     }
 
@@ -531,10 +1091,13 @@ impl SidePane {
 
     fn source_label(&self, source: Source) -> String {
         match source {
-            Source::LastTurn { turn_count } if self.latest_turn == Some(turn_count) => {
+            Source::LastTurn { turn_count }
+                if turn_count == 0 || self.latest_turn == Some(turn_count) =>
+            {
                 tr!("sidepane.last_turn")
             }
             Source::LastTurn { turn_count } => tr!("sidepane.turn_n", count = turn_count),
+            Source::AllChanges => tr!("sidepane.all_changes"),
             Source::Uncommitted => tr!("sidepane.uncommitted"),
             Source::Unstaged => tr!("git_panel.unstaged"),
             Source::Staged => tr!("git_panel.staged"),
@@ -561,17 +1124,14 @@ impl SidePane {
 
     fn select_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
         self.selected_file = Some(file_index);
-        if let Some(line) = self
-            .review
-            .as_ref()
-            .and_then(|snapshot| snapshot.files.get(file_index))
-            .and_then(|file| file.diff_line)
-        {
-            self.diff_list.scroll_to(ListOffset {
-                item_ix: line,
-                offset_in_item: px(0.),
-            });
+        // Hunk navigation restarts from the newly selected file.
+        self.diff_cursor = None;
+        // Picking a file is an ask to see it; a collapsed row would scroll to
+        // its header and show nothing.
+        if self.collapsed_files.remove(&file_index) {
+            self.remeasure_diff_rows();
         }
+        self.scroll_to_selected_file();
         cx.notify();
     }
 
@@ -587,36 +1147,116 @@ impl SidePane {
         cx.notify();
     }
 
-    fn on_tree_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
+    /// Move the tree cursor one row (registry-bound ↑/↓).
+    pub(super) fn review_tree_move(&mut self, direction: isize, cx: &mut Context<Self>) {
         let rows_len = self.tree_rows.len();
         if rows_len == 0 {
             return;
         }
-        match key {
-            "down" => {
-                let next = self.tree_cursor.map_or(0, |ix| (ix + 1).min(rows_len - 1));
-                self.move_tree_cursor(next, cx);
+        let next = if direction > 0 {
+            self.tree_cursor.map_or(0, |ix| (ix + 1).min(rows_len - 1))
+        } else {
+            self.tree_cursor.map_or(0, |ix| ix.saturating_sub(1))
+        };
+        self.move_tree_cursor(next, cx);
+    }
+
+    /// Enter/Space on the cursor row: toggle a directory, open a file.
+    pub(super) fn review_tree_toggle(&mut self, cx: &mut Context<Self>) {
+        if let Some(index) = self.tree_cursor {
+            match self.tree_rows.get(index).cloned() {
+                Some(review::TreeRow::Directory { path, .. }) => self.toggle_dir(path, cx),
+                Some(review::TreeRow::File { file_index, .. }) => self.select_file(file_index, cx),
+                None => {}
             }
-            "up" => {
-                let next = self.tree_cursor.map_or(0, |ix| ix.saturating_sub(1));
-                self.move_tree_cursor(next, cx);
-            }
-            "enter" | "space" => {
-                if let Some(index) = self.tree_cursor {
-                    match self.tree_rows.get(index).cloned() {
-                        Some(review::TreeRow::Directory { path, .. }) => {
-                            self.toggle_dir(path, cx);
-                        }
-                        Some(review::TreeRow::File { file_index, .. }) => {
-                            self.select_file(file_index, cx);
-                        }
-                        None => {}
-                    }
-                }
-            }
-            _ => {}
         }
+    }
+
+    /// `n` / `p`: select the next or previous changed file. The toolbar's
+    /// arrows call the same step, so pointer and keyboard always agree.
+    pub(super) fn review_move_file(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.review.clone() else {
+            return;
+        };
+        let count = snapshot.files.len();
+        let Some(current) = self.current_file(&snapshot) else {
+            return;
+        };
+        let next = if direction > 0 {
+            (current + 1).min(count - 1)
+        } else {
+            current.saturating_sub(1)
+        };
+        if next != current {
+            self.select_file(next, cx);
+        }
+    }
+
+    /// The changed file the reader is looking at: the file whose header sits
+    /// at the top of the diff, falling back to the tree's selection and then
+    /// to the first file. Navigation steps from here, so `n` / `p` and the
+    /// arrows follow what is on screen rather than a selection the reader
+    /// scrolled away from.
+    fn current_file(&self, snapshot: &Snapshot) -> Option<usize> {
+        let top = self.diff_list.logical_scroll_top().item_ix;
+        snapshot
+            .file_headers_around(top)
+            .and_then(|(header, _)| snapshot.lines.get(header))
+            .map(|line| line.file_index)
+            .or(self.selected_file)
+            .or((!snapshot.files.is_empty()).then_some(0))
+    }
+
+    /// `]` / `[`: jump the diff to the next or previous hunk header. The
+    /// selection follows the hunk's file so the tree and the diff agree.
+    pub(super) fn review_move_hunk(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.review.as_ref() else {
+            return;
+        };
+        let start = self.diff_cursor.or_else(|| {
+            self.selected_file
+                .and_then(|ix| snapshot.files.get(ix))
+                .and_then(|file| file.diff_line)
+        });
+        let current = start.unwrap_or(0);
+        let target = if direction > 0 {
+            (current + 1..snapshot.lines.len()).find(|&ix| is_hunk_start(&snapshot.lines, ix))
+        } else {
+            (0..current)
+                .rev()
+                .find(|&ix| is_hunk_start(&snapshot.lines, ix))
+        };
+        let Some(ix) = target else {
+            return;
+        };
+        self.diff_cursor = Some(ix);
+        self.selected_file = snapshot.lines[ix].file_index.into();
+        self.diff_list.scroll_to(ListOffset {
+            item_ix: ix,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+    }
+
+    /// `e`: expand every changed file's diff.
+    pub(super) fn review_expand_all(&mut self, cx: &mut Context<Self>) {
+        if self.review.as_ref().map_or(0, |review| review.files.len()) == 0 {
+            return;
+        }
+        self.collapsed_files.clear();
+        self.remeasure_diff_rows();
+        cx.notify();
+    }
+
+    /// `c`: collapse every changed file to its header.
+    pub(super) fn review_collapse_all(&mut self, cx: &mut Context<Self>) {
+        let files = self.review.as_ref().map_or(0, |review| review.files.len());
+        if files == 0 {
+            return;
+        }
+        self.collapsed_files.extend(0..files);
+        self.remeasure_diff_rows();
+        cx.notify();
     }
 
     fn move_tree_cursor(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -627,8 +1267,12 @@ impl SidePane {
 
     // ── rendering ──────────────────────────────────────────────────────
 
-    fn body(&mut self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        self.sync_tree_rows(cx);
+    fn body(&mut self, window: &Window, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        // The embedded browser has no dock header or changed-files tree;
+        // grouped section strips carry its view controls instead.
+        if !self.embedded {
+            self.sync_tree_rows(cx);
+        }
         let truncated = self
             .review
             .as_ref()
@@ -638,24 +1282,36 @@ impl SidePane {
             .as_ref()
             .map(|snapshot| (snapshot.additions, snapshot.deletions))
             .unwrap_or((0, 0));
-        let compact = self.width < px(STATS_MIN_PANE_W);
-        let tree_available = self.width >= px(TREE_MIN_PANE_W);
+        let files = self
+            .review
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.files.len());
+        let compact = self.pane_width() < px(STATS_MIN_PANE_W);
+        // The count and the navigator need more room than the stats do; each
+        // folds away at its own width so the row never overflows its pane.
+        let show_file_count =
+            files > 0 && !compact && self.pane_width() >= px(FILE_COUNT_MIN_PANE_W);
+        let nav_min_w = FILE_NAV_MIN_PANE_W + if truncated { FILE_WARNING_W } else { 0. };
+        let show_file_nav = !self.embedded && files > 1 && self.pane_width() >= px(nav_min_w);
+        let tree_available = !self.embedded && self.pane_width() >= px(TREE_MIN_PANE_W);
         let tree_visible = tree_available && self.tree_open;
 
-        // Header row: title + tree toggle + refresh + close.
-        let head = div()
-            .h(px(40.))
+        // The header names the source on screen and, while a run is open,
+        // that Last Turn is behind it rather than current.
+        let title = self.header_title();
+
+        // Header row: title + tree toggle + refresh + the panel-window
+        // controls (full width, close). Embedded drops the panel-window
+        // controls — they belong to the dock, not the host surface.
+        let mut head = div()
+            .h(px(PANE_ROW_H))
             .flex()
             .items_center()
             .gap_1()
-            .pl(px(12.))
-            // The pane owns the window's right edge, so where the app paints
-            // the caption its buttons land here and the header stops short.
-            .pr(px(if crate::platform::draws_window_controls() {
-                crate::platform::WINDOW_CONTROLS_W
-            } else {
-                6.
-            }))
+            .pl(DynamicSpacing::Base12.px(&theme))
+            // The top bar above owns the caption buttons; the dock below it
+            // never shares their row.
+            .pr(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
             .border_color(theme.border)
             .child(
@@ -664,161 +1320,467 @@ impl SidePane {
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(tr!("sidepane.review")),
+                    .text_color(theme.text_primary)
+                    .child(title.clone()),
             )
             .children(tree_available.then(|| {
-                div()
-                    .id("review-tree-toggle")
+                icon_button_frame(div().id("review-tree-toggle"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
+                    .tip(tr!("sidepane.toggle_tree"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
                     .child(icon(
                         "icons/folder.svg",
-                        14.,
+                        ButtonSize::Default.icon_size().px(&theme),
                         if self.tree_open {
-                            theme.text
+                            theme.text_primary
                         } else {
-                            theme.text_3
+                            theme.text_muted
                         },
                     ))
             }))
             .child(
-                div()
-                    .id("review-refresh")
+                icon_button_frame(div().id("review-refresh"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
+                    .tip(tr!("common.refresh"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
                     .child(refresh_glyph(
                         "review-spinner",
-                        13.,
+                        ButtonSize::Default.icon_size().px(&theme),
                         self.review_loading || self.refresh_spin_until.is_some(),
-                        theme.text_3,
+                        theme.text_muted,
                         theme,
                     )),
-            )
-            .child(
-                div()
-                    .id("pane-close")
-                    .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
-                    .child(icon("icons/x.svg", 14., theme.text_3)),
             );
 
-        // Toolbar: the source filter chip + live ±stats + refresh.
+        if !self.embedded {
+            head = head
+                .child(self.view_toggle(
+                    "review-full-width",
+                    ButtonSize::Default,
+                    if self.full_width {
+                        "icons/arrow-shrink.svg"
+                    } else {
+                        "icons/arrow-expand.svg"
+                    },
+                    self.full_width,
+                    true,
+                    if self.full_width {
+                        tr!("sidepane.restore_width")
+                    } else {
+                        tr!("sidepane.full_width")
+                    },
+                    Self::toggle_full_width,
+                    theme,
+                    cx,
+                ))
+                .child(
+                    icon_button_frame(div().id("pane-close"), &theme, ButtonSize::Default)
+                        .group(BUTTON_GROUP)
+                        .tip(tr!("common.close"))
+                        .cursor_pointer()
+                        .hover_state(&theme)
+                        .pressed_state(&theme, PressedRamp::Wash)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
+                        .child(icon(
+                            "icons/x.svg",
+                            ButtonSize::Default.icon_size().px(&theme),
+                            theme.text_muted,
+                        )),
+                );
+        }
+
+        // The source filter belongs to the docked Review pane. The Git page's
+        // embedded browser always shows the working tree split into Staged and
+        // Changes sections, so its chip is dropped.
+        let source_chip = (!self.embedded).then(|| {
+            button_frame(div().id("review-source"), &theme, ButtonSize::Medium)
+                .group(BUTTON_GROUP)
+                .border_1()
+                .border_color(if self.source_menu_open {
+                    theme.border_strong
+                } else {
+                    theme.border
+                })
+                .raised(theme.surface_elevated, &theme)
+                .cursor_pointer()
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
+                .child(icon(
+                    "icons/file-diff.svg",
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    theme.text_muted,
+                ))
+                .child(
+                    div()
+                        .max_w(px(120.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_primary)
+                        .child(self.source_label(self.source)),
+                )
+                .child(icon(
+                    "icons/chevron-down.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.text_muted,
+                ))
+                .into_any_element()
+        });
+
+        // Toolbar: the source filter chip, the diff view toggles, and the
+        // live ±stats.
         let toolbar = div()
-            .h(px(40.))
+            .h(px(PANE_ROW_H))
             .flex()
             .items_center()
             .gap_2()
             .px(px(10.))
             .border_b_1()
             .border_color(theme.border)
-            .child(
-                div()
-                    .id("review-source")
-                    .group(BUTTON_GROUP)
-                    .h(px(28.))
-                    .px(px(8.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(if self.source_menu_open {
-                        theme.border_strong
-                    } else {
-                        theme.border
-                    })
-                    .bg(theme.bg_raised)
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
-                    .on_click(
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)),
-                    )
-                    .child(icon("icons/file-diff.svg", 12., theme.text_3))
-                    .child(
-                        div()
-                            .max_w(px(120.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_size(theme.ui_px(12.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(self.source_label(self.source)),
-                    )
-                    .child(icon("icons/chevron-down.svg", 10., theme.text_3)),
-            )
+            .children(source_chip)
             .child(div().flex_1())
             .when(truncated, |row| {
                 row.child(
                     div()
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.warn)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.warning)
                         .child(tr!("sidepane.partial")),
                 )
             })
+            // An embedded browser gives every grouped section strip its own
+            // copy of the view toggles, so its toolbar drops them.
+            .children(
+                (!self.embedded)
+                    .then(|| self.view_toggle_group("review", ButtonSize::Default, theme, cx)),
+            )
             .children((!compact).then(|| {
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(div().text_color(theme.add_green).child(format!("+{added}")))
-                    .child(div().text_color(theme.del_red).child(format!("-{removed}")))
+                    .children(show_file_count.then(|| {
+                        div()
+                            .debug_selector(|| "review-file-count".to_string())
+                            .whitespace_nowrap()
+                            .text_color(theme.text_secondary)
+                            .child(file_count_label(files))
+                    }))
+                    .child(div().text_color(theme.success).child(format!("+{added}")))
+                    .child(div().text_color(theme.error).child(format!("-{removed}")))
+            }))
+            .children(show_file_nav.then(|| {
+                let current = self
+                    .review
+                    .as_ref()
+                    .and_then(|snapshot| self.current_file(snapshot));
+                self.file_nav("review", current, theme, cx)
             }));
 
-        let content = self.render_content(theme, tree_visible, cx);
+        let content = self.render_content(window, theme, tree_visible, cx);
 
+        // The embedded browser puts its controls on the grouped section
+        // strips; only a truncation warning needs a separate row.
+        let mut column = div().flex_1().min_h_0().flex().flex_col();
+        if self.embedded {
+            if truncated {
+                column = column.child(
+                    div()
+                        .h(px(PANE_ROW_H))
+                        .flex()
+                        .items_center()
+                        .px(DynamicSpacing::Base12.px(&theme))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.warning)
+                        .child(tr!("sidepane.partial")),
+                );
+            }
+        } else {
+            column = column.child(head).child(toolbar);
+        }
+        column.child(content).into_any_element()
+    }
+
+    /// One icon-only view toggle. The glyph and tooltip name the action, the
+    /// ink marks the active mode, and an inert toggle stays visible so the
+    /// toolbar never reflows around it.
+    #[allow(clippy::too_many_arguments)]
+    fn view_toggle(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        size: ButtonSize,
+        icon_path: &'static str,
+        active: bool,
+        enabled: bool,
+        tooltip: String,
+        action: fn(&mut SidePane, &mut Context<SidePane>),
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let color = if !enabled {
+            theme.text_disabled
+        } else if active {
+            theme.text_primary
+        } else {
+            theme.text_muted
+        };
+        let button = icon_button_frame(div().id(id), &theme, size)
+            .group(BUTTON_GROUP)
+            .child(icon(icon_path, size.icon_size().px(&theme), color));
+        if !enabled {
+            return button.into_any_element();
+        }
+        button
+            .cursor_pointer()
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
+            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
+            .into_any_element()
+    }
+
+    /// The three view toggles — expand/collapse all, wrap, and split — as one
+    /// row. The toolbar hosts them, and an embedded browser's grouped section
+    /// strips each carry a copy so both sections offer the same options;
+    /// `prefix` keeps every copy's element ids unique, and `size` lets the
+    /// strips line their toggles up with the taller labeled actions.
+    fn view_toggle_group(
+        &self,
+        prefix: &str,
+        size: ButtonSize,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = |slug: &str| gpui::ElementId::Name(format!("{prefix}-{slug}").into());
         div()
-            .flex_1()
-            .min_h_0()
             .flex()
-            .flex_col()
-            .child(head)
-            .child(toolbar)
-            .child(content)
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .child(
+                self.view_toggle(
+                    id("files"),
+                    size,
+                    if self.collapsed_files.is_empty() {
+                        "icons/collapse-all.svg"
+                    } else {
+                        "icons/expand-all.svg"
+                    },
+                    false,
+                    self.review
+                        .as_ref()
+                        .is_some_and(|review| !review.files.is_empty()),
+                    if self.collapsed_files.is_empty() {
+                        tr!("sidepane.collapse_all")
+                    } else {
+                        tr!("sidepane.expand_all")
+                    },
+                    Self::toggle_all_files,
+                    theme,
+                    cx,
+                ),
+            )
+            .child(self.view_toggle(
+                id("wrap"),
+                size,
+                "icons/text-wrap.svg",
+                self.wrap,
+                true,
+                if self.wrap {
+                    tr!("sidepane.unwrap_lines")
+                } else {
+                    tr!("sidepane.wrap_lines")
+                },
+                Self::toggle_wrap,
+                theme,
+                cx,
+            ))
+            .child(self.view_toggle(
+                id("split"),
+                size,
+                if self.split {
+                    "icons/unified-view.svg"
+                } else {
+                    "icons/side-by-side.svg"
+                },
+                self.split,
+                true,
+                if self.split {
+                    tr!("sidepane.unified_view")
+                } else {
+                    tr!("sidepane.split_view")
+                },
+                Self::toggle_split,
+                theme,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// Previous / next changed file with the reader's place among them — the
+    /// pointer twin of `p` / `n`. The arrows stay in place and go inert at the
+    /// ends, so the row never reflows as the reader walks the diff.
+    fn file_nav(
+        &self,
+        prefix: &str,
+        current: Option<usize>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(snapshot) = self.review.as_ref() else {
+            return div().into_any_element();
+        };
+        let count = snapshot.files.len();
+        let current = current.unwrap_or(0);
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_0p5()
+            .child(self.file_step_button(
+                format!("{prefix}-file-prev"),
+                "icons/chevron-up.svg",
+                tr!("sidepane.previous_file"),
+                current > 0,
+                -1,
+                theme,
+                cx,
+            ))
+            .child(
+                // Tabular figures keep the counter from jittering as the
+                // reader steps from 9 to 10.
+                div()
+                    .flex_none()
+                    .min_w(px(40.))
+                    .flex()
+                    .justify_center()
+                    .font(crate::usage::view::num_font())
+                    .whitespace_nowrap()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(format!("{}/{count}", current + 1)),
+            )
+            .child(self.file_step_button(
+                format!("{prefix}-file-next"),
+                "icons/chevron-down.svg",
+                tr!("sidepane.next_file"),
+                current + 1 < count,
+                1,
+                theme,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// One arrow of the file navigator. An arrow with nowhere to go keeps its
+    /// hit target but loses its ink, hover, and handler.
+    #[allow(clippy::too_many_arguments)]
+    fn file_step_button(
+        &self,
+        id: String,
+        icon_path: &'static str,
+        tooltip: String,
+        enabled: bool,
+        direction: isize,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let button = icon_button_frame(
+            div().id(gpui::ElementId::Name(id.clone().into())),
+            &theme,
+            ButtonSize::Default,
+        )
+        .group(BUTTON_GROUP)
+        .debug_selector(move || id.clone())
+        .child(icon(
+            icon_path,
+            IconSize::XSmall.px(&theme),
+            if enabled {
+                theme.text_muted
+            } else {
+                theme.text_disabled
+            },
+        ));
+        if !enabled {
+            return button.into_any_element();
+        }
+        button
+            .cursor_pointer()
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
+            .tip(tooltip)
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.review_move_file(direction, cx)
+                }),
+            )
             .into_any_element()
     }
 
     fn render_content(
         &mut self,
+        window: &Window,
         theme: Theme,
         tree_visible: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let diff = if self.review_loading && self.review.is_none() {
-            empty_state(theme, &tr!("sidepane.loading_changes"), None, EmptyFill::Grow)
+            empty_state(
+                theme,
+                "icons/loader.svg",
+                &tr!("sidepane.loading_changes"),
+                None,
+                EmptyFill::Grow,
+            )
         } else if let Some(error) = self.review_error.as_deref() {
-            empty_state(theme, &tr!("sidepane.changes_unavailable"), Some(error), EmptyFill::Grow)
+            empty_state(
+                theme,
+                "icons/stop.svg",
+                &tr!("sidepane.changes_unavailable"),
+                Some(error),
+                EmptyFill::Grow,
+            )
         } else if let Some(snapshot) = self.review.clone() {
             if snapshot.files.is_empty() {
-                let empty = self.source.empty_description();
-                empty_state(theme, &tr!("sidepane.no_changes"), Some(&empty), EmptyFill::Grow)
+                // Nothing has landed yet, so do not claim the turn changed
+                // nothing: it has not finished.
+                let empty = if self.showing_running_turn() {
+                    tr!("sidepane.empty_turn_running")
+                } else {
+                    self.source.empty_description()
+                };
+                empty_state(
+                    theme,
+                    "icons/file-diff.svg",
+                    &tr!("sidepane.no_changes"),
+                    Some(&empty),
+                    EmptyFill::Grow,
+                )
             } else {
-                self.render_diff(snapshot, theme, cx)
+                self.render_diff(window, snapshot, theme, cx)
             }
         } else {
-            empty_state(theme, &tr!("sidepane.no_changes"), None, EmptyFill::Grow)
+            empty_state(
+                theme,
+                "icons/file-diff.svg",
+                &tr!("sidepane.no_changes"),
+                None,
+                EmptyFill::Grow,
+            )
         };
 
         let mut content = div()
@@ -836,90 +1798,378 @@ impl SidePane {
 
     fn render_diff(
         &self,
+        window: &Window,
         snapshot: Arc<Snapshot>,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity().downgrade();
+        // Unwrapped rows want their natural width. The list gets a minimum
+        // equal to the widest row and a scroll container lets the pointer pan
+        // it; the file header is counter-shifted by the pan so its name and
+        // counts stay fixed at the viewport's edges (see `pinned_row`), and
+        // the sticky header sits outside the scroller and never pans.
+        let min_w = if self.wrap {
+            px(0.)
+        } else {
+            self.unwrapped_content_width(window, theme)
+        };
+        // List row renderers run while the list state is borrowed. Capture the
+        // visible file before layout so their navigation controls never borrow it again.
+        let current_file = self.current_file(&snapshot);
         let list_el = gpui::list(self.diff_list.clone(), move |index, _window, cx| {
             entity
                 .upgrade()
-                .map(|entity| entity.update(cx, |this, cx| this.render_diff_line(index, cx)))
+                .map(|entity| {
+                    entity.update(cx, |this, cx| {
+                        this.render_diff_line(index, current_file, cx)
+                    })
+                })
                 .unwrap_or_else(|| div().into_any_element())
         })
-        .size_full();
+        .h_full()
+        .w_full()
+        .min_w(min_w);
+        let rows = if self.wrap {
+            list_el.into_any_element()
+        } else {
+            div()
+                .id("review-diff-scroll")
+                .size_full()
+                .overflow_scroll()
+                .track_scroll(&self.h_scroll)
+                .child(list_el)
+                .into_any_element()
+        };
 
-        let nerd = nerd_font_family(cx);
-        let dark = theme.mode == ThemeMode::Dark;
-        let sticky = self.render_sticky_header(&snapshot, theme, nerd.as_ref(), dark);
+        let sticky = self.render_sticky_header(&snapshot, theme, cx);
         div()
             .flex_1()
             .min_h_0()
             .min_w_0()
             .relative()
             .overflow_hidden()
-            .child(list_el)
+            .child(rows)
             .children(sticky)
             .into_any_element()
     }
 
+    /// A row that must not pan with unwrapped content. The file header keeps
+    /// its name and counts at the viewport's edges: the row is sized to the
+    /// scroller's visible width and counter-shifted by its horizontal offset.
+    /// The shift lives on an inner wrapper — the virtualized list paints item
+    /// roots at its own origins, so an inset on the root itself is ignored.
+    fn pinned_row(&self, row: AnyElement) -> AnyElement {
+        if self.wrap {
+            return row;
+        }
+        let offset = self.h_scroll.offset().x;
+        let viewport = self.h_scroll.bounds().size.width;
+        div()
+            .w_full()
+            .child(div().w(viewport).left(-offset).child(row))
+            .into_any_element()
+    }
+
+    /// The horizontal extent an unwrapped row needs: the widest row in
+    /// monospace cells at the diff font's advance, plus the row chrome. Split
+    /// view gives each half that extent, so it doubles.
+    fn unwrapped_content_width(&self, window: &Window, theme: Theme) -> Pixels {
+        let cell = crate::diff_view::code_cell_width(window, &theme);
+        let row = cell * self.content_cells.max(1) as f32 + px(diff_gutter_width() + 22.);
+        if self.split {
+            row * 2. + px(1.)
+        } else {
+            row
+        }
+    }
+
+    /// The pinned copy of the current file's header. It lives outside the
+    /// horizontal scroller, so it never pans: the name and counts stay fixed
+    /// at the viewport's edges while the code slides beneath.
     fn render_sticky_header(
         &self,
         snapshot: &Snapshot,
         theme: Theme,
-        nerd: Option<&SharedString>,
-        dark: bool,
+        cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let scroll_top = self.diff_list.logical_scroll_top();
-        let (header_index, next_header_index) = snapshot.file_headers_around(scroll_top.item_ix)?;
-        let needs_sticky = header_index < scroll_top.item_ix
-            || (header_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
-        if !needs_sticky {
-            return None;
-        }
-        let line = snapshot.lines.get(header_index)?;
-        let file = snapshot.files.get(line.file_index)?;
-        let top_offset = next_header_index
-            .and_then(|next_header_index| {
-                let bounds = self.diff_list.bounds_for_item(next_header_index)?;
-                let viewport = self.diff_list.viewport_bounds();
-                let y_in_viewport = bounds.origin.y - viewport.origin.y;
-                (y_in_viewport < bounds.size.height).then_some(y_in_viewport - bounds.size.height)
-            })
+        let mut layers = div().absolute().top_0().left_0().w_full();
+        let mut has_layer = false;
+
+        // A grouped list pins its current section divider; the file header
+        // then stacks directly beneath it. An ungrouped list keeps only the
+        // file header, as before.
+        let section = if snapshot.is_grouped() {
+            snapshot.section_headers_around(scroll_top.item_ix)
+        } else {
+            None
+        };
+        let section_needs = section.is_some_and(|(section_index, _)| {
+            section_index < scroll_top.item_ix
+                || (section_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.))
+        });
+        let section_push = section
+            .map(|(_, next_section)| self.sticky_push_offset(next_section))
             .unwrap_or(px(0.));
+        // Once the next divider starts pushing this section off, its file
+        // header goes with it — pinning one would leave it hovering over the
+        // incoming divider and the rows that belong to it.
+        let section_leaving = section_push < px(0.);
+
+        // The file header layer is added first so the section divider, added
+        // after it, always stays on top while the two overlap mid-transition.
+        if !section_leaving {
+            if let Some((header_index, next_header_index)) =
+                snapshot.file_headers_around(scroll_top.item_ix)
+            {
+                // Once the section divider is pinned the file header beneath it
+                // is covered, so it must pin too even when it sits exactly at
+                // the top.
+                let file_needs = section_needs
+                    || header_index < scroll_top.item_ix
+                    || (header_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
+                if file_needs {
+                    if let Some(line) = snapshot.lines.get(header_index) {
+                        let push = self.sticky_push_offset(next_header_index).min(section_push);
+                        let section_height = if snapshot.is_grouped() {
+                            px(crate::diff_view::REVIEW_SECTION_HEADER_HEIGHT)
+                        } else {
+                            px(0.)
+                        };
+                        layers = layers.child(
+                            div()
+                                .absolute()
+                                .top(section_height + push)
+                                .left_0()
+                                .w_full()
+                                .child(self.file_header_row(line.file_index, true, theme, cx)),
+                        );
+                        has_layer = true;
+                    }
+                }
+            }
+        }
+
+        if section_needs {
+            if let Some((section_index, _)) = section {
+                if let Some(LineKind::SectionHeader {
+                    label,
+                    icon,
+                    count,
+                    additions,
+                    deletions,
+                }) = snapshot.lines.get(section_index).map(|line| &line.kind)
+                {
+                    let actions = self.section_strip_actions(
+                        label,
+                        true,
+                        self.current_file(snapshot),
+                        theme,
+                        cx,
+                    );
+                    layers =
+                        layers.child(div().absolute().top(section_push).left_0().w_full().child(
+                            render_section_header(
+                                label, *icon, *count, *additions, *deletions, actions, theme,
+                            ),
+                        ));
+                    has_layer = true;
+                }
+            }
+        }
+
+        has_layer.then(|| layers.into_any_element())
+    }
+
+    /// The action row an embedded host hangs off a grouped section strip.
+    /// `sticky` tells the host whether this is the pinned copy, so its
+    /// element ids stay unique against the in-list row.
+    fn section_action_row(&self, label: &str, sticky: bool, theme: Theme) -> Option<AnyElement> {
+        self.section_actions
+            .as_ref()
+            .and_then(|build| build(label, sticky, theme))
+    }
+
+    /// The full action row a grouped section strip carries: the host's bulk
+    /// action (stage / unstage all) followed by the same view toggles the
+    /// toolbar shows, so both sections offer every option.
+    fn section_strip_actions(
+        &self,
+        label: &str,
+        sticky: bool,
+        current_file: Option<usize>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let mut row = div().flex().flex_none().items_center().gap_2();
+        if let Some(action) = self.section_action_row(label, sticky, theme) {
+            row = row.child(action);
+        }
+        let prefix = format!(
+            "review-section-{label}-{}",
+            if sticky { "sticky" } else { "row" }
+        );
         Some(
-            div()
-                .absolute()
-                .top(top_offset)
-                .left_0()
-                .w_full()
-                .child(render_file_header(file, theme, nerd, dark))
+            row.child(self.view_toggle_group(&prefix, ButtonSize::Medium, theme, cx))
+                .children(
+                    self.review
+                        .as_ref()
+                        .is_some_and(|review| review.files.len() > 1)
+                        .then(|| self.file_nav(&prefix, current_file, theme, cx)),
+                )
                 .into_any_element(),
         )
     }
 
-    fn render_diff_line(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// How far a sticky row `next_index` pushes the current one up as it
+    /// enters the viewport: zero until it overlaps, then negative by the
+    /// overlap. `None` when there is no following row.
+    fn sticky_push_offset(&self, next_index: Option<usize>) -> Pixels {
+        next_index
+            .and_then(|next_index| {
+                let bounds = self.diff_list.bounds_for_item(next_index)?;
+                let viewport = self.diff_list.viewport_bounds();
+                let y_in_viewport = bounds.origin.y - viewport.origin.y;
+                (y_in_viewport < bounds.size.height).then_some(y_in_viewport - bounds.size.height)
+            })
+            .unwrap_or(px(0.))
+    }
+
+    /// One changed file's header, made actionable: its chevron says whether
+    /// the file's rows follow, and a click toggles them. `sticky` separates
+    /// the pinned copy's element id from the in-list row's, so a partially
+    /// scrolled header never registers two live handlers on one id.
+    fn file_header_row(
+        &self,
+        file_index: usize,
+        sticky: bool,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(file) = self
+            .review
+            .as_ref()
+            .and_then(|review| review.files.get(file_index))
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
+        let collapsed = self.collapsed_files.contains(&file_index);
+        let nerd = nerd_font_family(cx);
+        let dark = theme.mode == ThemeMode::Dark;
+        let note = self.outside_call_note(&file.path);
+        let mut row = render_file_header(
+            &file,
+            theme,
+            nerd.as_ref(),
+            dark,
+            collapsed,
+            note.as_deref(),
+        )
+        .id(gpui::ElementId::Name(
+            format!(
+                "review-file-{}-{file_index}",
+                if sticky { "sticky" } else { "row" }
+            )
+            .into(),
+        ))
+        .debug_selector(move || {
+            if sticky {
+                "review-file-header-sticky"
+            } else {
+                "review-file-header"
+            }
+            .to_string()
+        })
+        .cursor_pointer()
+        .hover_state(&theme)
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_file(file_index, cx)));
+        // An embedded host (the Git page) can hang stage / unstage / discard
+        // actions off the header; they reveal on hover so the row stays clean.
+        if self.embedded {
+            if let Some(actions) = self
+                .file_actions
+                .as_ref()
+                .and_then(|build| build(&file, theme))
+            {
+                row = row.group("review-file-header").child(actions);
+            }
+        }
+        row.into_any_element()
+    }
+
+    fn render_diff_line(
+        &self,
+        index: usize,
+        current_file: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(snapshot) = self.review.as_ref() else {
             return div().into_any_element();
         };
         let Some(line) = snapshot.lines.get(index) else {
             return div().into_any_element();
         };
-        let Some(file) = snapshot.files.get(line.file_index) else {
+        if snapshot.files.get(line.file_index).is_none() {
             return div().into_any_element();
-        };
+        }
         let theme = *theme::get(cx);
         match &line.kind {
             LineKind::FileHeader => {
-                let nerd = nerd_font_family(cx);
-                let dark = theme.mode == ThemeMode::Dark;
-                render_file_header(file, theme, nerd.as_ref(), dark)
+                self.pinned_row(self.file_header_row(line.file_index, false, theme, cx))
+            }
+            // The group divider stays put even while every file beneath it is
+            // collapsed, so it is handled before the collapse gate.
+            LineKind::SectionHeader {
+                label,
+                icon,
+                count,
+                additions,
+                deletions,
+            } => {
+                let actions = self.section_strip_actions(label, false, current_file, theme, cx);
+                self.pinned_row(
+                    render_section_header(
+                        label, *icon, *count, *additions, *deletions, actions, theme,
+                    )
+                    .into_any_element(),
+                )
+            }
+            // A collapsed file keeps its header and nothing else.
+            _ if self.collapsed_files.contains(&line.file_index) => {
+                div().h(px(0.)).into_any_element()
             }
             LineKind::Gap(gap) => self.render_gap(index, gap.clone(), theme, cx),
-            LineKind::HunkHeader => render_hunk_header(&line.content, theme),
-            LineKind::Meta => render_meta(&line.content, theme),
+            LineKind::HunkHeader => render_hunk_header(&line.content, theme, self.wrap),
+            LineKind::Meta => render_meta(&line.content, theme, self.wrap),
             LineKind::Context | LineKind::Addition | LineKind::Deletion => {
-                render_code_row(line, theme)
+                if !self.split {
+                    return render_code_row(line, theme, self.wrap);
+                }
+                if self
+                    .split_pairing
+                    .secondary
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    // The paired deletion's row already draws this line; its
+                    // own row collapses so the pair reads as one row.
+                    return div().h(px(0.)).into_any_element();
+                }
+                let partner = self.split_pairing.partner.get(index).copied().flatten();
+                match (&line.kind, partner) {
+                    (LineKind::Addition, _) => render_split_row(None, Some(line), theme, self.wrap),
+                    (LineKind::Deletion, Some(partner)) => {
+                        render_split_row(Some(line), snapshot.lines.get(partner), theme, self.wrap)
+                    }
+                    (LineKind::Deletion, None) => {
+                        render_split_row(Some(line), None, theme, self.wrap)
+                    }
+                    // Context rides both halves, numbered per side.
+                    _ => render_split_row(Some(line), Some(line), theme, self.wrap),
+                }
             }
         }
     }
@@ -969,7 +2219,7 @@ impl SidePane {
                                 .border_color(theme.border)
                         })
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.overlay_strong))
+                        .hover_on_glass(&theme)
                         .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                             let direction = if event.modifiers().shift {
                                 ExpansionDirection::All
@@ -978,7 +2228,11 @@ impl SidePane {
                             };
                             this.expand_gap(index, direction, cx);
                         }))
-                        .child(icon(gap_icon(direction), 10., theme.text_3)),
+                        .child(icon(
+                            gap_icon(direction),
+                            IconSize::Indicator.px(&theme),
+                            theme.text_muted,
+                        )),
                 );
             }
         }
@@ -989,18 +2243,18 @@ impl SidePane {
             .flex_1()
             .h_full()
             .min_w_0()
-            .px(px(12.))
+            .px(DynamicSpacing::Base12.px(&theme))
             .flex()
             .items_center()
             .overflow_hidden()
             .whitespace_nowrap()
-            .text_size(theme.ui_px(11.5))
-            .text_color(theme.text_3)
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_muted)
             .bg(theme.overlay)
             .when(expandable, |label| {
                 label
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.overlay_strong))
+                    .hover_on_glass(&theme)
                     .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                         let direction = if event.modifiers().shift {
                             ExpansionDirection::All
@@ -1036,6 +2290,9 @@ impl SidePane {
         if let Some(expansion) = expansion {
             self.diff_list
                 .splice(line_index..line_index + 1, expansion.replacement_count);
+            // The line stream shifted under the pairing, and a cap-limited
+            // reveal can leave another gap behind.
+            self.rebuild_view_metrics();
             cx.notify();
         }
     }
@@ -1049,20 +2306,16 @@ impl SidePane {
                 .unwrap_or_else(|| div().into_any_element())
         })
         .size_full()
-        .py(px(4.));
+        .py(DynamicSpacing::Base04.px(&theme));
 
         let column_w = (f32::from(self.width) * 0.42).clamp(TREE_MIN_COL_W, TREE_MAX_COL_W);
-        let filter_row = div()
-            .h(px(40.))
-            .flex_none()
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(icon("icons/search.svg", 13., theme.text_3))
-            .child(self.tree_filter.clone());
+        let filter_row = picker_search_frame(div(), &theme)
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(div().flex_1().min_w_0().child(self.tree_filter.clone()));
 
         div()
             .w(px(column_w))
@@ -1082,8 +2335,32 @@ impl SidePane {
                     .flex_1()
                     .min_h_0()
                     .relative()
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                        this.on_tree_key_down(event, cx)
+                    .on_action(cx.listener(|this, _: &crate::ReviewTreeNext, _, cx| {
+                        this.review_tree_move(1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewTreePrev, _, cx| {
+                        this.review_tree_move(-1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewTreeToggle, _, cx| {
+                        this.review_tree_toggle(cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewFileNext, _, cx| {
+                        this.review_move_file(1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewFilePrev, _, cx| {
+                        this.review_move_file(-1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewHunkNext, _, cx| {
+                        this.review_move_hunk(1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewHunkPrev, _, cx| {
+                        this.review_move_hunk(-1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewExpandAll, _, cx| {
+                        this.review_expand_all(cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewCollapseAll, _, cx| {
+                        this.review_collapse_all(cx)
                     }))
                     .child(tree_el),
             )
@@ -1108,7 +2385,7 @@ impl SidePane {
             } => div()
                 .w_full()
                 .h(px(30.))
-                .px(px(6.))
+                .px(DynamicSpacing::Base06.px(&theme))
                 .flex()
                 .items_center()
                 .child(
@@ -1119,13 +2396,13 @@ impl SidePane {
                         .min_w_0()
                         .pl(px(7. + depth as f32 * 14.))
                         .pr(px(7.))
-                        .rounded(px(5.))
+                        .rounded(Radius::Medium.px(&theme))
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .cursor_pointer()
                         .when(cursor, |row| row.bg(theme.overlay_strong))
-                        .when(!cursor, |row| row.hover(|row| row.bg(theme.overlay)))
+                        .when(!cursor, |row| row.hover_state(&theme))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             window.focus(&this.tree_focus);
                             this.tree_cursor = Some(index);
@@ -1137,19 +2414,23 @@ impl SidePane {
                             } else {
                                 "icons/chevron-right.svg"
                             },
-                            10.,
-                            theme.text_3,
+                            IconSize::Indicator.px(&theme),
+                            theme.text_muted,
                         ))
-                        .child(icon("icons/folder.svg", 13., theme.text_3))
+                        .child(icon(
+                            "icons/folder.svg",
+                            IconSize::Small.px(&theme),
+                            theme.text_muted,
+                        ))
                         .child(
                             div()
                                 .min_w_0()
                                 .flex_1()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
-                                .text_size(theme.ui_px(12.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_2)
+                                .text_color(theme.text_secondary)
                                 .child(name),
                         ),
                 )
@@ -1166,19 +2447,30 @@ impl SidePane {
                     .to_owned();
                 let selected = self.selected_file == Some(file_index);
                 let (status, status_color) = match file.status {
-                    review::FileStatus::Added => ("A", theme.add_green),
-                    review::FileStatus::Deleted => ("D", theme.del_red),
-                    review::FileStatus::Binary => ("B", theme.warn),
-                    review::FileStatus::Modified => ("M", theme.warn),
+                    review::FileStatus::Added => ("A", theme.success),
+                    review::FileStatus::Deleted => ("D", theme.error),
+                    review::FileStatus::Binary => ("B", theme.warning),
+                    review::FileStatus::Modified => ("M", theme.warning),
                 };
                 let nerd = nerd_font_family(cx);
                 let dark = theme.mode == ThemeMode::Dark;
-                let fallback = icon("icons/file.svg", 13., theme.text_3).into_any_element();
-                let glyph = file_glyph(&file.path, dark, nerd.as_ref(), 13., fallback);
+                let fallback = icon(
+                    "icons/file.svg",
+                    IconSize::Small.px(&theme),
+                    theme.text_muted,
+                )
+                .into_any_element();
+                let glyph = file_glyph(
+                    &file.path,
+                    dark,
+                    nerd.as_ref(),
+                    IconSize::Small.px(&theme),
+                    fallback,
+                );
                 div()
                     .w_full()
                     .h(px(30.))
-                    .px(px(6.))
+                    .px(DynamicSpacing::Base06.px(&theme))
                     .flex()
                     .items_center()
                     .child(
@@ -1191,16 +2483,14 @@ impl SidePane {
                             .min_w_0()
                             .pl(px(23. + depth as f32 * 14.))
                             .pr(px(7.))
-                            .rounded(px(5.))
+                            .rounded(Radius::Medium.px(&theme))
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(DynamicSpacing::Base06.px(&theme))
                             .cursor_pointer()
-                            .when(selected && cursor, |row| row.bg(theme.overlay_strong))
-                            .when(selected ^ cursor, |row| row.bg(theme.overlay))
-                            .when(!selected && !cursor, |row| {
-                                row.hover(|row| row.bg(theme.overlay))
-                            })
+                            .when(selected, |row| row.bg(theme.surface_selected))
+                            .when(!selected && cursor, |row| row.bg(theme.surface_hover))
+                            .when(!selected && !cursor, |row| row.hover_state(&theme))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 window.focus(&this.tree_focus);
                                 this.tree_cursor = Some(index);
@@ -1213,8 +2503,12 @@ impl SidePane {
                                     .flex_1()
                                     .overflow_hidden()
                                     .whitespace_nowrap()
-                                    .text_size(theme.ui_px(12.5))
-                                    .text_color(if selected { theme.text } else { theme.text_2 })
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .text_color(if selected {
+                                        theme.text_primary
+                                    } else {
+                                        theme.text_secondary
+                                    })
                                     .child(name),
                             )
                             .child(
@@ -1222,13 +2516,13 @@ impl SidePane {
                                     .w(px(18.))
                                     .h(px(18.))
                                     .flex_none()
-                                    .rounded(px(4.))
+                                    .rounded(Radius::Small.px(&theme))
                                     .border_1()
                                     .border_color(status_color.opacity(0.65))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(theme.ui_px(11.))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(status_color)
                                     .child(status),
@@ -1241,20 +2535,26 @@ impl SidePane {
 
     /// The source filter dropdown, painted over the pane body.
     fn source_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.source_menu_open {
+        if !self.source_menu_open || self.embedded {
             return None;
         }
-        let mut menu = div()
-            .id("review-source-menu")
+        let mut menu = picker_surface(div().id("review-source-menu"), &theme)
             .absolute()
-            .top(px(84.))
+            // Below the toolbar's source button.
+            .top(menu_top(
+                // Embedded drops the head row, so the toolbar is flush with the
+                // pane top; docked panes push it down by the head row's height
+                // plus its 1px bottom border.
+                if self.embedded { 0. } else { 1. + PANE_ROW_H },
+                ButtonSize::Medium,
+                &theme,
+            ))
             .left(px(10.))
             .w(px(200.))
-            .py(px(4.))
-            .rounded(px(10.))
-            .popover_surface(theme)
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .occlude()
             .on_mouse_down_out(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_source_menu(cx)),
@@ -1266,6 +2566,14 @@ impl SidePane {
             last_turn.is_some(),
             last_turn.is_some() && last_turn == Some(self.source),
             last_turn,
+            theme,
+            cx,
+        ));
+        menu = menu.child(source_row(
+            &tr!("sidepane.all_changes"),
+            true,
+            self.source == Source::AllChanges,
+            Some(Source::AllChanges),
             theme,
             cx,
         ));
@@ -1303,313 +2611,82 @@ fn source_row(
     theme: Theme,
     cx: &mut Context<SidePane>,
 ) -> AnyElement {
-    let row = div()
-        .id(gpui::ElementId::Name(
+    let row = picker_entry(
+        div().id(gpui::ElementId::Name(
             format!("review-source-{label}").into(),
-        ))
-        .h(px(28.))
-        .mx(px(4.))
-        .px(px(8.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .text_size(theme.ui_px(12.))
-        .when(enabled, |row| row.cursor_pointer())
-        .when(selected, |row| row.bg(theme.active))
-        .when(enabled && !selected, |row| {
-            row.hover(|s| s.bg(theme.overlay))
-        })
-        .when(enabled && choice.is_some(), |row| {
-            row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if let Some(choice) = choice {
-                    this.set_source(choice, cx);
-                }
-            }))
-        })
-        .child(
+        )),
+        &theme,
+    )
+    .h(picker::entry_height(&theme))
+    .flex_none()
+    .when(enabled, |row| row.cursor_pointer())
+    .when(selected, |row| row.bg(theme.surface_selected))
+    .when(enabled && !selected, |row| row.hover_state(&theme))
+    .when(enabled && choice.is_some(), |row| {
+        row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            if let Some(choice) = choice {
+                this.set_source(choice, cx);
+            }
+        }))
+    })
+    .child(
+        div()
+            .min_w_0()
+            .flex_1()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_color(if !enabled {
+                theme.text_muted
+            } else if selected {
+                theme.text_primary
+            } else {
+                theme.text_secondary
+            })
+            .child(label.to_string()),
+    )
+    .when(!enabled, |row| {
+        // Zed's `ml_4` before a trailing hint, less the row gap already there.
+        row.child(
             div()
-                .min_w_0()
-                .flex_1()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_color(if !enabled {
-                    theme.text_3
-                } else if selected {
-                    theme.active_fg
-                } else {
-                    theme.text_2
-                })
-                .child(label.to_string()),
+                .flex_none()
+                .ml(context_menu::keybinding_gap(&theme) - context_menu::icon_gap(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
+                .child(tr!("sidepane.no_turns_yet")),
         )
-        .when(!enabled, |row| {
-            row.child(
-                div()
-                    .flex_none()
-                    .text_size(theme.ui_px(10.))
-                    .text_color(theme.text_3)
-                    .child(tr!("sidepane.no_turns_yet")),
-            )
-        })
-        .when(selected, |row| {
-            row.child(icon("icons/check.svg", 11., theme.accent))
-        });
+    })
+    .when(selected, |row| {
+        row.child(icon(
+            "icons/check.svg",
+            context_menu::ICON.px(&theme),
+            theme.accent_text,
+        ))
+    });
     row.into_any_element()
 }
 
 fn separator(theme: Theme) -> AnyElement {
-    div()
-        .h(px(1.))
-        .my(px(4.))
-        .mx(px(8.))
-        .bg(theme.border)
-        .into_any_element()
+    context_menu_separator(&theme).into_any_element()
+}
+
+/// The changed-file total beside the ±stats — "12 files", or "1 file" where a
+/// count of one would otherwise read as a bug.
+fn file_count_label(files: usize) -> String {
+    if files == 1 {
+        tr!("sidepane.files_count_one", count = files)
+    } else {
+        tr!("sidepane.files_count_other", count = files)
+    }
+}
+
+/// The top of a dropdown hung from a button centered in the pane row that
+/// starts `row_top` px below the pane: the button's bottom edge plus Zed's
+/// menu offset.
+fn menu_top(row_top: f32, trigger: ButtonSize, theme: &Theme) -> Pixels {
+    px(row_top + PANE_ROW_H / 2.) + trigger.height(theme) * 0.5 + popover::MENU_OFFSET
 }
 
 // ── diff row rendering ─────────────────────────────────────────────────────
-
-/// Sticky/normal file header: icon, path, +additions, -deletions.
-fn render_file_header(
-    file: &review::File,
-    theme: Theme,
-    nerd: Option<&SharedString>,
-    dark: bool,
-) -> AnyElement {
-    let fallback = icon("icons/file.svg", 13., theme.text_3).into_any_element();
-    let glyph = file_glyph(&file.path, dark, nerd, 13., fallback);
-    div()
-        .w_full()
-        .min_w_0()
-        .h(px(REVIEW_FILE_HEADER_HEIGHT))
-        .px(px(12.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .border_b_1()
-        .border_color(theme.border)
-        .bg(theme.bg_raised)
-        .child(glyph)
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .font_family(theme::code_font_family())
-                .text_size(theme.ui_px(12.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2)
-                .child(file.path.clone()),
-        )
-        .child(
-            div()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.add_green)
-                .child(format!("+{}", file.additions)),
-        )
-        .child(
-            div()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.del_red)
-                .child(format!("-{}", file.deletions)),
-        )
-        .into_any_element()
-}
-
-fn render_hunk_header(content: &str, theme: Theme) -> AnyElement {
-    let gutter_w = diff_gutter_width();
-    div()
-        .min_h(px(REVIEW_HUNK_HEIGHT))
-        .w_full()
-        .min_w_0()
-        .flex()
-        .font_family(theme::code_font_family())
-        .text_size(theme.code_px(DIFF_TEXT_SIZE))
-        .line_height(theme.code_px(16.))
-        .text_color(theme.text_3)
-        .child(
-            div()
-                .w(px(gutter_w))
-                .min_h(px(REVIEW_HUNK_HEIGHT))
-                .flex_none()
-                .border_r_1()
-                .border_color(theme.border)
-                .bg(theme.overlay),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .px(px(12.))
-                .py(px(4.))
-                .overflow_hidden()
-                .whitespace_normal()
-                .bg(theme.overlay)
-                .child(content.to_string()),
-        )
-        .into_any_element()
-}
-
-fn render_meta(content: &str, theme: Theme) -> AnyElement {
-    let gutter_w = diff_gutter_width();
-    div()
-        .min_h(px(REVIEW_HUNK_HEIGHT))
-        .w_full()
-        .min_w_0()
-        .flex()
-        .font_family(theme::code_font_family())
-        .text_size(theme.code_px(DIFF_TEXT_SIZE))
-        .line_height(theme.code_px(16.))
-        .text_color(theme.text_3)
-        .child(
-            div()
-                .w(px(gutter_w))
-                .min_h(px(REVIEW_HUNK_HEIGHT))
-                .flex_none(),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .py(px(4.))
-                .pr(px(10.))
-                .overflow_hidden()
-                .whitespace_normal()
-                .child(content.to_string()),
-        )
-        .into_any_element()
-}
-
-fn diff_gutter_width() -> f32 {
-    (DIFF_TEXT_SIZE * 3. + 14.).round()
-}
-
-fn diff_row_height() -> f32 {
-    (DIFF_TEXT_SIZE * 1.5).round()
-}
-
-/// One context/addition/deletion row: a single line-number gutter (the new
-/// number, falling back to the old one) and syntax-coloured code.
-fn render_code_row(line: &review::Line, theme: Theme) -> AnyElement {
-    let row_height = diff_row_height();
-    let (body_bg, gutter_bg, edge, number_color) = match line.kind {
-        LineKind::Addition => (
-            Some(theme.add_green.opacity(body_wash(theme))),
-            Some(theme.add_green.opacity(gutter_wash(theme))),
-            Some(theme.add_green),
-            theme.add_green,
-        ),
-        LineKind::Deletion => (
-            Some(theme.del_red.opacity(body_wash(theme))),
-            Some(theme.del_red.opacity(gutter_wash(theme))),
-            Some(theme.del_red),
-            theme.del_red,
-        ),
-        _ => (None, None, None, theme.text_3),
-    };
-    let shown_line = line.new_line.or(line.old_line);
-    let number = shown_line.map(|n| n.to_string()).unwrap_or_default();
-    let content = code_text(line, theme);
-    div()
-        .w_full()
-        .min_w_0()
-        .min_h(px(row_height))
-        .flex()
-        .font_family(theme::code_font_family())
-        .text_size(theme.code_px(DIFF_TEXT_SIZE))
-        .line_height(theme.code_px(16.))
-        .when_some(edge, |row, edge| row.border_l_2().border_color(edge))
-        .child(
-            div()
-                .w(px(diff_gutter_width()))
-                .min_h(px(row_height))
-                .flex_none()
-                .pr(px(9.))
-                .flex()
-                .justify_end()
-                .border_r_1()
-                .border_color(theme.border)
-                .text_color(number_color)
-                .when_some(gutter_bg, |gutter, bg| gutter.bg(bg))
-                .child(number),
-        )
-        .child(
-            div()
-                .min_h(px(row_height))
-                .min_w_0()
-                .flex_1()
-                .pl(px(12.))
-                .pr(px(10.))
-                .overflow_hidden()
-                .whitespace_normal()
-                .when_some(body_bg, |body, bg| body.bg(bg))
-                .child(content),
-        )
-        .into_any_element()
-}
-
-fn body_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.20
-    } else {
-        0.12
-    }
-}
-
-fn gutter_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.15
-    } else {
-        0.09
-    }
-}
-
-/// Build syntax-colored text for one diff line.
-fn code_text(line: &review::Line, theme: Theme) -> StyledText {
-    let base = theme.text_2;
-    let font = mono_font();
-    let mut runs: Vec<TextRun> = Vec::new();
-    let mut offset = 0usize;
-    for token in &line.tokens {
-        let start = token.range.start.min(line.content.len());
-        let end = token.range.end.min(line.content.len());
-        if start > offset {
-            runs.push(run(start - offset, base, &font));
-        }
-        if end > start {
-            runs.push(run(end - start, theme.token_color(token.class), &font));
-        }
-        offset = offset.max(end);
-    }
-    if offset < line.content.len() {
-        runs.push(run(line.content.len() - offset, base, &font));
-    }
-    if runs.is_empty() {
-        runs.push(run(line.content.len(), base, &font));
-    }
-    StyledText::new(line.content.clone()).with_runs(runs)
-}
-
-fn run(len: usize, color: Hsla, font: &Font) -> TextRun {
-    TextRun {
-        len,
-        font: font.clone(),
-        color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    }
-}
-
-fn mono_font() -> Font {
-    Font {
-        family: theme::code_font_family(),
-        features: FontFeatures::default(),
-        fallbacks: None,
-        weight: FontWeight::NORMAL,
-        style: FontStyle::Normal,
-    }
-}
 
 fn gap_icon(direction: ExpansionDirection) -> &'static str {
     match direction {
@@ -1624,10 +2701,17 @@ fn gap_icon(direction: ExpansionDirection) -> &'static str {
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 impl Source {
+    /// Last Turn and All Changes are painted from the conversation. Git
+    /// sources still diff the worktree.
+    fn is_conversation(self) -> bool {
+        matches!(self, Self::LastTurn { .. } | Self::AllChanges)
+    }
+
     /// Reader-facing empty-state copy for each source.
     fn empty_description(self) -> String {
         match self {
             Source::LastTurn { .. } => tr!("sidepane.empty_last_turn"),
+            Source::AllChanges => tr!("sidepane.empty_all_changes"),
             Source::Uncommitted => tr!("sidepane.empty_uncommitted"),
             Source::Unstaged => tr!("sidepane.empty_unstaged"),
             Source::Staged => tr!("sidepane.empty_staged"),
@@ -1638,20 +2722,40 @@ impl Source {
 }
 
 impl Render for SidePane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Embedded: paint the browser directly, filling its host surface.
+        if self.embedded {
+            let theme = *theme::get(cx);
+            let body = self.body(window, theme, cx);
+            return div()
+                .id("embedded-review")
+                .debug_selector(|| "embedded-review".to_string())
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .w_full()
+                .bg(theme.background)
+                .flex()
+                .flex_col()
+                .child(body)
+                .children(self.source_menu(theme, cx))
+                .on_action(cx.listener(Self::on_filter_cancel))
+                .into_any_element();
+        }
         if !self.open {
             return div().into_any_element();
         }
         let theme = *theme::get(cx);
+        let body = self.body(window, theme, cx);
         div()
             .id("side-pane")
+            .debug_selector(|| "side-pane".to_string())
             .relative()
             .flex_none()
             .w(self.width)
             .h_full()
-            .bg(theme.bg_main)
-            .border_l_1()
-            .border_color(theme.border)
+            .pl(DynamicSpacing::Base12.px(&theme))
             .flex()
             .flex_col()
             .min_h_0()
@@ -1661,13 +2765,32 @@ impl Render for SidePane {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left(px(-3.))
+                    // Sit on the card's left border (the 12px gutter, minus
+                    // half the handle width), not the panel's outer edge, so
+                    // the edge users see is the edge they can grab.
+                    .left(px(9.))
                     .w(px(6.))
                     .cursor(CursorStyle::ResizeLeftRight)
-                    .hover(|style| style.bg(theme.accent.opacity(0.4)))
+                    .hover_accent_wash(&theme, AccentWash::Strong)
                     .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
             )
-            .child(self.body(theme, cx))
+            // The dock reads as a rounded card, like the Git/Usage cards in
+            // the main column. The menus stay outside this clipped shell so
+            // they are not cut off at its corners.
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .bg(theme.background)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(panel::RADIUS.px(&theme))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(body),
+            )
             .children(self.source_menu(theme, cx))
             .on_action(cx.listener(Self::on_filter_cancel))
             .into_any_element()
@@ -1677,8 +2800,950 @@ impl Render for SidePane {
 /// An invisible drag ghost — resizing leaves no floating preview.
 struct DragGhost;
 
+/// Whether `ix` begins a hunk: an explicit hunk header, or the first
+/// addition/deletion of a change run. Full-context snapshots carry no
+/// `HunkHeader` rows, so the run boundary is the signal both shapes share.
+fn is_hunk_start(lines: &[review::Line], ix: usize) -> bool {
+    match lines[ix].kind {
+        LineKind::HunkHeader => true,
+        LineKind::Addition | LineKind::Deletion => {
+            let previous_is_change = ix > 0
+                && lines[ix - 1].file_index == lines[ix].file_index
+                && matches!(lines[ix - 1].kind, LineKind::Addition | LineKind::Deletion);
+            !previous_is_change
+        }
+        _ => false,
+    }
+}
+
 impl Render for DragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeId;
+    use gpui::point;
+
+    fn pane(cx: &mut gpui::TestAppContext) -> Entity<SidePane> {
+        cx.update(|cx| {
+            cx.set_global(Theme::for_id(ThemeId::Orbit));
+            cx.new(SidePane::new)
+        })
+    }
+
+    /// A 10-line file with one change, so collapsing leaves a leading and a
+    /// trailing gap.
+    fn gap_patch() -> String {
+        let mut patch = String::from(
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             index 1111111..2222222 100644\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,10 +1,10 @@\n",
+        );
+        for line in 1..=5 {
+            patch.push_str(&format!(" context line {line}\n"));
+        }
+        patch.push_str("-change();\n+changed();\n");
+        for line in 6..=10 {
+            patch.push_str(&format!(" context line {line}\n"));
+        }
+        patch
+    }
+
+    #[gpui::test]
+    fn change_during_load_is_retried_and_errors_are_visible(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.workspace = Some(PathBuf::from("/orbit-test-nonexistent-workspace"));
+                pane.review_loading = true;
+                pane.review_stale = false;
+                pane.load_generation = 10;
+                pane.mark_review_stale(cx);
+                let snapshot = crate::review::parse_collected(Source::Uncommitted, "", "", false);
+                pane.finish_review_load(10, Ok(snapshot), cx);
+                assert_eq!(
+                    pane.load_generation, 11,
+                    "a dirty in-flight load must be retried"
+                );
+                assert!(pane.review_loading);
+                assert!(!pane.review_stale);
+                pane.open = false;
+                pane.finish_review_load(11, Err("read failed".to_string()), cx);
+                assert_eq!(pane.review_error.as_deref(), Some("read failed"));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn full_width_and_dock_share_one_restore_point(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_available_width(px(1200.), cx);
+                pane.set_width(px(500.), cx);
+
+                pane.toggle_full_width(cx);
+                assert_eq!(pane.width(), px(1200.));
+                assert!(pane.full_width);
+
+                // `leave_full_width` — the app's feature-page and sidebar
+                // path — docks back to the width the reader dialed in.
+                pane.leave_full_width(cx);
+                assert_eq!(pane.width(), px(500.));
+                assert!(!pane.full_width);
+
+                // While full width, the pane tracks a resized window.
+                pane.toggle_full_width(cx);
+                pane.set_available_width(px(900.), cx);
+                assert_eq!(pane.width(), px(900.));
+
+                // Docked, a window that shrinks tightens the pane to fit.
+                pane.leave_full_width(cx);
+                assert_eq!(pane.width(), px(500.));
+                pane.set_available_width(px(420.), cx);
+                assert_eq!(pane.width(), px(420.));
+            });
+        });
+    }
+
+    /// A left-edge drag cannot grow past the drag ceiling. Full width is a
+    /// separate path with no such cap — it deliberately takes the whole
+    /// column beside the sidebar.
+    #[gpui::test]
+    fn a_drag_resize_is_capped_but_full_width_is_not(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_available_width(px(1400.), cx);
+                pane.set_width(px(1200.), cx);
+                assert_eq!(
+                    pane.width(),
+                    px(PANE_MAX_W),
+                    "a drag is capped at the drag ceiling"
+                );
+
+                pane.toggle_full_width(cx);
+                assert_eq!(pane.width(), px(1400.));
+                assert!(pane.full_width);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn collapse_all_hides_every_file_body_and_expand_all_restores_them(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let pane = pane(cx);
+        let snapshot = crate::review::parse_collected(
+            Source::Uncommitted,
+            "1\t1\tsrc/lib.rs\n",
+            &gap_patch(),
+            true,
+        );
+        let files = snapshot.files.len();
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.apply_snapshot(snapshot);
+                assert!(pane.collapsed_files.is_empty());
+
+                pane.toggle_all_files(cx);
+                assert_eq!(pane.collapsed_files.len(), files);
+
+                pane.toggle_all_files(cx);
+                assert!(pane.collapsed_files.is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn review_keyboard_navigation_moves_between_files(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        let patch = format!(
+            "{}\n\
+             diff --git a/src/other.rs b/src/other.rs\n\
+             index 3333333..4444444 100644\n\
+             --- a/src/other.rs\n\
+             +++ b/src/other.rs\n\
+             @@ -1,3 +1,3 @@\n\
+             -old();\n\
+             +new();\n",
+            gap_patch()
+        );
+        let snapshot = crate::review::parse_collected(
+            Source::Uncommitted,
+            "1\t1\tsrc/lib.rs\n1\t1\tsrc/other.rs\n",
+            &patch,
+            true,
+        );
+        assert_eq!(
+            snapshot.files.len(),
+            2,
+            "fixture must hold two changed files"
+        );
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.apply_snapshot(snapshot);
+                pane.review_move_file(1, cx);
+                assert_eq!(pane.selected_file, Some(1));
+                pane.review_move_file(1, cx);
+                assert_eq!(pane.selected_file, Some(1), "clamps at the last file");
+                pane.review_move_file(-1, cx);
+                assert_eq!(pane.selected_file, Some(0));
+
+                pane.review_collapse_all(cx);
+                assert_eq!(pane.collapsed_files.len(), 2);
+                pane.review_expand_all(cx);
+                assert!(pane.collapsed_files.is_empty());
+
+                // Hunk navigation follows the diff into the next file.
+                pane.select_file(0, cx);
+                pane.review_move_hunk(1, cx);
+                assert_eq!(pane.selected_file, Some(0));
+                pane.review_move_hunk(1, cx);
+                assert_eq!(pane.selected_file, Some(1));
+            });
+        });
+    }
+
+    /// A patch with one changed line in each named file.
+    fn multi_file_patch(names: &[&str]) -> (String, String) {
+        let numstat = names.iter().map(|name| format!("1\t1\t{name}\n")).collect();
+        let patch = names
+            .iter()
+            .map(|name| {
+                format!(
+                    "diff --git a/{name} b/{name}\n\
+                     index 1111111..2222222 100644\n\
+                     --- a/{name}\n\
+                     +++ b/{name}\n\
+                     @@ -1,3 +1,3 @@\n\
+                     -old();\n\
+                     +new();\n"
+                )
+            })
+            .collect();
+        (numstat, patch)
+    }
+
+    /// The arrows step from the file at the top of the diff, not from a
+    /// selection the reader scrolled away from — so stepping always continues
+    /// where they are reading.
+    #[gpui::test]
+    fn file_navigation_steps_from_the_file_on_screen(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        let (numstat, patch) = multi_file_patch(&["src/a.rs", "src/b.rs", "src/c.rs"]);
+        let snapshot = crate::review::parse_collected(Source::Uncommitted, &numstat, &patch, false);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.apply_snapshot(snapshot);
+
+                // The reader scrolls to the last file without touching the
+                // tree, so the selection still points at the first one.
+                let last = pane.review.as_ref().unwrap().files[2].diff_line.unwrap();
+                pane.diff_list.scroll_to(ListOffset {
+                    item_ix: last,
+                    offset_in_item: px(0.),
+                });
+                pane.review_move_file(-1, cx);
+                assert_eq!(
+                    pane.selected_file,
+                    Some(1),
+                    "the previous file is the one above the file being read"
+                );
+
+                pane.review_move_file(1, cx);
+                assert_eq!(pane.selected_file, Some(2));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn embedded_file_navigation_crosses_staged_and_unstaged_sections(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        let (staged_stats, staged_patch) = multi_file_patch(&["src/staged.rs"]);
+        let (changes_stats, changes_patch) = multi_file_patch(&["src/changes.rs"]);
+        let sections = [
+            review::SectionInput {
+                label: "Staged".into(),
+                icon: None,
+                numstat: &staged_stats,
+                patch: &staged_patch,
+                complete_context: true,
+            },
+            review::SectionInput {
+                label: "Changes".into(),
+                icon: None,
+                numstat: &changes_stats,
+                patch: &changes_patch,
+                complete_context: true,
+            },
+        ];
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_embedded(true, cx);
+                pane.apply_snapshot(review::parse_sections(Source::Uncommitted, &sections));
+            });
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(700.), px(600.)),
+            |_, _| pane.clone(),
+        );
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.review_move_file(1, cx);
+                assert_eq!(pane.selected_file, Some(1));
+                pane.review_move_file(-1, cx);
+                assert_eq!(pane.selected_file, Some(0));
+            });
+        });
+    }
+
+    /// The file counter and its arrows share the stats group: they appear
+    /// where the toolbar has the room and drop out below the stats breakpoint
+    /// rather than overflowing.
+    /// The file navigator and the standalone count fold away at their own
+    /// widths: the arrows need the stats' room plus theirs, and the count only
+    /// appears once the toolbar can hold it beside them. The counter in the
+    /// navigator keeps the total on the panes that cannot.
+    #[gpui::test]
+    fn file_navigation_shows_where_the_toolbar_has_room(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        let (numstat, patch) = multi_file_patch(&["src/a.rs", "src/b.rs"]);
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_width(px(460.), cx);
+                pane.apply_snapshot(crate::review::parse_collected(
+                    Source::Uncommitted,
+                    &numstat,
+                    &patch,
+                    true,
+                ));
+            });
+        });
+        let viewport = gpui::size(px(1200.), px(800.));
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| pane.clone());
+        };
+
+        // The debug-bounds map keeps entries from earlier frames, so the test
+        // widens from narrow to wide: an arrow seen here was drawn by this
+        // frame.
+        cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_width(px(PANE_MIN_W), cx)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("review-file-prev").is_none(),
+            "a narrow pane drops the arrows with the stats"
+        );
+        assert!(cx.debug_bounds("review-file-count").is_none());
+
+        // The default docked width carries the arrows; the counter in them
+        // states the total, so the standing count waits for more room.
+        cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_width(px(460.), cx)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("review-file-prev").is_some(),
+            "a docked pane has room for the file arrows"
+        );
+        let next = cx.debug_bounds("review-file-next").unwrap();
+        let pane_bounds = cx.debug_bounds("side-pane").unwrap();
+        assert!(next.origin.x + next.size.width <= pane_bounds.origin.x + pane_bounds.size.width);
+        assert!(
+            cx.debug_bounds("review-file-count").is_none(),
+            "the count folds into the counter on a narrow pane"
+        );
+
+        // A wide pane also names the total outright.
+        cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_width(px(700.), cx)));
+        draw(cx);
+        assert!(cx.debug_bounds("review-file-count").is_some());
+        assert!(cx.debug_bounds("review-file-prev").is_some());
+    }
+
+    #[gpui::test]
+    fn partial_diff_warning_leaves_room_for_file_navigation(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        let (numstat, patch) = multi_file_patch(&["src/a.rs", "src/b.rs"]);
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_width(px(460.), cx);
+                pane.apply_snapshot(crate::review::parse_collected(
+                    Source::Uncommitted,
+                    &numstat,
+                    &patch,
+                    false,
+                ));
+            });
+        });
+        let viewport = gpui::size(px(1200.), px(800.));
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| pane.clone());
+        assert!(cx.debug_bounds("review-file-next").is_none());
+
+        cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_width(px(560.), cx)));
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| pane.clone());
+        let next = cx.debug_bounds("review-file-next").unwrap();
+        let pane_bounds = cx.debug_bounds("side-pane").unwrap();
+        assert!(next.origin.x + next.size.width <= pane_bounds.origin.x + pane_bounds.size.width);
+    }
+
+    #[gpui::test]
+    fn one_file_collapses_independently_and_selecting_it_expands_it(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        let snapshot = crate::review::parse_collected(
+            Source::Uncommitted,
+            "1\t1\tsrc/lib.rs\n",
+            &gap_patch(),
+            true,
+        );
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.apply_snapshot(snapshot);
+
+                pane.toggle_file(0, cx);
+                assert!(pane.collapsed_files.contains(&0));
+
+                // Picking the file in the tree is an ask to see its diff.
+                pane.select_file(0, cx);
+                assert!(pane.collapsed_files.is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn wrap_and_split_toggles_flip_their_state(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                assert!(pane.wrap);
+                pane.toggle_wrap(cx);
+                assert!(!pane.wrap);
+
+                assert!(!pane.split);
+                pane.toggle_split(cx);
+                assert!(pane.split);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn populated_diff_has_a_visible_viewport_in_dock_and_git_page(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        for embedded in [false, true] {
+            cx.update(|_, cx| {
+                pane.update(cx, |pane, cx| {
+                    pane.open = true;
+                    pane.set_embedded(embedded, cx);
+                    pane.set_available_width(px(900.), cx);
+                    pane.apply_snapshot(crate::review::parse_collected(
+                        Source::Uncommitted,
+                        "1\t1\tsrc/lib.rs\n",
+                        &gap_patch(),
+                        true,
+                    ));
+                });
+            });
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(800.)),
+                |_, _| div().size_full().flex().flex_col().child(pane.clone()),
+            );
+            cx.update(|_, cx| {
+                let pane = pane.read(cx);
+                assert!(
+                    pane.diff_list.viewport_bounds().size.height > px(0.),
+                    "the diff list needs a visible viewport (embedded={embedded})"
+                );
+            });
+            assert!(
+                cx.debug_bounds("review-file-header").is_some(),
+                "a changed file header must render"
+            );
+        }
+    }
+
+    /// Every view mode lays out its real element tree without panicking —
+    /// split rows, collapsed files, and the unwrapped scroller only exist at
+    /// render time.
+    #[gpui::test]
+    fn every_view_mode_draws(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_available_width(px(900.), cx);
+                pane.apply_snapshot(crate::review::parse_collected(
+                    Source::Uncommitted,
+                    "1\t1\tsrc/lib.rs\n",
+                    &gap_patch(),
+                    true,
+                ));
+            });
+        });
+        let viewport = || gpui::size(px(900.), px(800.));
+        for (wrap, split, collapse) in [
+            (true, false, false),
+            (false, false, false),
+            (true, true, false),
+            (false, true, false),
+            (true, true, true),
+            (false, true, true),
+        ] {
+            cx.update(|_, cx| {
+                pane.update(cx, |pane, cx| {
+                    pane.wrap = wrap;
+                    pane.split = split;
+                    let should_collapse = collapse && pane.collapsed_files.is_empty();
+                    if should_collapse || (!collapse && !pane.collapsed_files.is_empty()) {
+                        pane.toggle_all_files(cx);
+                    }
+                    cx.notify();
+                });
+            });
+            let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
+        }
+    }
+
+    /// Unwrapped text keeps the file header fixed: its name and change counts
+    /// stay at the viewport's edges while only the code pans sideways beneath.
+    #[gpui::test]
+    fn unwrapped_file_header_stays_fixed_while_code_pans(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        let long = "x".repeat(200);
+        let patch = format!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             index 1111111..2222222 100644\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,3 +1,3 @@\n\
+              context one\n\
+             -old line\n\
+             +{long}\n\
+              context two\n"
+        );
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_width(px(460.), cx);
+                pane.wrap = false;
+                pane.apply_snapshot(crate::review::parse_collected(
+                    Source::Uncommitted,
+                    "1\t1\tsrc/lib.rs\n",
+                    &patch,
+                    false,
+                ));
+            });
+        });
+        let viewport = || gpui::size(px(900.), px(700.));
+        let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
+
+        let scroller = cx.update(|_, cx| pane.read(cx).h_scroll.bounds());
+        assert!(
+            scroller.size.width < px(700.),
+            "the scroller is the pane-sized viewport, got {:?}",
+            scroller.size.width
+        );
+        let header = cx
+            .debug_bounds("review-file-header")
+            .expect("the in-list header is laid out");
+        assert!(
+            (header.size.width - scroller.size.width).abs() < px(1.),
+            "the header spans the visible pane, not the wide content: {:?} vs {:?}",
+            header.size.width,
+            scroller.size.width
+        );
+
+        // Pan the content right: the offset moves, the header must not.
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: point(px(200.), px(400.)),
+            delta: gpui::ScrollDelta::Pixels(point(px(-240.), px(0.))),
+            ..Default::default()
+        });
+        let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
+        let offset = cx.update(|_, cx| pane.read(cx).h_scroll.offset().x);
+        assert!(
+            offset < px(0.),
+            "the scroller must pan right, got {offset:?}"
+        );
+        let after = cx
+            .debug_bounds("review-file-header")
+            .expect("the in-list header is still laid out");
+        assert!(
+            (after.origin.x - header.origin.x).abs() < px(1.),
+            "the header is fixed: {:?} -> {:?}",
+            header.origin.x,
+            after.origin.x
+        );
+    }
+
+    #[gpui::test]
+    fn a_session_swap_keeps_last_turn_when_no_turn_is_known(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_context(Some("other-session".into()), None, cx);
+                assert!(
+                    matches!(pane.source, Source::LastTurn { turn_count: 0 }),
+                    "a missing clock stays on Last Turn and drops the other session's turn number"
+                );
+                assert!(pane.review_error.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn an_open_last_turn_follows_the_new_latest(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(None, cx);
+                pane.set_turn_context(Some("session".into()), Some(1), cx);
+                assert!(matches!(pane.source, Source::LastTurn { turn_count: 1 }));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn an_older_turn_stays_selected_when_a_newer_one_finishes(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(3), cx);
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_context(Some("session".into()), Some(4), cx);
+                assert!(matches!(pane.source, Source::LastTurn { turn_count: 1 }));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn review_without_a_turn_stays_on_last_turn(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(None, cx);
+                assert!(matches!(pane.source, Source::LastTurn { turn_count: 0 }));
+                assert!(pane
+                    .review
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.files.is_empty()));
+                assert!(pane.review_error.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn last_turn_renders_recorded_edits_without_a_repository(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "src/lib.rs".into(),
+                                call: crate::turn_review::FileCall::Edits(vec![
+                                    crate::turn_review::TextEdit {
+                                        old: "old".into(),
+                                        new: "new".into(),
+                                    },
+                                ]),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.review_error = Some("not a repository".into());
+                let generation = pane.load_generation;
+                pane.show_review_turn(Some(1), cx);
+                let snapshot = pane.review.as_ref().expect("last turn snapshot");
+                assert_eq!(snapshot.files.len(), 1);
+                assert_eq!(snapshot.files[0].path, "src/lib.rs");
+                assert!(pane.review_error.is_none());
+                assert_eq!(pane.load_generation, generation.wrapping_add(1));
+                assert!(!pane.review_loading);
+                assert!(snapshot.lines.iter().any(|line| {
+                    matches!(line.kind, crate::review::LineKind::Addition) && line.content == "new"
+                }));
+            });
+        });
+    }
+
+    /// A push while Last Turn is open refreshes it. That push happens when
+    /// Review is opened or the turn settles, not as each tool call streams in.
+    #[gpui::test]
+    fn an_open_last_turn_shows_records_pushed_into_it(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(Some(1), cx);
+                assert!(pane
+                    .review
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.files.is_empty()));
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "src/lib.rs".into(),
+                                call: crate::turn_review::FileCall::Write("landed\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                let snapshot = pane.review.as_ref().expect("streaming snapshot");
+                assert_eq!(snapshot.files.len(), 1);
+                assert!(snapshot.lines.iter().any(|line| line.content == "landed"));
+                assert!(pane.review_error.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn all_changes_lists_every_turn_without_a_repository(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![
+                            (
+                                1,
+                                vec![crate::turn_review::RecordedCall {
+                                    path: "a.rs".into(),
+                                    call: crate::turn_review::FileCall::Write("old\n".into()),
+                                }],
+                            ),
+                            (
+                                2,
+                                vec![crate::turn_review::RecordedCall {
+                                    path: "b.rs".into(),
+                                    call: crate::turn_review::FileCall::Write("new\n".into()),
+                                }],
+                            ),
+                        ],
+                    },
+                    cx,
+                );
+                pane.review_error = Some("not a repository".into());
+                pane.set_source(Source::AllChanges, cx);
+                let snapshot = pane.review.as_ref().expect("all changes snapshot");
+                assert_eq!(
+                    snapshot
+                        .files
+                        .iter()
+                        .map(|file| file.path.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["a.rs", "b.rs"]
+                );
+                assert!(pane.review_error.is_none());
+                assert!(!pane.review_loading);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn an_empty_new_turn_does_not_reload_all_changes(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "a.rs".into(),
+                                call: crate::turn_review::FileCall::Write("old\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.set_source(Source::AllChanges, cx);
+                let generation = pane.load_generation;
+                let mut records = pane.turn_records.clone();
+                records.turns.push((2, Vec::new()));
+                pane.set_turn_records(records, cx);
+                assert_eq!(pane.load_generation, generation);
+                assert_eq!(pane.review.as_ref().expect("snapshot").files.len(), 1);
+            });
+        });
+    }
+
+    /// A `bash` fix or a formatter changes the worktree with no `edit` /
+    /// `write` behind it. Those files must land in Last Turn after the ones
+    /// the turn named, and say where they came from.
+    #[gpui::test]
+    fn a_turn_adds_worktree_changes_no_call_named(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "src/named.rs".into(),
+                                call: crate::turn_review::FileCall::Write("named\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_extras(
+                    1,
+                    vec!["src/formatted.rs".into()],
+                    "1\t0\tsrc/formatted.rs\n".into(),
+                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                     --- a/src/formatted.rs\n\
+                     +++ b/src/formatted.rs\n\
+                     @@ -0,0 +1 @@\n\
+                     +formatted\n"
+                        .into(),
+                    cx,
+                );
+
+                let snapshot = pane.review.as_ref().expect("last turn snapshot");
+                assert_eq!(
+                    snapshot
+                        .files
+                        .iter()
+                        .map(|file| file.path.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["src/named.rs", "src/formatted.rs"],
+                    "the unrecorded file lands after the named ones"
+                );
+                assert_eq!(
+                    pane.outside_call_note("src/formatted.rs").as_deref(),
+                    Some(tr!("sidepane.no_tool_call").as_str())
+                );
+                assert!(
+                    pane.outside_call_note("src/named.rs").is_none(),
+                    "a file the turn named is not flagged"
+                );
+            });
+        });
+    }
+
+    /// Extras belong to one turn; an older Last Turn does not inherit them.
+    #[gpui::test]
+    fn worktree_changes_do_not_leak_into_another_turn(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(2), cx);
+                pane.set_turn_extras(
+                    1,
+                    vec!["src/formatted.rs".into()],
+                    "1\t0\tsrc/formatted.rs\n".into(),
+                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                     --- a/src/formatted.rs\n\
+                     +++ b/src/formatted.rs\n\
+                     @@ -0,0 +1 @@\n\
+                     +formatted\n"
+                        .into(),
+                    cx,
+                );
+                pane.show_review_turn(Some(2), cx);
+                assert!(pane.review.as_ref().is_some_and(|s| s.files.is_empty()));
+                assert!(pane.outside_call_note("src/formatted.rs").is_none());
+
+                pane.show_review_turn(Some(1), cx);
+                assert_eq!(
+                    pane.review.as_ref().expect("turn 1").files.len(),
+                    1,
+                    "the turn that produced the extra still shows it"
+                );
+            });
+        });
+    }
+
+    /// Another session's turn numbers name another session's files.
+    #[gpui::test]
+    fn a_session_swap_drops_the_previous_turns_worktree_changes(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(1), cx);
+                pane.set_turn_extras(
+                    1,
+                    vec!["src/formatted.rs".into()],
+                    "1\t0\tsrc/formatted.rs\n".into(),
+                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                     --- a/src/formatted.rs\n\
+                     +++ b/src/formatted.rs\n\
+                     @@ -0,0 +1 @@\n\
+                     +formatted\n"
+                        .into(),
+                    cx,
+                );
+                pane.set_turn_context(Some("other".into()), Some(1), cx);
+                pane.show_review_turn(Some(1), cx);
+                assert!(pane.review.as_ref().is_some_and(|s| s.files.is_empty()));
+            });
+        });
+    }
+
+    /// The header names the source, and says when the shown turn is still
+    /// running rather than finished.
+    #[gpui::test]
+    fn the_header_names_the_source_and_a_running_turn(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(2), cx);
+                pane.show_review_turn(Some(2), cx);
+                assert_eq!(pane.header_title(), tr!("sidepane.last_turn").to_string());
+
+                pane.set_turn_running(true, cx);
+                assert_eq!(
+                    pane.header_title(),
+                    format!(
+                        "{} · {}",
+                        tr!("sidepane.last_turn"),
+                        tr!("sidepane.turn_running")
+                    )
+                );
+
+                // Turning to an older turn is not the running one.
+                pane.show_review_turn(Some(1), cx);
+                assert_eq!(
+                    pane.header_title(),
+                    tr!("sidepane.turn_n", count = 1).to_string()
+                );
+
+                // Git sources are never "running".
+                pane.set_source(Source::Uncommitted, cx);
+                assert_eq!(pane.header_title(), tr!("sidepane.uncommitted").to_string());
+            });
+        });
     }
 }

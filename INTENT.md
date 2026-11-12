@@ -1,12 +1,17 @@
 # INTENT.md — Decisions, rationale, and plan
 
-This file captures **why** Orbit is being rebuilt and the decisions that shape the plan.
+This file captures **why** Orbit was rebuilt as a native app and the decisions that shape it.
 It is the source of truth for architecture choices; when AGENT.md or README.md conflict with
 a decision recorded here, this file wins. Update it when a decision changes (and say why).
 
+**Maintenance contract:** every shipped feature updates the *Implementation status* below — and
+adds or revises a `D#` decision when the architecture changed. A feature is not done until this
+file describes it. `CHANGELOG.md` records what shipped; this file records why, and the
+architecture that follows from it.
+
 ## Vision
 
-Orbit becomes a **100% Rust, GPU-rendered desktop workbench for the pi coding agent** —
+Orbit is a **100% Rust, GPU-rendered desktop workbench for the pi coding agent** —
 the same architecture as Waku, scoped to pi only — with **every current feature preserved**:
 
 - no browser, no webview, no Node.js daemon anywhere in the app
@@ -38,17 +43,29 @@ than faking a pi-native mode. `--approve` is project trust (a separate concern).
 removed and is not a fallback.
 
 ### D2 — Mermaid diagrams
-**Choice:** code-block fallback first; no diagram rendering in the P0–P3 core. Later, evaluate
-(a) graphviz DOT for flowchart/sequence, or (b) a hidden native WKWebView used solely as a
-**rasterizer** (render → snapshot image → GPU image; the Waku `browser.rs` pattern), or
-(c) a custom GPUI renderer (only if we own enough of the diagram types).
-**Reason:** no good native Rust Mermaid exists; a full custom renderer is 2–3 weeks and still
-won't cover gantt/pie. This is the one accepted feature regression in the migration. Never
-present a diagram that isn't rendered — render a copyable code block instead.
+**Choice (revised):** a **native GPUI renderer for a Mermaid subset** — option (c) below — shipped
+for `flowchart`/`graph` (TD/TB, BT, LR, RL; common node shapes; chained and labelled edges;
+`subgraph` groups drawn as titled frames).
+Everything outside the subset keeps the code-block fallback. Fences are still parsed as ordinary
+code blocks, so the transcript's block model, copy path, and fold state are unchanged; the
+renderer upgrades a fence to a diagram at paint time and offers the source behind a disclosure.
+The original "code-block fallback only" choice and the two alternatives it weighed:
+(a) graphviz DOT for flowchart/sequence and (b) a hidden native WKWebView used solely as a
+**rasterizer** are both **rejected**: (b) reopens the no-webview rule for one feature, and (a)
+trades a large dependency plus a translation step for diagrams whose source the agent already
+wrote in Mermaid.
+**Reason:** no good native Rust Mermaid exists, so the renderer is ours; a full custom renderer is
+2–3 weeks and still won't cover gantt/pie — which is why the subset is explicit and the fallback is
+the default for anything outside it. **Never present a diagram that isn't rendered:** a fence the
+parser does not fully understand (another diagram type, an unparsable statement) falls back to the
+copyable source rather than drawing a partial graph. Layout is
+cached by source + interface font and needs no JS, no webview, and no network.
+**Cost of the subset:** sequence, class, state, gantt, pie, ER, and journey are not drawn yet; each
+is its own parser + layout in `src/mermaid/`.
 
 ### D3 — Rollout: full commit to GPUI (supersedes the original staged plan)
 **Choice (revised):** the web stack (React/Vite/Tauri/Node daemon) was **removed from the repo** and the GPUI app is the only app. The original plan kept both apps alive until chat parity; that was superseded when the web stack was deleted at the user's direction.
-**Consequence:** until P3/P4 land there is no fallback UI — the GPUI app is the product, and the parity contract below becomes the build-forward backlog rather than a switch-over checklist. The deleted web app remains recoverable from git history if a reference implementation is ever needed.
+**Consequence:** with no fallback UI, the GPUI app is the product, and the parity contract below was the build-forward backlog rather than a switch-over checklist. P3/P4 have since landed (see Implementation status); the deleted web app remains recoverable from git history if a reference implementation is ever needed.
 
 ### D4 — GPUI pinned to crates.io, not tracking main
 **Choice:** `gpui = { version = "0.2.2", features = ["runtime_shaders"] }` — upgrades are
@@ -58,10 +75,18 @@ deliberate and scheduled, never `git main`.
 machine lacks the Xcode MetalToolchain (`metal` CLI). For release builds, consider installing
 the Metal toolchain and precompiling shaders (drop the feature) to shave startup time.
 
-### D5 — Platform: macOS first
-**Choice:** macOS is the shipping target for P0–P6; Windows/Linux GPUI support exists but is
-out of scope until the macOS app ships.
-**Reason:** the dev machine is macOS; GPUI's macOS backend (Metal + font-kit) is its most mature.
+### D5 — Platform: macOS first-class, Windows/Linux shipped best-effort
+**Choice (revised):** macOS is the first-class target — signed + notarized `.app`/DMG, native
+window chrome and menu bar, desktop notifications. Windows (`scripts/bundle-windows.ps1` → Inno
+Setup installer / bare `.exe`) and Linux (`scripts/bundle-linux.sh` → `.deb` / `.tar.gz`) build
+from the same codebase and ship via `.github/workflows/release.yml`; they are best-effort
+(`continue-on-error`) until those platforms are validated.
+**Reason:** the app was written cross-platform from the start (`secondary` modifiers, its own
+window chrome on Windows, no macOS-only assumptions in shared code), so once the macOS app
+shipped the earlier "out of scope" framing no longer held. The dev machine is macOS, which is
+why its backend (Metal + font-kit) got first attention.
+**Open platform gaps:** notifications and the alert sound are macOS-only stubs; Windows/Linux
+native polish and signing remain.
 
 ### D6 — Reference, don't vendor
 Waku's gpui is a fork (`waku-webview` branch) — **their code is pattern reference, not
@@ -90,6 +115,285 @@ injects them into an installed pi by wrapping `ModelRuntime.login`/`logout`/`lis
 (reusing pi's OAuth and `auth.json`). It writes a `.orbit-orig` backup and reverts with
 `--revert`; re-run it after `pi update`. Upstreaming the handlers is the durable fix.
 
+### D8 — Workflow modes: per-session scope via a `tool_call`/`before_agent_start` extension
+**Choice:** a session is scoped **Plan**, **Build**, or **Ask**. Orbit persists the
+mode per pi session id in `~/.orbit-pi/workflow.json` (a map), and the bundled
+`contrib/orbit-workflow-extension/` reads it fresh on every hook. Plan and Ask drop
+the write tools with `pi.setActiveTools`, gate `bash` to a read-only allowlist on
+`tool_call`, and inject hidden guidance on `before_agent_start`; Build is the neutral
+default. The mode is also written into the session as an `orbit:workflow` entry so
+it survives resume and branch.
+
+**Rationale:** pi exposes no RPC command for active tools or the system prompt, so
+extension hooks are the only honest mechanism — the same call D1 made for access
+modes. Per-session (not global like `access.json`) because scope is a property of
+the task, and up to six parked sessions run at once. Reading the store fresh on every
+hook re-arms a live session with no restart.
+
+**Residual:** this is a guard, not a sandbox (pi ships none).
+
+### D9 — Localization: `en.yml` is the only hand-edited locale
+**Choice:** all user-facing copy goes through the crate-root `tr!` / `tr_cow!` macros
+(`crates/orbit-pi/src/i18n.rs`). `locales/en.yml` is the source of truth; the other nine locale
+files are generated from the `scripts/i18n_glossary*.py` tables by `scripts/gen_locales.py`, and
+`cargo test -p orbit-pi i18n` guards completeness. Ships English, 简体中文, 日本語, 한국어,
+Español, Français, Deutsch, Português do Brasil, Русский, Italiano — plus `System`, which walks
+the OS preferred-language list and picks the first shipped language.
+**Rationale:** ten hand-maintained locale files drift; generated files with an English fallback
+and a completeness test keep them honest without blocking releases. Long-lived fields resolve
+placeholders from keys at paint time, so a language change is live (including the native menu
+bar) without rebuilding them. **Consequence:** new copy adds an `en.yml` key and a glossary
+entry — hard-coded English in a render path is a bug.
+
+### D10 — Provider quota: a bundled extension bridge over pi's own credentials
+**Choice:** account usage (quota / balance / spend) is read by the bundled
+`contrib/orbit-quota-extension/`, loaded with `pi --extension` like the access/workflow guards.
+It fetches through pi's own authenticated `ctx.modelRegistry`, appends normalized `orbit:quota`
+custom session entries **only when the snapshot changes** (never in LLM context), and the app
+polls `get_entries` with a per-session `since` cursor; `crates/orbit-pi/src/quota.rs` reduces
+them to non-secret UI state, and `crates/orbit-rpc/docs/quota-rpc.md` is the optional
+`quota.list` server contract for a patched pi. Only normalized percentages / counts / resets /
+amounts cross the boundary — never a token, key, or account id.
+**Rationale:** the same reasoning as D7 — credential storage and refresh already live in pi, so
+a Rust re-implementation would fork the source of truth and risk leaking secrets into GPUI
+state. The extension path needs no pi patch and degrades to `unsupported` per provider (Gemini,
+for example, has no account-quota API). **Residual:** coverage is per-provider and rate-limited;
+a report is cached 60 s, and a provider without a verified adapter reports `unsupported` rather
+than an invented number.
+
+### D11 — Design tokens: Zed's sizing vocabulary, resolved through Orbit's theme
+**Choice:** `crates/orbit-pi/src/theme/tokens.rs` uses a Zed-derived vocabulary adapted
+to Orbit: `DynamicSpacing` (Base00–Base48 × three densities), `TextSize` / `HeadlineSize` /
+`BufferLineHeight`, `IconSize`, `ButtonSize`, `ListItemSpacing`, `Radius`, `ElevationIndex`,
+`Motion`, and per-component metrics. Orbit's radius ramp and restrained elevation differ
+from Zed's original values. Dynamic spacing resolves the Compact / Default / Comfortable
+anchors at 80 / 100 / 120% density, interpolates between them, then follows UI font scaling.
+Other tokens have their own resolvers: radii use fixed pixel steps plus the user's corner
+rounding, while motion durations do not scale with font size or density. UI transitions use
+`Motion` roles; charts and looping affordances have separate cadences. Colors remain Orbit's
+semantic palette. The Orbit design skill specifies the shared non-color grammar.
+**Rationale:** the UI audit found no shared sizing layer: ~1,200 per-call-site px literals, 17
+distinct text sizes, 12 radii, and chrome heights that did not follow the UI font size. Zed is
+a useful GPUI precedent, and adapting its token vocabulary gives every surface a shared
+scale while allowing Orbit's design to evolve. **Consequence:** new chrome sizes through
+`tokens` instead of literals; surfaces migrate one at a time. Context menus (sidebar session /
+workspace, Explorer, Git sync / branch / file), the tooltip, and the extension dialog are on
+the tokens, as are the floating modals (provider usage / API-key / provider editor, the update
+dialog, and the custom-UI card) via `elevation_3` and the `modal` metrics; the legacy heavier
+`popover_shadow` is gone. Sidebar session / workspace rows use Zed's list-item radius and the
+`TextSize` / `DynamicSpacing` scales, as do the transcript's message rows, user bubbles, tool /
+question card shells, error strips, the usage footer, and the settings section / group / row
+chrome and keycap chips. The sidebar's New Task / Search / Usage controls share one
+`button_frame(ButtonSize::Large)`. The ad-hoc `Theme::space` (density-only) helper is gone: every spacing
+site now resolves through `DynamicSpacing`, so chrome tracks the UI font size as well as
+density. UI type is on the `TextSize` scale across every surface (471 of 517 `.text_size` sites);
+what remains is sub-10px badge glyphs, 17px+ display headings, and editor / code text. Corner
+radii are on the `Radius` scale: gpui's fixed `rounded_sm/md/lg/xl` helpers and every on-scale
+`rounded(px(N))` are gone (only 23 off-scale bespoke radii remained at that sweep). One-shot
+UI transitions use `Motion` roles, layered on `AnimationDuration`; charts, looping affordances
+(spinner, shimmer, streaming pulses) and feedback timers keep their own cadences. The settings page is
+on the token scales throughout — its side nav, headers, sections, rows, toolbars, selects, cards,
+and modals read `DynamicSpacing` / `TextSize` / `Radius` / `ButtonSize`, and it has no `ui_px` or
+gpui spacing utility left; only bespoke geometry remains (avatar / dot / toggle sizes, fixed
+panel and modal widths). The Usage page and its `chart` / `heatmap` / `table` / `filters` /
+`tooltip` / `sparkline` modules are likewise on the token scales for spacing, type, and radius;
+only their chart / table geometry is bespoke. The page itself is one continuous read — Daily
+activity (the trailing-year calendar), Summary, Usage over time, Breakdown, Records — with each
+section's selector inside its card rather than a page-level Simple | Details switch. The
+Summary board is a row of KPI cards with a 40px line each (the bklit KPI-sparkline recipe):
+the four figures read the range at rest, and pointing at any line points the whole row at that
+bucket — figure, date, change, and secondary line — with the line drawn in on first paint,
+morphed when the range changes, and highlighted (no hover animation) where the pointer reads. The Breakdown section's four tabs share one legend row (the bklit
+legend with progress bars): a brand tile from the picker's own marks, the name and scope, the
+figure and share, and a share track; the table under it leads each name with the same mark. Every single-line input box in the app routes through
+`input_field_frame` (or the `input::*` metrics directly, in the extension dialog) — the main
+composer, the file editor, and the inline tree rename are the deliberate exceptions, and each is
+its own component rather than an `InputField`. Every search box in the app shares one look — the
+picker search row (`picker_search_frame`): the command palette, all pickers, the Explorer /
+Sidepane filters, the settings / Git / Usage searches, and the transcript find bar. The Git
+panel's tab strip and branch row are on the tokens too (one shared `tab_bar` for Changes /
+History / Graph / Issues / Pulls). The 2026-10 spacing sweep finished the holdout chrome: the
+top-level view (sidebar / onboarding / popovers), the transcript's row chrome, the session
+strip, the Sidepane review rows, diff view, the context meter, the Explorer panel and viewer,
+the update dialog, the Skills page, the custom-UI surfaces, the Git panel widgets, and the
+dialogs — every on-scale `p/px/py/pl/pr/pt/pb/m*/gap(px(N))` site in the app now resolves through
+`DynamicSpacing`. What stays px on purpose: 1–2px optical nudges (dot / badge insets), the
+legacy 6–10px rhythm values with no token equivalent (10/14/18/22 — folded into the scale or
+retired by design, pending), and bespoke geometry (widths, heights, icon and dot sizes).
+The palette set is twelve: ten Classic palettes plus the opt-in Operational pair. The blue design
+holds **Orbit Azure** / **Orbit Azure Light** and is the appearance default, while **Orbit** /
+**Orbit Light** carry the original ember identity. **Operational** / **Operational Light** are
+selected by the Design-system control, not by a Classic palette choice. Primary
+buttons fill from a role separate from the identity accent — `action` / `action_hover` /
+`action_pressed` with `action_fg` ink — because the ember palettes key their buttons to a light
+neutral with dark ink while Azure keys them to its accent; `accent` / `accent_hover` /
+`accent_pressed` stay the identity hue for selection washes, focus, tints, and accent text
+(see DESIGN.md, *The Primary-Action Role*).
+
+### D12 — Default session model: Orbit-owned config, applied at spawn and session birth
+**Choice:** one optional default model (`provider` + `modelId`) and thinking level for new
+sessions, persisted to Orbit's own `~/.orbit-pi/session-defaults.json`. An empty slot means
+pi's own startup default is left alone. The choice is applied through both paths a session
+can be born on: `--provider` / `--model` / `--thinking` flags at process spawn
+(`BundledExtensions::spawn`), which cover the first session, and `set_model` /
+`set_thinking_level` RPC for every later `new_session` inside a live process.
+`switch_session` and `clone` deliberately do not override a resumed session. Settings →
+Agent exposes the model plus a thinking-level select whose options are derived from the
+catalog entry exactly like pi's `getSupportedThinkingLevels` (`reasoning` +
+`thinkingLevelMap`); a model or level pi's catalog does not support is skipped, and a
+malformed file loads as no default. Per-mode defaults were deliberately dropped: mode is a
+per-session scope (D8), not a reason for a different startup model, and the composer chip
+already changes model/thinking per session.
+**Rationale:** one pi process hosts many sessions and a `new_session` re-applies the
+spawn-time CLI flags to each one, but those flags are frozen at spawn: a default
+changed while the process is live would only reach a new session through the RPC
+path, and RPC alone would leave the first session on pi's global default. Orbit owns
+the file for the same reason themes do (D9):
+`~/.pi/agent/settings.json` is global to the machine, is rewritten by pi itself, and
+writing it would silently change terminal `pi` sessions. Deriving the thinking ladder from
+the catalog keeps the settings control honest for the selected model instead of showing
+the live session's levels; fail-soft keeps a stale id or level from poisoning a session.
+**Consequence:** new sessions only — a resumed session keeps the model and thinking level
+recorded in its file, and a manual composer choice wins until the next new session.
+
+### D13 — Command registry is the source of truth for keys, palette, and help
+**Choice:** app commands live in one static table (`crates/orbit-pi/src/commands.rs`): id,
+category, title/detail i18n keys, icon, palette/help flags, and the advertised chord.
+`BINDINGS` rows name the chord, key context, and command, and `key_bindings()` turns them
+into the typed gpui bindings that `bind_keys` installs first. The command palette builds
+its rows from the registry; Settings → Shortcuts renders the same table; both label
+chords through `platform::shortcuts::label`, which formats canonical chords
+(`secondary-n`) per platform. Text-entry conventions and modal keymaps stay literal in
+`bind_keys` — they are conventions, not commands. Tests reject duplicate
+(chord, context) pairs, missing specs, missing keymap rows, and chords that do not parse.
+**Rationale:** the previous layout had four sources for one shortcut (the keymap literal,
+hand-typed glyph constants, palette items, and the settings reference) which had already
+drifted: `cmd-` bindings never fired on Windows/Linux, and `secondary-period` advertised
+a chord gpui never matches (the key is `.`). One table makes drift impossible at
+test time and is the only way “discoverable keyboard-first” stays true as commands are
+added.
+**Consequence:** a new app command is added once — spec, `BINDINGS` row, and a `CommandId`
+run arm — and appears in the palette, the shortcut reference, and the keymap together.
+Context actions (the review tree, Git tabs) are registry commands too, but never palette
+rows.
+
+### D14 — Git worktrees are workspaces, not a parallel filesystem
+**Choice:** a Git worktree is modeled by a dedicated `WorktreeManager`
+(`crates/orbit-pi/src/worktree.rs`, with the optional setup script in
+`worktree_setup.rs`) and driven only through the `git worktree` porcelain; the UI
+(`app/worktrees.rs`) consumes that abstraction. Opening a worktree sets
+`current_workspace` and adds it to the project list like any other folder — the
+Explorer, terminal, Git page, Review, MCP scope, file watcher, and agent read that one
+path, so no second filesystem abstraction exists. Worktree **name**, **branch**, and
+**path** stay separate identities; renames move only the directory.
+**Rationale:** sessions already persist an absolute `cwd`, and every consumer already
+reads the active workspace path. A separate worktree-specific layer would duplicate
+that plumbing and create a second source of truth for “where the agent runs”. The
+porcelain requirement (never editing `.git/worktrees` or `.git/config` by hand) keeps
+Orbit compatible with Git's own metadata format across versions.
+**Consequence:** new workspace-scoped features get worktree support for free by honoring
+`current_workspace`; worktree lifecycle/UI changes stay in `worktree.rs` / `app/worktrees.rs`.
+A missing worktree surfaces a notice rather than silently re-pointing a session at the
+main repository.
+
+### D15 — Design systems are an opt-in theme layer, not a fork
+**Choice:** `DesignSystem` (`Classic` / `Operational`) is persisted beside the existing
+Light/Dark/System preference and the remembered Classic palettes. `AppearancePrefs::resolve`
+selects a `ThemeId` from the chosen system; every component continues to read the same
+`Theme` semantic roles and token resolvers. Operational supplies its own palette and
+`surface_selected` row wash. Both families now share the same radius, typography and
+elevation grammar; the earlier family-specific geometry was superseded by the shared ramp.
+**Rationale:** a second widget tree or parallel CSS-like layer would duplicate every surface
+and drift. Palette families change appearance without forking component geometry.
+**Consequence:** new visual rules use semantic `Theme` roles and shared `theme/tokens.rs`
+resolvers; do not branch geometry on `DesignSystem`. New palettes join
+`ThemeId::ALL` and the palette-invariant tests; the Appearance Theme dropdown filters the
+catalog with `themes_for_system`, and the Design-system control is the normal way to switch.
+
+### D16 — Git account diagnostics are local and read-only
+
+Settings → Git Accounts inspects effective Git author settings, normalized generic and host-scoped helper configuration, SSH agent public fingerprints, conventional public-key file presence, sanitized remote hosts, GitHub CLI version and the presence (not values) of selected environment variables. Its separate, explicitly requested release check makes an anonymous request to GitHub for the latest stable `gh` version and shows manual package-manager commands; ordinary status refresh stays local and Orbit never runs the update. It does not manage credentials, execute helpers, inspect private keys or test remote access. Commit identity is not authentication, and helper or agent presence does not establish valid credentials or remote permissions. `gh auth status` may access the network and refresh credentials, so this local-only inspector does not run it and reports GitHub authentication as unknown. Desktop process environment can differ from the interactive shell; users resolve authentication manually in their own tools. No additional service or secret store is involved.
+
+### D17 — The check reads the feed; a download is a user's decision
+
+**Choice:** `Updater::start_check` fetches only the per-architecture appcast
+(`updater.rs::fetch_feed`) and publishes `Available` with a `ReleaseOffer` — the
+release's version, notes, artifact URL, length, and signature. The artifact is
+downloaded, length-checked, signature-verified, and staged only when
+`Updater::download_available_update` is called from the modal's **Download**
+button, which reports throttled `Progress` events and can be cancelled. A
+verified payload publishes `Ready`; the install handoff is a separate press
+(**Restart & Update**). The modal shows the target version beside the running
+build and links the release page whose body is the notes it renders inline.
+**Rationale:** the old flow downloaded during a silent launch check, so the
+user's first sight of a release came after the bytes had moved, and the pill
+had to mean "downloaded" while wearing a download arrow — the wrong affordance
+for a restart. Splitting read from fetch makes the changelog and version
+genuinely precede the download, gives the download a real progress bar, and
+makes the silent launch check cost one small request.
+**Consequence:** `UpdateStatus` distinguishes offer (`Available`) from payload
+(`Ready`); release details stay on the worker and only the version, notes, and
+progress cross into a frame. Anything that gates on "staged" must gate on
+`Ready`, and the modal's primary action changes meaning with that status.
+
+### D18 — Subagents: a delegation tool over child `pi` processes
+
+**Choice:** Orbit ships one bundled extension (`contrib/orbit-subagents-extension/`) that registers a
+`subagent` tool. A call spawns a child `pi --mode json -p --no-session` process per task and returns
+the child's final text plus its summed `usage`; the child's transcript, tool arguments and file
+contents never enter the parent's context. An agent is a markdown file in
+`~/.pi/agent/agents/*.md` (the path `pi-subagents` reads) with `name`, `description`, `model`,
+`thinking` and `tools`. The child's **ceiling** is derived from that `tools:` line, passed as
+`ORBIT_SUBAGENT_CEILING`, and the guard clamps every child tool call against it even under Full
+access. Before spawning, the extension intersects the ceiling with the session's access and workflow
+modes: a run that cannot finish is refused with the remedy instead of spending tokens and dying on
+its first denied call.
+**Rationale:** the parent's context and the user's money are the scarce resources. Delegation pays
+only when the child's reading stays in the child, so the report is capped at 4 KiB, the cost rides
+the tool result (pi folds it into session totals), and the child is a normal session in the same
+workspace with the same guardrails — there is no second permission system to drift. The tool stands
+down when another extension already owns the name (`pi-subagents`), because two implementations
+racing for one name is worse than one honest absence.
+**Consequence:** `subagent/1` is the `details` contract the transcript card parses (absent or foreign
+details degrade to the generic card). The guard classifies `subagent` as `delegate` and allows it in
+every mode: the child cannot exceed the mode and the extension refuses impossible runs, so a prompt
+would approve nothing. Depth is 1 and applies to Orbit's own tool; a third-party delegation extension
+loaded in the child is not constrained by it.
+
+### D19 — Permissions: rules over the guard, per command and per agent
+
+**Choice:** the access mode stays the global baseline, and a second layer —
+*granular rules* — lives in `~/.orbit-pi/access-rules.json`, written by
+Settings → Permissions and read fresh by the guard extension on every tool call.
+A rule names a scope (`any` / `session` / `agent:<name>`), a tool family (the
+guard's own `classify()` kinds plus `any`), an optional glob on the call's
+salient argument, and an action (`allow` / `ask` / `deny`). Precedence: **Full
+access is answered before the table** — it means "nothing asks, nothing is
+refused", so no rule can turn it back into a prompt; in a confined mode the
+scopes resolve most-specific first, then deny > ask > allow inside the winning
+scope, then the mode's default. The subagent ceiling is clamped before any
+rule. `deny` blocks
+without a prompt, `ask` with no UI to ask through is refused, and an `allow`
+never covers a compound shell command.
+
+**Rationale:** the mode could only answer "ask for everything" or "ask for
+nothing", and `grantable()` already refused tool-wide grants for `bash` and MCP
+for exactly that reason — one approval would have covered every future command.
+Rules close that gap without a second decision engine: `policy.js` keeps the
+one decision table, and `permissions.rs` only describes it (the defaults table is
+mirrored for the page's baseline, with a test on each side). Per-agent scoping is
+free because a child already carries `ORBIT_SUBAGENT_AGENT`, and it is where the
+feature pays most: a child has no approval window, so an `allow` rule is what
+lets a worker run `git status` at all.
+
+**Consequence:** `net` (`webfetch`, `websearch`) became its own family so a fetch
+can be gated, while its mode default stays `allow` — no existing session changed
+behaviour. The file has one writer each: the app owns `access-rules.json`, the
+extension owns `access-allow.json`, so there is no read-modify-write race. A
+rule is a guard, not a sandbox: command matching is a glob, not a shell parser,
+which is why an `allow` is refused for chained/redirected/substituted commands
+and why `deny` re-checks every segment.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -100,52 +404,368 @@ legacy app today:
 3. Model catalog from pi's own list; thinking levels per model
 4. Tool activity (bash, edit, todo, plan, search, mcp, thinking, question) + approval dialogs
 5. Git diff panel + file-change blocks
-6. Workbench pages — usage (charts), skills, plugins, models, providers (CRUD), settings
+6. Workbench pages — usage (activity calendar + KPI board + trend chart + breakdowns +
+   record tables), skills, plugins, models, providers
+   (CRUD + OAuth/quota), settings; Explorer + Files editor, integrated terminal, Git/GitHub,
+   and the in-app signed updater (offer → download with progress → restart) with
+   Version History and a changelog link
 7. Markdown — GFM, syntax-highlighted code, copy-able code blocks, image lightbox
 8. Theming — dark/light palettes, accent, font, density, reduce-motion. Persisted to **Orbit's own store** (`~/.orbit-pi/{theme,ui.json,fonts.json}`), not pi's settings: theme/UI state is Orbit's, and writing it into pi's config would fork pi's own source of truth. (Revised from "persisted to pi's settings".)
-9. Attachments — files read to base64 images for prompts
-10. macOS native expectations — traffic lights, native dialogs, keyboard operability. Menu-bar menus are **not** implemented; Orbit's actions are keyboard/mouse surfaces (⌘P palette, shortcuts), not an `NSMenu`.
+9. Attachments — images for prompts, compressed at ingest (1400 px longest edge, 512 KiB base64, JPEG quality 75; alpha images become lossless WebP) so a large screenshot never rides the session history at full size; non-image files ride as `@path` mentions the agent opens with its tools, held as chips in one tray beside the images and pastes
+10. macOS native expectations — traffic lights, a native menu bar (Orbit/File/Edit/View, rebuilt
+    on language change), native dialogs, keyboard operability. Orbit's actions are also exposed
+    as keyboard/mouse surfaces (⌘P palette, shortcuts), not only through menus.
 
 ### Implementation status (living)
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page; sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming + reduce-motion; signed/notarizable packaging; CI.
+Settings → Git Accounts provides the local-only, read-only Git diagnostics described in D16; it does not check remote access or manage credentials.
 
-Open: conversation **fork/rewind** (clone exists; rewind needs entry ids); on-device scroll-perf measurement. Access modes ship as a real `tool_call` confirmation guard (not a sandbox); an "Auto" AI reviewer awaits a pi reviewer API.
+Subagents (D18) ship the delegation tool, agent discovery, the three run modes, the caps, the
+mode/ceiling pre-flight, child cost reporting and the delegation card (per-child rows with the
+current step, the run's usage and mode, a blocked/refused banner, and — expanded — the child's real
+steps and its report). The parent's working line names the child while it runs, and the turn header
+counts delegations instead of "Ran 1 tool". Settings → Subagents manages the whole
+library in-app: the list groups builtins and user files, and the detail column edits the capability
+tier (which writes the `tools:` line and derives the child's ceiling), the workflow mode, the model,
+the thinking level, the description and the prompt. Saves are surgical — only the five keys Orbit
+owns change, and a file edited elsewhere is never clobbered without an explicit overwrite; a user
+agent can be created, duplicated, renamed, disabled, deleted (Undo restores the exact bytes) and
+reset to builtin. The inspectable-run viewer in `docs/plans/subagents.md` is not built.
+
+Permissions (D19) ship Settings → Permissions as one flat list, not an editor:
+a scope row (every session / main sessions only / one subagent), then one row per
+tool family carrying `Inherit · Allow · Ask · Deny`, the value that resolves to
+(`→ Ask`), and its pattern rules indented beneath it (`rm *` → Deny) with an
+inline form to add one. `Inherit` stores nothing, so the file only holds
+decisions a person made. Under Full access the board is replaced by a statement
+of what that mode does, because the mode short-circuits the table. The guard
+enforces the same file on every tool call, live sessions included; a `deny`
+blocks with a reason the model can act on, and an `ask` in a child (which has no
+approval window) is refused.
+`contrib/orbit-guard-extension/*.test.mjs` covers the engine and the entry point,
+`permissions.rs` covers the store, and `app/permissions_ui_tests.rs` covers the
+page. `docs/permissions.md` is the reference.
+
+The Report a bug draft generator has a searchable model selector. It defaults to the active session model and saves an independent override in `~/.orbit-pi/bug-report-model.json`, leaving both the session and commit-message model unchanged.
+
+Review and the Git page re-read a diff when a change or manual refresh arrives during an in-flight load; failures are surfaced rather than silently leaving an old snapshot. Bug reports with screenshots fall back to the browser and open the saved screenshot folder when `gh` rejects an upload before issue creation, including its repository-write-access preflight.
+
+Where space permits, the Review toolbar shows the changed-file total beside the ±stats and previous / next file arrows with the reader's place among them (`12/187`). On narrower panes the total is shown in the navigator instead, and the navigator also folds away when space is tight. The arrows and the `n` / `p` shortcuts use the same step, measured from the file at the top of the diff rather than a tree selection scrolled away from, and both go inert at the first and last file.
+
+Appearance's interface-font picker includes bundled Onest in Regular, Medium,
+SemiBold, and Bold weights; it works offline without an OS font installation.
+The default interface face and saved font preferences remain unchanged.
+
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace, plus **rewind** — pi's `fork` at an earlier user message, which branches the conversation into a new session file, keeps the old one in the sidebar, and hands the forked-from prompt back to the composer) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14) plus **Work in** on the status bar in a repository and on the new-task page, choosing `Local`, a linked worktree, a new worktree, an existing worktree folder re-registered with `git worktree repair` (`working_folder.rs` classifies it, and a folder whose `.git/worktrees/<id>` is gone is reported instead of opened), a remote branch checked out as a local branch that tracks it (`create_tracking_branch`, because `git worktree add <path> origin/feat` leaves a detached HEAD), a clone, or any folder; the new-task picker offers cloning outside a repository too (the Windows job-object cancellation path is covered on the Windows CI leg; manual GUI verification remains); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History (D17); notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot UI motion on `Motion` roles migrated onto them.
+
+Finder file URLs and Windows CF_HDROP lists take precedence over clipboard preview images: pasted image files enter the image queue, and other files enter the existing file-reference queue. On Linux, file URI lists exposed as clipboard text use the same queue; GPUI cannot currently read file-only clipboard offers. Plain path text stays text.
+
+Attached images are compressed when they are queued (`attachments.rs`): the
+longest edge is capped at 1400 px (never upscaled), opaque images are re-encoded
+as JPEG with quality stepping down to keep the base64 payload within 512 KiB, and
+images with transparency become lossless WebP. Images already under both caps pass
+through untouched, and animated GIFs pass through so their frames survive. The
+composer chip and bug-report screenshots both read the compressed bytes, and the
+status line reports the before/after size when an image shrank.
+
+The composer holds every queued item in one attachment tray (`attachments_row` in
+`app/composer_ops.rs`): images, non-image files, and collapsed long pastes are the
+same chip — a leading 20px slot (image thumbnail, or the file type's devicons mark drawn
+bare, with no tinted square behind it, and centred by the glyph's ink because icon artwork
+is not centred in its font cell; the type's short label on a tinted square fills the slot
+when no Nerd Font is available), the name, one secondary fact (size or line count), and an
+always-visible remove button — and a tray of two or more grows a
+count header with a **Clear** action. Files do not ride the wire as bytes, because
+pi's `prompt` payload carries text and images only; they fold into the prompt text on
+send as `@path` mentions (`fold_attached_files` in `app/session.rs`), workspace-relative
+when possible and backticked when the path contains whitespace, so the agent opens
+them with its own tools. The sent user message reads that block back out of its own
+text (`split_attached_files`) and renders it as the same chips under the bubble, which
+is why a reloaded session shows the same thing as the live send — the presentation is
+derived from the message, not from local-only metadata. All three kinds share the
+eight-item `MAX_ATTACHMENTS` budget, which the composer's send button, the drain paths,
+and the pickers all read through one predicate.
+
+Session metadata is cached per file (`sessions.rs`) keyed on the file's
+`(mtime, length)`, so a turn settle or watcher reload re-reads only the session
+files that actually grew instead of rescanning the whole store; a reload that
+changed nothing is skipped. The transcript's tok/s readout is labeled `avg`
+because it averages output tokens over the whole request (prefill plus decode).
+The navigation rail's user-turn index is likewise cached in `Transcript` and
+rebuilt only when the message list changes, and debug builds log one local
+`[orbit:perf]` line per settle (window, cache, prompt, output, duration, rate).
+
+The sidebar keeps the title, prompt preview, age/status, branch/divergence,
+provider/model marks, and pin/archive indicators. Flat mode adds the workspace
+above the title; grouped mode names it once in the project header. Tinted project
+marks and count badges establish hierarchy, semantic status washes distinguish
+outcomes, and primary-ink titles lead secondary previews and muted metadata.
+The selected row keeps its theme selection fill with a subtle accent outline;
+the keyboard cursor adds a full focus outline even when that row is selected.
+Preview and branch tooltips expose truncated text without widening the
+sidebar, while the session title stays a single visible line (its row tooltip
+names the keyboard shortcut instead). Spacing and mark geometry follow the
+existing theme tokens, and the list remains virtualized with the same session
+data and action handlers.
+The sidebar view menu's **Show first message** toggle hides or restores the preview
+in both grouped and flat lists. It defaults to shown and persists as
+`show_first_message` in `workspaces.json`; missing or invalid values keep previews
+visible. Toggling remeasures rows while retaining the logical scroll anchor, and
+never edits session content or hides other metadata. When enabled, the message line
+shows the whole prompt — pi titles a session from that message, so the two
+can start alike, but the title is capped at 80 characters while a row shows
+about thirty, so trimming the message to a "remainder" hid the end of the ask
+instead of de-duplicating it. Branch metadata is a
+per-project cache (`OrbitApp::sidebar_branches`), filled off-thread by
+`git branch --show-current` + `rev-list --left-right` at launch and whenever the
+project list or the current checkout changes, so rendering a row never spawns
+git; a project that is not a repository, or is on a detached HEAD, has no branch
+item rather than an empty slot, and `↑n`/`↓n` appear only for non-zero counts
+(`divergence_labels`). Row actions are the right-click context menu's job — the
+session row carries no hover-revealed `…`, which is why the title owns the full
+line width and why the keyboard/palette delete path anchors its confirmation to
+the row itself.
+
+Session rows show execution status independently of read/unread state. The same
+`SessionExecution` reducer consumes the foreground and parked sessions' real pi
+events: Running, Waiting for approval/input, Retrying, Compacting, Completed,
+Failed, Stopped, Disconnected, or Idle when no outcome is known. Only
+`agent_settled` completes a run; `agent_end` may still lead to retries or queued
+work. **A stop the user asked for is the one local exception**: `abort` is only a
+request, and a pi whose event loop is stuck never reads it, so an unanswered stop
+is given a grace period and then escalated in Orbit — the turn is closed and the
+process replaced, instead of Stop being a dead button. The request stays a
+request (pi's own settle still wins the race); it just cannot hang forever.
+The RPC parser preserves the settle's `aborted` bit, including stops before
+an assistant message exists. Outcomes survive reading, switching, and warm-process
+reaping for this app launch (`session_outcomes`); historical and externally written
+sessions carry no status label until observed, rather than guessing from old files. Tool errors alone do not fail the session.
+
+Native approval/dialog/questionnaire surfaces park with their session, including
+partially entered answers, and background requests wait instead of being denied.
+Opening the session restores its surface; waiting sessions remain busy and visible
+under collapsed project groups. Custom terminal surfaces still cancel on departure.
+
+Session rows spend exactly one glyph on execution state, in a fixed 16px **status
+lane** at the leading edge of the row's state line (`status_lane`, `status_lane_icon`,
+`status_lane_ink`, `status_lane_words`): accent spinner while running, amber lock for
+an approval gate or chat glyph for a question, green check for a read result, green
+eye for an unread one, red cross for a failure or a dead process, mute stop for an
+aborted run, and no glyph at all for Idle / Unknown (the lane still reserves its
+width). Only the spinner animates. Blocked, unread, and failed states add words in
+place of the age, so colour is never the only signal; the tooltip names the rest.
+
+A turn that settles while the user is not reading it leaves a separate unread mark on
+its row (`OrbitApp::awaiting_review`) — a green eye with "Needs review", or a red cross
+with a small corner dot when the turn failed. The execution glyph underneath
+distinguishes Completed from Failed and remains after the mark is spent, so reading a
+result costs the mark, not the outcome. Only the mark clears when the session is
+genuinely in front of the user — `transcript_in_front` (window frontmost, and no
+full-page surface covering the chat area: Files, Git, Usage, Worktrees, or a
+full-width Review pane, the same rule the renderer uses to hide the chat column),
+checked once on the heartbeat rather than from a hook on each path that can bring a
+session into view. That single rule is what keeps the distinction honest: selecting a
+row in a background window does not spend the mark, and a settle behind a full-page
+surface or another app still leaves one. Marks are memory-only — a cold start does
+not guess what was read elsewhere — and a marked row joins the open, running, and
+pinned rows in staying visible under a collapsed project group, so the result cannot
+scroll out of reach before it is seen.
+
+Workspace-list and last-workspace persistence use isolated, self-cleaning
+per-thread directories under tests. Simulated session switches must never add
+fixture folders to the user's real `~/.orbit-pi/workspaces.json` or replace the
+last workspace.
+
+During a run the composer footer shows Queue and Steer shortcuts in the same
+platform-aware keycaps as the sidebar. Their order and chords follow the chosen
+Enter behavior; the hints stay hidden while idle.
+
+Settings uses the same UI type and button scale as the rest of the workbench:
+readable page and section headings, regular-sized row descriptions, 32px selects,
+and neutral selected navigation. Navigation rows keep their height and scroll
+instead of compressing in short windows.
+
+Holding ⌘ (Ctrl on Windows/Linux) reveals numbered keycaps beside the first
+nine visible sidebar sessions. The hints follow the same filtered, sorted row
+order as the session-switching shortcuts and disappear on release or blur.
+
+The empty sidebar session search shows **⌘P / Ctrl+P** as compact grouped
+keycaps for the separate command palette, with a tooltip naming that action.
+**⌘⇧F / Ctrl+Shift+F** focuses the session search itself; **⌘P / ⌘K** open
+the command palette. The footer no longer duplicates a Search icon.
+
+Every icon-only button carries the app's native tooltip — a localized label, usually
+with its shortcut appended (the send / stop button set the register) — across the top
+bar, sidebar, transcript copy / diff controls, composer add button, window caption
+buttons, Explorer, Review pane, Git, Usage, terminal, settings, and the picker / dialog
+controls, so no glyph is a guess. A button that already shows its label does not repeat
+it on hover: New Task, the Git tabs, and a widened access chip keep their visible text
+as the label, while truncated text and icon-only controls keep a tooltip.
+
+The top bar's dirty-tree `+N −N` chip opens the Git page on **Changes**, so the
+counts reveal the files they name instead of opening Review; the plain
+side-panel glyph still toggles the Review dock.
+
+The Git page's **Issues** and **Pull requests** tabs gained a **Generate** action: the
+**New issue** and **New pull request** forms take optional free-form notes, then draft a
+title and Markdown body with the same one-shot, tool-free `pi -p` call the commit-message
+button uses (`issue_message.rs`), falling back to a local heuristic built from the branch's
+commits and changed files when pi is unavailable. The forms also read the repository's own
+templates (`gh_templates.rs`): a lone issue/PR template applies automatically, several are
+chosen from a **Template** picker, the body is prefilled with the template's skeleton (YAML
+issue forms are flattened to Markdown), the template's title prefix and labels are applied,
+and the generator is told to fill the template faithfully. Those tabs were also tightened
+for scanning — labels collapse to `+N`, every row ends in a fixed relative-time column, and
+the PR list drops its duplicated state pill — and the PR detail now shares the issue
+detail's reading-column + metadata-rail layout (review, checks, changes, branches,
+timeline).
+
+The commit bar's **Generate** button has its own model picker (`commit_model.rs` +
+the chip beside Generate). Commit messages are a short, cheap task, so they do not
+have to run on the session model; the chip opens a searchable catalog with each
+provider's mark, and its first row always restores **Active session model**. The pick
+persists to `~/.orbit-pi/commit-model.json` (Orbit-owned, like the auto-title slot) and
+the commit prompt is then sized from the picked model's own context window, so a small
+local model gets a smaller diff budget instead of an overflowing prompt. The provider
+and model id are passed straight to the one-shot `pi -p` call, so a custom provider
+that pi resolves through an extension still works even when its catalog entry has not
+arrived; issue/PR drafts keep using the session model.
+
+The in-app bug report (Settings → Report a bug) picks an issue type (bug /
+feature / other, which sets the GitHub label and the generated section
+headings), takes free-form context at the top, and drafts the issue title and
+description from it with the selected model (the active session model by default) — the same one-shot, tool-free
+`pi -p` call the Git page's generator uses (`issue_message.rs`), with a
+kind-aware prompt that returns a heading-free description so the form supplies
+the section headings; when pi is unavailable the draft falls back to the notes
+themselves. Screenshots are supported too: they upload with
+`gh issue create --attach` when `gh` supports the upload and the account has permission (Orbit writes them to a temp
+directory first). Otherwise, when the CLI reports a pre-creation limitation or is signed out, GitHub's prefilled web form and the saved image folder open for the user to drag the images in.
+Filing goes to `imrj05/orbit` with the machine's build details attached — Orbit
+version, app ID (`dev.orbit.pi`), OS and architecture, install kind, pi CLI
+version, and the signed-in `gh` account — through `gh issue create --repo` when
+the CLI is installed and authenticated, falling back to GitHub's new-issue page
+with the title, body, and label prefilled. `gh` keeps ownership of the token:
+Orbit still never stores one (`bug_report.rs`).
+
+Settings → Privacy pairs session retention with the guard's remembered tool
+approvals.
+
+Composer sending is configurable in Settings → Agent → Behavior: Enter queues a follow-up
+by default or steers the running task, with Alt/Option+Enter selecting the opposite mode.
+The explicit ⌘⇧Enter / Ctrl+Shift+Enter steering shortcut stays fixed. The choice is a
+live, global Orbit UI preference (`composer_send_mode` in `~/.orbit-pi/ui.json`), not a
+pi setting; it affects future sends only, never an existing queue. Idle sends remain
+normal prompts. Compact Send/Steer/Queue hints sit on the right side of the composer
+footer, immediately left of the context-window indicator, without a newline hint.
+These persistent hints, button tooltips, and the Shortcuts reference track the
+preference, with dedicated chat-only shortcut context to protect other fields.
+Non-blocking optional model questions remain outside this change.
+
+A message already queued can be changed before pi delivers it (issue #79). The queue
+bar gives each pending steer or follow-up its own **Edit** (an inline field on the row,
+⏎ saves, Esc cancels) and **Send now**. pi's protocol has no per-message queue command —
+`queue_update` reports bare strings and `clear_queue` drops everything — so either action
+rebuilds the queue: `clear_queue`, then re-queue every survivor in its original lane and
+order. "Send now" re-queues that message as the *first* steering message, which is pi's
+earliest delivery point short of aborting the run; the leading steer therefore offers no
+Send now, since it is already next. The mirror is updated optimistically and the
+`clear_queue` echo is skipped for that one rebuild, so the bar never blinks through the
+empty state; `queue_update` stays authoritative and re-anchors or closes an open field
+(`app/session.rs`, `app/view.rs`).
+
+Compaction and branch summaries are visible in the transcript: pi's
+`compactionSummary` / `branchSummary` context messages now render as boundary
+cards ("Compaction — Compacted from N tokens", click to expand the summary
+markdown) instead of being filtered out, and a successful `compaction_end`
+re-reads `get_messages` so the live chat adopts pi's compacted projection
+(summary + kept entries) instead of holding the pre-compaction history until
+the session is reopened.
+
+Agent call details — an activity group or a tool card the reader has not opened
+themselves — default to following the run: open while the turn streams, closed
+once it settles. Settings → Agent → Agent call details can pin them always
+expanded or always collapsed instead. The mode is a global Orbit UI preference
+(`~/.orbit-pi/agent-calls.json`, `agent_call_display.rs`), not a pi setting; an
+explicit per-group or per-call toggle always wins, so the setting only moves the
+default and never fights the reader.
+
+The sessions sidebar reads as three levels, not one: the "Projects" section
+label in muted 12px, a project group header in the accent's hue at body-ink
+brightness — or in the project's own mark tint, when the user picked one — and
+session titles a step below at secondary. Before this a header and the rows
+under it shared the same ink at the same size, so a long list of projects and
+sessions was a wall of identically colored lines. Project names keep the body
+ink's lightness and vary only in hue and saturation (`workspace_mark::label_ink`,
+`name_ink`): that is what keeps a tinted name above the AA floor in every
+palette, since several curated tints are fill/glyph colors too dark to read as
+text. A tint the palette collapsed onto body ink falls back to the default hue.
+
+The keyboard layer is command-registry driven (`commands.rs`, D13): every app
+command declares its chord once, and the command palette, Settings →
+Shortcuts, and tooltips all render from that table. The palette gained session
+rename/pin/clone/delete, model and thinking pickers (⌘⇧M / ⌘⇧T), Review
+(⌘⇧R), and the shortcut reference (⌘/). Session management is number- and
+cycle-addressable: ⌘1…⌘9 open the Nth session in the sidebar's visible order
+and Ctrl+Tab / Ctrl+Shift+Tab cycle sessions (the Git page tabs moved to
+⌘⌥1…⌘⌥6 to free the numbers). Hover hints come from the same registry
+(`commands::tooltip`), so the model/thinking chips, New Task, Search/Usage
+rows, top-bar toggles, and Git tabs name their chord on hover — and a session
+row shows its ⌘1…⌘9 slot. The Review pane is fully keyboard navigable —
+Tab / Shift-Tab traverse the workbench's focus stops (composer, sidebar,
+review tree, terminal, Explorer), the tree takes arrows and Enter, and
+`n`/`p` jump changed files, `[`/`]` hunks, `e`/`c` expand or collapse every
+file, Escape returns to the chat; the composer's autocomplete and the terminal
+keep Tab for themselves. `secondary` chords replaced the macOS-only `cmd-`
+bindings (Editor clipboard/undo/save, Files close, Git tabs), so Windows and
+Linux get the same shortcuts, and the dead ⌘. abort chord was fixed (gpui's key
+name is `.`, not `period`).
+
+Open: migrating the remaining surfaces (the settings page's toolbars / cards / controls, transcript inner content, the modal bodies' inner text, the remaining sub-10px / 17px+ type, and off-scale radii) onto the D11 tokens; drawn scrollbars (gpui 0.2.2 draws none); on-device scroll-perf measurement; stream veil + an explicit ≤8.3 Hz streaming commit pipeline; screen-reader labeling (gpui 0.2.2 exposes no accessibility tree); richer per-tool renderers (bash/thinking are dedicated, the rest generic).
 
 ## Non-goals (explicitly out of scope)
 
 - Any web technology in the UI — no webview surfaces as UI, no React, no HTML/CSS
 - Multi-provider support à la Waku (pi only; Oh My Pi *may* come later as a second RPC flavor)
-- Always-latest GPUI; auto-updater; Windows/Linux in the first release
+- Always-latest GPUI (the app is pinned, D4)
 - Fabricating permission modes, diagrams, or perf claims the protocol/renderer can't deliver
 
-## Phases, estimates, and gates
+## Phases — outcome (the original plan, kept for the record)
 
-Solo experienced dev, full-time. Ranges are honest uncertainty; P3 (core chat) dominates.
+The staged plan below is history: P0–P4 shipped and P5/P6 are partial. The GPUI app is the only
+app (D3), so this is a status board rather than a forward schedule. `cargo run -p orbit-pi` is
+the product; the per-item detail lives in AGENT.md.
 
-| Phase | Deliverable | Est. | Exit gate |
-|---|---|---|---|
-| P0 | Transport probe + workspace + process spawner + RPC client skeleton + first live round-trip | 3–5 d | D1 certified or `--approve` fallback decided; round-trip renders in window |
-| P1 | Shell, theme, fonts, sidebar sessions | 5–8 d | App opens, themed, sessions listed per project |
-| P2 | Data layer: serde models, sessions/catalog/workbench clients | 8–12 d | All 34 legacy endpoints have a Rust equivalent behavior |
-| P3 | Core chat: transcript, streaming, markdown, composer, tools, diff | 25–40 d | Chat parity vs legacy app (D3 gate) |
-| P4 | Workbench pages + settings persistence | 12–20 d | All workbench pages natively functional |
-| P5 | Mermaid fallback + a11y | 5–18 d | Keyboard-operable; reduce-motion honored; diagrams never faked |
-| P6 | Tests, perf harness, packaging/notarization, CI | 8–13 d | Ship; legacy tracks deleted |
-| **Total** | | **~66–116 d (14–22 wk solo; 9–14 wk with two devs)** | |
+| Phase | Deliverable | Status |
+|---|---|---|
+| P0 | Transport + workspace + process spawner + RPC client + first live round-trip | ✅ Shipped |
+| P1 | Shell, theme, fonts, sidebar sessions | ✅ Shipped |
+| P2 | Data layer: serde models, sessions/catalog/workbench clients | ✅ Shipped |
+| P3 | Core chat: transcript, streaming, markdown, composer, tools, diff | ✅ Shipped (stream veil + explicit ≤8.3 Hz pipeline open) |
+| P4 | Workbench pages + settings persistence | ✅ Shipped (plus Explorer/Files, terminal, Git/GitHub, localization, updater) |
+| P5 | Mermaid + a11y | ◐ Native flowchart rendering + code-block fallback for the rest + reduce-motion shipped; other diagram types, app-wide focus rings, screen-reader labeling open |
+| P6 | Tests, perf harness, packaging/notarization, CI | ◐ Unit/live tests, 10k perf test, signed `.app`/DMG, CI shipped; on-device scroll benchmark + streaming edge coverage open |
 
-Parallel with a second Rust dev (workbench + chat split): P3 and P4 run concurrently, cutting
-wall-clock roughly in half.
+Transcript Markdown export is available from each settled response's footer and,
+for the visible projection, from the command palette; it excludes thinking, tool
+output and image data and refuses to overwrite existing files. Manual GUI
+verification remains open (`docs/plans/transcript-actions.md`).
+
+Open backlog (detail in AGENT.md): on-device scroll-perf measurement,
+stream veil, explicit streaming commit pipeline, app-wide focus rings, screen-reader labeling, richer
+per-tool renderers, Windows/Linux native polish.
 
 ## Top risks (with mitigations)
 
-1. **P3 scope** — 25–40 days. Mitigate: Waku pattern map (AGENT.md), one-StyledText-per-block
-   markdown from day one, tool renderers by spec from `agent-elements/`.
-2. **Tool approval protocol gap (D1 residual)** — resolved: pi exposes no native per-tool permission in RPC mode, so Orbit enforces access modes through a bundled `tool_call` extension that prompts via `ctx.ui.select` (Allow once / Always allow this tool / Deny), rendered natively as an inline bar. An "Auto" AI reviewer stays open until pi exposes a reviewer API to extensions.
-3. **Composer editor** — a good multi-line markdown-aware input is the hardest single control in
-   GPUI 0.2.2 (could blow P3's composer sub-item to 10–12 d). Mitigate: single-line field first,
-   multi-line as a deliberate follow-up; never ship a broken input.
-4. **Mermaid regression** — accepted; D2 path chosen, fallback never fakes.
+1. **P3 scope** — *resolved:* was the dominant estimate (25–40 days); it shipped by keeping the
+   Waku pattern map (AGENT.md), one-StyledText-per-block markdown from day one, and tool
+   renderers by spec.
+2. **Tool approval protocol gap (D1 residual)** — resolved: pi exposes no native per-tool permission in RPC mode, so Orbit enforces access modes through a bundled `tool_call` extension that prompts via `ctx.ui.select` (Allow once / Always allow this tool / Deny), rendered natively as an inline bar. Settings → Permissions adds per-command and per-agent rules over the same guard (D19), so "`bash` may run but `rm` asks" no longer needs a mode change.
+3. **Composer editor** — *resolved:* the multi-line `ComposerInput` (`EntityInputHandler`) has
+   shipped, wrapping, auto-growing, and scrolling. Reuse it for new text controls rather than
+   introducing another editor abstraction.
+4. **Mermaid coverage** — a native renderer covers flowcharts only; every other diagram type
+   keeps the honest code-block fallback (D2), so no fence ever draws a partial graph.
 5. **GPUI churn** — pinned 0.2.2 (D4); upgrade = its own task with the registry source as docs.
 6. **Velocity** — Rust UI iteration is 3–5× slower than React hot-reload; the estimates assume
    this, not hope.

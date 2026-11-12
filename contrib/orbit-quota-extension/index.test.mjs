@@ -39,10 +39,10 @@ function fakePi() {
 }
 
 /** A pi-like activation context exposing one configured provider. */
-function fakeCtx(providerIds) {
+function fakeCtx(providerIds, registeredIds = providerIds) {
   return {
     modelRegistry: {
-      getRegisteredProviderIds: () => providerIds,
+      getRegisteredProviderIds: () => registeredIds,
       hasConfiguredAuth: (model) => providerIds.includes(model.provider),
       getProviderAuth: async () => ({ auth: { apiKey: "test-key" } }),
     },
@@ -143,6 +143,68 @@ test("a session-only Ollama Cloud setup still snapshots usage", async () => {
       await pi.fire("session_shutdown");
     },
   );
+});
+
+/** Both Ollama endpoints return the live meters; `sent` records the bearer. */
+function ollamaFetch(sent) {
+  return async (url, init) => {
+    if (sent) sent.push((init && init.headers && init.headers.Authorization) || "");
+    const body = String(url).includes("/api/balance")
+      ? { included: { session: { remaining_percent: 90, resets_at: "2026-10-30T11:00:00Z" } } }
+      : {};
+    return { ok: true, status: 200, redirected: false, url, text: async () => JSON.stringify(body) };
+  };
+}
+
+/** Provider ids in the single snapshot the extension appended. */
+function snapshotProviders(pi) {
+  assert.equal(pi.entries.length, 1);
+  return pi.entries[0].data.providers.map((provider) => provider.provider).sort();
+}
+
+test("a key under ollama-cloud also snapshots the local ollama id", async () => {
+  await withHome({ "ollama-cloud": { type: "api_key", key: "real-cloud-key" } }, async () => {
+    globalThis.fetch = ollamaFetch();
+    const pi = fakePi();
+    await activate(pi);
+    await pi.fire("session_start", fakeCtx(["ollama-cloud"]));
+    await pendingSnapshot();
+    // `ollama` is not configured in pi; the adapter's sibling-key fallback
+    // still meters it, so the local card must be in the snapshot too.
+    assert.deepEqual(snapshotProviders(pi), ["ollama", "ollama-cloud"]);
+    for (const report of pi.entries[0].data.providers) {
+      assert.equal(report.windows.find((w) => w.id === "session").usedPercent, 10);
+    }
+    await pi.fire("session_shutdown");
+  });
+});
+
+test("a key under ollama also snapshots a registered ollama-cloud id", async () => {
+  await withHome({ ollama: { type: "api_key", key: "real-cloud-key" } }, async () => {
+    globalThis.fetch = ollamaFetch();
+    const pi = fakePi();
+    await activate(pi);
+    // Registered but not separately configured: only the sibling rule adds it.
+    await pi.fire("session_start", fakeCtx(["ollama"], ["ollama", "ollama-cloud"]));
+    await pendingSnapshot();
+    assert.deepEqual(snapshotProviders(pi), ["ollama", "ollama-cloud"]);
+    await pi.fire("session_shutdown");
+  });
+});
+
+test("the local placeholder key never pulls in the cloud id", async () => {
+  await withHome({ ollama: { type: "api_key", key: "ollama" } }, async () => {
+    const sent = [];
+    globalThis.fetch = ollamaFetch(sent);
+    const pi = fakePi();
+    await activate(pi);
+    await pi.fire("session_start", fakeCtx(["ollama"], ["ollama", "ollama-cloud"]));
+    await pendingSnapshot();
+    assert.deepEqual(snapshotProviders(pi), ["ollama"]);
+    assert.equal(pi.entries[0].data.providers[0].kind, "unsupported");
+    assert.deepEqual(sent, [], "no request carried the placeholder");
+    await pi.fire("session_shutdown");
+  });
 });
 
 test("a turn end inside the refresh gap does not append again", async () => {

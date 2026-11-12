@@ -4,6 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 
 import { OrbitWordmark } from "@/components/brand";
 import { OsDownloadButton } from "@/components/download-button";
+import { LanguageSwitcher } from "@/components/language-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Band, Shell } from "@/components/ui";
 import {
@@ -11,14 +12,22 @@ import {
   getRepoStars,
   LATEST_RELEASE_URL,
 } from "@/lib/releases";
+import { NO_DOWNLOADS } from "@/lib/downloads";
+import { getT } from "@/i18n/t";
+import { DEFAULT_LOCALE, type Locale } from "@/i18n/config";
+import { downloadLabels } from "@/i18n/labels";
+import { localeHref } from "@/i18n/links";
 
-const links = [
-  { label: "Agent", href: "/#agent" },
-  { label: "Sessions", href: "/#sessions" },
-  { label: "Git", href: "/#git" },
-  { label: "Usage", href: "/#usage" },
-  { label: "Changelog", href: "/changelog" },
-];
+const LINKS = [
+  { id: "agent", href: "/#agent" },
+  { id: "sessions", href: "/#sessions" },
+  { id: "git", href: "/#git" },
+  { id: "usage", href: "/#usage" },
+  { id: "skills", href: "/#skills" },
+  { id: "mcp", href: "/#mcp" },
+  { id: "docs", href: "/docs" },
+  { id: "changelog", href: "/changelog" },
+] as const;
 
 /** 13 → "13", 1234 → "1.2k", 123456 → "123k". */
 function formatStars(count: number): string {
@@ -29,16 +38,22 @@ function formatStars(count: number): string {
   return `${rounded}k`;
 }
 
-export async function SiteNav() {
+export async function SiteNav({
+  locale = DEFAULT_LOCALE,
+  path = "/",
+}: {
+  locale?: Locale;
+  /** The page this nav sits on, without a locale prefix. */
+  path?: string;
+} = {}) {
+  const t = getT(locale, "nav");
+  const switcher = getT(locale, "switcher");
+  const labels = downloadLabels(locale);
   const [release, stars] = await Promise.all([
     getLatestRelease(),
     getRepoStars(),
   ]);
-  const assets = {
-    macos: release?.macos,
-    windows: release?.windows,
-    linux: release?.linux,
-  };
+  const downloads = release?.downloads ?? NO_DOWNLOADS;
 
   return (
     <header className="sticky top-0 z-50 bg-page/80 backdrop-blur-md">
@@ -46,21 +61,21 @@ export async function SiteNav() {
         <Band dashed>
           <nav className="nav-in flex h-16 items-center justify-between">
             <Link
-              href="/"
-              aria-label="Orbit home"
+              href={localeHref(locale, "/")}
+              aria-label={t("home")}
               className="inline-flex items-center no-underline"
             >
               <OrbitWordmark className="h-[30px] w-auto" alt="" priority />
             </Link>
 
             <div className="hidden items-center gap-[24px] text-[13px] md:flex">
-              {links.map((l) => (
+              {LINKS.map((l) => (
                 <a
                   key={l.href}
-                  href={l.href}
+                  href={localeHref(locale, l.href)}
                   className="text-ink-2 no-underline transition-colors duration-[120ms] hover:text-ink"
                 >
-                  {l.label}
+                  {t(`links.${l.id}`)}
                 </a>
               ))}
 
@@ -69,7 +84,9 @@ export async function SiteNav() {
                 target="_blank"
                 rel="noreferrer"
                 aria-label={
-                  stars != null ? `GitHub — ${stars} stars` : "GitHub"
+                  stars != null
+                    ? t("stars", { count: stars })
+                    : t("github")
                 }
                 className="group inline-flex items-center gap-2 rounded-[10px] border border-edge-subtle bg-surface-1 py-[5px] pl-2.5 pr-3 text-[12.5px] text-ink-2 no-underline transition-colors duration-[120ms] hover:border-edge-strong hover:bg-surface-2 hover:text-ink"
               >
@@ -86,27 +103,34 @@ export async function SiteNav() {
                     </span>
                   </span>
                 ) : (
-                  <span>GitHub</span>
+                  <span>{t("github")}</span>
                 )}
               </a>
+
+              <LanguageSwitcher locale={locale} label={switcher("label")} path={path} />
 
               <ThemeToggle />
 
               <OsDownloadButton
-                assets={assets}
+                downloads={downloads}
                 fallback={LATEST_RELEASE_URL}
                 variant="nav"
                 short
+                menu={false}
+                labels={labels}
               />
             </div>
 
             <div className="flex items-center gap-2.5 md:hidden">
+              <LanguageSwitcher locale={locale} label={switcher("label")} path={path} />
               <ThemeToggle />
               <OsDownloadButton
-                assets={assets}
+                downloads={downloads}
                 fallback={LATEST_RELEASE_URL}
                 variant="nav"
                 short
+                menu={false}
+                labels={labels}
               />
             </div>
           </nav>

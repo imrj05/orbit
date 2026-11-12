@@ -45,15 +45,20 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor,
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, size, AnyElement,
-    App, Background, Bounds, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Keystroke,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, Rgba,
-    ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle, Styled, Task, TextRun,
-    UnderlineStyle, Window,
+    canvas, div, fill, point, prelude::*, px, size, AnyElement, App, Background, Bounds,
+    ClipboardItem, Context, CursorStyle, Entity, FocusHandle, Focusable, Font, FontFallbacks,
+    FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Keystroke, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement, Pixels, Point, Render, Rgba, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, StrikethroughStyle, Styled, Task, TextRun, UnderlineStyle,
+    Window,
 };
 
-use crate::app::{icon, nerd_font_family, refresh_glyph, BUTTON_GROUP};
+use crate::app::{
+    button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, ControlExt,
+    PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+};
+use crate::theme::tokens::RaisedExt;
+use crate::theme::tokens::{button, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
@@ -72,9 +77,18 @@ const POLL_MS: u64 = 16;
 const BLINK_TICKS: u32 = 31;
 /// Panel height defaults and drag clamps.
 const PANEL_DEFAULT_H: f32 = 260.;
-const PANEL_MIN_H: f32 = 96.;
-/// Header height — the panel's title row.
+pub(crate) const PANEL_MIN_H: f32 = 96.;
+/// Taller than any window this runs in: a stored height must never restore to
+/// something the shell cannot show, or the chat column disappears on launch.
+pub(crate) const PANEL_MAX_H: f32 = 1200.;
+/// Header height — the tab strip.
 const HEADER_H: f32 = 32.;
+/// The resize handle above the header, where a panel's drag affordance
+/// belongs: the tab strip below it stays free for tabs.
+const SPLITTER_H: f32 = 6.;
+/// One tab chip's widest size: narrow enough that a handful fit without
+/// scrolling, wide enough for a readable truncated title.
+const TAB_MAX_W: f32 = 190.;
 
 /// How long the restart button spins after a click, so restarting a shell
 /// that comes back quickly still reads as acknowledged.
@@ -99,26 +113,26 @@ impl Palette {
         let background = theme.code_bg;
         Self {
             ansi: [
-                theme.text_3,
-                theme.del_red,
-                theme.add_green,
+                theme.text_muted,
+                theme.error,
+                theme.success,
                 theme.syn_number,
                 theme.syn_function,
                 theme.syn_string,
                 theme.syn_type,
-                theme.text,
-                theme.text_3,
-                theme.stop_red,
-                theme.ok_green,
+                theme.text_primary,
+                theme.text_muted,
+                theme.error,
+                theme.success,
                 theme.syn_literal,
                 theme.syn_function,
                 theme.syn_string,
                 theme.syn_type,
-                theme.text,
+                theme.text_primary,
             ],
             foreground,
             background,
-            cursor: theme.accent,
+            cursor: theme.accent_text,
         }
     }
 
@@ -340,16 +354,6 @@ struct TerminalSession {
 }
 
 impl TerminalSession {
-    fn new(
-        working_directory: &std::path::Path,
-        columns: usize,
-        rows: usize,
-        palette: Palette,
-    ) -> Result<Self> {
-        let (shell, args) = default_shell();
-        Self::with_shell(working_directory, columns, rows, palette, &shell, args)
-    }
-
     fn with_shell(
         working_directory: &std::path::Path,
         columns: usize,
@@ -451,6 +455,58 @@ impl Drop for TerminalSession {
         // Stops the event-loop thread, which then drops the `Pty` — SIGHUP
         // plus a wait for the child.
         let _ = self.sender.send(Msg::Shutdown);
+    }
+}
+
+/// The login shell a tab runs, as its tab chip shows it: a profile mark at the
+/// left of the label.
+///
+/// Orbit spawns one shell — the user's login shell — so every tab carries the
+/// same mark today. It is still the honest label for the tab (and the seam a
+/// per-tab shell picker would slot into), and it tells a `fish` tab from a
+/// `zsh` one at a glance once more than one shell can be launched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellProfile {
+    Zsh,
+    Bash,
+    Fish,
+    /// `sh`, `dash`, `ksh`, `cmd`, `pwsh` — anything without a mark in
+    /// Simple Icons, which withdraws trademarked logos (PowerShell, Windows).
+    Other,
+}
+
+impl ShellProfile {
+    /// Classify the shell by its executable name. `-l` and a `/usr/local/bin`
+    /// prefix are irrelevant here, so only the file stem is compared.
+    fn of(shell: &std::path::Path) -> Self {
+        match shell.file_stem().and_then(|name| name.to_str()) {
+            Some(name) if name.eq_ignore_ascii_case("zsh") => Self::Zsh,
+            Some(name) if name.eq_ignore_ascii_case("bash") => Self::Bash,
+            Some(name) if name.eq_ignore_ascii_case("fish") => Self::Fish,
+            _ => Self::Other,
+        }
+    }
+
+    /// The asset that draws this profile, in the same `currentColor` style as
+    /// the rest of the icon set.
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Zsh => "icons/zsh.svg",
+            Self::Bash => "icons/bash.svg",
+            Self::Fish => "icons/fish.svg",
+            Self::Other => "icons/terminal.svg",
+        }
+    }
+
+    /// The shell's name, for the tab's tooltip. Lowercase and short: it sits
+    /// beside a path, not on a page of its own.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Zsh => "zsh",
+            Self::Bash => "bash",
+            Self::Fish => "fish",
+            Self::Other => "shell",
+        }
     }
 }
 
@@ -614,7 +670,7 @@ fn prepare_grid(
                 .as_ref()
                 .is_some_and(|range| cell_selected(range, cell_point))
             {
-                background = Some(theme.active);
+                background = Some(theme.selection);
             }
 
             if solid_cursor && cell_point == cursor.point {
@@ -862,6 +918,13 @@ pub struct TerminalView {
     error: Option<String>,
     focus_handle: FocusHandle,
     title: Option<String>,
+    /// The directory this shell was started in. The tab strip labels the tab
+    /// from it, a tooltip shows it, and a restart lands in the same place
+    /// rather than wherever the process happens to have `cd`-ed to.
+    directory: PathBuf,
+    /// Which shell backs this tab: the tab chip's profile mark, and the
+    /// tooltip's first word.
+    profile: ShellProfile,
     /// Whether the panel is on screen; a hidden terminal still drains the PTY
     /// but does not ask for frames.
     active: bool,
@@ -872,7 +935,6 @@ pub struct TerminalView {
     font_size: Pixels,
     cell_width: Pixels,
     cell_height: Pixels,
-    measured: bool,
     cursor_on: bool,
     blink_ticks: u32,
     selecting: bool,
@@ -888,6 +950,10 @@ impl TerminalView {
         // Captured on the UI thread: the emulator's first OSC color reply and
         // its initial background must match the theme already on screen.
         let initial_palette = Palette::from_theme(theme::get(cx));
+        // Resolved once, here: the tab's mark and the shell the PTY actually
+        // runs come from the same answer, so they cannot disagree.
+        let (shell, args) = default_shell();
+        let profile = ShellProfile::of(&shell);
 
         // Build the session off the UI thread, then poll it: alacritty's event
         // loop owns PTY I/O, so polling is a dirty-flag check plus a channel
@@ -895,7 +961,9 @@ impl TerminalView {
         let task = cx.spawn(async move |this, cx| {
             let started = cx
                 .background_executor()
-                .spawn(async move { TerminalSession::new(&directory, 80, 24, initial_palette) })
+                .spawn(async move {
+                    TerminalSession::with_shell(&directory, 80, 24, initial_palette, &shell, args)
+                })
                 .await;
             let updated = this.update(cx, |this, cx| {
                 match started {
@@ -920,24 +988,42 @@ impl TerminalView {
             }
         });
 
-        Self {
+        let mut view = Self {
             session: None,
             error: None,
             focus_handle,
             title: None,
+            directory: working_directory,
+            profile,
             active: false,
             focused: false,
             exited: false,
             font_size: px(13.),
             cell_width: px(CELL_WIDTH_FALLBACK),
             cell_height: px(13. * LINE_HEIGHT_RATIO),
-            measured: false,
             cursor_on: true,
             blink_ticks: 0,
             selecting: false,
             scroll_accumulator: 0.0,
             grid_bounds: Rc::new(Cell::new(None)),
             _task: task,
+        };
+        view.measure_font(cx);
+        view
+    }
+
+    /// Resolve the face's advance once, from the app's text system, so the
+    /// grid math matches the cell box gpui actually shapes with.
+    fn measure_font(&mut self, cx: &App) {
+        let font_size = theme::get(cx).term_px(13.0);
+        let font = terminal_font(cx);
+        let font_id = cx.text_system().resolve_font(&font);
+        if let Ok(advance) = cx.text_system().advance(font_id, font_size, 'M') {
+            if advance.width > px(0.) {
+                self.font_size = font_size;
+                self.cell_width = advance.width;
+                self.cell_height = px(f32::from(font_size) * LINE_HEIGHT_RATIO);
+            }
         }
     }
 
@@ -945,9 +1031,39 @@ impl TerminalView {
         self.focus_handle.clone()
     }
 
-    pub fn title(&self) -> SharedString {
-        match &self.title {
-            Some(title) if !title.is_empty() => SharedString::from(title.clone()),
+    pub fn directory(&self) -> &std::path::Path {
+        &self.directory
+    }
+
+    /// The shell profile mark the tab chip draws before the label.
+    pub fn profile_icon(&self) -> &'static str {
+        self.profile.icon()
+    }
+
+    /// `zsh — ~/Personal/orbit`: what the tab runs, where it started.
+    pub fn tooltip(&self) -> String {
+        format!(
+            "{} — {}",
+            self.profile.name(),
+            abbreviate_home(&self.directory)
+        )
+    }
+
+    /// The tab's label: the shell's OSC title when it sets one (the running
+    /// command, the way every terminal names its tabs), else the folder the
+    /// shell runs in. Never empty, so a tab always reads as something.
+    pub fn label(&self) -> SharedString {
+        if let Some(title) = self.title.as_deref().filter(|title| !title.is_empty()) {
+            return SharedString::from(title.to_owned());
+        }
+        self.folder_label()
+    }
+
+    /// The last path component of [`Self::directory`], which is what a tab
+    /// shows before its shell sets a title.
+    fn folder_label(&self) -> SharedString {
+        match self.directory.file_name().and_then(|name| name.to_str()) {
+            Some(name) if !name.is_empty() => SharedString::from(name.to_owned()),
             _ => SharedString::from("Terminal"),
         }
     }
@@ -1194,47 +1310,35 @@ impl TerminalView {
     /// drives an exact shell (say `/bin/cat`) instead of the login shell. Its
     /// only caller runs on Unix, so Windows test builds do not carry it.
     fn with_session(session: TerminalSession, cx: &mut Context<Self>) -> Self {
-        Self {
+        let mut view = Self {
             session: Some(session),
             error: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             title: None,
+            directory: std::env::temp_dir(),
+            profile: ShellProfile::Other,
             active: true,
             focused: false,
             exited: false,
             font_size: px(13.),
             cell_width: px(CELL_WIDTH_FALLBACK),
             cell_height: px(13. * LINE_HEIGHT_RATIO),
-            measured: false,
             cursor_on: true,
             blink_ticks: 0,
             selecting: false,
             scroll_accumulator: 0.,
             grid_bounds: Rc::new(Cell::new(None)),
             _task: Task::ready(()),
-        }
+        };
+        view.measure_font(cx);
+        view
     }
 }
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *theme::get(cx);
-        let font_size = theme.term_px(13.0);
         let font = terminal_font(cx);
-
-        // Measure the advance once per font/size; the grid math depends on the
-        // cell box matching the face gpui actually shapes with.
-        if !self.measured {
-            let font_id = window.text_system().resolve_font(&font);
-            if let Ok(advance) = window.text_system().advance(font_id, font_size, 'M') {
-                if advance.width > px(0.) {
-                    self.font_size = font_size;
-                    self.cell_width = advance.width;
-                    self.cell_height = px(f32::from(font_size) * LINE_HEIGHT_RATIO);
-                    self.measured = true;
-                }
-            }
-        }
 
         let background = Palette::from_theme(&theme).background;
         let focused = self.focus_handle.is_focused(window);
@@ -1301,7 +1405,7 @@ impl TerminalView {
         let cell_width = self.cell_width;
         let cell_height = self.cell_height;
         let blinking = self.cursor_on;
-        let scroll_thumb = theme.text_3.opacity(0.45);
+        let scroll_thumb = theme.text_muted.opacity(0.45);
 
         canvas(
             move |bounds, window, _| {
@@ -1471,19 +1575,19 @@ fn terminal_message(theme: &Theme, title: &str, detail: Option<&str>) -> AnyElem
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(theme.space(4.))
+        .gap(DynamicSpacing::Base04.px(theme))
         .child(
             div()
-                .text_size(theme.ui_px(12.5))
-                .text_color(theme.text_2)
+                .text_size(TextSize::Small.px(theme))
+                .text_color(theme.text_secondary)
                 .child(SharedString::from(title.to_owned())),
         );
     if let Some(detail) = detail {
         column = column.child(
             div()
                 .max_w(px(520.))
-                .text_size(theme.ui_px(11.5))
-                .text_color(theme.stop_red)
+                .text_size(TextSize::Small.px(theme))
+                .text_color(theme.error)
                 .child(SharedString::from(detail.to_owned())),
         );
     }
@@ -1507,11 +1611,27 @@ impl Render for DragGhost {
 /// The bottom terminal panel: header, resizable body, and the terminal it
 /// owns. The shell outlives a close so a toggle does not restart the session;
 /// a workspace change does restart it, in the new directory.
+/// The bottom terminal panel: a tab strip, a resizable body, and one shell
+/// per tab.
+///
+/// Tabs are the pooled unit, the way sessions are in the chat column: a
+/// background tab keeps its PTY (and whatever it is printing) alive, and only
+/// the active one is rendered, focused, or asks for frames. The shells outlive
+/// closing the panel, so ⌘J is a show/hide rather than a restart.
 pub struct TerminalPanel {
     open: bool,
     height: Pixels,
+    /// The directory a *new* tab starts in — the workspace the panel was last
+    /// handed. Existing tabs keep their own: switching sessions must not kill
+    /// a build that is still running in a shell.
     workspace: Option<PathBuf>,
-    terminal: Option<Entity<TerminalView>>,
+    /// One shell per tab, in strip order.
+    tabs: Vec<Entity<TerminalView>>,
+    /// Index into `tabs` that is rendered and focused. Always in range while
+    /// `tabs` is non-empty.
+    active: usize,
+    /// Keeps the active tab visible when the strip overflows.
+    tab_scroll: ScrollHandle,
     /// Restart feedback: the header button spins until this instant, so the
     /// click is acknowledged while the fresh shell starts.
     restart_spin_until: Option<Instant>,
@@ -1523,19 +1643,37 @@ impl TerminalPanel {
             open: false,
             height: px(crate::layout::terminal_height()
                 .unwrap_or(PANEL_DEFAULT_H)
-                .max(PANEL_MIN_H)),
+                .clamp(PANEL_MIN_H, PANEL_MAX_H)),
             workspace: None,
-            terminal: None,
+            tabs: Vec::new(),
+            active: 0,
+            tab_scroll: ScrollHandle::new(),
             restart_spin_until: None,
         }
+    }
+
+    /// Tear down every shell by dropping its tab. Used by an app-wide reload
+    /// before the process exits so no PTY child outlives the window.
+    pub fn shutdown(&mut self, cx: &mut Context<Self>) {
+        self.open = false;
+        self.tabs.clear();
+        self.active = 0;
+        self.restart_spin_until = None;
+        cx.notify();
     }
 
     pub fn is_open(&self) -> bool {
         self.open
     }
 
+    /// How many shells the panel is holding — the palette gates the tab
+    /// commands on it.
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
     pub fn set_height(&mut self, height: Pixels, cx: &mut Context<Self>) {
-        let height = height.clamp(px(PANEL_MIN_H), px(f32::MAX / 2.));
+        let height = height.clamp(px(PANEL_MIN_H), px(PANEL_MAX_H));
         if height != self.height {
             self.height = height;
             crate::layout::set_terminal_height(f32::from(height));
@@ -1543,28 +1681,44 @@ impl TerminalPanel {
         }
     }
 
-    /// Keep the shell in the selected workspace. A change replaces the session
-    /// (the old PTY gets SIGHUP on drop) but leaves a closed panel closed.
+    /// Point *new* tabs at the selected workspace. Existing tabs are left
+    /// alone: they are live shells doing work the user started, and a session
+    /// switch is not a reason to SIGHUP them. The tab strip keeps showing each
+    /// one's own directory, so nothing here is implied that is not true.
     pub fn set_workspace(&mut self, workspace: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.workspace == workspace {
             return;
         }
         self.workspace = workspace;
-        // Dropping the old handle kills the old shell (SIGHUP on the PTY).
-        if self.terminal.take().is_some() && self.open {
-            self.ensure_terminal(cx);
-        }
         cx.notify();
+    }
+
+    /// The active tab's shell, if any.
+    fn active_terminal(&self) -> Option<&Entity<TerminalView>> {
+        self.tabs.get(self.active)
+    }
+
+    /// The directory a fresh tab starts in: the current workspace, else the
+    /// process's own directory, else the filesystem root — never a path that
+    /// cannot be spawned.
+    fn spawn_directory(&self) -> PathBuf {
+        self.workspace
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = !self.open;
         if self.open {
-            self.ensure_terminal(cx);
-            self.sync_active(true, cx);
-            // Focus follows the panel: the first keystroke lands in the shell.
-            if let Some(terminal) = &self.terminal {
-                window.focus(&terminal.read(cx).handle());
+            match self.active_terminal() {
+                // The shell that was here before is still here: show it and put
+                // the keyboard back in it.
+                Some(terminal) => {
+                    self.sync_active(true, cx);
+                    window.focus(&terminal.read(cx).handle());
+                }
+                None => self.new_tab(window, cx),
             }
         } else {
             self.sync_active(false, cx);
@@ -1572,12 +1726,104 @@ impl TerminalPanel {
         cx.notify();
     }
 
-    /// Kill the current shell and start a fresh one in the same directory.
-    fn restart(&mut self, cx: &mut Context<Self>) {
-        self.terminal = None;
-        if self.open {
-            self.ensure_terminal(cx);
+    /// Open a shell in a new tab, in the current workspace, and make it the
+    /// active one. The panel opens if it was closed.
+    pub fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.spawn_directory();
+        let terminal = cx.new(|cx| TerminalView::new(directory, cx));
+        self.tabs.push(terminal.clone());
+        self.active = self.tabs.len() - 1;
+        self.open = true;
+        // The tab that was visible stops asking for frames; its shell keeps
+        // running and keeps draining into its own grid.
+        self.sync_active(true, cx);
+        window.focus(&terminal.read(cx).handle());
+        self.tab_scroll.scroll_to_item(self.active);
+        cx.notify();
+    }
+
+    /// Close one tab. Its shell gets SIGHUP as the entity drops. Closing the
+    /// panel's last tab closes the panel — an empty terminal panel is a blank
+    /// strip that only wastes the transcript's height.
+    pub fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
         }
+        self.tabs.remove(index);
+        if self.tabs.is_empty() {
+            self.active = 0;
+            self.open = false;
+            cx.notify();
+            return;
+        }
+        // Closing a tab left of the active one shifts it; closing the active
+        // one leaves the index on its right-hand neighbour (or on the new last
+        // tab when it was the rightmost).
+        if index < self.active {
+            self.active -= 1;
+        }
+        self.active = self.active.min(self.tabs.len() - 1);
+        self.sync_active(true, cx);
+        if let Some(terminal) = self.active_terminal() {
+            window.focus(&terminal.read(cx).handle());
+        }
+        self.tab_scroll.scroll_to_item(self.active);
+        cx.notify();
+    }
+
+    /// Close the tab that is on screen (⌘W while the panel has focus).
+    pub fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tab(self.active, window, cx);
+    }
+
+    /// Show one tab and put the keyboard in it.
+    pub fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() || index == self.active {
+            return;
+        }
+        self.active = index;
+        self.sync_active(true, cx);
+        if let Some(terminal) = self.active_terminal() {
+            window.focus(&terminal.read(cx).handle());
+        }
+        self.tab_scroll.scroll_to_item(self.active);
+        cx.notify();
+    }
+
+    /// Step to the next (`1`) or previous (`-1`) tab, wrapping at the ends —
+    /// Ctrl+Tab muscle memory from every other tabbed surface.
+    pub fn cycle_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        let len = self.tabs.len() as isize;
+        let next = (self.active as isize + delta).rem_euclid(len) as usize;
+        self.select_tab(next, window, cx);
+    }
+
+    /// Close the panel if it is open. Idempotent, and unlike [`Self::toggle`]
+    /// it does not need a window — used when a fresh task takes the chat
+    /// column and the shell must get out of the way.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        self.sync_active(false, cx);
+        cx.notify();
+    }
+
+    /// Kill the active tab's shell and start a fresh one in the same
+    /// directory. The tab keeps its place in the strip; the other tabs are
+    /// untouched.
+    fn restart(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.tabs.get(self.active) else {
+            return;
+        };
+        let directory = index.read(cx).directory().to_path_buf();
+        let terminal = cx.new(|cx| TerminalView::new(directory, cx));
+        self.tabs[self.active] = terminal;
+        self.sync_active(true, cx);
         // A short spin on the header button: the fresh shell usually starts in
         // well under a frame, leaving the click otherwise invisible.
         self.restart_spin_until = Some(Instant::now() + RESTART_FEEDBACK);
@@ -1598,24 +1844,14 @@ impl TerminalPanel {
         cx.notify();
     }
 
-    fn ensure_terminal(&mut self, cx: &mut Context<Self>) {
-        if self.terminal.is_some() {
-            return;
-        }
-        let directory = self
-            .workspace
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
-        self.terminal = Some(cx.new(|cx| TerminalView::new(directory, cx)));
-    }
-
     /// Mirror the app's "is this panel actually on screen" state into the
-    /// view. The panel can be open while another page owns the main column,
-    /// and a terminal nobody can see should not ask for frames.
+    /// views. The panel can be open while another page owns the main column,
+    /// and a terminal nobody can see should not ask for frames. Hidden tabs
+    /// are inactive for the same reason, whichever one is selected.
     pub fn sync_active(&self, active: bool, cx: &mut Context<Self>) {
-        if let Some(terminal) = &self.terminal {
-            terminal.update(cx, |view, cx| view.set_active(active, cx));
+        for (index, terminal) in self.tabs.iter().enumerate() {
+            let visible = active && index == self.active;
+            terminal.update(cx, |view, cx| view.set_active(visible, cx));
         }
     }
 
@@ -1627,31 +1863,137 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = &self.terminal {
+        if let Some(terminal) = self.active_terminal() {
             window.focus(&terminal.read(cx).handle());
         }
     }
 
+    /// The panel's top edge: a thin grab strip that resizes the panel. It sits
+    /// above the header so the tab strip below it never fights a drag for the
+    /// same pixels.
+    fn splitter(&self, theme: Theme) -> AnyElement {
+        div()
+            .id("terminal-panel-splitter")
+            .flex_none()
+            .w_full()
+            .h(px(SPLITTER_H))
+            .cursor(CursorStyle::ResizeUpDown)
+            .on_drag(TerminalResize, |_, _, _, cx| cx.new(|_| DragGhost))
+            // Hover is the only affordance a borderless splitter can carry on
+            // a code surface; it reads as the edge thickening, not a new rule.
+            .hover_divider(&theme)
+            .into_any_element()
+    }
+
+    /// One chip in the tab strip: label, and a close button that appears with
+    /// the active tab and on hover so a quiet strip stays quiet.
+    fn tab_chip(&self, index: usize, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let terminal = &self.tabs[index];
+        let active = index == self.active;
+        let (label, icon_path, tooltip) = {
+            let view = terminal.read(cx);
+            (view.label(), view.profile_icon(), view.tooltip())
+        };
+        press(
+            div()
+                .id(gpui::ElementId::Name(
+                    format!("terminal-tab-{index}").into(),
+                ))
+                .h(ButtonSize::Default.height(&theme))
+                .max_w(px(TAB_MAX_W))
+                .flex_none()
+                .px(DynamicSpacing::Base06.px(&theme))
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .rounded(button::RADIUS.px(&theme))
+                .cursor_pointer()
+                .text_size(TextSize::Small.px(&theme))
+                .when(active, |el| el.bg(theme.surface_active))
+                .when(!active, |el| {
+                    el.text_color(theme.text_muted).hover_quiet(&theme)
+                }),
+        )
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+            this.select_tab(index, window, cx);
+        }))
+        // The profile mark: which shell this tab runs, ahead of what it is
+        // doing. Dimmed with the label so an inactive tab stays one quiet
+        // shape rather than two tones.
+        .child(icon(
+            icon_path,
+            IconSize::XSmall.px(&theme),
+            if active {
+                theme.text_primary
+            } else {
+                theme.text_muted
+            },
+        ))
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .font_weight(if active {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
+                .text_color(if active {
+                    theme.text_primary
+                } else {
+                    theme.text_muted
+                })
+                .child(label),
+        )
+        .child(
+            icon_button_frame(
+                div().id(gpui::ElementId::Name(
+                    format!("terminal-tab-close-{index}").into(),
+                )),
+                &theme,
+                ButtonSize::None,
+            )
+            .group(BUTTON_GROUP)
+            .tip(tr!("terminal.close_tab"))
+            .cursor_pointer()
+            .hover_state(&theme)
+            .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+                this.close_tab(index, window, cx);
+                // Click handlers bubble: without this the chip's own handler
+                // would select the stale index inside the shrunken strip.
+                cx.stop_propagation();
+            }))
+            .child(icon(
+                "icons/x.svg",
+                ButtonSize::None.icon_size().px(&theme),
+                if active {
+                    theme.text_primary
+                } else {
+                    theme.text_muted
+                },
+            )),
+        )
+        .tip(tooltip)
+        .into_any_element()
+    }
+
     fn header(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let exited = self
-            .terminal
-            .as_ref()
+            .active_terminal()
             .is_some_and(|terminal| terminal.read(cx).is_exited());
-        // The header names the project, not the shell's OSC title: a prompt
-        // that rewrites itself (`user@host: cwd`, a running command) is a
-        // noisy, unstable label, while the workspace path is what the panel
-        // actually follows. The shell title is only a stand-in until the app
-        // hands the panel a workspace.
-        let title = self
-            .workspace
-            .as_ref()
-            .map(|path| abbreviate_home(path))
-            .or_else(|| {
-                self.terminal
-                    .as_ref()
-                    .map(|terminal| terminal.read(cx).title().to_string())
-            })
-            .unwrap_or_else(|| "Terminal".to_owned());
+
+        let mut strip = div()
+            .id("terminal-tabs")
+            .h_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base04.px(&theme))
+            .overflow_x_scroll()
+            .track_scroll(&self.tab_scroll);
+        for index in 0..self.tabs.len() {
+            strip = strip.child(self.tab_chip(index, theme, cx));
+        }
 
         let mut header = div()
             .id("terminal-panel-header")
@@ -1661,26 +2003,29 @@ impl TerminalPanel {
             .px_2()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
             .border_color(theme.border)
-            // The header is the drag handle for the panel's height.
-            .cursor(CursorStyle::ResizeUpDown)
-            .on_drag(TerminalResize, |_, _, _, cx| cx.new(|_| DragGhost))
-            .child(icon(
-                "icons/terminal.svg",
-                14.,
-                if exited { theme.text_3 } else { theme.text_2 },
-            ))
+            // No leading panel glyph: every tab already carries its profile
+            // mark, and a second terminal icon would only eat tab width.
+            .child(strip.flex_1())
+            // New tab sits with the tabs, where a browser and every editor put
+            // it, and never scrolls away with them.
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(theme.ui_px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if exited { theme.text_2 } else { theme.text })
-                    .child(title),
+                icon_button_frame(div().id("terminal-new-tab"), &theme, ButtonSize::Default)
+                    .group(BUTTON_GROUP)
+                    .tip(tr!("terminal.new_tab"))
+                    .cursor_pointer()
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
+                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                        this.new_tab(window, cx);
+                    }))
+                    .child(icon(
+                        "icons/plus.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_secondary,
+                    )),
             );
         if exited {
             header = header.child(
@@ -1688,49 +2033,52 @@ impl TerminalPanel {
                     .flex_none()
                     .px(px(6.))
                     .py(px(1.))
-                    .rounded_sm()
-                    .bg(theme.stop_red.opacity(0.15))
-                    .text_size(theme.ui_px(10.5))
-                    .text_color(theme.stop_red)
+                    .rounded(Radius::Small.px(&theme))
+                    .bg(theme.error.opacity(0.15))
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.error)
                     .child(tr!("terminal.exited")),
             );
         }
         header
-            // Restart reads as the primary action once the shell has exited.
+            // Restart reads as the primary action once the shell has exited,
+            // and only ever touches the active tab.
             .child(
-                div()
-                    .id("terminal-restart")
+                icon_button_frame(div().id("terminal-restart"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
+                    .tip(tr!("terminal.restart"))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.bg_hover))
-                    .active(|style| style.bg(theme.active))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.restart(cx)),
-                    )
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
+                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.restart(cx)))
                     .child(refresh_glyph(
                         "terminal-restart-spin",
-                        14.,
+                        ButtonSize::Default.icon_size().px(&theme),
                         self.restart_spin_until.is_some(),
-                        if exited { theme.accent } else { theme.text_2 },
+                        if exited {
+                            theme.accent_text
+                        } else {
+                            theme.text_secondary
+                        },
                         theme,
                     )),
             )
             .child(
-                div()
-                    .id("terminal-close")
+                icon_button_frame(div().id("terminal-close"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
+                    .tip(tr!("common.close"))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| this.toggle(window, cx)),
+                    .hover_state(&theme)
+                    .on_click(
+                        cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                            this.toggle(window, cx)
+                        }),
                     )
-                    .child(icon("icons/x.svg", 14., theme.text_2)),
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_secondary,
+                    )),
             )
             .into_any_element()
     }
@@ -1738,7 +2086,7 @@ impl TerminalPanel {
     /// A quiet card over the frozen grid once the shell is gone, so "why is
     /// nothing happening" has an answer and a one-click fix.
     fn exited_overlay(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let terminal = self.terminal.as_ref()?;
+        let terminal = self.active_terminal()?;
         if !terminal.read(cx).is_exited() {
             return None;
         }
@@ -1754,41 +2102,41 @@ impl TerminalPanel {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap(theme.space(8.))
-                        .px(theme.space(16.))
-                        .py(theme.space(12.))
-                        .rounded_lg()
-                        .bg(theme.bg_raised)
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .px(DynamicSpacing::Base16.px(&theme))
+                        .py(DynamicSpacing::Base12.px(&theme))
+                        .rounded(panel::RADIUS.px(&theme))
+                        .bg(theme.surface_elevated)
                         .border_1()
                         .border_color(theme.border)
                         .shadow(theme.composer_shadow())
                         .child(
                             div()
-                                .text_size(theme.ui_px(12.5))
-                                .text_color(theme.text_2)
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_secondary)
                                 .child(tr!("terminal.shell_exited")),
                         )
                         .child(
-                            div()
-                                .id("terminal-exited-restart")
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .px(theme.space(10.))
-                                .py(px(5.))
-                                .rounded_lg()
-                                .bg(theme.accent)
-                                .cursor_pointer()
-                                .text_size(theme.ui_px(12.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.active_fg)
-                                .hover(|style| style.opacity(0.9))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| this.restart(cx)),
-                                )
-                                .child(icon("icons/refresh.svg", 13., theme.active_fg))
-                                .child(tr!("terminal.restart")),
+                            button_frame(
+                                div().id("terminal-exited-restart"),
+                                &theme,
+                                ButtonSize::Medium,
+                            )
+                            .raised(theme.action, &theme)
+                            .cursor_pointer()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.action_fg)
+                            .hover_dimmed()
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.restart(cx)),
+                            )
+                            .child(icon(
+                                "icons/refresh.svg",
+                                ButtonSize::Medium.icon_size().px(&theme),
+                                theme.text_primary,
+                            ))
+                            .child(tr!("terminal.restart")),
                         ),
                 )
                 .into_any_element(),
@@ -1802,6 +2150,7 @@ impl Render for TerminalPanel {
             return div().into_any_element();
         }
         let theme = *theme::get(cx);
+        let active = self.active_terminal().cloned();
         div()
             .id("terminal-panel")
             .relative()
@@ -1815,6 +2164,7 @@ impl Render for TerminalPanel {
             .flex_col()
             .min_h_0()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_panel_mouse_down))
+            .child(self.splitter(theme))
             .child(self.header(theme, cx))
             .child(
                 div()
@@ -1823,7 +2173,10 @@ impl Render for TerminalPanel {
                     .min_w_0()
                     .relative()
                     .overflow_hidden()
-                    .children(self.terminal.clone())
+                    // Only the active tab is mounted: a background shell keeps
+                    // its PTY and its grid, but an unmounted view cannot cost a
+                    // layout or a paint.
+                    .children(active)
                     .children(self.exited_overlay(theme, cx)),
             )
             .into_any_element()
@@ -1996,10 +2349,13 @@ mod tests {
         let selected = row
             .runs
             .iter()
-            .filter(|run| run.background_color == Some(theme.active))
+            .filter(|run| run.background_color == Some(theme.selection))
             .map(|run| run.len)
             .sum::<usize>();
-        assert_eq!(selected, 2, "exactly the selected cells take the accent");
+        assert_eq!(
+            selected, 2,
+            "exactly the selected cells take the selection wash"
+        );
     }
 
     #[test]
@@ -2021,7 +2377,7 @@ mod tests {
         let selected = prepared.rows[0]
             .runs
             .iter()
-            .filter(|run| run.background_color == Some(theme.active))
+            .filter(|run| run.background_color == Some(theme.selection))
             .map(|run| run.len)
             .sum::<usize>();
         assert_eq!(selected, 1);
@@ -2292,7 +2648,7 @@ mod tests {
         // The autostart shell is the login shell; swap in `cat` so the test is
         // deterministic, then type.
         let terminal = cx
-            .update(|_, cx| panel.read(cx).terminal.clone())
+            .update(|_, cx| panel.read(cx).active_terminal().cloned())
             .expect("terminal created");
         let cat = TerminalSession::with_shell(
             &std::env::temp_dir(),
@@ -2369,6 +2725,253 @@ mod tests {
             .expect("grid view laid out");
         assert_eq!(bounds.size.width, px(640.));
         assert_eq!(bounds.size.height, px(240.));
+    }
+
+    // ── tabs ───────────────────────────────────────────────────────────
+
+    /// Open a panel with `count` tabs, in `directory`, and return it. Only the
+    /// last tab is active, as after ⌘T.
+    fn panel_with_tabs(
+        cx: &mut gpui::VisualTestContext,
+        count: usize,
+        directory: PathBuf,
+    ) -> Entity<TerminalPanel> {
+        let panel = cx.new(TerminalPanel::new);
+        cx.update(|_, cx| panel.update(cx, |panel, cx| panel.set_workspace(Some(directory), cx)));
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                for _ in 0..count {
+                    panel.new_tab(window, cx);
+                }
+            });
+        });
+        panel
+    }
+
+    /// New tabs stack up, and the shells behind them are still held: a tab
+    /// that is only hidden must never be dropped (that would SIGHUP a build
+    /// the user left running).
+    #[gpui::test]
+    fn new_tabs_keep_the_earlier_shells_alive(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+
+        let panel = panel_with_tabs(cx, 2, std::env::temp_dir());
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert_eq!(panel.tab_count(), 2);
+            assert_eq!(panel.active, 1, "the fresh tab is the visible one");
+            assert_ne!(
+                panel.tabs[0].entity_id(),
+                panel.tabs[1].entity_id(),
+                "each tab owns its own shell"
+            );
+            // The first tab is unmounted and stops asking for frames, but it is
+            // still in the strip — and therefore still alive.
+            assert!(!panel.tabs[0].read(cx).active);
+            assert!(panel.tabs[1].read(cx).active);
+        });
+    }
+
+    /// Hiding the whole panel deactivates every tab, not just the selected one:
+    /// a background shell must not keep requesting frames behind a full-page
+    /// surface.
+    #[gpui::test]
+    fn hiding_the_panel_deactivates_every_tab(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+
+        let panel = panel_with_tabs(cx, 2, std::env::temp_dir());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle(window, cx)));
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert!(!panel.is_open());
+            assert!(panel.tabs.iter().all(|tab| !tab.read(cx).active));
+        });
+        // Reopening shows the tab that was selected, not a brand-new shell.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle(window, cx)));
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert_eq!(panel.tab_count(), 2);
+            assert_eq!(panel.active, 1);
+            assert!(panel.tabs[1].read(cx).active);
+            assert!(!panel.tabs[0].read(cx).active);
+        });
+    }
+
+    /// Closing the active tab hands the strip to its right-hand neighbour,
+    /// and closing the rightmost one falls back to the left.
+    #[gpui::test]
+    fn closing_a_tab_selects_its_neighbour(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+
+        let panel = panel_with_tabs(cx, 3, std::env::temp_dir());
+        let third = cx.update(|_, cx| panel.read(cx).tabs[2].entity_id());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.select_tab(1, window, cx)));
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close_tab(1, window, cx)));
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert_eq!(panel.tab_count(), 2);
+            assert_eq!(panel.active, 1, "the tab that moved up takes the focus");
+            assert_eq!(panel.tabs[1].entity_id(), third);
+        });
+
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close_active_tab(window, cx)));
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert_eq!(panel.tab_count(), 1);
+            assert_eq!(panel.active, 0, "the last tab's neighbour is on the left");
+            assert!(panel.is_open(), "one tab left: the panel stays up");
+        });
+    }
+
+    /// The last tab taking the panel with it, rather than leaving an empty
+    /// strip that only costs the transcript height.
+    #[gpui::test]
+    fn closing_the_last_tab_closes_the_panel(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+
+        let panel = panel_with_tabs(cx, 1, std::env::temp_dir());
+        assert!(cx.update(|_, cx| panel.read(cx).is_open()));
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close_active_tab(window, cx)));
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert_eq!(panel.tab_count(), 0);
+            assert!(!panel.is_open());
+        });
+    }
+
+    /// ⌘⇧[ / ⌘⇧] wrap at both ends and are a no-op on a single tab.
+    #[gpui::test]
+    fn cycling_tabs_wraps_at_the_ends(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+
+        let panel = panel_with_tabs(cx, 3, std::env::temp_dir());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.select_tab(0, window, cx)));
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.cycle_tab(-1, window, cx)));
+        assert_eq!(
+            cx.update(|_, cx| panel.read(cx).active),
+            2,
+            "wraps to the end"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.cycle_tab(1, window, cx)));
+        assert_eq!(
+            cx.update(|_, cx| panel.read(cx).active),
+            0,
+            "wraps to the front"
+        );
+
+        let single = panel_with_tabs(cx, 0, std::env::temp_dir());
+        cx.update(|window, cx| {
+            single.update(cx, |panel, cx| {
+                panel.new_tab(window, cx);
+                panel.cycle_tab(1, window, cx);
+                assert_eq!(panel.active, 0, "one tab has nowhere to cycle to");
+            });
+        });
+    }
+
+    /// A workspace switch points *new* tabs at the new directory and leaves the
+    /// live shells where they are — a session switch is no reason to kill a
+    /// running build.
+    #[gpui::test]
+    fn switching_workspaces_spares_running_shells(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+
+        let first = std::env::temp_dir();
+        let second = PathBuf::from("/tmp");
+        let panel = panel_with_tabs(cx, 1, first.clone());
+        let shell = cx.update(|_, cx| panel.read(cx).tabs[0].entity_id());
+
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_workspace(Some(second.clone()), cx)
+            })
+        });
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert_eq!(panel.tab_count(), 1, "the shell is not replaced");
+            assert_eq!(panel.tabs[0].entity_id(), shell);
+            assert_eq!(panel.tabs[0].read(cx).directory(), first.as_path());
+        });
+
+        // The next tab follows the workspace the panel was last handed.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.new_tab(window, cx)));
+        cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            assert_eq!(panel.tab_count(), 2);
+            assert_eq!(panel.tabs[1].read(cx).directory(), second.as_path());
+        });
+    }
+
+    /// Each login shell gets its own profile mark; anything Simple Icons has
+    /// no logo for (it withdraws the trademarked PowerShell and Windows marks)
+    /// keeps the generic terminal glyph rather than a wrong or borrowed one.
+    #[test]
+    fn shell_profiles_map_to_their_own_marks() {
+        use gpui::AssetSource as _;
+        let of = |path: &str| ShellProfile::of(std::path::Path::new(path));
+
+        assert_eq!(of("/bin/zsh"), ShellProfile::Zsh);
+        assert_eq!(of("/usr/local/bin/bash"), ShellProfile::Bash);
+        assert_eq!(of("/opt/homebrew/bin/fish"), ShellProfile::Fish);
+        assert_eq!(of("/bin/sh"), ShellProfile::Other);
+        assert_eq!(of("/bin/dash"), ShellProfile::Other);
+        assert_eq!(of(r"C:\Windows\System32\cmd.exe"), ShellProfile::Other);
+        assert_eq!(of(""), ShellProfile::Other);
+
+        // A mark that is not embedded renders as nothing at all — silently.
+        for profile in [
+            ShellProfile::Zsh,
+            ShellProfile::Bash,
+            ShellProfile::Fish,
+            ShellProfile::Other,
+        ] {
+            let loaded = crate::assets::Assets
+                .load(profile.icon())
+                .expect("asset load")
+                .is_some();
+            assert!(loaded, "{} is not embedded", profile.icon());
+        }
+        assert_eq!(ShellProfile::Zsh.name(), "zsh");
+        assert_eq!(ShellProfile::Other.name(), "shell");
+    }
+
+    /// A tab's label is its shell title when there is one, and the folder it
+    /// was spawned in otherwise — never an empty chip.
+    #[gpui::test]
+    fn tab_labels_fall_back_to_the_folder(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+        let (view, label) = cx.update(|_, cx| {
+            let view = cx.new(|cx| TerminalView::new(PathBuf::from("/tmp/orbit-tab-label"), cx));
+            let label = view.read(cx).label().to_string();
+            (view, label)
+        });
+        assert_eq!(label, "orbit-tab-label");
+        // The mark and the tooltip come from the same login-shell answer the
+        // PTY gets, so this stays true on a bash desktop and a fish one.
+        let (shell, _) = default_shell();
+        assert_eq!(
+            cx.update(|_, cx| view.read(cx).profile_icon()),
+            ShellProfile::of(&shell).icon(),
+            "the tab shows the mark of the shell it actually spawned"
+        );
+        assert_eq!(
+            cx.update(|_, cx| view.read(cx).tooltip()),
+            format!("{} — /tmp/orbit-tab-label", ShellProfile::of(&shell).name()),
+            "the tooltip names the profile and where the tab started"
+        );
+        cx.update(|_, cx| view.update(cx, |view, _| view.title = Some("cargo test".to_owned())));
+        assert_eq!(
+            cx.update(|_, cx| view.read(cx).label().to_string()),
+            "cargo test",
+            "a shell that sets a title names its own tab"
+        );
     }
 
     #[test]

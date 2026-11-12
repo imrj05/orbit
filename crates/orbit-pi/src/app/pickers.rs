@@ -1,36 +1,111 @@
 use super::*;
+use crate::commands::CommandId;
+use crate::theme::tokens::{popover, DynamicSpacing};
 
 impl OrbitApp {
-    /// Recent workspaces for the folder selector: distinct session folders,
-    /// newest activity first (`load_sessions` pre-sorts), with the current
-    /// workspace pinned to the top even when it has no sessions yet.
+    /// Rows for the new-task page's folder selector, in priority order:
+    /// this repository's locations (the main checkout, then each linked
+    /// worktree), then distinct session folders newest-first (`load_sessions`
+    /// pre-sorts), with the current workspace pinned to the top when it is not
+    /// already one of them. Every row is a place a task can start in, so the
+    /// same list serves the Worktrees page's vocabulary.
     pub(super) fn recent_workspaces(&self) -> Vec<WorkspaceEntry> {
         let current = self
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
         let mut entries: Vec<WorkspaceEntry> = Vec::new();
+        let push = |entry: WorkspaceEntry, entries: &mut Vec<WorkspaceEntry>| {
+            if entries.iter().any(|e| e.path == entry.path) {
+                return;
+            }
+            entries.push(entry);
+        };
+
+        // The repository first: "Local" and each worktree, exactly as the
+        // status bar's picker orders them.
+        if let Some(root) = self.work_in_root() {
+            for row in
+                crate::working_folder::location_rows(&self.worktrees, &root, current.as_deref())
+            {
+                let mark = match &row.folder.location {
+                    crate::working_folder::Location::Local => EntryMark::Local,
+                    crate::working_folder::Location::Worktree { .. } => EntryMark::Worktree,
+                    _ => EntryMark::Folder,
+                };
+                push(
+                    WorkspaceEntry {
+                        name: row.label,
+                        path: row.folder.path,
+                        note: row.detail,
+                        mark,
+                    },
+                    &mut entries,
+                );
+            }
+        }
+
         if let Some(cwd) = &current {
-            entries.push(WorkspaceEntry {
-                name: sessions::workspace_label(cwd),
-                path: cwd.clone(),
-                last_active: None,
-            });
+            push(
+                WorkspaceEntry {
+                    name: sessions::workspace_label(cwd),
+                    path: cwd.clone(),
+                    note: None,
+                    mark: EntryMark::Folder,
+                },
+                &mut entries,
+            );
         }
         for session in &self.sessions {
             if entries.len() >= crate::workspace_picker::MAX_RECENTS {
                 break;
             }
-            if entries.iter().any(|e| e.path == session.cwd) {
-                continue;
-            }
-            entries.push(WorkspaceEntry {
-                name: sessions::workspace_label(&session.cwd),
-                path: session.cwd.clone(),
-                last_active: Some(sessions::relative_time(session.modified)),
-            });
+            push(
+                WorkspaceEntry {
+                    name: sessions::workspace_label(&session.cwd),
+                    path: session.cwd.clone(),
+                    note: Some(sessions::relative_time(session.modified)),
+                    mark: EntryMark::Folder,
+                },
+                &mut entries,
+            );
         }
         entries
+    }
+
+    /// Worktree actions require a repository; cloning does not.
+    pub(super) fn folder_actions(&self) -> Vec<PickerAction> {
+        let mut actions = if self.work_in_root().is_some() {
+            vec![
+                PickerAction {
+                    id: "new-worktree",
+                    icon: "icons/plus.svg",
+                    label: tr!("working_folder.new"),
+                    hint: Some(tr!("working_folder.new_hint")),
+                },
+                PickerAction {
+                    id: "existing-worktree",
+                    icon: "icons/branch.svg",
+                    label: tr!("working_folder.existing"),
+                    hint: Some(tr!("working_folder.existing_hint")),
+                },
+                PickerAction {
+                    id: "remote-branch",
+                    icon: "icons/cloud.svg",
+                    label: tr!("working_folder.remote"),
+                    hint: Some(tr!("working_folder.remote_hint")),
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        actions.push(PickerAction {
+            id: "clone-repository",
+            icon: "icons/cloud.svg",
+            label: tr!("working_folder.clone_title"),
+            hint: Some(tr!("working_folder.clone_hint")),
+        });
+        actions
     }
 
     /// Toggle the workspace picker under the new-task page's folder field.
@@ -44,7 +119,7 @@ impl OrbitApp {
             }
         }
         if self.workspace_picker.take().is_some() {
-            self.input.read(cx).focus(window);
+            window.focus(&self.new_task_folder_focus);
             cx.notify();
             return;
         }
@@ -53,21 +128,23 @@ impl OrbitApp {
         }
         self.branch_picker = None;
         self.session_menu = None;
+        self.dismiss_work_in_menu();
 
         let entries = self.recent_workspaces();
+        let actions = self.folder_actions();
         let current = self
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
-        // Match the field's width basis exactly (main area = window minus the
-        // sidebar) so the popover lands flush under the card at any size.
-        let main_width = f32::from(window.viewport_size().width)
-            - if self.sidebar_visible && !self.settings_open {
-                self.sidebar_width.into()
-            } else {
-                0.
-            };
-        let width = crate::workspace_picker::width_for_window(main_width);
+        // Use the chat column's real width, after every visible dock, so the
+        // popover stays attached to the chip instead of overflowing from a
+        // window-minus-sidebar approximation.
+        let main_width = self.main_area_width(window, cx);
+        let width = crate::workspace_picker::width_for_window(main_width.into());
+        let list_max_h = crate::workspace_picker::list_max_height(
+            crate::theme::get(cx),
+            window.viewport_size().height,
+        );
 
         let this = cx.weak_entity();
         let on_pick = Box::new(move |folder: PathBuf, window: &mut Window, cx: &mut App| {
@@ -86,6 +163,29 @@ impl OrbitApp {
             })
             .ok();
         }) as Box<dyn Fn(&mut Window, &mut App)>;
+        // Verbs the picker offers under the folders. Each one closes the
+        // picker first: they open a dialog or a second surface, and a popover
+        // left behind a modal is the wrong layer.
+        let this = cx.weak_entity();
+        let action_ids: Vec<&'static str> = actions.iter().map(|action| action.id).collect();
+        let on_action = Box::new(move |ix: usize, window: &mut Window, cx: &mut App| {
+            let Some(id) = action_ids.get(ix).copied() else {
+                return;
+            };
+            this.update(cx, |app, cx| {
+                app.workspace_picker = None;
+                match id {
+                    "new-worktree" => app.open_new_worktree_from_work_in(window, cx),
+                    "existing-worktree" => app.browse_for_existing_worktree(window, cx),
+                    "clone-repository" => app.open_clone_dialog(window, cx),
+                    // The create dialog's existing-branch list carries the
+                    // remote refs, and the manager turns one into a local
+                    // tracking branch instead of a detached worktree.
+                    _ => app.open_new_worktree_from_remote_branch(window, cx),
+                }
+            })
+            .ok();
+        }) as Box<dyn Fn(usize, &mut Window, &mut App)>;
         let this = cx.weak_entity();
         let on_dismiss = Box::new(move |by_mouse: bool, window: &mut Window, cx: &mut App| {
             this.update(cx, |app, cx| {
@@ -93,14 +193,26 @@ impl OrbitApp {
                     app.menu_dismissed_at = Some(Instant::now());
                 }
                 app.workspace_picker = None;
-                app.input.read(cx).focus(window);
+                if by_mouse {
+                    // Pointer dismissal may be the first half of a click on
+                    // another control; preserve the existing composer route
+                    // and let that control's own handler take focus next.
+                    app.input.read(cx).focus(window);
+                } else {
+                    // Escape and reactivating the current row are keyboard
+                    // dismissals: return to the trigger that opened the flow.
+                    window.focus(&app.new_task_folder_focus);
+                }
                 cx.notify();
             })
             .ok();
         }) as Box<dyn Fn(bool, &mut Window, &mut App)>;
 
         let picker = cx.new(|cx| {
-            WorkspacePicker::new(entries, current, width, on_pick, on_browse, on_dismiss, cx)
+            WorkspacePicker::new(
+                entries, actions, current, width, list_max_h, on_pick, on_browse, on_action,
+                on_dismiss, cx,
+            )
         });
         window.focus(&picker.read(cx).focus_handle(cx));
         self.workspace_picker = Some(picker);
@@ -119,14 +231,34 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.start_task_in_folder_quiet(folder, cx);
+        // Ready to type: the empty state is gone, so put the caret in the
+        // composer. Callers with no window (the Worktrees page's Open, the
+        // status bar's location rows) use the quiet form.
+        self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// [`Self::start_task_in_folder`] without taking a window: the workspace
+    /// move, the spawn, and the reset, but no focus change. The caller
+    /// notifies.
+    pub(super) fn start_task_in_folder_quiet(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        self.cancel_new_task_settle();
+        // The folder pick starts a fresh task, which is the New Task page's
+        // slot — not the session being left's. Parked before anything clears
+        // `current_session_path`, so the draft keeps its own session's key.
+        self.swap_to_new_task_draft(cx);
         if self.is_running() {
-            // A blocking dialog belongs to the session being left; cancel it
-            // so the parked run can settle instead of waiting on a modal.
-            self.cancel_open_dialog(cx);
+            // Blocking native requests stay pending with the parked session.
+            self.cancel_custom_surfaces(cx);
             self.park_active_session();
         } else {
             self.drop_client();
         }
+        self.execution = SessionExecution::default();
         self.transcript.clear();
         self.current_title = None;
         self.reset_session_name(cx);
@@ -134,21 +266,19 @@ impl OrbitApp {
         // view starts idle.
         self.busy = false;
         // Picking a folder to work in adds it to Orbit's own sidebar list.
-        self.add_workspace(folder.clone());
-        self.set_current_workspace(folder);
+        self.add_workspace(folder.clone(), cx);
+        self.set_current_workspace(folder.clone(), cx);
         self.current_session_path = None;
         self.added = 0;
         self.removed = 0;
         self.context = None;
         self.session_usage = None;
-        self.reset_turns();
+        self.reset_turns(cx);
         self.reset_queue();
-        match self
-            .extensions
-            .spawn(self.current_workspace.as_ref().unwrap())
-        {
+        match self.extensions.spawn(&folder, true, &self.mcp.secret_env()) {
             Ok(client) => {
                 self.adopt_client(client);
+                self.mcp_stamp = self.mcp.fingerprint_for(self.current_workspace.as_deref());
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.
@@ -162,10 +292,6 @@ impl OrbitApp {
                 self.set_status(message);
             }
         }
-        // Ready to type: the empty state is gone, so put the caret in the
-        // composer.
-        self.input.read(cx).focus(window);
-        cx.notify();
     }
 
     /// Toggle one of the two composer dropdowns (model / thinking). Opening
@@ -184,6 +310,7 @@ impl OrbitApp {
         if self.model_selector.is_some() {
             self.close_model_selector(window, cx);
         }
+        self.dismiss_work_in_menu();
         self.open_picker(kind, window, cx);
     }
 
@@ -197,6 +324,10 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Model and thinking are locked while a run is in flight.
+        if self.is_running() {
+            return;
+        }
         self.refresh_catalogs();
         self.send(CommandBody::GetState, "get_state");
         // Mutually exclusive with the composer's add menu and the new-task
@@ -210,6 +341,9 @@ impl OrbitApp {
         let this = cx.weak_entity();
         let on_select_model = Box::new(
             move |id: &str, provider: &str, window: &mut Window, cx: &mut App| {
+                // A user pick is what "recently used" means — the default push
+                // for a fresh session is not recorded.
+                crate::recent_models::record(provider, id);
                 this.update(cx, |app, cx| {
                     app.set_model(id.to_string(), provider.to_string(), cx);
                     app.close_model_selector(window, cx);
@@ -272,23 +406,46 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_command_palette(window, cx);
+        // Keyboard path: no gesture guard. A dismissed popover must not be able
+        // to swallow the next ⌘P/⌘K — the guard exists for a single pointer
+        // gesture that both closes and re-opens, which cannot happen here.
+        self.toggle_command_palette_with(false, window, cx);
     }
 
-    /// Toggle the window-wide command palette. Mutually exclusive with the
-    /// chip popovers, the branch picker, and the row menu.
+    /// Exercise the pointer gesture guard in popup tests.
+    #[cfg(test)]
     pub(super) fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_command_palette_with(true, window, cx);
+    }
+
+    /// Hand focus back to whatever opened the palette, or to the composer when
+    /// that control is gone. Every close path goes through here.
+    pub(super) fn restore_palette_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.palette_return_focus.take().and_then(|h| h.upgrade()) {
+            Some(handle) => window.focus(&handle),
+            None => self.input.read(cx).focus(window),
+        }
+    }
+
+    fn toggle_command_palette_with(
+        &mut self,
+        by_gesture: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // A dismissal from the same click's mouse-down must not immediately
         // re-open — the sidebar Search row opens on mouse-up, and the scrim
         // dismisses on mouse-down.
         const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
+        if by_gesture {
+            if let Some(dismissed) = self.menu_dismissed_at.take() {
+                if dismissed.elapsed() < GESTURE {
+                    return;
+                }
             }
         }
         if self.command_palette.take().is_some() {
-            self.input.read(cx).focus(window);
+            self.restore_palette_focus(window, cx);
             cx.notify();
             return;
         }
@@ -300,17 +457,34 @@ impl OrbitApp {
         self.session_menu = None;
         self.workspace_menu = None;
 
+        // Model and thinking choices are fixed for the duration of a turn, so
+        // the palette hides those two commands while a run is in flight.
+        let running = self.is_running();
         let snapshot = PaletteSnapshot {
             sessions: self.sidebar_sessions(),
             active_path: self.current_session_path.clone(),
-            busy: self.busy || self.transcript.is_streaming(),
+            active_pinned: self
+                .current_session_path
+                .as_ref()
+                .is_some_and(|path| crate::pins::contains(path)),
+            busy: running,
             session_id: self.session_id.clone(),
             sidebar_visible: self.sidebar_visible,
             side_panel_visible: self.sidepane.read(cx).is_open(),
             terminal_visible: self.terminal_panel.read(cx).is_open(),
+            terminal_tabs: self.terminal_panel.read(cx).tab_count(),
             project_panel_visible: self.project_panel.read(cx).is_open(),
-            can_choose_model: !self.available_models.is_empty(),
-            can_choose_thinking: !self.available_thinking_levels.is_empty(),
+            can_choose_model: !self.available_models.is_empty() && !running,
+            can_choose_thinking: self.can_choose_thinking() && !running,
+            mcp_servers: self
+                .mcp
+                .servers()
+                .iter()
+                .map(|server| command_palette::PaletteMcpServer {
+                    name: server.name.clone(),
+                    enabled: server.def.enabled,
+                })
+                .collect(),
         };
 
         let this = cx.weak_entity();
@@ -328,6 +502,7 @@ impl OrbitApp {
             move |command: PaletteCommand, window: &mut Window, cx: &mut App| {
                 this.update(cx, |app, cx| {
                     app.command_palette = None;
+                    app.restore_palette_focus(window, cx);
                     app.run_palette_command(command, window, cx);
                 })
                 .ok();
@@ -340,9 +515,7 @@ impl OrbitApp {
                     app.menu_dismissed_at = Some(Instant::now());
                 }
                 app.command_palette = None;
-                // The palette's focus handle dies with it; hand focus back to
-                // the composer so typing continues after Escape.
-                app.input.read(cx).focus(window);
+                app.restore_palette_focus(window, cx);
                 cx.notify();
             })
             .ok();
@@ -350,7 +523,14 @@ impl OrbitApp {
 
         let palette =
             cx.new(|cx| CommandPalette::new(snapshot, on_open, on_command, on_dismiss, cx));
-        // Focus the palette's filter input so typing filters immediately.
+        // Remember who opened it (the focused control, or the composer when the
+        // palette is opened from a menu that took focus), then focus the filter.
+        self.palette_return_focus = Some(
+            window
+                .focused(cx)
+                .unwrap_or_else(|| self.input.read(cx).focus_handle(cx))
+                .downgrade(),
+        );
         window.focus(&palette.read(cx).focus_handle(cx));
         self.command_palette = Some(palette);
         cx.notify();
@@ -366,50 +546,192 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         match command {
-            PaletteCommand::NewSession => self.on_new_session(&crate::NewSession, window, cx),
-            PaletteCommand::RefreshSessions => self.on_refresh(&crate::RefreshSessions, window, cx),
-            PaletteCommand::FocusComposer => {
+            PaletteCommand::Run(id) => self.run_command(id, window, cx),
+            PaletteCommand::OpenSettings(section) => {
+                self.settings_open = true;
+                self.set_settings_section(section, cx);
+                self.sync_terminal_active(cx);
+            }
+            PaletteCommand::Mcp { name, action } => match action {
+                crate::command_palette::McpPaletteAction::Toggle => {
+                    self.mcp_toggle_server(name, cx)
+                }
+                crate::command_palette::McpPaletteAction::Reconnect => {
+                    self.mcp_reconnect_server(name, cx)
+                }
+                crate::command_palette::McpPaletteAction::Test => self.mcp_test_server(name, cx),
+            },
+        }
+    }
+
+    /// Run one registry command by id. The palette is the first caller; the
+    /// keymap dispatches the same commands as typed actions, so both paths
+    /// meet in one place where the UI can also call them directly.
+    pub(super) fn run_command(
+        &mut self,
+        id: CommandId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match id {
+            CommandId::NewSession => self.on_new_session(&crate::NewSession, window, cx),
+            CommandId::RefreshSessions => self.on_refresh(&crate::RefreshSessions, window, cx),
+            CommandId::FocusComposer => {
                 self.input.read(cx).focus(window);
             }
-            PaletteCommand::FocusSessions => {
+            CommandId::FocusSessions => {
                 self.on_focus_sessions(&crate::FocusSessions, window, cx);
             }
-            PaletteCommand::ToggleSidebar => {
-                self.toggle_sidebar(window, cx);
-                cx.notify();
+            // A numbered slot needs its payload action; the palette never
+            // lists it, so there is nothing to run here.
+            CommandId::OpenSessionSlot => {}
+            CommandId::NextSession => self.cycle_session(1, cx),
+            CommandId::PrevSession => self.cycle_session(-1, cx),
+            CommandId::RenameSession => self.begin_session_rename(window, cx),
+            CommandId::PinSession => {
+                if let Some(path) = self.current_session_path.clone() {
+                    crate::pins::toggle(&path);
+                    self.toast_success(if crate::pins::contains(&path) {
+                        tr!("sidebar.pin_session")
+                    } else {
+                        tr!("sidebar.unpin_session")
+                    });
+                    cx.notify();
+                }
             }
-            PaletteCommand::ToggleSidePanel => {
-                self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
-            }
-            PaletteCommand::ToggleTerminal => {
-                self.terminal_panel
-                    .update(cx, |panel, cx| panel.toggle(window, cx));
-            }
-            PaletteCommand::ToggleProjectPanel => {
-                self.project_panel.update(cx, |panel, cx| panel.toggle(cx));
-            }
-            PaletteCommand::ReviewChanges => {
-                self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
-            }
-            PaletteCommand::OpenGit => {
-                self.command_palette = None;
-                self.open_git(cx);
-            }
-            PaletteCommand::ChooseModel => self.toggle_picker(PickerKind::Model, window, cx),
-            PaletteCommand::ChooseThinking => self.toggle_picker(PickerKind::Thinking, window, cx),
-            PaletteCommand::AbortRun => self.on_abort(&crate::AbortRun, window, cx),
-            PaletteCommand::CopySessionId => {
+            CommandId::CloneSession => self.clone_session(cx),
+            CommandId::RewindConversation => self.open_rewind_picker(window, cx),
+            CommandId::ExportVisibleTranscript => self.export_markdown(false, cx),
+            CommandId::ExportVisibleTranscriptPdf => self.export_visible_pdf(cx),
+            CommandId::ExportLastResponsePdf => self.export_last_response_pdf(cx),
+            CommandId::CopySessionId => {
                 if let Some(id) = self.session_id.clone() {
                     cx.write_to_clipboard(ClipboardItem::new_string(id));
                     self.toast_success(tr!("pickers.session_id_copied"));
                     cx.notify();
                 }
             }
-            PaletteCommand::CloneSession => self.clone_session(cx),
-            PaletteCommand::OpenSettings(section) => {
-                self.settings_open = true;
-                self.set_settings_section(section, cx);
+            CommandId::DeleteSession => self.arm_active_session_delete(window, cx),
+            CommandId::ChooseModel => self.toggle_picker(PickerKind::Model, window, cx),
+            CommandId::ChooseThinking => self.toggle_picker(PickerKind::Thinking, window, cx),
+            // The guard policy has no chord, so the palette is its keyboard
+            // path; the composer chip is the pointer one. Opening the menu
+            // moves focus to it, so ↑/↓/Enter/Escape take over from here.
+            CommandId::ChooseAccess => self.toggle_access_menu(window, cx),
+            // Same shape: the scope chip is the pointer path, the palette the
+            // keyboard one.
+            CommandId::ChooseWorkflowMode => self.toggle_workflow_menu(window, cx),
+            CommandId::AbortRun => self.on_abort(&crate::AbortRun, window, cx),
+            CommandId::ToggleCommandPalette => {
+                self.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx)
             }
+            CommandId::ToggleSearch => self.on_toggle_search(&crate::ToggleSearch, window, cx),
+            CommandId::PrevTurn => self.on_prev_turn(&crate::PrevTurn, window, cx),
+            CommandId::NextTurn => self.on_next_turn(&crate::NextTurn, window, cx),
+            CommandId::CopyLastResponse => {
+                self.on_copy_last_response(&crate::CopyLastResponse, window, cx)
+            }
+            CommandId::ToggleUsage => self.on_toggle_usage(&crate::ToggleUsage, window, cx),
+            CommandId::ReviewChanges => {
+                self.open_review(cx);
+            }
+            CommandId::OpenGit => {
+                self.command_palette = None;
+                self.open_git(cx);
+            }
+            CommandId::OpenWorktrees => {
+                self.on_open_worktrees(&crate::OpenWorktrees, window, cx);
+            }
+            CommandId::FocusSessionSearch => {
+                self.focus_session_search(window, cx);
+            }
+            CommandId::ToggleSidebar => {
+                self.toggle_sidebar(window, cx);
+                cx.notify();
+            }
+            CommandId::ToggleSidePanel => {
+                // Opening Review replaces the Git page, which shares the window.
+                if !self.sidepane.read(cx).is_open() {
+                    self.close_git_for_review(cx);
+                }
+                self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
+            }
+            CommandId::ToggleTerminal => {
+                self.terminal_panel
+                    .update(cx, |panel, cx| panel.toggle(window, cx));
+            }
+            CommandId::NewTerminalTab => {
+                self.on_new_terminal_tab(&crate::NewTerminalTab, window, cx);
+            }
+            CommandId::CloseTerminalTab => {
+                self.on_close_terminal_tab(&crate::CloseTerminalTab, window, cx);
+            }
+            CommandId::NextTerminalTab => {
+                self.on_next_terminal_tab(&crate::NextTerminalTab, window, cx);
+            }
+            CommandId::PrevTerminalTab => {
+                self.on_prev_terminal_tab(&crate::PrevTerminalTab, window, cx);
+            }
+            // Route through the app so opening the tree also closes Review;
+            // the two docks are mutually exclusive.
+            CommandId::ToggleProjectPanel => self.toggle_project_panel(cx),
+            CommandId::GitTabChanges => self.on_git_tab(0, window, cx),
+            CommandId::GitTabHistory => self.on_git_tab(1, window, cx),
+            CommandId::GitTabGraph => self.on_git_tab(2, window, cx),
+            CommandId::GitTabStashes => self.on_git_tab(3, window, cx),
+            CommandId::GitTabIssues => self.on_git_tab(4, window, cx),
+            CommandId::GitTabPulls => self.on_git_tab(5, window, cx),
+            CommandId::OpenSettings => {
+                self.on_open_settings(&crate::OpenSettings, window, cx);
+            }
+            CommandId::ManageSubagents => {
+                self.command_palette = None;
+                self.settings_open = true;
+                self.set_settings_section(SettingsSection::Subagents, cx);
+                self.sync_terminal_active(cx);
+            }
+            CommandId::OpenMcpSettings => {
+                self.command_palette = None;
+                self.settings_open = true;
+                self.set_settings_section(SettingsSection::Mcp, cx);
+                self.sync_terminal_active(cx);
+            }
+            CommandId::AddMcpServer => {
+                self.command_palette = None;
+                self.settings_open = true;
+                self.set_settings_section(SettingsSection::Mcp, cx);
+                self.sync_terminal_active(cx);
+                self.mcp_add(window, cx);
+            }
+            CommandId::RefreshMcpServers => {
+                self.command_palette = None;
+                self.mcp_refresh(cx);
+            }
+            CommandId::ReconnectMcpServers => {
+                self.command_palette = None;
+                self.mcp_reconnect_all(cx);
+            }
+            CommandId::OpenShortcutHelp => {
+                self.settings_open = true;
+                self.set_settings_section(SettingsSection::Shortcuts, cx);
+                self.sync_terminal_active(cx);
+            }
+            CommandId::CheckForUpdates => {
+                self.on_check_for_updates(&crate::CheckForUpdates, window, cx)
+            }
+            CommandId::Quit => self.request_quit(crate::app::QuitRequest::User, cx),
+            // Context-only commands are dispatched by their own focus nodes
+            // (the review tree), never by the palette.
+            CommandId::ReviewTreeNext
+            | CommandId::ReviewTreePrev
+            | CommandId::ReviewTreeToggle
+            | CommandId::ReviewFileNext
+            | CommandId::ReviewFilePrev
+            | CommandId::ReviewHunkNext
+            | CommandId::ReviewHunkPrev
+            | CommandId::ReviewExpandAll
+            | CommandId::ReviewCollapseAll
+            | CommandId::ReviewClose => {}
         }
     }
 
@@ -434,6 +756,7 @@ impl OrbitApp {
         }
         self.workspace_picker = None;
         self.session_menu = None;
+        self.dismiss_work_in_menu();
 
         let cwd = match self
             .current_workspace
@@ -449,9 +772,12 @@ impl OrbitApp {
             return;
         }
         let current = crate::git::current_branch(&cwd).unwrap_or_else(|| "HEAD".into());
-        let branches = crate::git::list_branches(&cwd).unwrap_or_else(|err| {
+        let branches = crate::git::list_branch_entries(&cwd).unwrap_or_else(|err| {
             self.toast_error(tr!("pickers.branch_list_failed", error = err));
-            vec![current.clone()]
+            vec![crate::git::BranchEntry {
+                name: current.clone(),
+                commit_date: None,
+            }]
         });
         let workspace_label = sessions::workspace_label(&cwd);
 
@@ -550,7 +876,9 @@ impl OrbitApp {
                 app.branch_operation_pending = false;
                 match result {
                     Ok(()) => app.toast_success(tr!("pickers.created_and_switched", label = label)),
-                    Err(err) => app.toast_error(tr!("pickers.branch_create_failed", error = err)),
+                    // The key's placeholder is `%{err}` — binding `error`
+                    // left the literal `%{err}` in the toast.
+                    Err(err) => app.toast_error(tr!("pickers.branch_create_failed", err = err)),
                 }
                 app.refresh_branch_status(cx);
                 cx.notify();
@@ -559,42 +887,75 @@ impl OrbitApp {
         .detach();
     }
 
-    /// Popover anchored below the new-task page's workspace field.
-    pub(super) fn workspace_picker_popup(&self) -> Option<AnyElement> {
+    /// Popover anchored below the new-task page's folder row.
+    ///
+    /// Below, because that is where the row's own edge points: a folder list is
+    /// the select under its button, and `snap_to_window` keeps it on screen when
+    /// the row sits low. It covers the composer while it is open — the field is
+    /// inert while a folder is being chosen, and the card returns the space on
+    /// dismissal — rather than opening upward into the titlebar, where it would
+    /// have to be shrunk to fit at the window's minimum height.
+    pub(super) fn workspace_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.workspace_picker.clone().map(|picker| {
             div()
                 .absolute()
                 .bottom_0()
                 .left_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopLeft)
-                        .offset(point(px(0.), px(6.)))
-                        .snap_to_window()
-                        .child(deferred(picker)),
-                )
+                .child(anchored_popover(
+                    Corner::TopLeft,
+                    point(
+                        px(0.),
+                        popover::MENU_OFFSET + DynamicSpacing::Base08.px(theme),
+                    ),
+                    picker,
+                    "anchored_popover-in-7",
+                    theme,
+                ))
                 .into_any_element()
         })
     }
 
-    /// Popover anchored above the status-bar branch chip.
-    pub(super) fn branch_picker_popup(&self) -> Option<AnyElement> {
+    /// Popover anchored above the status-bar branch chip: bottom-left of the
+    /// menu on the chip's top-left, so the menu clears the chip instead of
+    /// covering it. (The anchor point is the chip's top edge, not its bottom.)
+    pub(super) fn branch_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
+        self.branch_picker.clone().map(|picker| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(0.))
+                .child(anchored_popover(
+                    Corner::BottomLeft,
+                    point(px(0.), -popover::MENU_OFFSET),
+                    picker,
+                    "anchored_popover-in-8",
+                    theme,
+                ))
+                .into_any_element()
+        })
+    }
+
+    /// Popover anchored below the new-task header's branch chip, with its
+    /// right edge aligned to the chip and snapped inside the window.
+    pub(super) fn branch_picker_popup_below(
+        &self,
+        theme: &crate::theme::Theme,
+    ) -> Option<AnyElement> {
         self.branch_picker.clone().map(|picker| {
             div()
                 .absolute()
                 .bottom_0()
-                .left_0()
+                .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::BottomLeft)
-                        .offset(point(px(0.), px(-6.)))
-                        .snap_to_window()
-                        .child(deferred(picker)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    picker,
+                    "anchored_popover-in-8",
+                    theme,
+                ))
                 .into_any_element()
         })
     }

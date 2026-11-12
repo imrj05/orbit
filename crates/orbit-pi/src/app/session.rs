@@ -1,19 +1,14 @@
+use super::composer_ops::CompletionIntent;
 use super::helpers::*;
+use super::mcp_ui::QuotaPopupTab;
 use super::*;
+use crate::app::helpers::{segmented_segment, SegmentPosition};
 use crate::context_meter::context_ring;
-use crate::quota::{is_five_hour_window, note_should_render, QuotaHeadline};
+use crate::quota::{canonical_provider, is_five_hour_window, note_should_render, QuotaHeadline};
+use crate::theme::tokens::{
+    input, panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
+};
 use crate::usage::tooltip::Tooltip;
-
-/// How a composer message is delivered while the agent is running. Both fall
-/// back to a normal `prompt` when the agent is idle, so a send never no-ops.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum SendMode {
-    /// Queued and delivered only once the current task settles.
-    FollowUp,
-    /// Injected into the live turn after the current step, before the next
-    /// LLM call — a course correction.
-    Steer,
-}
 
 /// A workspace-relative `/`-separated path for the Files toolbar. Falls back
 /// to the absolute path when the file lies outside the workspace.
@@ -21,6 +16,36 @@ fn relative_display(root: &std::path::Path, path: &std::path::Path) -> String {
     path.strip_prefix(root)
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+/// The path mention one attached file folds into a prompt. Workspace-relative
+/// when the file lives inside the workspace (short, and portable between
+/// machines), absolute otherwise. Whitespace makes it a code span rather than
+/// an `@` token, which would end at the first space and split the path.
+fn attached_file_mention(file: &AttachedFile, cwd: Option<&Path>) -> String {
+    let shown = match cwd {
+        Some(cwd) => relative_display(cwd, &file.path),
+        None => file.path.to_string_lossy().replace('\\', "/"),
+    };
+    if shown.chars().any(char::is_whitespace) {
+        format!("`{shown}`")
+    } else {
+        format!("@{shown}")
+    }
+}
+
+/// The path on one line of a folded file block, or `None` when the line is not
+/// a file mention. `@path` is the mention the composer types; a backticked path
+/// is how [`attached_file_mention`] writes one that contains whitespace.
+fn attached_file_path(line: &str) -> Option<&str> {
+    if let Some(rest) = line.strip_prefix('@') {
+        return (!rest.is_empty() && !rest.chars().any(char::is_whitespace)).then_some(rest);
+    }
+    let inner = line.strip_prefix('`')?.strip_suffix('`')?;
+    // A backticked span is a path only when it reads like one — `` `npm test` ``
+    // is prose the person typed, not an attachment.
+    let path_like = inner.contains('/') || inner.contains('.');
+    (!inner.is_empty() && path_like).then_some(inner)
 }
 
 /// Minimum time a manual quota refresh keeps its spinner turning, so a reply
@@ -32,31 +57,145 @@ const QUOTA_REFRESH_MIN_SPIN: Duration = Duration::from_millis(450);
 /// bridge-only pi (no `quota.list`) can never leave the button stuck spinning.
 const QUOTA_REFRESH_TIMEOUT: Duration = Duration::from_millis(4000);
 
+/// Top-bar provider-quota popover width: room for a provider name, its plan
+/// badge, and a window row.
+const QUOTA_POPOVER_W: f32 = 320.;
+/// Largest total height of the quota popover before its card list scrolls.
+const QUOTA_POPOVER_MAX_H: f32 = 460.;
+
+/// How much a hidden provider card is dimmed inside the popover's "Hidden"
+/// group: present and readable, but visibly out of the active list.
+const HIDDEN_CARD_DIM: f32 = 0.6;
+
 impl OrbitApp {
-    /// True while a run is in flight (busy flag or a streaming transcript).
+    /// True while a run is in flight: the busy flag, a streaming transcript, or
+    /// a prompt that is still waiting on its first step.
     pub(super) fn is_running(&self) -> bool {
-        self.busy || self.transcript.is_streaming()
+        self.busy || self.transcript.is_streaming() || self.transcript.is_awaiting_reply()
+    }
+
+    /// Whether the active model offers a thinking level to pick. pi answers
+    /// `["off"]` for a model without reasoning, and the list is empty until
+    /// `get_available_thinking_levels` replies, so neither case has a choice to
+    /// offer — one rule, read by the composer chip and the command palette
+    /// alike, so the chip and its shortcut can never disagree about whether the
+    /// picker has options.
+    pub(super) fn can_choose_thinking(&self) -> bool {
+        self.available_thinking_levels.len() > 1
+    }
+
+    /// Whether New Task can reuse the active process in place with
+    /// `new_session`: only when no turn is in flight and the process is
+    /// alive. A run in flight must be parked so `new_session` cannot abort
+    /// it; a dead process must be replaced by a fresh spawn instead of
+    /// sending the command into a stdin nobody reads (issue #30).
+    pub(super) fn can_reuse_session(&self) -> bool {
+        !self.is_running() && self.runtime_is_live()
     }
 
     pub(super) fn submit(&mut self, text: String, cx: &mut Context<Self>) {
-        self.submit_as(text, SendMode::FollowUp, cx);
+        self.submit_as(text, theme::get(cx).ui.composer_send_mode, cx);
     }
 
-    /// Keyboard path for steering: inject the composer text into the running
-    /// turn. With no run in flight this is just a normal submit.
-    pub(super) fn on_steer(&mut self, _: &crate::SteerRun, _: &mut Window, cx: &mut Context<Self>) {
-        if self.commit_autocomplete_if_open(cx) {
+    /// Keyboard path for explicit steering, independent of the Enter preference.
+    pub(super) fn on_steer(
+        &mut self,
+        _: &crate::SteerRun,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_composer_as(SendMode::Steer, window, cx);
+    }
+
+    pub(super) fn on_send_alternate(
+        &mut self,
+        _: &crate::SendAlternate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_composer_as(theme::get(cx).ui.composer_send_mode.opposite(), window, cx);
+    }
+
+    fn submit_composer_as(&mut self, mode: SendMode, window: &mut Window, cx: &mut Context<Self>) {
+        // Enter can be the key that confirms an IME candidate; never submit a
+        // composition in flight (the platform routes it to the IME first, but
+        // other backends may dispatch the action anyway).
+        {
+            let input = self.input.read(cx);
+            if input.is_composing() || !input.focus_handle(cx).is_focused(window) {
+                return;
+            }
+        }
+        if self.commit_autocomplete_if_open(CompletionIntent::Send, cx) {
             return;
         }
         let text = self.input.read(cx).text();
-        self.submit_as(text, SendMode::Steer, cx);
+        self.submit_as(text, mode, cx);
     }
 
-    /// Send the composer's current text/attachments as a steer; used by the
-    /// composer's steer control.
-    pub(super) fn steer_current(&mut self, cx: &mut Context<Self>) {
-        let text = self.input.read(cx).text();
-        self.submit_as(text, SendMode::Steer, cx);
+    /// Fold collapsed pastes back into the prompt text. The typed text leads;
+    /// each pill follows as its own block, separated so the agent never reads
+    /// the paste as a continuation of the sentence above it.
+    pub(super) fn fold_pasted_texts(text: &str, pasted: &[PastedText]) -> String {
+        if pasted.is_empty() {
+            return text.to_string();
+        }
+        let mut folded = text.to_string();
+        for block in pasted {
+            if !folded.is_empty() {
+                folded.push_str("\n\n");
+            }
+            folded.push_str(&block.content);
+        }
+        folded
+    }
+
+    /// Fold queued file attachments into the prompt text. pi's `prompt`
+    /// payload carries images only, so a file rides as a path the agent opens
+    /// with its own tools. Each one gets its own line — an `@` token ends at
+    /// the first space, so a path with whitespace is backticked as a code span
+    /// instead of being cut in half.
+    pub(super) fn fold_attached_files(
+        text: &str,
+        files: &[AttachedFile],
+        cwd: Option<&Path>,
+    ) -> String {
+        if files.is_empty() {
+            return text.to_string();
+        }
+        let mentions = files
+            .iter()
+            .map(|file| attached_file_mention(file, cwd))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() {
+            // A file on its own is the whole prompt — no leading blank block.
+            mentions
+        } else {
+            format!("{text}\n\n{mentions}")
+        }
+    }
+
+    /// Split a sent user message back into the prose the person typed and the
+    /// file mentions [`Self::fold_attached_files`] appended. The contract is
+    /// the fold's own shape — a blank line, then one `@path` (or backticked
+    /// path) per line — so a message that merely mentions a file mid-sentence
+    /// is left exactly as typed. `None` when the tail is not that block.
+    pub(crate) fn split_attached_files(text: &str) -> Option<(&str, Vec<&str>)> {
+        let (body, tail) = match text.rsplit_once("\n\n") {
+            Some(parts) => parts,
+            // A file-only message is the whole block.
+            None => ("", text),
+        };
+        let mut paths = Vec::new();
+        for line in tail.lines() {
+            paths.push(attached_file_path(line)?);
+        }
+        if paths.is_empty() {
+            None
+        } else {
+            Some((body, paths))
+        }
     }
 
     /// The image payload pi expects on `prompt` / `follow_up` / `steer`.
@@ -74,42 +213,52 @@ impl OrbitApp {
     }
 
     pub(super) fn submit_as(&mut self, text: String, mode: SendMode, cx: &mut Context<Self>) {
-        let text = text.trim().to_string();
-        if text.is_empty() {
+        if self.rewind_transition_pending(cx) {
             return;
         }
-        // Collect any paste that raced the submit tick.
+        // A manual send supersedes a regenerate still waiting for its branch
+        // reload; otherwise the queued prompt would follow this one.
+        self.pending_regenerate = None;
+        // Collect any paste that raced the submit tick, then fold the long
+        // pastes back in: a pill is only a compact way to *hold* text.
+        self.drain_pasted_files(cx);
         self.drain_pasted_images(cx);
+        self.drain_pasted_texts(cx);
+        let text = Self::fold_pasted_texts(text.trim(), &self.pasted_texts);
+        // Files are folded as `@path` mentions, so a message may be nothing
+        // but attachments.
+        let files = std::mem::take(&mut self.files);
+        let text = Self::fold_attached_files(&text, &files, self.current_workspace.as_deref());
+        if text.trim().is_empty() {
+            // Nothing to send. A file on its own would have folded into its
+            // mention above, so the tray was empty too — put it back anyway,
+            // so no future fold can silently swallow an attachment.
+            self.files = files;
+            return;
+        }
         // pi's `follow_up`, `steer`, and `prompt` all carry images, so
         // attachments ride whatever we send.
         let attachments = std::mem::take(&mut self.attachments);
+        let pasted_texts = std::mem::take(&mut self.pasted_texts);
         // While the agent is running, steer redirects the live turn and
         // follow-up waits for it to settle. pi emits the user message into the
         // transcript when it is actually delivered; until then the queue bar
         // above the composer mirrors it.
-        if self.is_running() {
-            let (body, label) = match mode {
-                SendMode::Steer => (
-                    CommandBody::Steer {
-                        message: text.clone(),
-                        images: Self::prompt_images(&attachments),
-                    },
-                    "steer",
-                ),
-                SendMode::FollowUp => (
-                    CommandBody::FollowUp {
-                        message: text.clone(),
-                        images: Self::prompt_images(&attachments),
-                    },
-                    "follow_up",
-                ),
-            };
-            if !self.send(body, label) {
-                // Keep the prompt and attachments so nothing is lost.
-                self.attachments = attachments;
-                cx.notify();
-                return;
-            }
+        let running = self.is_running();
+        let (body, label) = mode.command(running, text.clone(), Self::prompt_images(&attachments));
+        let Some(id) = self.send_tracked(body, label) else {
+            // Keep the prompt and attachments so nothing is lost.
+            self.attachments = attachments;
+            self.files = files;
+            self.pasted_texts = pasted_texts;
+            cx.notify();
+            return;
+        };
+        // A sent task is now a session, even if pi has yet to report its file.
+        self.composer_is_new_task = false;
+        // Sent, so the prompt joins the ↑/↓ recall log.
+        self.prompt_history.borrow_mut().record(&text);
+        if running {
             // Show it immediately; the next `queue_update` reconciles the list.
             match mode {
                 SendMode::Steer => self.queue.steering.push(text),
@@ -130,47 +279,70 @@ impl OrbitApp {
             .clone()
             .or_else(|| std::env::current_dir().ok())
         {
-            self.add_workspace(cwd);
+            self.add_workspace(cwd, cx);
         }
-        let body = CommandBody::Prompt {
-            message: text.clone(),
-            images: Self::prompt_images(&attachments),
-            streaming_behavior: None,
-        };
-        if !self.send(body, "prompt") {
-            // Keep the prompt and the queued attachments so the user can
-            // retry (pi offline, broken pipe, …) instead of losing work.
-            self.attachments = attachments;
-            cx.notify();
-            return;
+        let opened = self.begin_turn(cx);
+        // The composer's own prompt is the only one whose `handled` answer may
+        // tear down the working row (see `prompt_in_flight`).
+        self.prompt_in_flight = Some(id.clone());
+        self.execution.prompt_id = Some(id);
+        // The turn is in flight from here, not from pi's `agent_start`: the
+        // composer flips to Stop, the heartbeat polls at 60 Hz, and every
+        // `is_running()` gate agrees, so a slow provider (or a pi that is still
+        // booting) can never look like a dropped keystroke. `agent_start`
+        // re-sets the same flag, and every settle path clears it.
+        self.busy = true;
+        self.execution.start();
+        // Same for the transcript: the live "Working for…" row goes up now,
+        // with its clock running from the send.
+        self.transcript.expect_reply();
+        // The empty page becomes a session on this frame: arm the composer's
+        // settle so it docks into the session layout instead of jumping. Only a
+        // page that was empty animates — a follow-up in an open session has
+        // nowhere to travel, and a session resumed from the sidebar was never on
+        // the new-task page at all.
+        if self.transcript.is_empty() {
+            self.new_task_settle_gen = self.new_task_settle_gen.wrapping_add(1);
+            self.new_task_settle_at = None;
+            self.new_task_settle_pending = true;
         }
-        self.begin_turn(cx);
         // Show the prompt immediately — pi does not echo it back in RPC mode.
         // The decoded previews ride along so the chat window shows what was
         // attached (pi echoes/snapshots carry image blocks for reloads).
-        self.transcript.append_user_message(
+        let appended = self.transcript.append_user_message(
             &text,
             attachments
                 .iter()
                 .filter_map(|a| a.preview.clone())
                 .collect(),
         );
+        // The same prompt after an aborted turn is deduped onto the existing
+        // user row. Drop the turn we just opened so a reload does not invent
+        // an extra number for a row that was never stored.
+        if opened && !appended {
+            self.turns.cancel_begin();
+            // The deduplicated prompt still starts a run on the existing turn.
+            self.turns.open = true;
+            self.push_turn_records(cx);
+        }
         self.input.update(cx, |input, cx| input.clear(cx));
         cx.notify();
     }
 
-    /// Start a new user turn: snapshot the workspace so Review's **Last Turn**
-    /// can diff exactly what the agent changes, then let the prompt run.
-    pub(super) fn begin_turn(&mut self, cx: &mut Context<Self>) {
-        if self.turn_open {
-            return;
+    /// Start a new user turn. Last Turn numbers the turn here, before the
+    /// user message is appended, and does not wait on a session id or a Git
+    /// checkpoint. The checkpoint spawn is skipped when there is nothing to
+    /// write it against.
+    pub(super) fn begin_turn(&mut self, cx: &mut Context<Self>) -> bool {
+        let index = self.transcript.message_count();
+        if !self.turns.begin(index) {
+            return false;
         }
+        self.push_turn_records(cx);
         let Some(session) = self.session_id.clone() else {
-            return;
+            return true;
         };
-        self.turn_count += 1;
-        self.turn_open = true;
-        let turn = self.turn_count;
+        let turn = self.turns.count;
         let cwd = self
             .current_workspace
             .clone()
@@ -183,57 +355,128 @@ impl OrbitApp {
                 .await;
         })
         .detach();
+        true
     }
 
-    /// A run settled: snapshot the workspace's end state so Review's **Last
-    /// Turn** has a complete range, then mark Review stale. Without an open
-    /// turn (e.g. a settled retry) it still refreshes Review.
+    /// A run settled. Last Turn updates on this call, before the optional
+    /// checkpoint capture; a missing repo or a failed capture does not hide
+    /// the turn's `edit` / `write` calls.
     pub(super) fn finish_turn(&mut self, cx: &mut Context<Self>) {
+        let capture = self.turns.open;
+        self.turns.finish();
+        self.push_turn_records(cx);
+        // Last Turn already reloaded from the records just pushed. Git
+        // sources still need a worktree refresh.
+        self.sidepane
+            .update(cx, |pane, cx| pane.mark_git_review_stale(cx));
+        self.git_panel
+            .update(cx, |panel, cx| panel.mark_review_stale(cx));
         let Some(session) = self.session_id.clone() else {
-            self.turn_open = false;
-            self.sidepane
-                .update(cx, |pane, cx| pane.mark_review_stale(cx));
             return;
         };
-        if !self.turn_open {
-            self.sidepane
-                .update(cx, |pane, cx| pane.mark_review_stale(cx));
+        if !capture {
             return;
         }
-        // Close the turn synchronously so a second settle event can't start a
-        // duplicate capture while this one is still running.
-        self.turn_open = false;
-        let turn = self.turn_count;
+        let turn = self.turns.count;
         let cwd = self
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
+        // Paths the turn's calls named, normalized the way Review shows them.
+        // Anything the worktree changed outside this list is added to Last
+        // Turn once the checkpoint range for the turn exists.
+        let recorded = self
+            .turn_records()
+            .calls_for(turn)
+            .iter()
+            .filter_map(|call| {
+                crate::turn_review::normalize_review_path(
+                    &call.path,
+                    self.current_workspace.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
         cx.spawn(async move |this, cx| {
-            let result = cx
+            let key = session.clone();
+            let extra = cx
                 .background_executor()
-                .spawn(async move { checkpoint::capture_turn(&cwd, &session, turn) })
+                .spawn(async move {
+                    checkpoint::capture_turn(&cwd, &key, turn).ok()?;
+                    git_ops::changed_outside_calls(&cwd, &key, turn, &recorded)
+                        .ok()
+                        .flatten()
+                })
                 .await;
+            let Some((paths, diff)) = extra else { return };
             let _ = this.update(cx, |app, cx| {
-                app.turn_open = false;
-                if result.is_ok() {
-                    app.latest_turn = Some(turn);
+                if app.session_id.as_deref() != Some(session.as_str()) {
+                    return;
                 }
-                app.sidepane
-                    .update(cx, |pane, cx| pane.mark_review_stale(cx));
-                cx.notify();
+                app.sidepane.update(cx, |pane, cx| {
+                    pane.set_turn_extras(turn, paths, diff.numstat, diff.patch, cx);
+                });
             });
         })
         .detach();
     }
 
-    /// Forget turn checkpoints when the session or workspace changes.
-    pub(super) fn reset_turns(&mut self) {
-        self.turn_count = 0;
-        self.turn_open = false;
-        self.latest_turn = None;
+    /// Forget the active session's turn clock and clear Last Turn's records.
+    pub(super) fn reset_turns(&mut self, cx: &mut Context<Self>) {
+        self.turns = crate::turn_review::TurnClock::default();
         // The find hits belong to the previous session's transcript.
         self.transcript_search = None;
+        // Fork points belong to the previous session's entries, and a picker
+        // left over it would fork whatever session replaced it.
+        self.rewind_picker = None;
+        self.rewind_fetching = false;
+        self.rewind_fetch_id = None;
+        self.rewind_preselect = None;
+        self.rewind_intent = ForkIntent::Edit;
+        self.pending_regenerate = None;
+        self.rewind_prompt_images.clear();
+        self.push_turn_records(cx);
+    }
+
+    /// Push each turn's `edit` / `write` calls, and the latest turn number,
+    /// to the docked Review pane. Records stay off the Git page; it only
+    /// receives the turn number so its stored context does not go stale.
+    pub(super) fn push_turn_records(&mut self, cx: &mut Context<Self>) {
+        let len = self.transcript.message_count();
+        let start = self.turns.ranges(len).last().map(|&(_, start, _)| start);
+        self.transcript.set_review_card_scope(
+            start,
+            self.current_workspace.as_deref(),
+            self.turns.open,
+        );
+        let records = self.turn_records();
+        let session = self.session_id.clone();
+        let latest = self.turns.latest;
+        let running = self.turns.open;
+        self.sidepane.update(cx, |pane, cx| {
+            pane.set_turn_context(session.clone(), latest, cx);
+            pane.set_turn_records(records, cx);
+            pane.set_turn_running(running, cx);
+        });
+        self.git_panel.update(cx, |panel, cx| {
+            panel.set_review_turn_context(session, latest, cx);
+        });
+    }
+
+    fn turn_records(&self) -> crate::turn_review::TurnRecords {
+        let len = self.transcript.message_count();
+        let turns = self
+            .turns
+            .ranges(len)
+            .into_iter()
+            .map(|(turn, start, end)| (turn, self.transcript.recorded_calls(start, end)))
+            .collect();
+        crate::turn_review::TurnRecords { turns }
+    }
+
+    pub(super) fn rebuild_turn_clock(&mut self) {
+        let indices = self.transcript.user_message_indices();
+        self.turns.rebuild(&indices);
     }
 
     /// Forget the queued-message mirror — the queue belongs to the previous
@@ -241,6 +484,168 @@ impl OrbitApp {
     pub(super) fn reset_queue(&mut self) {
         self.queue = PendingQueue::default();
         self.restore_queue_on_clear = false;
+        self.queue_replaced = false;
+        self.queue_edit = None;
+    }
+
+    /// One queued message, if the mirror still holds it. A target goes stale
+    /// the moment pi delivers something ahead of it, so every action re-reads
+    /// the text through here instead of trusting the index it was drawn on.
+    pub(super) fn queued_message(&self, target: QueuedMessage) -> Option<&str> {
+        self.queue
+            .lane(target.lane)
+            .get(target.index)
+            .map(String::as_str)
+    }
+
+    /// Replace pi's whole pending queue.
+    ///
+    /// pi exposes no per-message queue command: `clear_queue` drops every
+    /// steering and follow-up message at once. Editing or promoting one queued
+    /// message is therefore a rebuild — clear, then re-queue the survivors in
+    /// their original lanes and order. The commands ride one writer in order,
+    /// so pi applies the swap as a single step; the mirror is set here so the
+    /// bar never blinks through the empty state.
+    fn replace_queue(&mut self, queue: PendingQueue) {
+        // Escape's restore-to-composer behavior belongs to Escape only.
+        self.restore_queue_on_clear = false;
+        self.queue_edit = None;
+        // The text the optimistic follow-up named is being re-queued under a
+        // new command id, so its own tracking is over.
+        self.pending_follow_up = None;
+        if !self.send(CommandBody::ClearQueue, "clear_queue") {
+            return;
+        }
+        self.queue = queue.clone();
+        self.queue_replaced = true;
+        for message in queue.steering {
+            self.send(
+                CommandBody::Steer {
+                    message,
+                    images: None,
+                },
+                "steer",
+            );
+        }
+        for message in queue.follow_up {
+            self.send(
+                CommandBody::FollowUp {
+                    message,
+                    images: None,
+                },
+                "follow_up",
+            );
+        }
+    }
+
+    /// Open the queue bar's inline editor on one queued message (issue #79).
+    pub(super) fn begin_queue_edit(
+        &mut self,
+        target: QueuedMessage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = self.queued_message(target).map(str::to_owned) else {
+            return;
+        };
+        let input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("queue-edit-input")
+                .with_placeholder_key("view.queue_edit_placeholder")
+                .with_key_context("Composer QueueEdit")
+                .with_max_lines(3)
+                .with_text(text.clone())
+        });
+        // The Save control reads the draft, so it repaints with every edit.
+        let sub = cx.observe(&input, |_, _, cx| cx.notify());
+        self.queue_edit = Some(QueueEdit {
+            target,
+            original: text,
+            input: input.clone(),
+            _sub: sub,
+        });
+        input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Write the inline draft back into the queue.
+    pub(super) fn commit_queue_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = self.queue_edit.as_ref() else {
+            return;
+        };
+        // Enter can be the key that confirms an IME candidate in the edit
+        // field; the preedit is still in the buffer and must not become the
+        // queued message. Save (⏎ or the button) waits for the composition to
+        // end, the same rule the chat composer follows (issue #100).
+        if edit.input.read(cx).is_composing() {
+            return;
+        }
+        let target = edit.target;
+        let text = edit.input.read(cx).text().trim().to_owned();
+        if text.is_empty() {
+            // A blank message pi should not deliver; keep the field open so the
+            // draft is never silently thrown away.
+            return;
+        }
+        let mut queue = self.queue.clone();
+        let Some(slot) = queue.lane_mut(target.lane).get_mut(target.index) else {
+            return;
+        };
+        if *slot == text {
+            // Nothing changed: closing the field is the whole edit.
+            self.cancel_queue_edit(window, cx);
+            return;
+        }
+        *slot = text;
+        self.replace_queue(queue);
+        self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Close the inline editor, leaving the queued message as it was.
+    pub(super) fn cancel_queue_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.queue_edit.take().is_some() {
+            self.input.read(cx).focus(window);
+            cx.notify();
+        }
+    }
+
+    /// Deliver one queued message ahead of everything else (issue #79).
+    ///
+    /// There is no "promote" command either, so the message is re-queued as a
+    /// steering message at the front of the steer lane: pi delivers steering
+    /// before the next model call, the earliest point short of aborting the
+    /// run. A message already at that point has nowhere to move, so the bar
+    /// does not offer the action for it.
+    pub(super) fn send_queued_now(&mut self, target: QueuedMessage, cx: &mut Context<Self>) {
+        if target.lane == QueueLane::Steer && target.index == 0 {
+            return;
+        }
+        let Some(text) = self.queued_message(target).map(str::to_owned) else {
+            return;
+        };
+        let mut queue = self.queue.clone();
+        queue.lane_mut(target.lane).remove(target.index);
+        queue.steering.insert(0, text);
+        self.replace_queue(queue);
+        cx.notify();
+    }
+
+    /// Re-point an open editor after pi reported a new queue: the message keeps
+    /// its text, so find it again by text. Nothing found means pi delivered or
+    /// dropped it — the field was editing a message that is no longer queued.
+    pub(super) fn reanchor_queue_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.queue_edit.as_mut() else {
+            return;
+        };
+        let lane = self.queue.lane(edit.target.lane);
+        match lane.iter().position(|message| *message == edit.original) {
+            Some(index) => edit.target.index = index,
+            None => {
+                self.queue_edit = None;
+                cx.notify();
+            }
+        }
     }
 
     /// Park the active session's process so it stays warm in the background,
@@ -248,36 +653,67 @@ impl OrbitApp {
     /// (no Node spawn), so session switching is near-instant. Running parked
     /// sessions keep draining events; idle ones are reaped after
     /// [`PARKED_IDLE_TTL`](crate::app::PARKED_IDLE_TTL).
+    ///
+    /// A process that has not claimed a session file yet (pi still booting, or
+    /// a `new_session` reply in flight) joins the pending pool instead:
+    /// leaving it active would let the incoming `adopt_client` overwrite — and
+    /// kill — a live run on the next switch (issue #46).
     pub(super) fn park_active_session(&mut self) {
         let Some(client) = self.client.take() else {
             return;
         };
-        let Some(path) = self.current_session_path.take() else {
-            // No path claimed yet (still starting up): keep the client active.
-            self.client = Some(client);
-            return;
+        let busy = self.busy
+            || self.transcript.is_streaming()
+            || self.retrying
+            || self.is_compacting
+            || self.execution.status().is_in_progress();
+        if busy && !self.execution.status().is_in_progress() {
+            self.execution.start();
+        }
+        if let Some(path) = &self.current_session_path {
+            self.remember_session_outcome(path.clone(), self.execution.status());
+        }
+        let execution = std::mem::take(&mut self.execution);
+        let interaction = ParkedInteraction {
+            dialog: self.dialog.take(),
+            approval: self.approval.take(),
+            ask: self.ask.take(),
+            ask_tool_id: self.ask_tool_id.take(),
+            ask_questions: std::mem::take(&mut self.ask_questions),
+            ask_replay: self.ask_replay.take(),
         };
-        let busy = self.busy || self.transcript.is_streaming();
+        self.dialog_focus_pending = false;
+        self.approval_focus_pending = false;
+        self.ask_focus_pending = false;
+        self.prompt_in_flight = None;
+        self.retrying = false;
+        self.is_compacting = false;
         let transcript = std::mem::replace(&mut self.transcript, Transcript::new());
         let widgets = std::mem::take(&mut self.extension_widgets);
-        self.park(
-            path,
-            ParkedSession {
-                client,
-                transcript,
-                busy,
-                added: self.added,
-                removed: self.removed,
-                widgets,
-                parked_at: Instant::now(),
-            },
-        );
+        let parked = ParkedSession {
+            client,
+            transcript,
+            busy,
+            execution,
+            interaction,
+            retry_detail: self.retry_detail.take(),
+            added: self.added,
+            removed: self.removed,
+            mcp_stamp: self.mcp_stamp,
+            widgets,
+            queue: self.queue.clone(),
+            parked_at: Instant::now(),
+            turns: std::mem::take(&mut self.turns),
+        };
+        match self.current_session_path.take() {
+            Some(path) => self.park(path, parked),
+            None => self.pending_parks.push(parked),
+        }
     }
 
-    /// Recover the newest completed turn from the persisted checkpoint refs,
-    /// so Review's **Last Turn** is available immediately after a restart or
-    /// session switch. Orbit keeps the fact in `refs/orbit/…` and reads it
-    /// back here.
+    /// Keep the next checkpoint ref numbered past any ref already stored.
+    /// Last Turn itself comes from the conversation, so this does not write
+    /// `turns.latest` and does not refresh the Review pane.
     pub(super) fn recover_latest_turn(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.session_id.clone() else {
             return;
@@ -293,17 +729,15 @@ impl OrbitApp {
                 .background_executor()
                 .spawn(async move { checkpoint::latest_turn(&cwd, &lookup_session) })
                 .await;
-            let _ = this.update(cx, |app, cx| {
+            let _ = this.update(cx, |app, _cx| {
                 if app.session_id.as_deref() != Some(session.as_str()) {
                     return;
                 }
-                app.latest_turn = latest;
                 if let Some(latest) = latest {
                     // Continue numbering after the recovered turn so new refs
                     // never clobber the persisted ones.
-                    app.turn_count = app.turn_count.max(latest);
+                    app.turns.note_checkpoint(latest);
                 }
-                cx.notify();
             });
         })
         .detach();
@@ -326,13 +760,8 @@ impl OrbitApp {
             self.rename_session(cx);
             return;
         }
-        // Enter commits the highlighted autocomplete entry while the menu
-        // is open; a second Enter submits.
-        if self.commit_autocomplete_if_open(cx) {
-            return;
-        }
-        let text = self.input.read(cx).text();
-        self.submit(text, cx);
+        // Shared Composer fields must never submit the main chat draft.
+        self.submit_composer_as(theme::get(cx).ui.composer_send_mode, window, cx);
     }
 
     /// Tab accepts the highlighted autocomplete entry; with the menu closed
@@ -348,7 +777,17 @@ impl OrbitApp {
         if !self.input.read(cx).focus_handle(cx).is_focused(window) {
             return;
         }
-        self.commit_autocomplete_if_open(cx);
+        // Tab can page IME candidates; moving focus here would drop the
+        // composition (issue #100).
+        if self.input.read(cx).is_composing() {
+            return;
+        }
+        // With the menu open, Tab accepts the highlighted entry; with it
+        // closed, Tab is the workbench's focus-traversal key and must not be
+        // swallowed by this binding.
+        if !self.commit_autocomplete_if_open(CompletionIntent::Accept, cx) {
+            window.focus_next();
+        }
     }
 
     pub(super) fn on_send_click(
@@ -357,7 +796,10 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.commit_autocomplete_if_open(cx) {
+        if self.input.read(cx).is_composing() {
+            return;
+        }
+        if self.commit_autocomplete_if_open(CompletionIntent::Send, cx) {
             return;
         }
         let text = self.input.read(cx).text();
@@ -392,6 +834,16 @@ impl OrbitApp {
             cx.notify();
             return;
         }
+        // The Worktrees dialog is a modal surface: Escape closes it before
+        // anything underneath (menus, the page, a running agent).
+        if self.worktree_dialog.is_some() {
+            let clone = matches!(self.worktree_dialog, Some(WorktreeDialog::Clone));
+            self.cancel_worktree_dialog(cx);
+            if clone {
+                self.input.read(cx).focus(window);
+            }
+            return;
+        }
         // A pending access-guard approval is answered first: escape denies it.
         if self.approval.is_some() {
             self.respond_to_approval(None, window, cx);
@@ -410,6 +862,10 @@ impl OrbitApp {
             self.close_access_menu(window, cx);
             return;
         }
+        if self.work_in_menu_open {
+            self.close_work_in_menu(window, cx);
+            return;
+        }
         if self.git_open && self.git_panel.read(cx).has_modal() {
             self.git_panel
                 .update(cx, |panel, cx| panel.dismiss_modal(cx));
@@ -425,6 +881,15 @@ impl OrbitApp {
         }
         if self.git_open {
             self.close_git(cx);
+            return;
+        }
+        if self.worktree_menu.take().is_some() || self.worktree_advanced_open {
+            self.worktree_advanced_open = false;
+            cx.notify();
+            return;
+        }
+        if self.worktrees_open {
+            self.close_worktrees(cx);
             return;
         }
         if self.settings_open {
@@ -469,11 +934,125 @@ impl OrbitApp {
         // Interactive Esc: drop the pending queue first so its text can be
         // restored to the composer when the `clear_queue` response lands
         // (docs), then abort the run.
+        self.request_abort(cx);
+        cx.notify();
+    }
+
+    /// Ask pi to stop the current run.
+    ///
+    /// The request is recorded, not just sent: pi answers a cancelled automatic
+    /// retry with `auto_retry_end { success: false }`, and only this record tells
+    /// that apart from a retry that genuinely ran out (issue #76).
+    ///
+    /// It is also timestamped, because asking is all this can do and asking is
+    /// not cancelling. A pi whose event loop is stuck never reads the line, so
+    /// waiting for `agent_settled` can mean waiting forever while Stop looks
+    /// like a dead button — [`Self::check_stalled_stop`] turns a stop pi never
+    /// answered into an action Orbit takes itself.
+    pub(super) fn request_abort(&mut self, cx: &mut Context<Self>) {
+        // A second press is the user saying "now" — once it reads as a second
+        // press. Stop and Esc share this path and a double-tapped Esc is common,
+        // so inside the retry window the first request stands: a healthy pi is
+        // busy writing the aborted turn into the session at that point, and
+        // killing it there would throw that away.
+        if let Some(sent_at) = self.abort_sent_at {
+            if sent_at.elapsed() >= ABORT_RETRY_GRACE {
+                self.force_stop_run(cx);
+            }
+            return;
+        }
         if !self.queue.is_empty() {
             self.restore_queue_on_clear = true;
             self.send(CommandBody::ClearQueue, "clear_queue");
         }
+        // Only a request with a run behind it may claim pi's cancelled-retry
+        // report: an Esc pressed on an idle composer must not swallow the
+        // failure of a retry that really does run out later. The request is
+        // deliberately not cleared by `AgentStart` — a prompt sent moments
+        // before the Esc still starts its run after the abort is written.
+        if self.is_running() {
+            self.abort_requested = true;
+            self.abort_sent_at = Some(Instant::now());
+        }
         self.send(CommandBody::Abort, "abort");
+    }
+
+    /// Whether a stop has gone out that pi has not answered yet. The composer
+    /// reads this to say it is waiting on pi, so a stop being waited on never
+    /// reads as a dead button.
+    pub(super) fn is_stopping(&self) -> bool {
+        self.abort_sent_at.is_some()
+    }
+
+    /// Turn a stop pi never answered into a local action.
+    ///
+    /// Runs on the heartbeat. Every way a run can end clears the timestamp, so a
+    /// turn that settles normally never reaches this.
+    pub(super) fn check_stalled_stop(&mut self, cx: &mut Context<Self>) {
+        let Some(sent_at) = self.abort_sent_at else {
+            return;
+        };
+        if sent_at.elapsed() < ABORT_GRACE {
+            return;
+        }
+        self.abort_sent_at = None;
+        if !self.is_running() {
+            return;
+        }
+        self.force_stop_run(cx);
+    }
+
+    /// End the run by taking down the process that owns it, then bring a fresh
+    /// pi back on the same session.
+    ///
+    /// This is the difference between asking and cancelling. pi cannot honour an
+    /// `abort` it never reads, so the only cancel that always lands is the one
+    /// Orbit performs itself — the shape Zed gives a language server: the request
+    /// is a courtesy, dropping the process is the cancel.
+    ///
+    /// The local side closes *first*, exactly as a dying process would close it.
+    /// Waiting for the next heartbeat to notice would leave the composer on Stop
+    /// over a process that is already going, and a respawn that failed would
+    /// never clear it at all.
+    pub(super) fn force_stop_run(&mut self, cx: &mut Context<Self>) {
+        self.abort_sent_at = None;
+        // Nothing pi never acknowledged can still be delivered, so hand the
+        // queued text back before the drop resets the queue: a stop must not eat
+        // what the user typed while they waited.
+        if let Some(queued) = self.queue.restore_text() {
+            let typed = self.input.read(cx).text();
+            let restored = if typed.trim().is_empty() {
+                queued
+            } else {
+                // Something was typed while the stop was waiting: keep both,
+                // the queued text first, because it was written first.
+                format!("{queued}\n\n{typed}")
+            };
+            self.input
+                .update(cx, |input, cx| input.set_text(restored, cx));
+        }
+        self.restore_queue_on_clear = false;
+        self.busy = false;
+        self.execution.stop();
+        // `abandon_reply` alone leaves a streaming row live; the process this
+        // turn belonged to is going, so close the turn the way its exit does.
+        self.transcript.apply_event(&Event::ProcessExited);
+        self.finish_turn(cx);
+        // The deferred MCP apply was waiting for a settle that will never come.
+        // The process about to start reads the current configuration itself.
+        self.mcp_apply_pending = false;
+        self.mcp_apply_forced = false;
+        self.drop_client();
+        self.toast_warning(tr!("runtime.pi_unresponsive_restart"));
+        // A session pi never claimed has nothing to re-attach, and a fresh
+        // process would open an empty one: the honest end is to stay stopped.
+        if self.current_session_path.is_none() {
+            self.transcript.abandon_reply();
+        } else {
+            // Quietly: the toast above says what happened, and pi's own
+            // "process started" line on top of it would be noise.
+            self.respawn_into_session(cx);
+        }
         cx.notify();
     }
 
@@ -486,19 +1065,57 @@ impl OrbitApp {
         self.on_abort(&crate::AbortRun, window, cx);
     }
 
+    /// A navigation away from the starting task must not replay its dock on
+    /// the next session, even if the first animation frame never arrived.
+    pub(super) fn cancel_new_task_settle(&mut self) {
+        self.new_task_settle_pending = false;
+        self.new_task_settle_at = None;
+    }
+
+    /// Close every main-area surface and dock so the new-task page owns the
+    /// window. New Task is reachable while Review, Git, Files, Usage, the
+    /// Explorer, the terminal, or Settings is up; without this the fresh task
+    /// opens behind a panel that still covers the chat column.
+    pub(super) fn close_surfaces_for_new_task(&mut self, cx: &mut Context<Self>) {
+        self.cancel_new_task_settle();
+        self.pending_session_rename = None;
+        self.session_rename_ready = false;
+        self.settings_open = false;
+        self.provider_editor = None;
+        self.provider_key_editor = None;
+        if self.git_open {
+            self.close_git(cx);
+        }
+        if self.usage_open {
+            self.close_usage(cx);
+        }
+        if self.file_viewer.read(cx).is_open() {
+            self.close_files(cx);
+        }
+        self.sidepane.update(cx, |pane, cx| pane.close(cx));
+        self.project_panel.update(cx, |panel, cx| panel.close(cx));
+        self.terminal_panel.update(cx, |panel, cx| panel.close(cx));
+        self.sync_terminal_active(cx);
+    }
+
     pub(super) fn on_new_session(
         &mut self,
         _: &crate::NewSession,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // A run in flight must not be sacrificed to start a new task. pi's
         // `new_session` replaces the session and calls `abort()` on the live
         // turn (`agent-session-runtime.teardownCurrent`), which surfaces as
         // "This operation was aborted". Park the running session instead — its
         // process keeps going in the background — and start the new task on a
-        // fresh pi process. An idle session is cheap to reuse in place.
-        if self.is_running() {
+        // fresh pi process. An idle session is cheap to reuse in place, but
+        // only while its process is alive: a dead one (see issue #30) gets a
+        // fresh process too rather than a command into the void.
+        if !self.can_reuse_session() {
             let cwd = self
                 .current_workspace
                 .clone()
@@ -507,6 +1124,9 @@ impl OrbitApp {
             self.begin_new_task(cwd, window, cx);
             return;
         }
+        self.close_surfaces_for_new_task(cx);
+        self.swap_to_new_task_draft(cx);
+        self.current_session_path = None;
         self.send(CommandBody::NewSession, "new_session");
         self.input.read(cx).focus(window);
         cx.notify();
@@ -516,6 +1136,9 @@ impl OrbitApp {
     /// switches the process onto it; the `clone` response handler reloads the
     /// transcript and re-keys the session.
     pub(super) fn clone_session(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         self.send(CommandBody::CloneSession, "clone");
         cx.notify();
     }
@@ -527,13 +1150,16 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Same workspace with an idle process: reuse it in place. A run in
-        // flight is parked instead, so `new_session` never aborts it; a
-        // different workspace always needs its own process anyway.
-        if self.current_workspace.as_ref() == Some(&cwd)
-            && self.client.is_some()
-            && !self.is_running()
-        {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        // Same workspace with a live idle process: reuse it in place. A run
+        // in flight is parked instead, so `new_session` never aborts it; a
+        // dead process (or a different workspace) always needs its own.
+        if self.current_workspace.as_ref() == Some(&cwd) && self.can_reuse_session() {
+            self.close_surfaces_for_new_task(cx);
+            self.swap_to_new_task_draft(cx);
+            self.current_session_path = None;
             self.send(CommandBody::NewSession, "new_session");
             self.input.read(cx).focus(window);
             cx.notify();
@@ -542,20 +1168,37 @@ impl OrbitApp {
         self.begin_new_task(cwd, window, cx);
     }
 
-    /// Start a fresh task rooted at `cwd` on its own pi process, parking the
-    /// active session first so a running one keeps going in the background.
-    /// Shared by New Task and a workspace group's "+".
+    /// Start a fresh task rooted at `cwd` on its own pi process, parking a
+    /// live active session first so a running one keeps going in the
+    /// background (a dead one is dropped). Shared by New Task and a
+    /// workspace group's "+".
     pub(super) fn begin_new_task(
         &mut self,
         cwd: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Leaving this session: cancel any open blocking dialog first, so a
-        // parked run never waits on a modal tied to the previous session.
-        self.cancel_open_dialog(cx);
-        self.park_active_session();
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        // Custom terminal surfaces cannot run offscreen; native blocking
+        // requests are parked with their session and restored on return.
+        self.cancel_custom_surfaces(cx);
+        // A new task owns the window: drop whatever surface was covering the
+        // chat column before the fresh session paints.
+        self.close_surfaces_for_new_task(cx);
+        // A live session is parked so a run in flight keeps going in the
+        // background. A dead one holds nothing worth keeping: drop it (its
+        // exit banner goes with it) instead of parking a corpse.
+        self.save_composer_draft(cx);
+        if self.runtime_is_live() {
+            self.park_active_session();
+        } else {
+            self.cancel_open_dialog(cx);
+            self.drop_client();
+        }
 
+        self.execution = SessionExecution::default();
         self.busy = false;
         self.transcript.clear();
         self.current_title = None;
@@ -564,14 +1207,23 @@ impl OrbitApp {
         self.added = 0;
         self.removed = 0;
         self.context = None;
-        self.reset_turns();
+        self.reset_turns(cx);
         self.reset_queue();
-        self.add_workspace(cwd.clone());
-        self.set_current_workspace(cwd.clone());
+        // A brand-new task starts unscoped (Build) and waits for its own id:
+        // clearing the id keeps a mode chosen on the New Task page pending
+        // instead of writing it to the session we just parked.
+        self.session_id = None;
+        self.workflow_pending = None;
+        self.workflow_mode = WorkflowMode::default();
+        self.add_workspace(cwd.clone(), cx);
+        self.set_current_workspace(cwd.clone(), cx);
+        // The New Task page has no file — its draft lives in its own slot.
+        self.restore_composer_draft(None, cx);
 
-        match self.extensions.spawn(&cwd) {
+        match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
             Ok(client) => {
                 self.adopt_client(client);
+                self.mcp_stamp = self.mcp.fingerprint_for(Some(&cwd));
                 self.send(CommandBody::NewSession, "new_session");
                 self.refresh_catalogs();
                 // Capability probes queue after the new-session request.
@@ -651,6 +1303,11 @@ impl OrbitApp {
         push: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        self.pending_session_rename = None;
+        self.session_rename_ready = false;
         // Opening a session means viewing the chat: leave whichever full-page
         // surface (GitHub / Usage) was covering the main area. Without this
         // the switch happens out of sight and the page stays up, so clicking
@@ -664,30 +1321,122 @@ impl OrbitApp {
         if self.current_session_path.as_ref() == Some(&session.path) {
             return;
         }
-        // A blocking dialog belongs to the session being left; cancel it so
-        // the now-parked run can settle instead of waiting on an unseen modal.
-        self.cancel_open_dialog(cx);
+        self.cancel_new_task_settle();
+        // Native dialogs and approvals stay pending with their own session.
+        self.cancel_custom_surfaces(cx);
         // ── park the outgoing session (running or idle) ──
+        // Its unsent composer text/attachments go with it, keyed to the file.
+        self.save_composer_draft(cx);
         self.park_active_session();
         self.busy = false;
         self.added = 0;
         self.removed = 0;
         self.transcript = Transcript::new();
+        // No client means the clock was not parked with a process. Drop it
+        // either way so the outgoing session cannot leak into the next one;
+        // a warm resume puts its own clock back below.
+        self.turns = crate::turn_review::TurnClock::default();
+        self.push_turn_records(cx);
         // The queue belongs to the session we just left; the target's state
         // re-establishes it from `get_state`/`queue_update`.
         self.reset_queue();
+        // Interaction state is per-session too. `park_active_session` hands it
+        // to the parked process when there is one; a session with no live
+        // process (or a parked one being dropped as stale) has nothing to hand
+        // over, and leaving its dialog, approval, questionnaire, or retry
+        // bookkeeping in place would show it on the incoming session.
+        self.execution = SessionExecution::default();
+        self.prompt_in_flight = None;
+        // A stop belonged to the session being left; the incoming process has
+        // nothing in flight for the deadline to be about.
+        self.abort_sent_at = None;
+        self.retrying = false;
+        self.is_compacting = false;
+        self.retry_detail = None;
+        self.dialog = None;
+        self.dialog_focus_pending = false;
+        self.approval = None;
+        self.approval_focus_pending = false;
+        self.ask = None;
+        self.ask_tool_id = None;
+        self.ask_questions.clear();
+        self.ask_replay = None;
+        self.ask_focus_pending = false;
 
         // ── activate the target ──
-        if let Some(parked) = self.lives.remove(&session.path) {
+        // A parked process spawned before the latest MCP configuration change
+        // is stale: drop it and cold-start so it loads the current servers.
+        // The stamp is workspace-specific, so compare against the *target
+        // session's* workspace — the manager is still pointed at the workspace
+        // being left. Using the current fingerprint made every cross-workspace
+        // switch look like a config change and drop (kill) the parked run.
+        // A busy session is never dropped for staleness: the live run wins,
+        // and the new config applies on its next idle reopen.
+        let mcp_stamp = self.mcp.fingerprint_for(Some(&session.cwd));
+        if !session.cwd.is_dir() {
+            // Keep a warm process parked: it may still be finishing a run in
+            // the removed directory, but it cannot safely become active.
+            self.extension_widgets.clear();
+            self.execution = SessionExecution::from_status(
+                self.session_outcomes
+                    .get(&session.path)
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            self.preview_session_transcript(session.path.clone(), cx);
+            self.client = None;
+            self.worktree_dialog_error = None;
+            self.worktree_dialog = Some(WorktreeDialog::Unavailable {
+                path: session.cwd.clone(),
+                local: None,
+            });
+            self.find_missing_worktree_local(session.cwd.clone(), session.path.clone(), cx);
+        } else if let Some(parked) = self
+            .lives
+            .remove(&session.path)
+            .filter(|parked| parked.busy || parked.mcp_stamp == mcp_stamp)
+        {
             // Resume a background run. The parked transcript is already up
             // to date (its events drain every tick); anything buffered in
             // the process channel streams in from the next tick on.
             self.adopt_client(parked.client);
             self.transcript = parked.transcript;
+            self.turns = parked.turns;
+            self.push_turn_records(cx);
             self.busy = parked.busy;
+            self.execution = parked.execution;
+            self.prompt_in_flight = self.execution.prompt_id.clone();
+            self.retrying = self.execution.retrying;
+            self.is_compacting = self.execution.compacting;
+            self.retry_detail = parked.retry_detail;
+            self.dialog = parked.interaction.dialog;
+            self.approval = parked.interaction.approval;
+            self.ask = parked.interaction.ask;
+            self.ask_tool_id = parked.interaction.ask_tool_id;
+            self.ask_questions = parked.interaction.ask_questions;
+            self.ask_replay = parked.interaction.ask_replay;
+            self.dialog_focus_pending = self.dialog.is_some();
+            self.approval_focus_pending = self.approval.is_some();
+            self.approval_highlight = 0;
+            self.ask_focus_pending = self.ask.is_some();
+            // Requests received while parked have no UI entity yet. Reopen
+            // the saved request only when there is no existing surface.
+            if self.dialog.is_none() && self.approval.is_none() && self.ask.is_none() {
+                if let Some(request) = self.execution.pending_request.clone() {
+                    self.handle_extension_ui_request(
+                        request.id,
+                        &request.method,
+                        &request.value,
+                        cx,
+                    );
+                }
+            }
             self.added = parked.added;
             self.removed = parked.removed;
             self.extension_widgets = parked.widgets;
+            // pi re-emits `queue_update` only on a change, so a warm resume
+            // restores the pending bar from the drained mirror instead.
+            self.queue = parked.queue;
             self.send(CommandBody::GetState, "get_state");
             self.refresh_context_stats();
             // A warm process already reported capabilities; a cheap refresh
@@ -698,28 +1447,42 @@ impl OrbitApp {
             // transcript from disk in the same frame so the switch never waits
             // on pi boot. `get_messages` supersedes it moments later.
             self.extension_widgets.clear();
+            self.execution = SessionExecution::from_status(
+                self.session_outcomes
+                    .get(&session.path)
+                    .copied()
+                    .unwrap_or_default(),
+            );
             self.preview_session_transcript(session.path.clone(), cx);
-            // Spawn a dedicated pi process rooted at the session's workspace
-            // and point it at the session file.
-            let spawned = self.extensions.spawn(&session.cwd).or_else(|_| {
-                self.extensions
-                    .spawn(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-            });
+            // Spawn a dedicated pi process rooted at the session's
+            // workspace and point it at the session file.
+            let secret_env = self.mcp.secret_env();
+            let spawned = self
+                .extensions
+                .spawn(&session.cwd, false, &secret_env)
+                .or_else(|_| {
+                    self.extensions.spawn(
+                        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        false,
+                        &secret_env,
+                    )
+                });
             match spawned {
                 Ok(client) => {
                     self.adopt_client(client);
+                    self.mcp_stamp = mcp_stamp;
                     self.send(
                         CommandBody::SwitchSession {
                             session_path: session.path.to_string_lossy().into_owned(),
                         },
                         "switch_session",
                     );
-                    // `get_state` and the capability probes are sent from the
-                    // switch_session success handler: querying state eagerly
-                    // here races the switch (pi answers with the default
-                    // model), and the probes only get queued after the load
-                    // commands, so a slow auth/quota lookup can't delay the
-                    // transcript.
+                    // `get_state` and the capability probes are sent from
+                    // the switch_session success handler: querying state
+                    // eagerly here races the switch (pi answers with the
+                    // default model), and the probes only get queued after
+                    // the load commands, so a slow auth/quota lookup can't
+                    // delay the transcript.
                 }
                 Err(err) => {
                     let message = tr!("runtime.pi_spawn_failed", error = err);
@@ -733,9 +1496,16 @@ impl OrbitApp {
         self.reset_session_name(cx);
         self.seed_session_name_input(cx);
         // Opening a session keeps its folder in Orbit's own sidebar list.
-        self.add_workspace(session.cwd.clone());
-        self.set_current_workspace(session.cwd.clone());
+        self.add_workspace(session.cwd.clone(), cx);
+        self.set_current_workspace(session.cwd.clone(), cx);
+        // The warm resume above pushed the card while `current_workspace`
+        // still named the session being left. Push again so absolute tool
+        // paths normalize against the session that is now on screen.
+        self.push_turn_records(cx);
         self.current_session_path = Some(session.path.clone());
+        // The incoming session's own draft (if any) lands in the composer —
+        // never the previous session's half-written text.
+        self.restore_composer_draft(Some(&session.path.clone()), cx);
         if push {
             self.session_history.truncate(self.history_index + 1);
             let new_entry = self
@@ -774,7 +1544,7 @@ impl OrbitApp {
                 if !still_active || !app.transcript.is_empty() {
                     return;
                 }
-                app.apply_messages_snapshot(&payload);
+                app.apply_messages_snapshot(&payload, cx);
                 cx.notify();
             });
         })
@@ -817,31 +1587,52 @@ impl OrbitApp {
         cx.notify();
     }
 
-    pub(super) fn on_info_click(
+    /// Open the top-bar session-details popover. The chip that used to own
+    /// this toggle is now a row in the overflow menu, so the open is a plain
+    /// action; the popover still dismisses on an outside click.
+    pub(super) fn open_session_details(&mut self, cx: &mut Context<Self>) {
+        self.session_details_open = true;
+        // Only one top-bar popover is meaningful at a time.
+        self.header_more_open = false;
+        self.quota_popup_open = false;
+        // Seed the rename field from the live title so the input isn't empty
+        // when pi auto-titled via `session_info_changed` and hasn't echoed
+        // `sessionName` yet.
+        self.seed_session_name_input(cx);
+        cx.notify();
+    }
+
+    /// Flip the top bar's overflow menu. Mirrors the old info chip's guard so
+    /// the click that closes the menu cannot reopen it on mouse-up.
+    pub(super) fn on_header_more_click(
         &mut self,
         _: &MouseUpEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The open popover dismisses on this same click's mouse-down; without
-        // this guard the mouse-up would toggle it straight back open.
         const GESTURE: Duration = Duration::from_millis(200);
         if let Some(dismissed) = self.menu_dismissed_at.take() {
             if dismissed.elapsed() < GESTURE {
                 return;
             }
         }
-        // The top-bar info affordance shows the active session's details.
-        self.session_details_open = !self.session_details_open;
-        // Only one top-bar popover is meaningful at a time.
-        if self.session_details_open {
+        self.header_more_open = !self.header_more_open;
+        if self.header_more_open {
+            // Only one top-bar popover is meaningful at a time.
             self.quota_popup_open = false;
-            // Seed the rename field from the live title so the input isn't
-            // empty when pi auto-titled via `session_info_changed` and hasn't
-            // echoed `sessionName` yet.
-            self.seed_session_name_input(cx);
+            self.session_details_open = false;
+            self.open_in_menu_open = false;
         }
         cx.notify();
+    }
+
+    /// Dismiss the top bar's overflow menu from a click outside it.
+    pub(super) fn dismiss_header_more(&mut self, cx: &mut Context<Self>) {
+        if self.header_more_open {
+            self.menu_dismissed_at = Some(Instant::now());
+            self.header_more_open = false;
+            cx.notify();
+        }
     }
 
     /// The rename row's **Generate title** control: a magic-wand button
@@ -856,28 +1647,20 @@ impl OrbitApp {
             return None;
         }
         let generating = self.title_generating;
-        let mut button = div()
-            .id("sess-generate-title")
-            .group(BUTTON_GROUP)
-            .flex_none()
-            .h(px(28.))
-            .w(px(28.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme.border)
-            .bg(if generating {
-                theme.overlay
-            } else {
-                theme.bg_raised
-            })
-            .flex()
-            .items_center()
-            .justify_center();
+        let mut button =
+            icon_button_frame(div().id("sess-generate-title"), &theme, ButtonSize::Large)
+                .group(BUTTON_GROUP)
+                .border_1()
+                .border_color(theme.border)
+                .when(generating, |button| button.bg(theme.overlay))
+                .when(!generating, |button| {
+                    button.raised(theme.surface_elevated, &theme)
+                });
         if !generating {
             button = button
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
-                .active(|s| s.opacity(PRESS_DIM))
+                .hover_bordered(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .tooltip({
                     let label = tr!("session.generate_title");
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -889,9 +1672,19 @@ impl OrbitApp {
         Some(
             button
                 .child(if generating {
-                    crate::app::spinner("sess-generate-title-spinner", 12., theme.accent, theme)
+                    crate::app::spinner(
+                        "sess-generate-title-spinner",
+                        ButtonSize::Large.icon_size().px(&theme),
+                        theme.accent_text,
+                        theme,
+                    )
                 } else {
-                    icon("icons/magic-wand.svg", 12., theme.text_2).into_any_element()
+                    icon(
+                        "icons/magic-wand.svg",
+                        ButtonSize::Large.icon_size().px(&theme),
+                        theme.text_secondary,
+                    )
+                    .into_any_element()
                 })
                 .into_any_element(),
         )
@@ -909,6 +1702,11 @@ impl OrbitApp {
     /// or transcript entry; its `setSessionName` comes back as
     /// `session_info_changed` (handled in `events.rs`).
     pub(super) fn generate_session_title(&mut self, cx: &mut Context<Self>) {
+        // The command is a prompt: during a fork pi would run it on the new
+        // branch, and the reply's session reset would clear the spinner.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.session_id.is_none() || !self.can_generate_title() {
             return;
         }
@@ -926,40 +1724,83 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Open the full-page Git panel (Changes / History / Graph) and load it.
+    /// Open the Git card (Changes / History / Graph) and load it.
     pub(super) fn open_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = true;
-        // One main-area page at a time.
+        // One main-area feature at a time.
         self.usage_open = false;
+        self.worktrees_open = false;
         self.session_details_open = false;
+        // Files is another main-area feature; leave it for the Git card.
+        self.close_files(cx);
+        // Review owns the right dock and would otherwise show beside the Git
+        // page; opening Git replaces it. Opening Review closes Git in turn
+        // (see `close_git_for_review`).
+        self.sidepane.update(cx, |pane, cx| pane.close(cx));
         self.git_panel.update(cx, |panel, cx| panel.show(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
-    /// Top-bar GitHub affordance: same destination as the session-details
-    /// **Commit or push** row.
-    pub(super) fn on_open_git_click(
+    /// Open the Git page on its **Changes** tab. The dirty-tree counts chip
+    /// calls this so the files behind the `+N −N` are the first thing shown.
+    pub(super) fn open_git_changes(&mut self, cx: &mut Context<Self>) {
+        self.open_git(cx);
+        self.git_panel.update(cx, |panel, cx| panel.set_tab(0, cx));
+    }
+
+    /// ⌘⇧G: open the Git page, or leave it when it is already open. The
+    /// top-bar affordance lives in the overflow menu; this keeps the GitHub
+    /// surface one chord away.
+    pub(super) fn on_open_git(
         &mut self,
-        _: &MouseUpEvent,
+        _: &crate::OpenGit,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_git(cx);
+        if self.git_open {
+            self.close_git(cx);
+        } else {
+            self.open_git(cx);
+        }
     }
 
     /// Close the Git page and return to the chat.
     pub(super) fn close_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = false;
         self.git_panel.update(cx, |panel, cx| panel.hide(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
-    /// Open the Usage page and let it load (or refresh) the session store.
+    /// Leave the Git page when the Review dock takes the window. The Git page
+    /// is a main-area surface and Review owns the right dock, so leaving both
+    /// mounted shows them side by side; opening either replaces the other.
+    pub(super) fn close_git_for_review(&mut self, cx: &mut Context<Self>) {
+        if self.git_open {
+            self.git_open = false;
+            self.git_panel.update(cx, |panel, cx| panel.hide(cx));
+            self.sync_terminal_active(cx);
+            cx.notify();
+        }
+    }
+
+    /// Open Review (⌘⇧R and the palette), replacing the Git page.
+    pub(super) fn open_review(&mut self, cx: &mut Context<Self>) {
+        self.close_git_for_review(cx);
+        self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
+    }
+
+    /// Open the Usage card and let it load (or refresh) the session store.
     pub(super) fn open_usage(&mut self, cx: &mut Context<Self>) {
         self.usage_open = true;
         self.git_open = false;
+        self.worktrees_open = false;
         self.session_details_open = false;
+        // Files is another main-area feature; leave it for the Usage card.
+        self.close_files(cx);
         self.usage.update(cx, |page, cx| page.open(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -967,6 +1808,7 @@ impl OrbitApp {
     pub(super) fn close_usage(&mut self, cx: &mut Context<Self>) {
         self.usage_open = false;
         self.usage.update(cx, |page, cx| page.close(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -1053,20 +1895,34 @@ impl OrbitApp {
         }
     }
 
+    /// The command palette's Rename Session: open the details popover (the
+    /// header's info control owns the rename field) and put the caret in it.
+    pub(super) fn begin_session_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_session_rename.is_some() {
+            return;
+        }
+        self.quota_popup_open = false;
+        self.session_details_open = true;
+        self.seed_session_name_input(cx);
+        let handle = self.session_name_input.read(cx).focus_handle(cx);
+        window.focus(&handle);
+        cx.notify();
+    }
+
     /// The Update button's success glyph: a green check that scales and fades
     /// in when a rename commits. Reduce motion renders it statically.
     fn rename_check(theme: Theme, cx: &App) -> AnyElement {
         let svg = gpui::svg()
             .path("icons/check.svg")
             .flex_none()
-            .size(px(12.))
-            .text_color(theme.send_fg);
+            .size(IconSize::XSmall.px(&theme))
+            .text_color(theme.action_fg);
         if theme::reduce_motion(cx) {
             return svg.into_any_element();
         }
         svg.with_animation(
             "sess-rename-check",
-            Animation::new(Duration::from_millis(200)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+            Animation::new(Motion::Layout.duration(&theme)).with_easing(Motion::Layout.easing()),
             |svg, d| {
                 let scale = 0.5 + 0.5 * d;
                 svg.opacity(d)
@@ -1108,101 +1964,79 @@ impl OrbitApp {
         // the rename field below, so repeating it here only crowded the card;
         // the only line worth keeping is the no-session hint.
         let header = div()
-            .px(px(12.))
-            .py(px(10.))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
             .border_color(theme.border)
             .flex()
             .flex_col()
-            .gap(px(2.))
+            .gap(DynamicSpacing::Base02.px(&theme))
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(tr!("session.session_details")),
             )
             .children(session_id.is_empty().then(|| {
                 div()
-                    .text_size(theme.ui_px(11.))
-                    .text_color(theme.text_3)
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
                     .child(tr!("session.no_active"))
             }));
 
         // pi owns the name; Enter or Update commits it (`set_session_name`).
         let name_block = (!session_id.is_empty()).then(|| {
             div()
-                .px(px(12.))
-                .py(px(10.))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
                 .border_b_1()
                 .border_color(theme.border)
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_3)
-                        .child(tr!("session.name")),
-                )
+                .gap(input::gap(&theme))
+                .child(input_label(tr!("session.name"), &theme).text_color(theme.text_muted))
                 .child(
                     div()
                         .w_full()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(DynamicSpacing::Base08.px(&theme))
                         .child(
-                            div()
+                            input_field_frame(div(), &theme)
                                 .flex_1()
                                 .min_w_0()
-                                .min_h(px(28.))
-                                .px(px(8.))
-                                .py(px(4.))
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(theme.border)
-                                .bg(theme.bg_main)
+                                .bg(theme.background)
                                 .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .text_size(theme.ui_px(12.))
                                 .child(self.session_name_input.clone()),
                         )
                         .children(self.generate_title_button(theme, this.clone()))
                         .child({
-                            let mut button = div()
-                                .id("sess-rename")
-                                .flex_none()
-                                .h(px(28.))
-                                .px(px(10.))
-                                .rounded(px(8.))
-                                .border_1()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .text_size(theme.ui_px(12.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .on_mouse_up(MouseButton::Left, {
-                                    let this = this.clone();
-                                    move |_, _, cx| {
-                                        this.update(cx, |app, cx| app.rename_session(cx));
-                                    }
-                                });
+                            let mut button =
+                                button_frame(div().id("sess-rename"), &theme, ButtonSize::Large)
+                                    .border_1()
+                                    .cursor_pointer()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .on_mouse_up(MouseButton::Left, {
+                                        let this = this.clone();
+                                        move |_, _, cx| {
+                                            this.update(cx, |app, cx| app.rename_session(cx));
+                                        }
+                                    });
                             if rename_saved {
                                 // Commit succeeded: the label becomes a check
                                 // that pops in, so the button confirms the
                                 // rename instead of silently doing nothing.
                                 button = button
-                                    .bg(theme.ok_green)
-                                    .border_color(theme.ok_green)
+                                    .raised(theme.success, &theme)
+                                    .border_color(theme.success)
                                     .child(Self::rename_check(theme, cx));
                             } else {
                                 button = button
-                                    .bg(theme.bg_raised)
+                                    .raised(theme.surface_elevated, &theme)
                                     .border_color(theme.border)
-                                    .text_color(theme.text)
-                                    .hover(|s| s.bg(theme.bg_hover))
+                                    .text_color(theme.text_primary)
+                                    .hover_state(&theme)
                                     .child(tr!("session.update"));
                             }
                             button
@@ -1212,12 +2046,12 @@ impl OrbitApp {
 
         let section_label = |label: &str| {
             div()
-                .px(px(12.))
-                .pt(px(10.))
-                .pb(px(4.))
-                .text_size(theme.ui_px(11.))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .pt(DynamicSpacing::Base08.px(&theme))
+                .pb(DynamicSpacing::Base04.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(label.to_string())
         };
 
@@ -1225,8 +2059,7 @@ impl OrbitApp {
             .id("session-details-popup")
             .w(px(320.))
             .font_family(theme::ui_font_family())
-            .rounded(px(12.))
-            .popover_surface(theme)
+            .elevation_2(&theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -1256,13 +2089,13 @@ impl OrbitApp {
             .child(
                 div()
                     .id(ElementId::Name("sess-commit-push".into()))
-                    .px(px(12.))
-                    .py(px(8.))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
+                    .hover_state(&theme)
                     .on_click({
                         let this = this.clone();
                         move |_, _window, cx| {
@@ -1271,26 +2104,34 @@ impl OrbitApp {
                             });
                         }
                     })
-                    .child(icon("icons/branch.svg", 13., theme.text_2))
+                    .child(icon(
+                        "icons/branch.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_secondary,
+                    ))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.text)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_primary)
                             .child(tr!("session.commit_or_push")),
                     )
-                    .child(icon("icons/chevron-right.svg", 11., theme.text_3)),
+                    .child(icon(
+                        "icons/chevron-right.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_muted,
+                    )),
             )
             .child(
                 div()
                     .id(ElementId::Name("sess-compare-branch".into()))
-                    .px(px(12.))
-                    .py(px(8.))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
+                    .hover_state(&theme)
                     .on_click({
                         let this = this.clone();
                         move |_, window, cx| {
@@ -1299,19 +2140,27 @@ impl OrbitApp {
                             });
                         }
                     })
-                    .child(icon("icons/file-diff.svg", 13., theme.text_2))
+                    .child(icon(
+                        "icons/file-diff.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_secondary,
+                    ))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.text)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_primary)
                             .child(tr!("session.compare_branch")),
                     )
-                    .child(icon("icons/chevron-right.svg", 11., theme.text_3)),
+                    .child(icon(
+                        "icons/chevron-right.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_muted,
+                    )),
             )
             .child(
                 div()
-                    .mt(px(4.))
+                    .mt(DynamicSpacing::Base04.px(&theme))
                     .border_t_1()
                     .border_color(theme.border)
                     .child(section_label(&tr!("session.details"))),
@@ -1329,31 +2178,36 @@ impl OrbitApp {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(6.)))
-                        .snap_to_window()
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    popup,
+                    "anchored_popover-in-2",
+                    &theme,
+                ))
                 .into_any_element(),
         )
     }
 
-    /// The top-bar quota pill: the rolling 5-hour limit of the provider the
+    /// The top-bar quota chip: the rolling 5-hour limit of the provider the
     /// active model is using — provider mark, window label, percentage, and
     /// a context-style ring gauge — falling back to that provider's
     /// most-constrained window or balance, then to the account that will run
     /// out first. It stays provider-independent: everything comes from the
     /// normalized [`QuotaReport`] list, so a new adapter needs no UI change.
     /// `None` (hidden) when pi lacks `quota.*` or nothing has been reported.
-    pub(super) fn render_quota_pill(
+    pub(super) fn render_quota_chip(
         &self,
         compact: bool,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
-        if self.quota.reports().is_empty() {
+        // The chip is the only way into the usage popover, and the popover now
+        // carries the MCP status pane too. Render it when either side has
+        // something to show, so an MCP-only setup is not left without the
+        // control. `None` (hidden) when pi lacks `quota.*` and no MCP server
+        // is configured.
+        let mcp_chip = self.mcp_chip_parts(*theme::get(cx));
+        if self.quota.usage_reports(&self.model_provider).is_empty() && mcp_chip.is_none() {
             return None;
         }
         let theme = *theme::get(cx);
@@ -1364,18 +2218,21 @@ impl OrbitApp {
         // border) instead of the chip appearing from nothing. It shares the
         // top bar's chip glass, so the meter sits in the same row as the
         // buttons without looking like one.
-        let mut pill = press(header_chip(
+        let mut chip = press(header_chip(
             div()
                 .id("top-quota")
                 .group(BUTTON_GROUP)
                 .relative()
                 .h(px(HEADER_CTRL_H))
-                .pl(px(10.))
-                .pr(px(8.))
-                .rounded_full()
+                // A Medium button's padding; the left keeps its extra 2px.
+                .pl(ButtonSize::Medium.padding_x(&theme) + DynamicSpacing::Base02.px(&theme))
+                .pr(ButtonSize::Medium.padding_x(&theme))
+                // The quota meter is a header chip: it takes the
+                // same button radius as the rest of the top-bar controls.
+                .rounded(header_ctrl_radius(&theme))
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .cursor_pointer(),
             &theme,
         ))
@@ -1394,31 +2251,35 @@ impl OrbitApp {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .child(icon_dyn(provider_icon(&report.provider), 12., theme.text_3))
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(icon_dyn(
+                    provider_icon(&report.provider),
+                    IconSize::XSmall.px(&theme),
+                    provider_mark_color(&report.provider, &theme, theme.text_muted),
+                ))
                 .child(
                     div()
                         .max_w(px(96.))
                         .truncate()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
+                        .text_color(theme.text_secondary)
                         .child(providers::provider_display_name(&report.provider)),
                 )
         };
 
         match self.quota.headline(&self.model_provider) {
             QuotaHeadline::Window { report, window } => {
-                pill = pill.child(provider_head(report)).child(divider());
+                chip = chip.child(provider_head(report)).child(divider());
                 // Drop the window label when the title bar is tight so the
                 // session name still has room to truncate instead of colliding.
                 if !compact {
-                    pill = pill.child(
+                    chip = chip.child(
                         div()
                             .max_w(px(72.))
                             .truncate()
-                            .text_size(theme.ui_px(10.5))
-                            .text_color(theme.text_3)
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_muted)
                             .child(if is_five_hour_window(window) {
                                 "5h".to_string()
                             } else {
@@ -1433,16 +2294,16 @@ impl OrbitApp {
                     // without the gauge — the same pairing the composer's
                     // context meter uses.
                     let tint = quota_tint(fraction, theme);
-                    pill = pill
+                    chip = chip
                         .child(
                             div()
                                 .font(crate::usage::view::num_font())
-                                .text_size(theme.ui_px(11.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(tint)
                                 .child(format!("{}%", (fraction * 100.0).round() as i32)),
                         )
-                        .child(context_ring(fraction, tint, theme.ring_track));
+                        .child(context_ring(fraction, tint, theme.surface_elevated));
                 }
             }
             // A balance-only account (DeepSeek, OpenRouter) has no window to
@@ -1453,35 +2314,58 @@ impl OrbitApp {
                 } else {
                     format!("{} {}", quota_amount(balance.amount), balance.currency)
                 };
-                pill = pill.child(provider_head(report)).child(divider()).child(
+                chip = chip.child(provider_head(report)).child(divider()).child(
                     div()
                         .font(crate::usage::view::num_font())
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(text),
                 );
             }
-            // Nothing metered anywhere (notes, errors): a quiet label keeps
-            // the popover reachable.
-            QuotaHeadline::Quiet => {
-                pill = pill
-                    .child(icon("icons/spark.svg", 13., theme.text_2))
-                    .child(
-                        div()
-                            .text_size(theme.ui_px(11.5))
-                            .text_color(theme.text_2)
-                            .child(tr!("session.usage")),
-                    );
-            }
+            // Nothing metered anywhere (notes, errors): the chip keeps the
+            // popover reachable. With MCP servers configured it becomes the
+            // MCP status chip — the pane behind it is now the only place
+            // their state is visible from the top bar.
+            QuotaHeadline::Quiet => match mcp_chip {
+                Some((dot, label)) => {
+                    chip = chip
+                        .child(icon(
+                            "icons/tools/mcp.svg",
+                            IconSize::Small.px(&theme),
+                            theme.text_secondary,
+                        ))
+                        .child(div().size(px(6.)).rounded_full().bg(dot))
+                        .child(
+                            div()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_secondary)
+                                .child(label),
+                        );
+                }
+                None => {
+                    chip = chip
+                        .child(icon(
+                            "icons/spark.svg",
+                            IconSize::Small.px(&theme),
+                            theme.text_secondary,
+                        ))
+                        .child(
+                            div()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_secondary)
+                                .child(tr!("session.usage")),
+                        );
+                }
+            },
         }
 
-        Some(pill.into_any_element())
+        Some(chip.into_any_element())
     }
 
     /// The quota popover: every connected provider's windows and balances,
     /// grouped by provider and read from the normalized model. Rendered only
-    /// while open; anchored under the pill.
+    /// while open; anchored under the chip.
     pub(super) fn render_quota_popup(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if !self.quota_popup_open {
             return None;
@@ -1489,94 +2373,173 @@ impl OrbitApp {
         let theme = *theme::get(cx);
         let this = cx.entity();
 
-        let reports = self.quota.reports();
-        let count = reports.len();
+        let reports = self.quota.usage_reports(&self.model_provider);
+        // The user's hide list only shapes the popover; Settings still shows
+        // every connected provider. Split once so the header count and the
+        // "Hidden" group agree, and so a hidden provider is one click back.
+        // The list is account-keyed, so one entry hides a card collapsed to
+        // either sibling id (`ollama` / `ollama-cloud`).
+        let hidden = &self.hidden_quota_providers;
+        let (visible, hidden_reports): (Vec<&QuotaReport>, Vec<&QuotaReport>) = reports
+            .into_iter()
+            .partition(|report| !hidden.contains(&report.provider));
+        let count = visible.len();
         // One glyph that turns in place instead of swapping to a loader, so
         // the click never changes the control's shape. Active, it wears the
         // accent; idle, the shared hover group lifts its ink. Reduce Motion
         // keeps the spin off, but the accent still marks the active state.
         let refresh_icon = refresh_glyph(
             "quota-refresh-spin",
-            13.,
+            ButtonSize::Medium.icon_size().px(&theme),
             self.quota_refreshing,
-            theme.text_2,
+            theme.text_secondary,
             theme,
         );
-        let refresh_button = div()
-            .id("quota-refresh")
-            .group(BUTTON_GROUP)
-            .flex_none()
-            .size(px(26.))
-            .rounded_md()
+        let refresh_button =
+            icon_button_frame(div().id("quota-refresh"), &theme, ButtonSize::Medium)
+                .group(BUTTON_GROUP)
+                .cursor_pointer()
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
+                .tooltip({
+                    let label = tr!("common.refresh");
+                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                })
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
+                .child(refresh_icon);
+
+        // Two panes in one popover: the original provider quotas and the MCP
+        // server list. A segmented control keeps the switch in the header
+        // without adding a row (the body cap math below depends on this
+        // header's height).
+        let tab = self.quota_popup_tab;
+        let mut tabs = div()
             .flex()
             .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
-            .active(|style| style.bg(theme.active))
-            .tooltip({
-                let label = tr!("common.refresh");
-                move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-            })
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
-            .child(refresh_icon);
+            .gap(DynamicSpacing::Base02.px(&theme));
+        for (index, candidate) in QuotaPopupTab::ALL.into_iter().enumerate() {
+            let selected = tab == candidate;
+            tabs = tabs.child(
+                segmented_segment(
+                    div()
+                        .id(ElementId::Name(
+                            format!("quota-tab-{}", candidate.as_str()).into(),
+                        ))
+                        .debug_selector({
+                            let tab = candidate.as_str().to_string();
+                            move || format!("quota-tab-chip-{tab}")
+                        }),
+                    &theme,
+                    ButtonSize::Default,
+                    SegmentPosition::at(index, QuotaPopupTab::ALL.len()),
+                )
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .border_color(theme.border)
+                .when(selected, |chip| {
+                    chip.raised_flat(theme.surface_active)
+                        .text_color(theme.text_primary)
+                })
+                .when(!selected, |chip| {
+                    chip.raised_flat(theme.surface_elevated)
+                        .text_color(theme.text_secondary)
+                        .hover_state(&theme)
+                })
+                .on_mouse_up(MouseButton::Left, {
+                    let this = this.clone();
+                    move |_, _, cx| {
+                        this.update(cx, |app, cx| app.mcp_popup_tab(candidate, cx));
+                    }
+                })
+                .child(tr!(candidate.label_key())),
+            );
+        }
 
         let header = div()
             .flex_none()
-            .px(px(12.))
+            .px(DynamicSpacing::Base12.px(&theme))
             .py(px(10.))
             .border_b_1()
             .border_color(theme.border)
             .flex()
             .items_center()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(theme.ui_px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(tr!("session.provider_usage")),
-            )
-            .child(
-                div()
-                    .text_size(theme.ui_px(11.))
-                    .text_color(theme.text_2)
-                    .child(tr!("session.provider_count", count = count)),
-            )
-            .child(refresh_button);
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(tabs)
+            .child(div().flex_1())
+            .child(match tab {
+                QuotaPopupTab::Providers => div()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_secondary)
+                            .child(tr!("session.provider_count", count = count)),
+                    )
+                    .child(refresh_button)
+                    .into_any_element(),
+                QuotaPopupTab::Mcp => self.mcp_popup_summary(theme, this.clone(), cx),
+            });
 
         // One card per provider, 8 px apart: the boundary between accounts
-        // is what tells a glance which numbers belong together.
-        let body = div().flex().flex_col().child(header).child(
-            div()
-                .id("quota-popup-body")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .p(px(8.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .children(
-                    reports
-                        .iter()
-                        .map(|report| quota_provider_card(self, report, theme)),
-                ),
-        );
+        // is what tells a glance which numbers belong together. The list is
+        // the scroll region, content-sized up to the space the popover cap
+        // leaves under the header. It must not lean on `flex_1`: inside the
+        // deferred, anchored popover the available height is zero, where a
+        // flexible child collapses and the cards get clipped instead (the
+        // same reason the model picker's list carries its own `max_h`).
+        // Ordinary children keep it independent of measured-layout sizing.
+        let header_h = ButtonSize::Medium.height(&theme) + px(21.);
+        let body_max_h = px(QUOTA_POPOVER_MAX_H) - header_h;
+        let body: AnyElement = match tab {
+            QuotaPopupTab::Providers => {
+                let mut cards = div()
+                    .id("quota-popup-body")
+                    .debug_selector(|| "quota-popup-body".to_string())
+                    .w_full()
+                    .max_h(body_max_h)
+                    .overflow_y_scroll()
+                    .p(DynamicSpacing::Base08.px(&theme))
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .children(visible.iter().map(|report| {
+                        quota_provider_card(
+                            self,
+                            report,
+                            theme,
+                            false,
+                            Some(self.quota_visibility_button(
+                                canonical_provider(&report.provider),
+                                false,
+                                cx,
+                            )),
+                        )
+                    }));
+                if !hidden_reports.is_empty() {
+                    cards = cards.child(self.quota_hidden_section(&hidden_reports, theme, cx));
+                }
+                if visible.is_empty() && hidden_reports.is_empty() {
+                    cards = cards.child(self.quota_popup_empty(theme, this.clone()));
+                }
+                cards.into_any_element()
+            }
+            QuotaPopupTab::Mcp => self.mcp_popup_panel(theme, body_max_h, this.clone(), cx),
+        };
 
         let popup = div()
-            .w(px(320.))
-            .max_h(px(460.))
+            .debug_selector(|| "quota-popup".to_string())
+            .w(px(QUOTA_POPOVER_W))
+            .max_h(px(QUOTA_POPOVER_MAX_H))
             .font_family(theme::ui_font_family())
-            .rounded(px(12.))
-            .popover_surface(theme)
+            .elevation_2(&theme)
             .flex()
             .flex_col()
             .overflow_hidden()
             .occlude()
             // Clicks inside the card (the refresh button) must not bubble to
-            // the pill that toggles this popover.
+            // the chip that toggles this popover.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out({
@@ -1585,7 +2548,7 @@ impl OrbitApp {
                     this.update(cx, |app, cx| {
                         if app.quota_popup_open {
                             // Arm the click-through guard so this same
-                            // click's mouse-up on the pill cannot
+                            // click's mouse-up on the chip cannot
                             // immediately re-open the popover.
                             app.menu_dismissed_at = Some(Instant::now());
                             app.quota_popup_open = false;
@@ -1594,6 +2557,7 @@ impl OrbitApp {
                     });
                 }
             })
+            .child(header)
             .child(body);
 
         Some(
@@ -1602,16 +2566,179 @@ impl OrbitApp {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(6.)))
-                        .snap_to_window()
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    popup,
+                    "anchored_popover-in-3",
+                    &theme,
+                ))
                 .into_any_element(),
         )
+    }
+
+    /// The eye toggle on a provider card in the top-bar quota popover: hides
+    /// the provider from the list, or restores one from the "Hidden" group.
+    /// A Compact glyph so it sits inside a card header without inflating the
+    /// row. The element id varies with the state so the visible and hidden
+    /// forms never collide.
+    fn quota_visibility_button(
+        &self,
+        provider: &str,
+        hidden: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = *theme::get(cx);
+        let (path, label) = if hidden {
+            ("icons/eye.svg", tr!("session.show_provider"))
+        } else {
+            ("icons/eye-off.svg", tr!("session.hide_provider"))
+        };
+        let id = SharedString::from(format!(
+            "quota-{}-{provider}",
+            if hidden { "show" } else { "hide" }
+        ));
+        // The toggle names the account it hides, not the active model's id:
+        // both Ollama ids share one card, so both store the same entry.
+        let selector = id.to_string();
+        let provider = provider.to_string();
+        icon_button_frame(
+            div().id(id).debug_selector(move || selector.clone()),
+            &theme,
+            ButtonSize::Compact,
+        )
+        .cursor_pointer()
+        .hover_state(&theme)
+        .pressed_state(&theme, PressedRamp::Wash)
+        .tooltip({
+            let label = label.clone();
+            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+        })
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(
+                move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
+                    this.hidden_quota_providers.toggle(&provider);
+                    this.hidden_quota_providers.persist();
+                    cx.notify();
+                },
+            ),
+        )
+        .child(icon(
+            path,
+            ButtonSize::Compact.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .into_any_element()
+    }
+
+    /// The Providers pane with nothing to show (no quota reports yet, or a
+    /// pi without `quota.*`). Points at the other pane rather than sitting
+    /// empty — the chip that opened it is the MCP status chip in that case.
+    fn quota_popup_empty(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        div()
+            .w_full()
+            .py(DynamicSpacing::Base16.px(&theme))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(icon(
+                "icons/spark.svg",
+                IconSize::Medium.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .child(tr!("session.no_provider_usage")),
+            )
+            .child(
+                button_frame(div().id("quota-empty-mcp"), &theme, ButtonSize::Compact)
+                    .debug_selector(|| "quota-empty-mcp".to_string())
+                    .cursor_pointer()
+                    .font_weight(FontWeight::MEDIUM)
+                    .raised(theme.action, &theme)
+                    .text_color(theme.action_fg)
+                    .hover_action(&theme)
+                    .pressed_state(&theme, PressedRamp::Action)
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        this.update(cx, |app, cx| {
+                            app.mcp_popup_tab(QuotaPopupTab::Mcp, cx);
+                        });
+                    })
+                    .child(tr!("session.show_mcp_servers")),
+            )
+            .into_any_element()
+    }
+
+    /// The folded "Hidden" group at the foot of the top-bar quota popover.
+    /// Lists the providers the user removed from the list, each with a restore
+    /// button, so hiding is a one-click round trip rather than a config hunt.
+    /// A header row carries the count and folds the group.
+    fn quota_hidden_section(
+        &self,
+        reports: &[&QuotaReport],
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let open = self.quota_hidden_open;
+        let chevron = if open {
+            "icons/chevron-down.svg"
+        } else {
+            "icons/chevron-right.svg"
+        };
+        let mut group = div()
+            .debug_selector(|| "quota-hidden".to_string())
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(
+                div()
+                    .id("quota-hidden-toggle")
+                    .debug_selector(|| "quota-hidden-toggle".to_string())
+                    .w_full()
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .px(DynamicSpacing::Base04.px(&theme))
+                    .py(px(2.))
+                    .rounded(Radius::Medium.px(&theme))
+                    .hover_state(&theme)
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_hidden_toggle))
+                    .child(icon(chevron, IconSize::XSmall.px(&theme), theme.text_muted))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_muted)
+                            .child(tr!("session.hidden_providers", count = reports.len())),
+                    ),
+            );
+        if open {
+            group = group.children(reports.iter().map(|report| {
+                div()
+                    .w_full()
+                    .opacity(HIDDEN_CARD_DIM)
+                    .child(quota_provider_card(
+                        self,
+                        report,
+                        theme,
+                        true,
+                        Some(self.quota_visibility_button(
+                            canonical_provider(&report.provider),
+                            true,
+                            cx,
+                        )),
+                    ))
+            }));
+        }
+        group.into_any_element()
     }
 
     /// Re-fetch account quota on demand from the popover's refresh button.
@@ -1680,7 +2807,13 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.quota_refresh(cx);
+        // The header's control is contextual: it probes MCP while the MCP
+        // tab is showing, and re-reads provider quotas otherwise.
+        if self.quota_popup_tab == QuotaPopupTab::Mcp {
+            self.mcp_refresh(cx);
+        } else {
+            self.quota_refresh(cx);
+        }
     }
 
     /// Toggle the top-bar quota popover.
@@ -1691,19 +2824,46 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         // A dismissal from this same click's mouse-down must not
-        // immediately re-open (see `toggle_session_menu`).
+        // immediately re-open (see `toggle_workspace_menu`).
         const GESTURE: Duration = Duration::from_millis(200);
         if let Some(dismissed) = self.menu_dismissed_at.take() {
             if dismissed.elapsed() < GESTURE {
                 return;
             }
         }
+        self.toggle_quota_popup(cx);
+    }
+
+    /// Open or close the top-bar usage popover. Opening picks the pane that
+    /// matches the chip the user clicked: when the chip is showing the MCP
+    /// status chip (nothing metered), the popover opens on the MCP pane
+    /// instead of an empty provider list.
+    pub(super) fn toggle_quota_popup(&mut self, cx: &mut Context<Self>) {
         self.quota_popup_open = !self.quota_popup_open;
         // The quota popover and the session-details popover share the top
         // bar; only one is meaningful at a time.
         if self.quota_popup_open {
             self.session_details_open = false;
+            let theme = *theme::get(cx);
+            let quiet = matches!(
+                self.quota.headline(&self.model_provider),
+                QuotaHeadline::Quiet
+            );
+            if quiet && self.mcp_chip_parts(theme).is_some() {
+                self.quota_popup_tab = QuotaPopupTab::Mcp;
+            }
         }
+        cx.notify();
+    }
+
+    /// Fold or unfold the popover's "Hidden" provider group.
+    pub(super) fn on_quota_hidden_toggle(
+        &mut self,
+        _: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.quota_hidden_open = !self.quota_hidden_open;
         cx.notify();
     }
 
@@ -1720,11 +2880,11 @@ impl OrbitApp {
         let value = value.to_string();
         let v = value.clone();
         div()
-            .px(px(12.))
+            .px(DynamicSpacing::Base12.px(&theme))
             .py(px(7.))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 div()
                     .flex_1()
@@ -1734,14 +2894,14 @@ impl OrbitApp {
                     .gap(px(2.))
                     .child(
                         div()
-                            .text_size(theme.ui_px(11.))
-                            .text_color(theme.text_3)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
                             .child(label),
                     )
                     .child(
                         div()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.text)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_primary)
                             .truncate()
                             .child(if value.is_empty() {
                                 "—".to_string()
@@ -1751,16 +2911,18 @@ impl OrbitApp {
                     ),
             )
             .child(
-                div()
-                    .id(("sess-copy", ix))
-                    .p_1()
-                    .rounded_sm()
+                icon_button_frame(div().id(("sess-copy", ix)), &theme, ButtonSize::Compact)
+                    .tip(tr!("common.copy"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
+                    .hover_state(&theme)
                     .on_click(move |_, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(v.clone()));
                     })
-                    .child(icon("icons/copy.svg", 12., theme.text_3)),
+                    .child(icon(
+                        "icons/copy.svg",
+                        ButtonSize::Compact.icon_size().px(&theme),
+                        theme.text_muted,
+                    )),
             )
     }
 
@@ -1801,14 +2963,29 @@ impl OrbitApp {
                 self.input.read(cx).focus(window);
             }
         }
+        self.record_arrangement(cx);
     }
 
+    /// The clean top-bar chip: flip the right dock, opening Review. The dirty
+    /// `+N −N` state never reaches here; it opens the Git page's Changes tab.
     pub(super) fn on_toggle_side_pane(
         &mut self,
         _: &MouseUpEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.toggle_side_pane(cx);
+    }
+
+    /// Flip the right dock, closing the Git page it shares the window with.
+    /// Split from the click handler so it can be called without synthesizing
+    /// an event.
+    pub(super) fn toggle_side_pane(&mut self, cx: &mut Context<Self>) {
+        let pane_open = self.sidepane.read(cx).is_open();
+        if !pane_open {
+            // Opening Review replaces the Git page, which shares the window.
+            self.close_git_for_review(cx);
+        }
         self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
         cx.notify();
     }
@@ -1826,7 +3003,56 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Switch the Git page's tab (⌘1–⌘5). A no-op unless the page is open, so
+    /// Open another shell tab in the current workspace (⌘T in the terminal).
+    pub(super) fn on_new_terminal_tab(
+        &mut self,
+        _: &crate::NewTerminalTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_panel
+            .update(cx, |panel, cx| panel.new_tab(window, cx));
+        cx.notify();
+    }
+
+    /// Close the active terminal tab (⌘W in the terminal). Its shell gets
+    /// SIGHUP; the panel closes when it was the last tab.
+    pub(super) fn on_close_terminal_tab(
+        &mut self,
+        _: &crate::CloseTerminalTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_panel
+            .update(cx, |panel, cx| panel.close_active_tab(window, cx));
+        cx.notify();
+    }
+
+    /// Cycle terminal tabs (⌘⇧[ / ⌘⇧]). Wraps at the ends and does nothing
+    /// with fewer than two tabs.
+    pub(super) fn on_next_terminal_tab(
+        &mut self,
+        _: &crate::NextTerminalTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_panel
+            .update(cx, |panel, cx| panel.cycle_tab(1, window, cx));
+        cx.notify();
+    }
+
+    pub(super) fn on_prev_terminal_tab(
+        &mut self,
+        _: &crate::PrevTerminalTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_panel
+            .update(cx, |panel, cx| panel.cycle_tab(-1, window, cx));
+        cx.notify();
+    }
+
+    /// Switch the Git page's tab (⌘1–⌘6). A no-op unless the page is open, so
     /// the shortcuts never surprise a chat session.
     pub(super) fn on_git_tab(&mut self, index: usize, _: &mut Window, cx: &mut Context<Self>) {
         if self.git_open {
@@ -1835,22 +3061,10 @@ impl OrbitApp {
         }
     }
 
-    // ── Explorer (project panel + Files surface) ───────────────────────
-
     /// Flip the left project-panel dock (⌘⇧E / Ctrl+Shift+E).
     pub(super) fn on_toggle_project_panel(
         &mut self,
         _: &crate::ToggleProjectPanel,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_project_panel(cx);
-    }
-
-    /// The top-bar Files button.
-    pub(super) fn on_toggle_project_panel_click(
-        &mut self,
-        _: &MouseUpEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1882,8 +3096,10 @@ impl OrbitApp {
         self.settings_open = false;
         self.git_open = false;
         self.usage_open = false;
+        self.worktrees_open = false;
         self.file_viewer
             .update(cx, |viewer, cx| viewer.show(path, display, cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -1924,6 +3140,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 let display = relative_display(&display_root, &path);
                                 app.open_file_in_viewer(path, display, cx);
                                 app.toast_success(tr!("explorer.created_file", name = name));
@@ -1949,6 +3166,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.created_folder", name = name));
                             }
                             Err(error) => app.explorer_op_error(&error, cx),
@@ -1990,6 +3208,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.renamed", name = name));
                             }
                             Err(error) => app.explorer_op_error(&error, cx),
@@ -2021,16 +3240,13 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.deleted", name = name));
                             }
                             Err(error) => {
-                                let message = format!(
-                                    "{}: {error}",
-                                    tr!("explorer.err_delete")
-                                );
-                                app.project_panel.update(cx, |panel, cx| {
-                                    panel.set_notice(Some(message), cx)
-                                });
+                                let message = format!("{}: {error}", tr!("explorer.err_delete"));
+                                app.project_panel
+                                    .update(cx, |panel, cx| panel.set_notice(Some(message), cx));
                             }
                         }
                         cx.notify();
@@ -2048,11 +3264,7 @@ impl OrbitApp {
     }
 
     /// Surface a failed create/rename in the Explorer's notice strip.
-    fn explorer_op_error(
-        &mut self,
-        error: &crate::explorer::ops::OpError,
-        cx: &mut Context<Self>,
-    ) {
+    fn explorer_op_error(&mut self, error: &crate::explorer::ops::OpError, cx: &mut Context<Self>) {
         let message = error.message();
         self.project_panel
             .update(cx, |panel, cx| panel.set_notice(Some(message), cx));
@@ -2061,6 +3273,7 @@ impl OrbitApp {
     /// Leave the Files surface and return to the chat.
     pub(super) fn close_files(&mut self, cx: &mut Context<Self>) {
         self.file_viewer.update(cx, |viewer, cx| viewer.hide(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -2074,27 +3287,23 @@ impl OrbitApp {
         self.close_files(cx);
     }
 
-    /// The top-bar `+N -M` chip opens Review on the working tree's
-    /// **Uncommitted** changes.
-    pub(super) fn on_open_uncommitted_review(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.sidepane
-            .update(cx, |pane, cx| pane.show_uncommitted(cx));
-        cx.notify();
-    }
-
     /// Hands the transcript's changed-files cards a way to open the side
     /// pane's Review tab on that run's **Last Turn** git diff (the pane lives
     /// in the app, the cards don't know that). Cheap to build per frame — an
     /// `Rc` closure over the entity and the latest captured turn.
-    pub(super) fn review_opener(&self, _: &Context<Self>) -> crate::transcript_view::ReviewOpener {
+    pub(super) fn review_opener(&self, cx: &Context<Self>) -> crate::transcript_view::ReviewOpener {
         let pane = self.sidepane.clone();
-        let latest = self.latest_turn;
+        let app = cx.entity().downgrade();
         Rc::new(move |_window, cx| {
+            // Opening Review replaces the Git page and the subagent dock.
+            // Slice the turn from the transcript at click time so a turn that
+            // is still streaming shows the tools that have already landed.
+            let mut latest = None;
+            let _ = app.update(cx, |app, cx| {
+                app.push_turn_records(cx);
+                app.close_git_for_review(cx);
+                latest = app.turns.latest;
+            });
             pane.update(cx, |pane, cx| pane.show_review_turn(latest, cx));
         })
     }
@@ -2112,12 +3321,33 @@ impl OrbitApp {
         })
     }
 
+    /// Whether one of the composer's anchored popovers currently owns the
+    /// keyboard. See [`Self::on_composer_click`] for why this gates focus.
+    pub(super) fn composer_popup_open(&self) -> bool {
+        self.model_selector.is_some()
+            || self.add_menu_open
+            || self.access_menu_open
+            || self.workflow_menu_open
+    }
+
     pub(super) fn on_composer_click(
         &mut self,
         _: &MouseUpEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A composer-anchored popover (model/thinking picker, add menu, access
+        // menu, workflow menu) rides a descendant of the composer box, so a
+        // click that opens one — or a click on its search field — bubbles here
+        // after the popover has grabbed focus. Pulling focus back to the
+        // composer input would silently kill the popover's ↑/↓/Enter/Escape,
+        // which is exactly what made the chip pickers feel dead next to the
+        // command palette and branch picker. The popovers dismiss on an
+        // outside mouse-down, so a click meant to close one has already cleared
+        // these flags by the time the mouse-up lands.
+        if self.composer_popup_open() {
+            return;
+        }
         self.input.read(cx).focus(window);
     }
 
@@ -2127,12 +3357,71 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Sessions first: the CLI or another Orbit window may have written
+        // since the list was last read.
         self.sessions = sessions::load_sessions();
         self.sync_session_menu(cx);
-        // ⌘R on the Usage page refreshes the analytics too.
+        // The status bar's branch chip and every sidebar row's branch line.
+        self.refresh_branch_status(cx);
+        self.refresh_sidebar_branches(cx);
+
+        // Config-backed catalogs are re-read unconditionally, not just while
+        // their Settings page is open. A manual Refresh is a full resync: a
+        // plugin installed from a terminal, a provider edited into
+        // models.json, or a skill dropped into the workspace should be in
+        // Orbit's state even when the page that shows it is closed.
+        self.reload_custom_providers(cx);
+        self.refresh_plugins(cx);
+        self.refresh_skills(cx);
+        // MCP config, secrets, metadata, and runtime state. Re-reading is
+        // cheap; the probe (which starts servers) stays with the open page.
+        self.mcp.set_workspace(self.current_workspace.as_deref());
+        self.mcp.refresh();
+        self.mcp_external_change = false;
+
+        // Worktrees for the active repository, when their page is up.
+        if self.worktrees_open {
+            self.refresh_worktrees(cx);
+        }
+        // The Explorer tree (a cheap no-op when it was never loaded).
+        self.project_panel
+            .update(cx, |panel, cx| panel.mark_stale(cx));
+        // `@` ranks this tree too; a workspace switch invalidates at once.
+        self.invalidate_index(true, cx);
+        // The Review pane's diff, only while it is showing.
+        if self.sidepane.read(cx).is_open() {
+            self.sidepane
+                .update(cx, |pane, cx| pane.refresh_from_button(cx));
+        }
+        // Git status/branch (the panel itself no-ops when closed).
+        self.git_panel.update(cx, |panel, cx| panel.refresh(cx));
+        // Usage analytics when its page is open.
         if self.usage_open {
             self.usage.update(cx, |page, cx| page.refresh(cx));
         }
+        // Section-only probes and reads that would otherwise cost a process
+        // or a filesystem scan for data nothing is showing.
+        if self.settings_open {
+            match self.settings_section {
+                SettingsSection::Mcp => self.mcp_refresh(cx),
+                SettingsSection::GitAccounts if !self.git_accounts_loading => {
+                    self.refresh_git_accounts_for_workspace(cx)
+                }
+                SettingsSection::General => self.refresh_notification_auth(cx),
+                _ => {}
+            }
+        }
+        // The running agent can change under us (re-auth, model list, a
+        // compaction moved the context estimate) — re-ask it directly. The
+        // primary state/catalog commands go first so the slow auth/quota
+        // probes never queue in front of them.
+        if self.client.is_some() {
+            self.send(CommandBody::GetState, "get_state");
+            self.refresh_catalogs();
+            self.refresh_context_stats();
+            self.refresh_auth();
+        }
+        self.toast_info(tr!("view.refreshed"));
         cx.notify();
     }
 
@@ -2186,11 +3475,11 @@ impl OrbitApp {
 /// same thresholds the Settings quota meters use, so the two surfaces agree.
 fn quota_tint(fraction: f32, theme: Theme) -> Hsla {
     if fraction >= 0.9 {
-        theme.crit
+        theme.error
     } else if fraction >= 0.75 {
-        theme.warn
+        theme.warning
     } else {
-        theme.ok_green
+        theme.success
     }
 }
 
@@ -2246,8 +3535,15 @@ fn quota_reset_hint(resets_at: i64, now_ms: i64) -> String {
 /// the provider's mark, plan, windows, and balances, with the meter and its
 /// countdown beside every window. Provider-independent: it renders whatever
 /// the normalized report carries (windows, balances, note, error) and names
-/// the provider by id only, never a bespoke label.
-fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> AnyElement {
+/// the provider by id only, never a bespoke label. `action` is the caller's
+/// hide/show toggle, dropped into the header's trailing edge.
+fn quota_provider_card(
+    app: &OrbitApp,
+    report: &QuotaReport,
+    theme: Theme,
+    hidden: bool,
+    action: Option<AnyElement>,
+) -> AnyElement {
     let name = providers::provider_display_name(&report.provider);
     let amount = quota_amount;
 
@@ -2255,36 +3551,53 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
         .flex()
         .items_center()
         .gap(px(7.))
-        .child(icon_dyn(provider_icon(&report.provider), 13., theme.text_3))
+        .child(icon_dyn(
+            provider_icon(&report.provider),
+            IconSize::Small.px(&theme),
+            provider_mark_color(&report.provider, &theme, theme.text_muted),
+        ))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(name),
         );
     if let Some(plan) = &report.plan {
-        header =
-            header.child(app.provider_badge(plan, theme.accent, theme.accent.opacity(0.12), theme));
+        header = header.child(app.provider_badge(
+            plan,
+            theme.accent_text,
+            theme.accent.opacity(0.12),
+            theme,
+        ));
+    }
+    if let Some(action) = action {
+        header = header.child(action);
     }
 
-    // The card fill is the ink wash rather than `bg_raised`: most palettes
-    // set `menu_bg == bg_raised`, where a raised fill would vanish inside
-    // the popup. The wash steps off any surface in every palette.
+    // The card fill is the ink wash rather than `surface_elevated`: the popup
+    // itself already sits on that elevation, so a raised card would vanish
+    // inside it. The wash steps off any surface in every palette.
+    let card_selector = format!(
+        "quota-card-{}-{}",
+        if hidden { "hidden" } else { "visible" },
+        report.provider
+    );
     let mut block = div()
+        .debug_selector(move || card_selector.clone())
         .w_full()
-        .rounded(px(8.))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
-        .px(px(12.))
+        .px(DynamicSpacing::Base12.px(&theme))
         .py(px(10.))
         .flex()
         .flex_col()
-        .gap(px(8.))
+        .gap(DynamicSpacing::Base08.px(&theme))
         .child(header);
 
     for window in &report.windows {
@@ -2309,22 +3622,22 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_2)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
                         .child(window.label.clone()),
                 )
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(value),
                 ),
         );
@@ -2336,7 +3649,7 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
                     .h(px(5.))
                     .rounded_full()
                     .overflow_hidden()
-                    .bg(theme.trough)
+                    .bg(theme.surface_secondary)
                     .child(
                         div()
                             .h_full()
@@ -2349,8 +3662,8 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
         if let Some(resets_at) = window.resets_at {
             row = row.child(
                 div()
-                    .text_size(theme.ui_px(10.5))
-                    .text_color(theme.text_2)
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(quota_reset_hint(
                         resets_at,
                         chrono::Local::now().timestamp_millis(),
@@ -2371,22 +3684,22 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
                 .w_full()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_2)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
                         .child(balance.label.clone()),
                 )
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(text),
                 ),
         );
@@ -2395,16 +3708,16 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
     if let Some(error) = &report.error {
         block = block.child(
             div()
-                .text_size(theme.ui_px(10.5))
-                .text_color(theme.crit)
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.error)
                 .child(error.clone()),
         );
     } else if note_should_render(report) {
         if let Some(note) = &report.note {
             block = block.child(
                 div()
-                    .text_size(theme.ui_px(10.5))
-                    .text_color(theme.text_3)
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_muted)
                     .child(note.clone()),
             );
         }
