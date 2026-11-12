@@ -16,8 +16,11 @@ use gpui::{
     ListAlignment, ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
-use crate::app::{button_frame, icon_button_frame, ControlExt, TipExt, BUTTON_GROUP};
-use crate::theme::tokens::{ButtonSize, StyledExt};
+use crate::app::{
+    button_frame, icon_button_frame, ControlExt, PressedRamp, StatefulControlExt, TipExt,
+    BUTTON_GROUP,
+};
+use crate::theme::tokens::{ButtonSize, Radius, StyledExt};
 use crate::theme::Theme;
 
 const LIST_OVERDRAW: f32 = 400.0;
@@ -361,6 +364,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
     let unread = state.has_unread();
     let button = div()
         .id(ElementId::Name("message-scroller-jump".into()))
+        .debug_selector(|| "message-scroller-jump".to_string())
         .group(BUTTON_GROUP);
     let button = if unread {
         button_frame(button, &theme, ButtonSize::Large)
@@ -377,25 +381,38 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
         .flex()
         .justify_center()
         .child(
-            // Floating round scroll-to-bottom affordance: the elevated
-            // surface, kept round and on the composer's fill.
+            // Keep the floating control distinct from the transcript and
+            // center the arrow in its own stable icon box.
             button
-                .elevation_2(&theme)
+                .relative()
+                .elevation_2_borderless(&theme)
+                .frosted_card(&theme, theme.border_strong, Radius::Full.px(&theme))
                 .rounded_full()
                 .tip(tr!("message_scroller.jump_to_latest"))
-                .bg(theme.surface_secondary)
                 .cursor_pointer()
-                .hover_elevated(&theme)
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .on_click(move |_, _, cx| {
                     state.scroll_to_end();
                     cx.refresh_windows();
                 })
                 .child(
-                    svg()
-                        .path("icons/arrow-down.svg")
+                    div()
+                        .debug_selector(|| "message-scroller-jump-icon".to_string())
                         .flex_none()
                         .size(ButtonSize::Large.icon_size().px(&theme))
-                        .text_color(theme.text_primary),
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path("icons/arrow-down.svg")
+                                .size_full()
+                                // The arrow's stroke reads low and right inside
+                                // the circular frame despite its centered box.
+                                .when(!unread, |icon| icon.relative().left(px(-1.)).top(px(-1.)))
+                                .text_color(theme.text_primary),
+                        ),
                 )
                 .when(unread, |button| {
                     button.child(
@@ -493,6 +510,48 @@ mod tests {
                 assert_eq!(fade_stops(fallback).1, page);
             }
         }
+    }
+
+    struct JumpProbe(MessageScrollerState);
+
+    impl gpui::Render for JumpProbe {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div().size_full().relative().child(render_jump_button(
+                self.0.clone(),
+                Theme::for_id(crate::theme::ThemeId::OrbitOnyx),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn jump_control_and_arrow_are_centered_in_the_transcript(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let probe = cx.update(|_, cx| cx.new(|_| JumpProbe(MessageScrollerState::new(1))));
+        let _ = cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(600.), px(400.)),
+            |_, _| div().size_full().child(probe.clone()),
+        );
+        let button = cx
+            .debug_bounds("message-scroller-jump")
+            .expect("jump button");
+        let icon = cx
+            .debug_bounds("message-scroller-jump-icon")
+            .expect("jump icon");
+        let center = |origin: Pixels, size: Pixels| origin + size / 2.;
+        assert_eq!(center(button.origin.x, button.size.width), px(300.));
+        assert_eq!(
+            center(icon.origin.x, icon.size.width),
+            center(button.origin.x, button.size.width)
+        );
+        assert_eq!(
+            center(icon.origin.y, icon.size.height),
+            center(button.origin.y, button.size.height)
+        );
     }
 
     type RowHeights = Rc<std::cell::RefCell<std::collections::HashMap<usize, f32>>>;

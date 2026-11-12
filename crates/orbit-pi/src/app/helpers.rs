@@ -183,12 +183,6 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
         self.hover(move |style| style.bg(fill))
     }
 
-    /// Hover on a raised surface: the elevated fill.
-    fn hover_elevated(self, theme: &Theme) -> Self {
-        let fill = theme.surface_elevated;
-        self.hover(move |style| style.bg(fill))
-    }
-
     /// Hover for a control that is defined by its outline: the wash plus the
     /// strong hairline, no ink change.
     fn hover_bordered(self, theme: &Theme) -> Self {
