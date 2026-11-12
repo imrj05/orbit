@@ -740,7 +740,14 @@ fn session_status_lane(
             theme,
         ))
     } else {
-        status_lane_icon(lane).map(|path| icon(path, size, ink).into_any_element())
+        status_lane_icon(lane).map(|path| {
+            // The font's baseline places its visible ink above the centered
+            // line box. Lift the static glyph without moving the badge lane.
+            icon(path, size, ink)
+                .relative()
+                .top(px(-1.))
+                .into_any_element()
+        })
     };
     let lane_el = div()
         .debug_selector(|| "session-status-lane".into())
