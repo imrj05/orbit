@@ -426,8 +426,8 @@ names a palette family, not a shape language.
 `button::RADIUS` / `button::radius(size)` for buttons, segmented controls, tabs, and
 header chips; `input::RADIUS` for text fields; `panel::RADIUS` for cards, panels,
 popovers, menus, and dialogs; `list_item::RADIUS` for navigation/list rows; and
-`Radius::Small` for badges and checkboxes. A large multi-line composer is still
-a field: it takes `input::composer_radius`, which is the field's own corner. Fully round
+`Radius::Small` for badges and checkboxes. The chat composer uses its own fixed
+12px `input::composer_radius`, independent of the rounding preference. Fully round
 `Radius::Full` is reserved for genuinely circular or pill-shaped controls (send/stop
 actions, toggles, avatars, status dots, meters) and is not mixed into the rectangular
 card/field/button family.
@@ -518,8 +518,8 @@ list-board rows (`settings_group`, the MCP server rows).
 ## Shapes
 
 Corners are soft but restrained. Before the corner-rounding preference, list
-items and compact button frames use 5px, standard buttons and inputs (including
-the composer) use 6px, and panels and elevated surfaces use 8px. `full` is
+items and compact button frames use 5px, standard buttons and inputs use 6px,
+and panels and elevated surfaces use 8px. The chat composer is fixed at 12px. `full` is
 reserved for circular or pill-shaped elements such as status dots, avatar
 monograms, the send button, and the toggle-switch track.
 
@@ -554,9 +554,10 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   effect pixel size, and a **black** overlay — never a palette tint, which washed a bright
   picture out while claiming to dim it. Hero mode paints it only in the main column;
   full-window mode paints it behind the sidebar too, with translucent surfaces above.
-  The wallpaper stays *behind the page*: the composer and the reader's own message bubble
-  paint the palette's surface at full opacity, because a picture showing through the field
-  you are typing in reads as a stain, not as a material. The page itself never goes below
+  The reader's own message bubble remains opaque. The chat composer is an explicit
+  exception: with supported wallpaper glass behind it, it uses the contrast-adjusted card fill
+  and a rounded backdrop frost; otherwise it retains its opaque surface. Hero mode
+  has no wallpaper behind the composer in active chat. The page itself never goes below
   88% of the palette canvas, so an artwork effect's dots tint the page instead of drawing
   behind the transcript; panels and cards keep the card-opacity treatment and its frost,
   and the black overlay is resolved against the image's own dot extremes (not its cell
@@ -570,8 +571,7 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   frosted backdrop with a smoothstep from clear at the top to full frost at the
   bottom, measured over the original strip bounds even when clipped. It adds no
   palette wash or black dimming; only the blur coverage changes, using one Gaussian
-  pass rather than stacked strips. The composer remains opaque and the jump button
-  supplies its own contrast. Without a backdrop pass the strip falls back to the
+  pass rather than stacked strips. The jump button supplies its own contrast. Without a backdrop pass the strip falls back to the
   page's composited appearance.
 
 Both are the page's floor, not an illustration: nothing on the page depends on them, and
@@ -613,8 +613,9 @@ the chat page has neither.
   hover fill instead.
 
 ### Inputs / Fields
-- **Style:** composer-style box — `surface`, 1px hairline, 6px radius on the main
-  composer (`input::composer_radius`) and inline fields (`input::RADIUS`).
+- **Style:** 1px hairline, fixed 12px radius on the chat composer
+  (`input::composer_radius`), 6px before preferences on inline fields (`input::RADIUS`).
+  The composer uses `surface_secondary`, with contrast-adjusted glass when available.
 - **Focus:** other fields step their border to `focus_ring` (1px). The composer keeps
   its resting hairline when focused; its caret indicates text focus.
 - **Placeholder:** `text_muted` — always a real prompt ("Search sessions…"), never a label.
@@ -1332,7 +1333,8 @@ Long transcripts must remain scanable.
 
 The composer is a primary work surface.
 
-- Use `input::composer_radius` (6px before the rounding preference) and the composer surface.
+- Use `input::composer_radius` (fixed 12px) and the composer surface; frost it only
+  with enabled, supported wallpaper glass, falling back to opaque otherwise.
 - Keep the input visually distinct from the transcript without making it look like a
   floating SaaS widget.
 - **The new-task page is the same composer in the middle of the page.** There is no second
@@ -1720,7 +1722,8 @@ below are before that preference.
 | Role | Value | Token |
 | -- | -- | -- |
 | Control radius | 5px compact / 6px standard | `button::radius(size)` |
-| Input radius | 6px; composer shares it | `input::RADIUS`, `input::composer_radius` |
+| Input radius | 6px | `input::RADIUS` |
+| Chat composer radius | fixed 12px | `input::composer_radius` |
 | Panel radius | 8px | `panel::RADIUS` |
 | Row / menu-entry radius | 5px | `list_item::RADIUS` |
 | Badge radius | 4px | `Radius::Small` |

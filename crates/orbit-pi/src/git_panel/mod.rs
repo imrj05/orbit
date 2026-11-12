@@ -4598,7 +4598,7 @@ impl GitPanel {
                     .px(DynamicSpacing::Base16.px(&theme))
                     .pt(DynamicSpacing::Base12.px(&theme))
                     .pb(DynamicSpacing::Base12.px(&theme))
-                    .rounded(input::composer_radius(&theme))
+                    .rounded(input::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.surface_secondary)

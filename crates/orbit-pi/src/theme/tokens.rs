@@ -990,11 +990,9 @@ pub mod input {
     pub const LABEL: TextSize = TextSize::Small;
     pub const ICON: IconSize = IconSize::Small;
 
-    /// The composer is a field, so it takes the field's corner. A large
-    /// multi-line box is still an input, and one corner value across every
-    /// field is what makes the workbench read as one system.
-    pub fn composer_radius(theme: &Theme) -> Pixels {
-        RADIUS.px(theme)
+    /// The chat composer has its own fixed corner, independent of UI rounding.
+    pub fn composer_radius(_theme: &Theme) -> Pixels {
+        px(12.)
     }
 }
 
@@ -1644,11 +1642,11 @@ mod tests {
         let theme = default_theme();
         assert!(close(panel::RADIUS.px(&theme), 8.));
         assert!(close(input::RADIUS.px(&theme), 6.));
-        assert_eq!(
-            input::composer_radius(&theme),
-            input::RADIUS.px(&theme),
-            "the composer shares the field radius"
-        );
+        assert_eq!(input::composer_radius(&theme), px(12.));
+        let mut rounded = theme;
+        rounded.ui.corner_rounding = crate::theme::MAX_CORNER_ROUNDING;
+        assert_eq!(input::composer_radius(&rounded), px(12.));
+        assert_ne!(input::RADIUS.px(&rounded), input::RADIUS.px(&theme));
         assert_eq!(list_item::RADIUS, Radius::Medium);
     }
 

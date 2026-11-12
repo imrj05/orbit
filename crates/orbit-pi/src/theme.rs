@@ -1522,14 +1522,30 @@ impl Theme {
     /// The fill of a card-like surface (settings board, transcript card, menu,
     /// dialog). With no active wallpaper this is exactly `base`.
     ///
-    /// The composer and the reader's own message bubble do not use this: they
-    /// carry the text someone is writing or reading back, so they keep the
-    /// palette surface and let the wallpaper stay behind the page.
+    /// The reader's own message bubble remains opaque. The composer uses this
+    /// treatment only when the wallpaper backdrop can actually be frosted.
     pub fn card_fill(self, base: Hsla) -> Hsla {
         if self.wallpaper.active {
             base.opacity(self.wallpaper.card_alpha)
         } else {
             base
+        }
+    }
+
+    /// Scope the composer's material to wallpaper actually behind the chat:
+    /// hero wallpaper is painted only on the empty new-task page.
+    pub fn for_composer(mut self, empty: bool) -> Self {
+        self.wallpaper.active &= self.wallpaper.full_window || empty;
+        self
+    }
+
+    /// The chat composer uses the contrast-adjusted card treatment only with
+    /// a supported, enabled wallpaper frost; otherwise retain its opaque fill.
+    pub fn composer_fill(self) -> Hsla {
+        if self.glass_sigma().is_some() {
+            self.card_fill(self.surface_secondary)
+        } else {
+            self.surface_secondary
         }
     }
 
@@ -2891,6 +2907,80 @@ mod tests {
             ..treatment
         };
         assert_eq!(theme.with_wallpaper(off).glass_sigma(), None);
+    }
+
+    #[test]
+    fn composer_glass_requires_supported_enabled_wallpaper() {
+        let base = Theme::dark();
+        let glass = SurfaceTreatment {
+            active: true,
+            glass: true,
+            card_alpha: 0.88,
+            ..SurfaceTreatment::OPAQUE
+        };
+        assert_eq!(base.composer_fill(), base.surface_secondary);
+        assert_eq!(
+            base.with_wallpaper(glass).composer_fill(),
+            base.surface_secondary.opacity(0.88)
+        );
+        assert_eq!(
+            base.with_wallpaper(SurfaceTreatment {
+                glass: false,
+                ..glass
+            })
+            .composer_fill(),
+            base.surface_secondary
+        );
+        assert_eq!(
+            base.with_wallpaper(SurfaceTreatment {
+                active: false,
+                ..glass
+            })
+            .composer_fill(),
+            base.surface_secondary
+        );
+    }
+
+    #[test]
+    fn composer_glass_tracks_wallpaper_behind_chat() {
+        let base = Theme::dark();
+        let hero = base.with_wallpaper(SurfaceTreatment {
+            active: true,
+            glass: true,
+            card_alpha: 0.88,
+            ..SurfaceTreatment::OPAQUE
+        });
+        let full = hero.with_wallpaper(SurfaceTreatment {
+            full_window: true,
+            ..hero.wallpaper
+        });
+        for (theme, empty, frosted) in [
+            (hero, true, true),
+            (hero, false, false),
+            (full, true, true),
+            (full, false, true),
+            (base, true, false),
+            (base, false, false),
+            (
+                hero.with_wallpaper(SurfaceTreatment {
+                    glass: false,
+                    ..hero.wallpaper
+                }),
+                true,
+                false,
+            ),
+        ] {
+            let composer = theme.for_composer(empty);
+            assert_eq!(composer.glass_sigma().is_some(), frosted);
+            assert_eq!(
+                composer.composer_fill(),
+                if frosted {
+                    base.surface_secondary.opacity(0.88)
+                } else {
+                    base.surface_secondary
+                }
+            );
+        }
     }
 
     /// A control's wash follows the surface under it: the palette's own step
