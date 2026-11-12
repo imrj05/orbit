@@ -358,9 +358,10 @@ impl OrbitApp {
         true
     }
 
-    /// A run settled. Last Turn updates on this call, before the optional
-    /// checkpoint capture; a missing repo or a failed capture does not hide
-    /// the turn's `edit` / `write` calls.
+    /// A run settled. Last Turn and the transcript's changed-files card update
+    /// on this call — the card first from the turn's `edit` / `write` calls,
+    /// then from the turn's checkpoint range once that read lands. A missing
+    /// repo or a failed capture does not hide the calls themselves.
     pub(super) fn finish_turn(&mut self, cx: &mut Context<Self>) {
         let capture = self.turns.open;
         self.turns.finish();
@@ -371,21 +372,44 @@ impl OrbitApp {
             .update(cx, |pane, cx| pane.mark_git_review_stale(cx));
         self.git_panel
             .update(cx, |panel, cx| panel.mark_review_stale(cx));
-        let Some(session) = self.session_id.clone() else {
-            return;
-        };
-        if !capture {
+        // Only a turn that was actually open settles here; a rejected prompt
+        // reuses the clock without a run behind it.
+        if !capture || self.session_id.is_none() {
             return;
         }
         let turn = self.turns.count;
+        self.spawn_turn_worktree_read(turn, true, cx);
+    }
+
+    /// Read the turn's checkpoint range off the UI thread and hand the result
+    /// to the two surfaces that describe that turn: the transcript's
+    /// changed-files card and Last Turn's worktree extras.
+    ///
+    /// `capture` writes the turn's end checkpoint first, which only the settle
+    /// path may do — a reopened session reads the refs the run already left, so
+    /// a read must never move a finished turn's end ref onto today's worktree.
+    /// A missing repository or missing refs leave both surfaces on the recorded
+    /// `edit` / `write` calls.
+    pub(super) fn spawn_turn_worktree_read(
+        &mut self,
+        turn: usize,
+        capture: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session_id.clone() else {
+            return;
+        };
+        let Some(start) = self.turns.start_of(turn) else {
+            return;
+        };
         let cwd = self
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
         // Paths the turn's calls named, normalized the way Review shows them.
-        // Anything the worktree changed outside this list is added to Last
-        // Turn once the checkpoint range for the turn exists.
+        // Everything the worktree changed outside this list is Last Turn's
+        // extras; the card lists the whole range.
         let recorded = self
             .turn_records()
             .calls_for(turn)
@@ -399,23 +423,35 @@ impl OrbitApp {
             .collect::<Vec<_>>();
         cx.spawn(async move |this, cx| {
             let key = session.clone();
-            let extra = cx
+            let read = cx
                 .background_executor()
                 .spawn(async move {
-                    checkpoint::capture_turn(&cwd, &key, turn).ok()?;
-                    git_ops::changed_outside_calls(&cwd, &key, turn, &recorded)
+                    if capture {
+                        checkpoint::capture_turn(&cwd, &key, turn).ok()?;
+                    }
+                    let extras = git_ops::changed_outside_calls(&cwd, &key, turn, &recorded)
                         .ok()
-                        .flatten()
+                        .flatten();
+                    let card = git_ops::turn_changed_files(&cwd, &key, turn, &recorded)
+                        .ok()
+                        .flatten();
+                    Some((extras, card))
                 })
                 .await;
-            let Some((paths, diff)) = extra else { return };
+            let Some((extras, card)) = read else { return };
             let _ = this.update(cx, |app, cx| {
                 if app.session_id.as_deref() != Some(session.as_str()) {
                     return;
                 }
-                app.sidepane.update(cx, |pane, cx| {
-                    pane.set_turn_extras(turn, paths, diff.numstat, diff.patch, cx);
-                });
+                if let Some(files) = card {
+                    app.transcript.set_review_card_worktree_files(start, files);
+                }
+                if let Some((paths, diff)) = extras {
+                    app.sidepane.update(cx, |pane, cx| {
+                        pane.set_turn_extras(turn, paths, diff.numstat, diff.patch, cx);
+                    });
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -1129,6 +1165,48 @@ impl OrbitApp {
         self.current_session_path = None;
         self.send(CommandBody::NewSession, "new_session");
         self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Start a GitHub task without sending it or discarding either draft.
+    pub(super) fn start_github_task(
+        &mut self,
+        workspace: PathBuf,
+        prompt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        let stored_draft = self
+            .new_task_draft
+            .as_ref()
+            .is_some_and(|draft| !draft.text.is_empty() || !draft.is_empty());
+        let current_draft = if self.composer_is_new_task || self.current_session_path.is_none() {
+            let input = self.input.read(cx);
+            !input.text().is_empty()
+                || !self.attachments.is_empty()
+                || !self.files.is_empty()
+                || !self.pasted_texts.is_empty()
+                || !input.pasted_files.is_empty()
+                || input.has_pasted_images()
+                || input.has_pasted_texts()
+        } else {
+            false
+        };
+        if stored_draft || current_draft {
+            self.push_toast(
+                crate::toast::ToastKind::Warning,
+                tr!("session.github_draft_conflict_title"),
+                Some(tr!("session.github_draft_conflict").to_string()),
+            );
+            cx.notify();
+            return;
+        }
+        self.on_new_session_in_workspace(workspace, window, cx);
+        self.input
+            .update(cx, |input, cx| input.set_text(prompt, cx));
         cx.notify();
     }
 

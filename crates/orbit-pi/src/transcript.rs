@@ -1222,7 +1222,7 @@ pub struct Transcript {
     seed_thinking: Rc<Cell<bool>>,
     /// Whether the list currently carries the end-of-task summary row (an
     /// extra slot after the last message). Shown once the latest turn has
-    /// landed an `edit` / `write`; removed when that turn has none.
+    /// settled with files behind it; removed when the next turn opens.
     tail_summary: Rc<Cell<bool>>,
     /// Message index where the latest turn starts. `None` until the app's
     /// turn clock says which turn the card should describe.
@@ -1231,8 +1231,17 @@ pub struct Transcript {
     review_turn_open: bool,
     /// Workspace used to normalize the card's paths the same way Review does.
     review_workspace: Option<PathBuf>,
-    /// Latest-turn file list. Same paths and counts as that turn's Review.
+    /// Latest-turn file list. Every file the turn changed once its checkpoint
+    /// range has been read, or the same paths and counts as that turn's
+    /// `edit` / `write` calls until then.
     review_card_files: Vec<(String, u64, u64)>,
+    /// Files the settled turn changed in the worktree, from its checkpoint
+    /// range. Complete where the recorded calls are not: a `bash` fix, a
+    /// formatter, a subagent's writes, a deleted file.
+    review_card_worktree_files: Vec<(String, u64, u64)>,
+    /// The turn [`Self::review_card_worktree_files`] describes, by its first
+    /// message index. `None` until Git answers for the turn the card names.
+    review_card_worktree_start: Option<usize>,
     /// A prompt is out and no assistant step has streamed yet. Drives the
     /// same tail slot as the summary card, showing the live "Working for…"
     /// row from the moment the user hits send instead of from the first
@@ -1287,6 +1296,8 @@ impl Transcript {
             review_turn_open: false,
             review_workspace: None,
             review_card_files: Vec::new(),
+            review_card_worktree_files: Vec::new(),
+            review_card_worktree_start: None,
             awaiting_reply: Rc::new(Cell::new(false)),
             user_turns: Rc::new(RefCell::new((0, Rc::new(Vec::new())))),
         }
@@ -1609,6 +1620,8 @@ impl Transcript {
         self.review_card_start = None;
         self.review_turn_open = false;
         self.review_card_files.clear();
+        self.review_card_worktree_files.clear();
+        self.review_card_worktree_start = None;
         self.awaiting_reply.set(false);
         self.set_tail_row(false);
     }
@@ -1649,6 +1662,8 @@ impl Transcript {
         self.review_turn_open = false;
         self.review_workspace = None;
         self.review_card_files.clear();
+        self.review_card_worktree_files.clear();
+        self.review_card_worktree_start = None;
         self.tail_summary.set(false);
         self.awaiting_reply.set(false);
     }
@@ -2702,29 +2717,69 @@ impl Transcript {
         workspace: Option<&Path>,
         turn_open: bool,
     ) {
+        // A worktree read describes one turn. Pointing the card somewhere else
+        // must drop it, or the new turn would list the previous turn's files
+        // until its own read lands.
+        if self.review_card_worktree_start != start {
+            self.review_card_worktree_start = None;
+            self.review_card_worktree_files.clear();
+        }
         self.review_card_start = start;
         self.review_turn_open = turn_open;
         self.review_workspace = workspace.map(Path::to_path_buf);
         self.refresh_review_card();
     }
 
-    /// Rebuild the card from calls that have already landed in the latest turn.
-    pub(crate) fn set_review_turn_open(&mut self, open: bool) {
-        self.review_turn_open = open;
+    /// Attach the files the settled turn changed in the worktree, read from its
+    /// checkpoint range (see [`crate::git::turn_changed_files`]).
+    ///
+    /// `start` is that turn's first message index — the scope
+    /// [`Self::set_review_card_scope`] named — so a read that lands after the
+    /// reader moved on is dropped instead of describing the turn that replaced
+    /// it. An empty list is ignored: a workspace with no turn changes keeps the
+    /// recorded calls as the card's honest fallback.
+    pub(crate) fn set_review_card_worktree_files(
+        &mut self,
+        start: usize,
+        files: Vec<(String, u64, u64)>,
+    ) {
+        if self.review_card_start != Some(start) || files.is_empty() {
+            return;
+        }
+        self.review_card_worktree_start = Some(start);
+        self.review_card_worktree_files = files;
         self.refresh_review_card();
     }
 
+    /// Rebuild the card from calls that have already landed in the latest turn.
+    ///
+    /// A settled turn's worktree read wins when it has landed: the card then
+    /// lists every file the turn changed, including those no `edit` / `write`
+    /// call named. Otherwise the recorded calls are what the conversation can
+    /// say, and the card stays hidden while that turn is still open.
     fn refresh_review_card(&mut self) {
         let Some(start) = self.review_card_start else {
             self.review_card_files.clear();
             self.set_tail_row(false);
             return;
         };
-        let calls = self.recorded_calls(start, self.message_count());
-        let files = crate::turn_review::file_counts(&calls, self.review_workspace.as_deref());
+        let files = if self.review_card_worktree_start == Some(start) {
+            self.review_card_worktree_files.clone()
+        } else {
+            let calls = self.recorded_calls(start, self.message_count());
+            crate::turn_review::file_counts(&calls, self.review_workspace.as_deref())
+        };
         let show = !self.review_turn_open && !files.is_empty();
         self.review_card_files = files;
         self.set_tail_row(show);
+    }
+
+    /// Mark whether the app's latest turn is still open. The card belongs to a
+    /// settled run, so a turn that reopened (a steer between agent
+    /// boundaries, a parked session resuming) must not paint one.
+    pub(crate) fn set_review_turn_open(&mut self, open: bool) {
+        self.review_turn_open = open;
+        self.refresh_review_card();
     }
 
     /// Add or remove the end-of-task summary row (the extra list slot after
@@ -4676,6 +4731,53 @@ mod tests {
             }
         });
         assert_eq!(diff_from_message(&value), (1, 0));
+    }
+
+    /// The card used to count a turn's `edit` / `write` calls, so a turn that
+    /// changed files through the shell produced no card at all. The checkpoint
+    /// read fills the list in once the run settles.
+    #[test]
+    fn a_settled_turn_card_lists_worktree_files_no_call_named() {
+        let mut t = Transcript::new();
+        t.set_review_card_scope(Some(0), None, true);
+        // A turn that only ran `bash`: nothing for the calls to count.
+        assert!(t.changed_files_summary().is_empty());
+        assert!(!t.tail_summary.get());
+
+        let files = vec![("a.rs".to_string(), 3, 1), ("b.rs".to_string(), 0, 4)];
+        t.set_review_card_worktree_files(0, files.clone());
+        // The turn is still open: the card belongs to a settled run.
+        assert!(!t.tail_summary.get());
+
+        t.set_review_turn_open(false);
+        assert!(t.tail_summary.get());
+        assert_eq!(t.changed_files_summary(), files);
+    }
+
+    /// A read that lands after the reader moved on must not describe the turn
+    /// that replaced it, and an empty read leaves the recorded calls alone.
+    #[test]
+    fn a_late_worktree_read_does_not_describe_another_turn() {
+        let mut t = Transcript::new();
+        t.apply_event(&Event::MessageStart {
+            value: json!({"role": "user", "content": "one"}),
+        });
+        t.set_review_card_scope(Some(0), None, false);
+        t.set_review_card_worktree_files(0, vec![("a.rs".to_string(), 1, 0)]);
+        assert_eq!(t.changed_files_summary(), vec![("a.rs".to_string(), 1, 0)]);
+
+        // A new send opens turn two and moves the card's scope with it.
+        let next = t.message_count();
+        t.set_review_card_scope(Some(next), None, true);
+        t.set_review_card_worktree_files(0, vec![("stale.rs".to_string(), 9, 9)]);
+        assert!(t.changed_files_summary().is_empty());
+        assert!(!t.tail_summary.get());
+
+        // A read that finds nothing keeps whatever the calls said.
+        t.set_review_card_scope(Some(0), None, false);
+        t.set_review_card_worktree_files(0, vec![("a.rs".to_string(), 1, 0)]);
+        t.set_review_card_worktree_files(0, Vec::new());
+        assert_eq!(t.changed_files_summary(), vec![("a.rs".to_string(), 1, 0)]);
     }
 
     #[test]

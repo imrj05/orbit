@@ -252,6 +252,81 @@ fn the_new_task_draft_comes_back_through_the_reused_process(cx: &mut gpui::TestA
     });
 }
 
+#[cfg(unix)]
+#[gpui::test]
+fn github_task_preserves_new_task_drafts_and_starts_only_when_empty(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let fake = FakePi::start();
+    let workspace = fake._dir.path().to_path_buf();
+    let session = PathBuf::from("/tmp/github-draft-session.jsonl");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            adopt_fake_pi(app, &fake);
+            app.current_workspace = Some(workspace.clone());
+            app.current_session_path = None;
+            app.input
+                .update(cx, |input, cx| input.set_text("existing", cx));
+            app.start_github_task(workspace.clone(), "github prompt".into(), window, cx);
+            assert_eq!(app.input.read(cx).text(), "existing");
+            assert!(!app.toasts.is_empty());
+
+            app.input.update(cx, |input, cx| input.set_text("  ", cx));
+            app.start_github_task(workspace.clone(), "github prompt".into(), window, cx);
+            assert_eq!(app.input.read(cx).text(), "  ");
+
+            app.input.update(cx, |input, cx| {
+                input.clear(cx);
+                input.pasted_texts.push("pending paste".into());
+                input.pasted_files.push(PathBuf::from("/tmp/pending"));
+            });
+            app.start_github_task(workspace.clone(), "github prompt".into(), window, cx);
+            assert_eq!(app.input.read(cx).pasted_texts, ["pending paste"]);
+            assert_eq!(app.input.read(cx).pasted_files.len(), 1);
+            app.input.update(cx, |input, _| {
+                input.pasted_texts.clear();
+                input.pasted_files.clear();
+            });
+
+            app.files.push(AttachedFile {
+                path: "/tmp/a".into(),
+                name: "a".into(),
+                size: 1,
+            });
+            app.start_github_task(workspace.clone(), "github prompt".into(), window, cx);
+            assert_eq!(app.files.len(), 1);
+            assert_eq!(app.input.read(cx).text(), "");
+            app.files.clear();
+
+            app.current_session_path = Some(session.clone());
+            app.composer_is_new_task = false;
+            app.input
+                .update(cx, |input, cx| input.set_text("session draft", cx));
+            app.new_task_draft = Some(ComposerDraft {
+                pasted_texts: vec![PastedText::new("stored paste".into())],
+                ..Default::default()
+            });
+            app.start_github_task(workspace.clone(), "github prompt".into(), window, cx);
+            assert_eq!(app.current_session_path.as_ref(), Some(&session));
+            assert_eq!(app.input.read(cx).text(), "session draft");
+            assert_eq!(
+                app.new_task_draft.as_ref().unwrap().pasted_texts[0].content,
+                "stored paste"
+            );
+
+            app.new_task_draft = None;
+            app.start_github_task(workspace.clone(), "github prompt".into(), window, cx);
+            assert_eq!(app.input.read(cx).text(), "github prompt");
+            assert_eq!(app.drafts.get(&session).unwrap().text, "session draft");
+            assert!(app.files.is_empty());
+            assert!(app.pasted_texts.is_empty());
+        });
+    });
+}
+
 /// Pills are only a compact way to *hold* text: on submit the paste rejoins
 /// the prompt as its own block, so the agent never reads it as a continuation
 /// of the sentence above.

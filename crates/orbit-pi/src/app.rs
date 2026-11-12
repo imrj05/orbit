@@ -2656,6 +2656,14 @@ impl OrbitApp {
                 });
             }));
         });
+        let app_weak = cx.entity().downgrade();
+        app.git_panel.update(cx, |panel, _| {
+            panel.set_start_github_task(Rc::new(move |workspace, prompt, window, cx| {
+                let _ = app_weak.update(cx, |app, cx| {
+                    app.start_github_task(workspace, prompt, window, cx);
+                });
+            }));
+        });
         // The Git page's Back button leaves the page. The panel closes itself
         // first, so this only clears the app flag (never re-enters the panel).
         let app_weak = cx.entity().downgrade();

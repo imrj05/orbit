@@ -878,6 +878,17 @@ impl OrbitApp {
         // latest number step backwards, then refresh Last Turn.
         self.rebuild_turn_clock();
         self.push_turn_records(cx);
+        // A reopened session has no settle to ask Git what the last turn changed
+        // in the worktree, so both the card and Last Turn would fall back to the
+        // turn's `edit` / `write` calls — a `bash` fix or a subagent's writes
+        // would go missing. Read the checkpoints the run left behind instead of
+        // capturing a new one, which would move a finished turn's end ref onto
+        // today's worktree.
+        if !self.turns.open {
+            if let Some(latest) = self.turns.latest {
+                self.spawn_turn_worktree_read(latest, false, cx);
+            }
+        }
     }
 
     /// Apply a command response to the app. The arguments are the response's

@@ -14,7 +14,7 @@ use std::process::{Command, Output};
 use anyhow::{anyhow, bail};
 
 use crate::checkpoint::{self, EMPTY_TREE};
-use crate::review::Source;
+use crate::review::{self, Source};
 
 /// One `git diff` capture: numstat summary plus the (possibly full-context)
 /// patch text.
@@ -414,6 +414,58 @@ pub fn changed_outside_calls(
             complete_context,
         },
     )))
+}
+
+/// Every file a settled turn changed, with the counts the transcript's
+/// changed-files card shows.
+///
+/// The card used to count the turn's `edit` / `write` calls, so a `bash` fix, a
+/// formatter, a subagent's writes, or a deleted file left it empty while the
+/// turn had plainly changed files. The turn's checkpoint range is the same
+/// range Last Turn diffs, so the card and the Review pane its button opens
+/// describe one turn the same way.
+///
+/// `recorded` holds the paths the calls named, so the card keeps the order the
+/// conversation produced and appends everything else in Git's order. Returns
+/// `None` when the turn's checkpoints are unavailable or changed nothing.
+pub fn turn_changed_files(
+    cwd: &Path,
+    session: &str,
+    turn: usize,
+    recorded: &[String],
+) -> anyhow::Result<Option<Vec<(String, u64, u64)>>> {
+    if turn == 0 {
+        return Ok(None);
+    }
+    ensure_repository(cwd)?;
+    let source = Source::LastTurn { turn_count: turn };
+    let (from, to) = resolve_range(cwd, source, Some(session))?;
+    // Numstat only: the card needs names and counts, and the pane parses the
+    // patch itself when it opens. An empty patch keeps this off the
+    // highlighter.
+    let numstat = diff_output_paths(cwd, &from, &to, &["--numstat"], &["."])?;
+    let files = review::parse_collected(source, &numstat, "", true)
+        .files
+        .into_iter()
+        .map(|file| (file.path, file.additions, file.deletions))
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(recorded_first(files, recorded)))
+}
+
+/// The turn's named files in call order, then everything it changed silently.
+fn recorded_first(files: Vec<(String, u64, u64)>, recorded: &[String]) -> Vec<(String, u64, u64)> {
+    let mut ordered = Vec::with_capacity(files.len());
+    let mut rest = files;
+    for path in recorded {
+        if let Some(index) = rest.iter().position(|(candidate, _, _)| candidate == path) {
+            ordered.push(rest.remove(index));
+        }
+    }
+    ordered.extend(rest);
+    ordered
 }
 
 fn resolve_range(
@@ -1872,6 +1924,55 @@ mod tests {
         assert_eq!(summary(&data), (1, 1, 0));
         assert!(data.patch.contains("from_turn"));
         assert!(!data.patch.contains("after_turn"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_turn_card_lists_every_file_the_turn_changed() {
+        let root = repository();
+        let session = "card-session";
+        checkpoint::capture_turn(&root, session, 0).unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        // One file through a recorded `edit`, one through a shell command no
+        // tool call named.
+        fs::write(root.join("src/lib.rs"), "fn baseline() {}\nfn named() {}\n").unwrap();
+        fs::write(root.join("src/formatted.rs"), "fn formatted() {}\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        let recorded = vec!["src/formatted.rs".to_string()];
+        let files = turn_changed_files(&root, session, 1, &recorded)
+            .unwrap()
+            .expect("the turn changed two files");
+        assert_eq!(
+            files
+                .iter()
+                .map(|(path, _, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/formatted.rs", "src/lib.rs"],
+            "a named file keeps its call order; worktree-only files follow"
+        );
+        assert!(
+            files
+                .iter()
+                .all(|(_, added, deleted)| *added + *deleted > 0),
+            "every row carries the counts the card prints: {files:?}"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// A turn that changed nothing has no card, even though its checkpoints
+    /// exist.
+    #[test]
+    fn a_turn_that_changed_nothing_has_no_card_files() {
+        let root = repository();
+        let session = "card-empty-session";
+        checkpoint::capture_turn(&root, session, 0).unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        assert!(turn_changed_files(&root, session, 1, &[])
+            .unwrap()
+            .is_none());
         fs::remove_dir_all(root).ok();
     }
 

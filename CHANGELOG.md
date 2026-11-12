@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Composer "+" menu picks several images or files at once.** "Attach images…"
+  and "Attach files…" open a multi-select picker, and the chosen items land in
+  the tray in the order the picker returned them. Decoding and compression run
+  off the UI thread. The shared eight-item cap still applies; when a selection
+  overflows it, the status line says how many were added and how many were
+  turned away.
+
 ## [0.2.18] - 2026-11-12
 
 ### Added

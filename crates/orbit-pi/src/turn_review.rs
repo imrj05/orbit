@@ -81,6 +81,17 @@ pub(crate) struct TurnClock {
 }
 
 impl TurnClock {
+    /// Message index where `turn` starts, when this clock still knows it.
+    /// The transcript's changed-files card is keyed to this, so a Git read that
+    /// lands after the reader moved on is dropped instead of describing the
+    /// turn that replaced it.
+    pub(crate) fn start_of(&self, turn: usize) -> Option<usize> {
+        self.starts
+            .iter()
+            .find(|(number, _)| *number == turn)
+            .map(|(_, start)| *start)
+    }
+
     /// Open a turn at `message_index` (the user message about to be appended).
     /// Returns false when a turn is already open — the caller must not start
     /// a second one.

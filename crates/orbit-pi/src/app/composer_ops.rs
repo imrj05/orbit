@@ -883,6 +883,36 @@ impl OrbitApp {
         }
     }
 
+    /// Queue a batch from a multi-select picker, in picker order, until the
+    /// shared cap is reached. Paths turned away by the cap are counted and
+    /// reported, so a partial batch reads as partial instead of silently
+    /// losing files.
+    pub(super) fn queue_picked(
+        &mut self,
+        picked: Vec<QueuedPath>,
+        mut window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.attachment_slots_used();
+        let mut turned_away = 0;
+        for queued in picked {
+            if self.attachment_budget_exhausted() {
+                turned_away += 1;
+                continue;
+            }
+            self.queue_path(queued, window.as_deref_mut(), cx);
+        }
+        if turned_away > 0 {
+            let added = self.attachment_slots_used() - before;
+            self.set_status(tr!(
+                "composer_ops.batch_limit",
+                added = added,
+                skipped = turned_away,
+                count = MAX_ATTACHMENTS,
+            ));
+        }
+    }
+
     /// Files dragged over the window (external OS drag — gpui mirrors them
     /// as an `ExternalPaths` drag). `on_drag_move` fires for *every* move
     /// during the drag with this element's bounds, so one handler tracks
@@ -928,8 +958,9 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Add menu → "Attach image…": pick an image file and queue it.
-    pub(super) fn attach_image(&mut self, cx: &mut Context<Self>) {
+    /// Add menu → "Attach images…": pick one or more image files and queue
+    /// them in the order the picker returns them.
+    pub(super) fn attach_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.attachment_budget_exhausted() {
             self.report_attachment_limit();
             cx.notify();
@@ -943,29 +974,13 @@ impl OrbitApp {
         let dialog = rfd::AsyncFileDialog::new()
             .set_title(tr!("composer_ops.attach_image_title"))
             .add_filter("Image", &["png", "jpg", "jpeg", "webp", "gif", "bmp"]);
-        cx.spawn(async move |this, cx| {
-            let Some(handle) = dialog.pick_file().await else {
-                return;
-            };
-            let path = handle.path().to_path_buf();
-            // Decode + compress off the UI thread; only the finished
-            // attachment (and its preview) lands on the next update.
-            let attachment = Attachment::from_path(&path);
-            let _ = this.update(cx, |app, cx| {
-                match attachment {
-                    Some(attachment) => app.push_attachment(attachment, cx),
-                    None => app.set_status(tr!("composer_ops.unsupported_image_format")),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        Self::queue_picked_files(dialog, window, cx);
     }
 
-    /// Add menu → "Attach file…": any file. Images become image attachments;
-    /// any other file becomes a file chip (same rule as a file dropped on the
-    /// window), and only a folder or unreadable path is referenced in the
-    /// text.
+    /// Add menu → "Attach files…": one or more files. Images become image
+    /// attachments; any other file becomes a file chip (same rule as a file
+    /// dropped on the window), and only a folder or unreadable path is
+    /// referenced in the text.
     pub(super) fn attach_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.attachment_budget_exhausted() {
             self.report_attachment_limit();
@@ -975,16 +990,33 @@ impl OrbitApp {
         // See `attach_image` — never block the main thread on the native panel
         // while this entity is borrowed.
         let dialog = rfd::AsyncFileDialog::new().set_title(tr!("composer_ops.attach_file_title"));
+        Self::queue_picked_files(dialog, window, cx);
+    }
+
+    /// Run a multi-select picker and queue what it returns. Paths are
+    /// classified (read, and for an image decoded and compressed) on the
+    /// background executor so a large selection never stalls a frame; the
+    /// finished chips land on the UI thread in picker order.
+    fn queue_picked_files(dialog: rfd::AsyncFileDialog, window: &Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            let Some(handle) = dialog.pick_file().await else {
+            let Some(handles) = dialog.pick_files().await else {
                 return;
             };
-            let path = handle.path().to_path_buf();
-            // Read + decode off the UI thread; only the finished attachment
-            // (and its preview) lands on the next update.
-            let queued = QueuedPath::classify(&path);
+            let paths: Vec<PathBuf> = handles
+                .iter()
+                .map(|handle| handle.path().to_path_buf())
+                .collect();
+            let queued = cx
+                .background_executor()
+                .spawn(async move {
+                    paths
+                        .iter()
+                        .map(|path| QueuedPath::classify(path))
+                        .collect::<Vec<_>>()
+                })
+                .await;
             let _ = this.update_in(cx, |app, window, cx| {
-                app.queue_path(queued, Some(window), cx);
+                app.queue_picked(queued, Some(window), cx);
                 cx.notify();
             });
         })
@@ -1087,7 +1119,7 @@ impl OrbitApp {
         self.add_menu_open = false;
         self.add_menu_highlight = 0;
         match ix {
-            0 => self.attach_image(cx),
+            0 => self.attach_image(window, cx),
             1 => self.attach_file(window, cx),
             // Insert `@` at the caret — the file-mention autocomplete opens
             // on its own from the text trigger.
