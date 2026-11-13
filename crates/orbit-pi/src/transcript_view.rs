@@ -73,7 +73,7 @@ fn frosted_transcript_fill(theme: Theme) -> Hsla {
 /// Opens the changed-files Review in the side pane (see `sidepane.rs`) —
 /// handed down from the app so the transcript's Review buttons can point
 /// at it without knowing the pane exists.
-pub(crate) type ReviewOpener = Rc<dyn Fn(&mut Window, &mut App)>;
+pub(crate) type ReviewOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 /// Opens one attachment image in the app's full-window lightbox. Handed down
 /// from the app so an image tile can open a surface it doesn't own.
@@ -317,6 +317,8 @@ pub(crate) struct TranscriptView {
     /// End-of-task changed-files summary — `Some` renders one extra row
     /// after the last message (the list's tail slot).
     pub summary_files: Option<Vec<(String, u64, u64)>>,
+    pub summary_turn: Option<usize>,
+    pub history_cards: Vec<(usize, usize, Vec<(String, u64, u64)>)>,
     /// When the settled run finished (last message's timestamp) — shown in
     /// the summary card's footer next to the copy affordance.
     pub summary_finished_at: Option<i64>,
@@ -1264,6 +1266,8 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let rail_autoscroll = view.rail_autoscroll.clone();
     let scroller = view.scroller.clone();
     let summary_files = view.summary_files.clone();
+    let summary_turn = view.summary_turn;
+    let history_cards = view.history_cards.clone();
     let summary_finished_at = view.summary_finished_at;
     let summary_usage = view.summary_usage.clone();
     let review_changes = view.review_changes.clone();
@@ -1425,7 +1429,8 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 expanded_files.borrow().contains(&ix),
                 expanded_files.clone(),
                 scroller.clone(),
-                review_changes.clone(),
+                summary_turn
+                    .and_then(|turn| review_changes.clone().map(|open| (turn, open))),
             );
             // One run footer, after the changed-files card (turn order:
             // answer → files card → Copy): the copy affordance copies the
@@ -1494,7 +1499,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 )
                 .into_any_element();
         }
-        render_row(
+        let row = render_row(
             RowPaint {
                 messages: messages.clone(),
                 text_selection: text_selection.clone(),
@@ -1537,7 +1542,43 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             },
             cx,
         )
-        .into_any_element()
+        .into_any_element();
+        if let Some((_, turn, files)) = history_cards.iter().find(|(last, _, _)| *last == ix) {
+            let card = render_changed_files(
+                files,
+                *theme::get(cx),
+                nerd.as_ref(),
+                ix,
+                workspace.as_deref(),
+                expanded_files.borrow().contains(&ix),
+                expanded_files.clone(),
+                scroller.clone(),
+                review_changes.clone().map(|open| (*turn, open)),
+            );
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(row)
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .px(DynamicSpacing::Base20.px(theme::get(cx)))
+                        .pb(px(22.))
+                        .child(
+                            div()
+                                .w_full()
+                                .max_w(px(CONTENT_MAX_WIDTH))
+                                .min_w_0()
+                                .child(card),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            row
+        }
     })
     .w_full()
     .h_full();
@@ -8708,7 +8749,7 @@ pub(crate) fn render_changed_files(
     expanded: bool,
     expanded_files: Rc<RefCell<HashSet<usize>>>,
     scroller: MessageScrollerState,
-    review_changes: Option<ReviewOpener>,
+    review_changes: Option<(usize, ReviewOpener)>,
 ) -> impl IntoElement {
     const EXPANDED_PREVIEW_LIMIT: usize = 12;
     let additions: u64 = files.iter().map(|(_, added, _)| *added).sum();
@@ -8773,7 +8814,7 @@ pub(crate) fn render_changed_files(
 
     // Review affordance: opens the changed-files diff in the right side
     // pane's Review tab (no external editor hop).
-    let review = review_changes.map(|review| {
+    let review = review_changes.map(|(turn, review)| {
         button_frame(
             div().id(ElementId::NamedInteger(
                 "review-changes".into(),
@@ -8795,7 +8836,7 @@ pub(crate) fn render_changed_files(
             theme.text_muted,
         ))
         .child(tr!("transcript_view.review"))
-        .on_click(move |_, window, cx| review(window, cx))
+        .on_click(move |_, window, cx| review(turn, window, cx))
     });
 
     let mut header = div()
@@ -11122,6 +11163,8 @@ mod tests {
             rail_scroll: ScrollHandle::new(),
             rail_autoscroll: Rc::new(Cell::new(None)),
             summary_files: None,
+            summary_turn: None,
+            history_cards: Vec::new(),
             summary_finished_at: None,
             summary_usage: None,
             review_changes: None,

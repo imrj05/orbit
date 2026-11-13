@@ -38,6 +38,7 @@ use crate::git::{self, CommitEntry, StatusRow};
 use crate::git_ops::{self, InProgress};
 use crate::issue_message::{self, DraftKind};
 use crate::model_selector::provider_icon;
+use crate::motion::Hover;
 use crate::sidepane::{FileActions, SectionActions, SidePane};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
@@ -1778,48 +1779,51 @@ impl GitPanel {
         }
         for (index, template) in templates.iter().enumerate() {
             let selected = current == Some(index);
-            list = list.child(
-                picker_entry(
-                    div().id(gpui::ElementId::Name(
-                        format!("git-template-{index}").into(),
-                    )),
-                    &theme,
-                )
-                .cursor_pointer()
-                .text_color(theme.text_secondary)
-                .hover_state(&theme)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.set_template(target, Some(index), cx)
-                }))
-                .child(icon(
-                    "icons/file.svg",
+            let row = picker_entry(
+                div().id(gpui::ElementId::Name(
+                    format!("git-template-{index}").into(),
+                )),
+                &theme,
+            )
+            .cursor_pointer()
+            .text_color(theme.text_secondary)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.set_template(target, Some(index), cx)
+            }))
+            .child(icon(
+                "icons/file.svg",
+                context_menu::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(template.label())
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(template.path.clone()),
+                    ),
+            )
+            .when(selected, |row| {
+                row.child(icon(
+                    "icons/check.svg",
                     context_menu::ICON.px(&theme),
-                    theme.text_muted,
+                    theme.accent_text,
                 ))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(template.label())
-                        .child(
-                            div()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(TextSize::XSmall.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(template.path.clone()),
-                        ),
-                )
-                .when(selected, |row| {
-                    row.child(icon(
-                        "icons/check.svg",
-                        context_menu::ICON.px(&theme),
-                        theme.accent_text,
-                    ))
-                }),
-            );
+            });
+            list = list.child(crate::motion::hover(
+                row,
+                format!("git-template-{index}"),
+                &theme,
+                Hover::row(&theme),
+            ));
         }
 
         let menu = picker_surface(div().id(id), &theme)
@@ -6231,12 +6235,12 @@ impl GitPanel {
                     self.issue_filter.label.as_deref() == Some(name.as_str())
                 }
             };
-            let id = gpui::ElementId::Name(format!("git-label-{name}").into());
-            list = list.child(
+            let hover_name = format!("git-label-{name}");
+            let id = gpui::ElementId::Name(hover_name.clone().into());
+            list = list.child(crate::motion::hover(
                 picker_entry(div().id(id), &theme)
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, _, cx| match target {
                             LabelMenuTarget::Issue => this.toggle_issue_label(name.clone(), cx),
@@ -6254,7 +6258,10 @@ impl GitPanel {
                             theme.accent_text,
                         ))
                     }),
-            );
+                hover_name,
+                &theme,
+                Hover::row(&theme),
+            ));
         }
         let menu = picker_surface(div().id("git-label-menu"), &theme)
             .w(px(260.))
@@ -7528,9 +7535,7 @@ impl GitPanel {
                 row.bg(theme.surface_selected)
                     .text_color(theme.selection_fg)
             })
-            .when(!selected, |row| {
-                row.text_color(theme.text_secondary).hover_state(&theme)
-            })
+            .when(!selected, |row| row.text_color(theme.text_secondary))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if selected {
                     this.dismiss_branch_menu(cx);
@@ -7599,7 +7604,16 @@ impl GitPanel {
                     .child(age),
             );
         }
-        row.into_any_element()
+        if selected {
+            row.into_any_element()
+        } else {
+            crate::motion::hover(
+                row,
+                format!("git-branch-{name}"),
+                &theme,
+                Hover::row(&theme),
+            )
+        }
     }
 
     /// The ref picker opened by "Merge branch…" / "Rebase onto…".
@@ -7683,14 +7697,14 @@ impl GitPanel {
             }
             let name = entry.name.clone();
             let label = entry.name.clone();
-            let id = gpui::ElementId::Name(format!("git-ref-{name}").into());
-            menu = menu.child(
+            let hover_name = format!("git-ref-{name}");
+            let id = gpui::ElementId::Name(hover_name.clone().into());
+            menu = menu.child(crate::motion::hover(
                 picker_entry(div().id(id), &theme)
                     .h(picker::entry_height(&theme))
                     .flex_none()
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, _, cx| match target {
                             RefTarget::Merge => this.merge_ref(&name, cx),
@@ -7714,7 +7728,10 @@ impl GitPanel {
                             .whitespace_nowrap()
                             .child(label),
                     ),
-            );
+                hover_name,
+                &theme,
+                Hover::row(&theme),
+            ));
         }
         Some(menu.into_any_element())
     }
@@ -8429,22 +8446,25 @@ fn menu_row(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    press(
-        picker_entry(div().id(id).group(BUTTON_GROUP), &theme)
-            .h(picker::entry_height(&theme))
-            .flex_none()
-            .cursor_pointer()
-            .text_color(theme.text_secondary)
-            .hover_state(&theme),
+    crate::motion::hover(
+        press(
+            picker_entry(div().id(id).group(BUTTON_GROUP), &theme)
+                .h(picker::entry_height(&theme))
+                .flex_none()
+                .cursor_pointer()
+                .text_color(theme.text_secondary),
+        )
+        .on_click(listener)
+        .child(icon(
+            icon_path,
+            context_menu::ICON.px(&theme),
+            theme.text_muted,
+        ))
+        .child(div().flex_1().min_w_0().truncate().child(label.to_string())),
+        id,
+        &theme,
+        Hover::row(&theme),
     )
-    .on_click(listener)
-    .child(icon(
-        icon_path,
-        context_menu::ICON.px(&theme),
-        theme.text_muted,
-    ))
-    .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
-    .into_any_element()
 }
 
 /// A hairline between menu groups (Zed's `ListSeparator`).
@@ -8470,7 +8490,7 @@ fn ref_icon(kind: git::RefKind) -> &'static str {
 /// One row in the Stashes section: message plus pop / apply / drop.
 fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
     let index = stash.index;
-    div()
+    let row = div()
         .id(gpui::ElementId::Name(format!("git-stash-{index}").into()))
         .group("git-row")
         .mx(DynamicSpacing::Base12.px(&theme))
@@ -8480,7 +8500,6 @@ fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) 
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
-        .hover_state(&theme)
         .child(icon(
             "icons/clock.svg",
             IconSize::XSmall.px(&theme),
@@ -8526,8 +8545,13 @@ fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) 
                     theme,
                     cx.listener(move |this, _: &ClickEvent, _, cx| this.stash_drop(index, cx)),
                 )),
-        )
-        .into_any_element()
+        );
+    crate::motion::hover(
+        row,
+        format!("git-stash-{index}"),
+        &theme,
+        Hover::wash(&theme),
+    )
 }
 
 /// Whether the create action collapses to its plus glyph. The label remains in
@@ -9144,10 +9168,9 @@ fn github_list_row<P>(
 where
     P: Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(gpui::ElementId::Name(
-            format!("git-{}-{}", parts.kind, parts.number).into(),
-        ))
+    let name = format!("git-{}-{}", parts.kind, parts.number);
+    let row = div()
+        .id(gpui::ElementId::Name(name.clone().into()))
         .debug_selector(|| "github-row".into())
         .group("git-row")
         .px(DynamicSpacing::Base08.px(&theme))
@@ -9165,15 +9188,20 @@ where
         // row does not provide, so the row clips as well as the run does.
         .overflow_hidden()
         .cursor_pointer()
-        .hover_state(&theme)
-        .when(selected, |row| {
-            row.bg(theme.surface_selected).border_color(theme.border)
-        })
+        .when(selected, |row| row.border_color(theme.border))
         .on_click(on_click)
         .child(github_row_header(&parts, theme))
         .child(github_row_title(parts.title, parts.emphasized, theme))
-        .child(github_row_meta(parts.url, parts.labels, theme))
-        .into_any_element()
+        .child(github_row_meta(parts.url, parts.labels, theme));
+    crate::motion::hover(
+        row,
+        name,
+        &theme,
+        Hover::over(
+            selected.then_some(theme.surface_selected),
+            theme.hover_wash(),
+        ),
+    )
 }
 
 /// One issue row in the list: state, title, repository and labels.
@@ -9784,8 +9812,6 @@ fn graph_row(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover_state(&theme)
-        .when(selected, |s| s.bg(theme.surface_selected))
         .on_click(listener)
         .child(graph_gutter(row, theme))
         .child(
@@ -9843,17 +9869,24 @@ fn graph_row(
                 )),
         );
     }
-    element
-        .child(icon(
-            if selected {
-                "icons/arrow-down.svg"
-            } else {
-                "icons/arrow-right.svg"
-            },
-            IconSize::XSmall.px(&theme),
-            theme.text_muted,
-        ))
-        .into_any_element()
+    let element = element.child(icon(
+        if selected {
+            "icons/arrow-down.svg"
+        } else {
+            "icons/arrow-right.svg"
+        },
+        IconSize::XSmall.px(&theme),
+        theme.text_muted,
+    ));
+    crate::motion::hover(
+        element,
+        format!("git-graph-{}", commit.short),
+        &theme,
+        Hover::over(
+            selected.then_some(theme.surface_selected),
+            theme.hover_wash(),
+        ),
+    )
 }
 
 /// The lane drawing for one row: a canvas sized to the row's widest lane, with
@@ -9999,8 +10032,6 @@ fn commit_row(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover_state(&theme)
-        .when(selected, |row| row.bg(theme.surface_selected))
         .on_click(listener)
         .child(history_marker(theme))
         .child(
@@ -10060,7 +10091,7 @@ fn commit_row(
             move |_, _, cx| cx.open_url(&url),
         ));
     }
-    row.child(icon(
+    let row = row.child(icon(
         if selected {
             "icons/arrow-down.svg"
         } else {
@@ -10068,8 +10099,16 @@ fn commit_row(
         },
         IconSize::XSmall.px(&theme),
         theme.text_muted,
-    ))
-    .into_any_element()
+    ));
+    crate::motion::hover(
+        row,
+        format!("git-commit-{}", commit.short),
+        &theme,
+        Hover::over(
+            selected.then_some(theme.surface_selected),
+            theme.hover_wash(),
+        ),
+    )
 }
 
 /// Diameter of a row's leading git marker. The separator inset below is

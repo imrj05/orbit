@@ -427,7 +427,8 @@ pub fn changed_outside_calls(
 ///
 /// `recorded` holds the paths the calls named, so the card keeps the order the
 /// conversation produced and appends everything else in Git's order. Returns
-/// `None` when the turn's checkpoints are unavailable or changed nothing.
+/// `None` for the baseline; an empty vector means the checkpoints exist but
+/// the turn has no net changes. Missing checkpoints return an error.
 pub fn turn_changed_files(
     cwd: &Path,
     session: &str,
@@ -444,15 +445,38 @@ pub fn turn_changed_files(
     // patch itself when it opens. An empty patch keeps this off the
     // highlighter.
     let numstat = diff_output_paths(cwd, &from, &to, &["--numstat"], &["."])?;
-    let files = review::parse_collected(source, &numstat, "", true)
+    Ok(Some(turn_files_from_numstat(source, &numstat, recorded)))
+}
+
+/// Build the card from the same checkpoint diff that Review displays.
+pub(crate) fn turn_files_from_numstat(
+    source: Source,
+    numstat: &str,
+    recorded: &[String],
+) -> Vec<(String, u64, u64)> {
+    let files = review::parse_collected(source, numstat, "", true)
         .files
         .into_iter()
         .map(|file| (file.path, file.additions, file.deletions))
         .collect::<Vec<_>>();
-    if files.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(recorded_first(files, recorded)))
+    recorded_first(files, recorded)
+}
+
+/// Identify files in the collected checkpoint diff that no call named.
+pub(crate) fn outside_call_paths(
+    files: &[(String, u64, u64)],
+    recorded: &[String],
+) -> Vec<String> {
+    files
+        .iter()
+        .map(|(path, _, _)| path)
+        .filter(|path| {
+            !recorded
+                .iter()
+                .any(|recorded| *path == recorded || path.ends_with(&format!("/{recorded}")))
+        })
+        .cloned()
+        .collect()
 }
 
 /// The turn's named files in call order, then everything it changed silently.
@@ -481,14 +505,12 @@ fn resolve_range(
             if turn_count == 0 {
                 bail!("the first checkpoint is a baseline, not a completed turn");
             }
-            let from = [
-                checkpoint::turn_diff_base_ref(session, turn_count),
-                checkpoint::turn_start_ref(session, turn_count),
-                checkpoint::checkpoint_ref(session, turn_count - 1),
-            ]
-            .into_iter()
-            .find_map(|rev| checkpoint::resolve(cwd, &rev))
-            .ok_or_else(|| anyhow!("the turn's starting checkpoint is unavailable"))?;
+            // The previous end can predate edits made between turns. Even a
+            // surviving diff-base ref is not authoritative without this start.
+            let start = checkpoint::resolve(cwd, &checkpoint::turn_start_ref(session, turn_count))
+                .ok_or_else(|| anyhow!("the turn's starting checkpoint is unavailable"))?;
+            let from = checkpoint::resolve(cwd, &checkpoint::turn_diff_base_ref(session, turn_count))
+                .unwrap_or(start);
             let to = checkpoint::resolve(cwd, &checkpoint::checkpoint_ref(session, turn_count))
                 .ok_or_else(|| anyhow!("the turn's ending checkpoint is unavailable"))?;
             (from, to)
@@ -1928,6 +1950,56 @@ mod tests {
     }
 
     #[test]
+    fn last_turn_checkpoint_diff_is_the_full_net_change() {
+        let root = repository();
+        let session = "net-diff-session";
+        fs::write(root.join("deleted.txt"), "remove me\n").unwrap();
+        fs::write(root.join("reverted.txt"), "unchanged\n").unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        fs::write(root.join("src/lib.rs"), "intermediate\n").unwrap();
+        fs::write(root.join("src/lib.rs"), "final\n").unwrap();
+        fs::write(root.join("reverted.txt"), "temporary\n").unwrap();
+        fs::write(root.join("reverted.txt"), "unchanged\n").unwrap();
+        fs::remove_file(root.join("deleted.txt")).unwrap();
+        fs::write(root.join("shell.txt"), "shell change\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+        fs::write(root.join("src/lib.rs"), "later\n").unwrap();
+
+        let data = collect(&root, Source::LastTurn { turn_count: 1 }, Some(session));
+        let files = turn_files_from_numstat(Source::LastTurn { turn_count: 1 }, &data.numstat, &[]);
+        assert_eq!(
+            files.iter().map(|file| file.0.as_str()).collect::<Vec<_>>(),
+            vec!["deleted.txt", "shell.txt", "src/lib.rs"]
+        );
+        assert!(data.patch.contains("+final"));
+        assert!(data.patch.contains("-fn baseline() {}"));
+        assert!(data.patch.contains("-remove me"));
+        assert!(!data.patch.contains("intermediate"));
+        assert!(!data.patch.contains("later"));
+        let recorded = vec!["src/lib.rs".to_string(), "reverted.txt".to_string()];
+        assert_eq!(
+            outside_call_paths(&files, &recorded),
+            vec!["deleted.txt", "shell.txt"]
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn last_turn_checkpoint_diff_can_be_empty_after_a_revert() {
+        let root = repository();
+        let session = "net-empty-session";
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        fs::write(root.join("src/lib.rs"), "intermediate\n").unwrap();
+        fs::write(root.join("src/lib.rs"), "fn baseline() {}\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        let data = collect(&root, Source::LastTurn { turn_count: 1 }, Some(session));
+        assert!(data.numstat.is_empty());
+        assert!(data.patch.is_empty());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn a_turn_card_lists_every_file_the_turn_changed() {
         let root = repository();
         let session = "card-session";
@@ -1970,9 +2042,10 @@ mod tests {
         checkpoint::capture_turn_start(&root, session, 1).unwrap();
         checkpoint::capture_turn(&root, session, 1).unwrap();
 
-        assert!(turn_changed_files(&root, session, 1, &[])
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            turn_changed_files(&root, session, 1, &[]).unwrap(),
+            Some(vec![])
+        );
         fs::remove_dir_all(root).ok();
     }
 
@@ -2029,6 +2102,59 @@ mod tests {
         assert!(changed_outside_calls(&root, session, 1, &recorded)
             .unwrap()
             .is_none());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn last_turn_missing_start_does_not_attribute_between_turn_edits() {
+        let root = repository();
+        let session = "missing-start-session";
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+        fs::write(root.join("between.txt"), "between turns\n").unwrap();
+        fs::write(root.join("during.txt"), "during turn\n").unwrap();
+        checkpoint::capture_turn(&root, session, 2).unwrap();
+
+        let source = Source::LastTurn { turn_count: 2 };
+        let error = collect_review_diff(&root, source, Some(session)).unwrap_err();
+        assert!(error.contains("starting checkpoint"), "{error}");
+        assert!(turn_changed_files(&root, session, 2, &[]).is_err());
+        assert!(changed_outside_calls(&root, session, 2, &[]).is_err());
+        // An orphaned diff-base is not proof that this turn's start survived.
+        let previous = checkpoint::resolve(&root, &checkpoint::checkpoint_ref(session, 1)).unwrap();
+        git_ok(&root, &["update-ref", &checkpoint::turn_diff_base_ref(session, 2), &previous]);
+        assert!(collect_review_diff(&root, source, Some(session)).is_err());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn last_turn_start_excludes_between_turn_edits() {
+        let root = repository();
+        let session = "between-turns-session";
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+        fs::write(root.join("between.txt"), "between turns\n").unwrap();
+        checkpoint::capture_turn_start(&root, session, 2).unwrap();
+        fs::write(root.join("during.txt"), "during turn\n").unwrap();
+        checkpoint::capture_turn(&root, session, 2).unwrap();
+
+        let data = collect(&root, Source::LastTurn { turn_count: 2 }, Some(session));
+        assert!(data.numstat.contains("during.txt"));
+        assert!(!data.numstat.contains("between.txt"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn last_turn_without_diff_base_uses_its_start_for_compatibility() {
+        let root = repository();
+        let session = "start-only-session";
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        fs::write(root.join("during.txt"), "during turn\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+        git_ok(&root, &["update-ref", "-d", &checkpoint::turn_diff_base_ref(session, 1)]);
+
+        let data = collect(&root, Source::LastTurn { turn_count: 1 }, Some(session));
+        assert!(data.numstat.contains("during.txt"));
         fs::remove_dir_all(root).ok();
     }
 

@@ -215,7 +215,10 @@ fn a_picked_batch_keeps_picker_order_and_reports_what_the_cap_turns_away(
                 cx,
             );
             assert_eq!(app.attachments.len(), MAX_ATTACHMENTS);
-            assert_eq!(app.attachments.last().map(|a| a.name.as_str()), Some("x.png"));
+            assert_eq!(
+                app.attachments.last().map(|a| a.name.as_str()),
+                Some("x.png")
+            );
             assert_eq!(
                 app.status,
                 tr!(

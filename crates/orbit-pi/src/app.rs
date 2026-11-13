@@ -4130,6 +4130,8 @@ mod send_progress_tests;
 #[cfg(test)]
 mod session_default_apply_tests;
 #[cfg(test)]
+mod session_open_card_tests;
+#[cfg(test)]
 mod session_park_tests;
 #[cfg(test)]
 mod sidebar_active_reveal_tests;

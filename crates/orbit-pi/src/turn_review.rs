@@ -1,7 +1,7 @@
-//! Last Turn review built from a conversation's `edit` / `write` tool calls.
+//! Turn review fallback built from a conversation's `edit` / `write` calls.
 //!
-//! The docked Review pane's **Last Turn** source reads this module, not Git
-//! checkpoints. Uncommitted and the other sources still diff the worktree.
+//! Live turns can use checkpoint diffs; reconstructed session history uses
+//! these calls because its turn numbers do not reliably identify checkpoints.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -78,13 +78,14 @@ pub(crate) struct TurnClock {
     pub open: bool,
     pub latest: Option<usize>,
     pub starts: Vec<(usize, usize)>,
+    /// Turn numbers opened in this process, not guessed from session history.
+    pub live: Vec<usize>,
 }
 
 impl TurnClock {
     /// Message index where `turn` starts, when this clock still knows it.
-    /// The transcript's changed-files card is keyed to this, so a Git read that
-    /// lands after the reader moved on is dropped instead of describing the
-    /// turn that replaced it.
+    /// The transcript's changed-files card is keyed to this, so a Git read can
+    /// still describe its original turn after a newer one starts.
     pub(crate) fn start_of(&self, turn: usize) -> Option<usize> {
         self.starts
             .iter()
@@ -102,6 +103,7 @@ impl TurnClock {
         self.count += 1;
         self.open = true;
         self.starts.push((self.count, message_index));
+        self.live.push(self.count);
         self.latest = Some(self.count);
         true
     }
@@ -114,6 +116,7 @@ impl TurnClock {
             self.open = false;
             return;
         };
+        self.live.retain(|number| *number != turn);
         if self.count == turn {
             self.count -= 1;
         }
@@ -140,6 +143,7 @@ impl TurnClock {
     /// transcript never points an existing Last Turn selection at a
     /// different turn.
     pub(crate) fn rebuild(&mut self, user_indices: &[usize]) {
+        self.live.clear();
         let count = user_indices.len();
         if count == 0 {
             self.starts.clear();
@@ -741,11 +745,24 @@ mod tests {
             open: false,
             latest: Some(5),
             starts: vec![(1, 0), (2, 3), (3, 6), (4, 9), (5, 12)],
+            live: vec![1, 2, 3, 4, 5],
         };
         clock.rebuild(&[0, 4]);
         assert_eq!(clock.count, 5);
         assert_eq!(clock.latest, Some(5));
         assert_eq!(clock.starts, vec![(4, 0), (5, 4)]);
+    }
+
+    #[test]
+    fn rebuilt_turn_numbers_are_not_live_checkpoint_identities() {
+        let mut clock = TurnClock::default();
+        clock.begin(0);
+        clock.finish();
+        assert_eq!(clock.live, vec![1]);
+        clock.rebuild(&[0, 2]);
+        assert!(clock.live.is_empty());
+        clock.begin(4);
+        assert_eq!(clock.live, vec![3]);
     }
 
     #[test]

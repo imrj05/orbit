@@ -1242,6 +1242,11 @@ pub struct Transcript {
     /// The turn [`Self::review_card_worktree_files`] describes, by its first
     /// message index. `None` until Git answers for the turn the card names.
     review_card_worktree_start: Option<usize>,
+    /// Settled cards anchored after their last message, excluding the tail.
+    review_history: Vec<(usize, usize, Vec<(String, u64, u64)>)>,
+    review_turn_numbers: Vec<(usize, usize)>,
+    /// Live checkpoint summaries keyed by their exact turn start.
+    review_checkpoints: HashMap<usize, Vec<(String, u64, u64)>>,
     /// A prompt is out and no assistant step has streamed yet. Drives the
     /// same tail slot as the summary card, showing the live "Working for…"
     /// row from the moment the user hits send instead of from the first
@@ -1298,6 +1303,9 @@ impl Transcript {
             review_card_files: Vec::new(),
             review_card_worktree_files: Vec::new(),
             review_card_worktree_start: None,
+            review_history: Vec::new(),
+            review_turn_numbers: Vec::new(),
+            review_checkpoints: HashMap::new(),
             awaiting_reply: Rc::new(Cell::new(false)),
             user_turns: Rc::new(RefCell::new((0, Rc::new(Vec::new())))),
         }
@@ -1622,6 +1630,9 @@ impl Transcript {
         self.review_card_files.clear();
         self.review_card_worktree_files.clear();
         self.review_card_worktree_start = None;
+        self.review_history.clear();
+        self.review_turn_numbers.clear();
+        self.review_checkpoints.clear();
         self.awaiting_reply.set(false);
         self.set_tail_row(false);
     }
@@ -1664,6 +1675,9 @@ impl Transcript {
         self.review_card_files.clear();
         self.review_card_worktree_files.clear();
         self.review_card_worktree_start = None;
+        self.review_history.clear();
+        self.review_turn_numbers.clear();
+        self.review_checkpoints.clear();
         self.tail_summary.set(false);
         self.awaiting_reply.set(false);
     }
@@ -2709,6 +2723,24 @@ impl Transcript {
         self.review_card_files.clone()
     }
 
+    pub(crate) fn review_checkpoints(&self) -> HashMap<usize, Vec<(String, u64, u64)>> {
+        self.review_checkpoints.clone()
+    }
+
+    pub(crate) fn restore_review_checkpoints(
+        &mut self,
+        checkpoints: HashMap<usize, Vec<(String, u64, u64)>>,
+    ) {
+        self.review_checkpoints = checkpoints;
+    }
+
+    /// The settled checkpoint result, including an authoritative empty list.
+    pub(crate) fn review_card_checkpoint(&self) -> Option<(usize, Vec<(String, u64, u64)>)> {
+        let start = self.review_card_worktree_start?;
+        (!self.review_turn_open && self.review_card_start == Some(start))
+            .then(|| (start, self.review_card_worktree_files.clone()))
+    }
+
     /// Point the changed-files card at the latest turn. `start` is that
     /// turn's first message index; `None` hides the card.
     pub(crate) fn set_review_card_scope(
@@ -2725,28 +2757,29 @@ impl Transcript {
             self.review_card_worktree_files.clear();
         }
         self.review_card_start = start;
-        self.review_turn_open = turn_open;
         self.review_workspace = workspace.map(Path::to_path_buf);
-        self.refresh_review_card();
+        self.set_review_turn_open(turn_open);
     }
 
     /// Attach the files the settled turn changed in the worktree, read from its
     /// checkpoint range (see [`crate::git::turn_changed_files`]).
     ///
-    /// `start` is that turn's first message index — the scope
-    /// [`Self::set_review_card_scope`] named — so a read that lands after the
-    /// reader moved on is dropped instead of describing the turn that replaced
-    /// it. An empty list is ignored: a workspace with no turn changes keeps the
-    /// recorded calls as the card's honest fallback.
+    /// `start` identifies the turn even if it has become historical by the
+    /// time the read lands. An empty list is authoritative: the turn has no
+    /// net changes.
     pub(crate) fn set_review_card_worktree_files(
         &mut self,
         start: usize,
         files: Vec<(String, u64, u64)>,
     ) {
-        if self.review_card_start != Some(start) || files.is_empty() {
+        if self.review_card_start != Some(start) {
+            if self.review_turn_numbers.iter().any(|(_, s)| *s == start) {
+                self.review_checkpoints.insert(start, files);
+            }
             return;
         }
         self.review_card_worktree_start = Some(start);
+        self.review_checkpoints.insert(start, files.clone());
         self.review_card_worktree_files = files;
         self.refresh_review_card();
     }
@@ -2778,8 +2811,52 @@ impl Transcript {
     /// settled run, so a turn that reopened (a steer between agent
     /// boundaries, a parked session resuming) must not paint one.
     pub(crate) fn set_review_turn_open(&mut self, open: bool) {
+        if open && !self.review_turn_open {
+            // A continuation can change the same turn after its last capture.
+            self.review_card_worktree_start = None;
+            self.review_card_worktree_files.clear();
+            if let Some(start) = self.review_card_start {
+                self.review_checkpoints.remove(&start);
+            }
+        }
         self.review_turn_open = open;
         self.refresh_review_card();
+    }
+
+    /// Build earlier cards from exact live ranges or best-effort rebuilt ranges.
+    pub(crate) fn set_review_ranges(&mut self, ranges: &[(usize, usize, usize)]) {
+        self.review_turn_numbers = ranges
+            .iter()
+            .map(|(turn, start, _)| (*turn, *start))
+            .collect();
+        self.review_checkpoints
+            .retain(|start, _| ranges.iter().any(|(_, s, _)| s == start));
+        let history = ranges
+            .iter()
+            .take(ranges.len().saturating_sub(1))
+            .filter_map(|&(turn, start, end)| {
+                let last = end.checked_sub(1)?;
+                if last < start || end > self.message_count() {
+                    return None;
+                }
+                let files = self.review_checkpoints.get(&start).cloned().unwrap_or_else(|| {
+                    let calls = self.recorded_calls(start, end);
+                    crate::turn_review::file_counts(&calls, self.review_workspace.as_deref())
+                });
+                (!files.is_empty()).then_some((last, turn, files))
+            })
+            .collect::<Vec<_>>();
+        let changed_rows: HashSet<usize> = self.review_history.iter().chain(&history)
+            .map(|(row, _, _)| *row)
+            .filter(|row| {
+                self.review_history.iter().find(|(ix, _, _)| ix == row)
+                    != history.iter().find(|(ix, _, _)| ix == row)
+            })
+            .collect();
+        self.review_history = history;
+        for row in changed_rows {
+            self.scroller.remeasure_items(row..row + 1);
+        }
     }
 
     /// Add or remove the end-of-task summary row (the extra list slot after
@@ -3168,6 +3245,13 @@ impl Transcript {
                 rail_scroll: self.rail_scroll.clone(),
                 rail_autoscroll: self.rail_autoscroll.clone(),
                 summary_files,
+                summary_turn: self.review_card_start.and_then(|start| {
+                    self.review_turn_numbers
+                        .iter()
+                        .find(|(_, s)| *s == start)
+                        .map(|(turn, _)| *turn)
+                }),
+                history_cards: self.review_history.clone(),
                 summary_finished_at,
                 summary_usage,
                 review_changes,
@@ -3187,6 +3271,102 @@ impl Transcript {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn per_turn_cards_use_scoped_calls_and_live_checkpoints() {
+        let mut t = Transcript::new();
+        t.load_from(&json!({"messages": [
+            {"role":"user", "content":"first"},
+            {"role":"assistant", "content":[{"type":"toolCall", "id":"a", "name":"write", "arguments":{"path":"a.rs", "content":"a"}}]},
+            {"role":"user", "content":"second"},
+            {"role":"assistant", "content":[{"type":"toolCall", "id":"b", "name":"write", "arguments":{"path":"b.rs", "content":"b"}}]}
+        ]}));
+        t.set_review_card_scope(Some(0), None, false);
+        t.set_review_card_worktree_files(0, vec![("shell.rs".into(), 2, 0)]);
+        t.set_review_card_scope(Some(2), None, false);
+        t.set_review_ranges(&[(7, 0, 2), (9, 2, 4)]);
+        assert_eq!(t.review_history, vec![(1, 7, vec![("shell.rs".into(), 2, 0)])]);
+        assert_eq!(t.changed_files_summary(), vec![("b.rs".into(), 1, 0)]);
+        assert_eq!(t.review_turn_numbers.last(), Some(&(9, 2)));
+        // An empty checkpoint is authoritative over recorded writes.
+        t.set_review_card_worktree_files(0, Vec::new());
+        t.set_review_ranges(&[(7, 0, 2), (9, 2, 4)]);
+        assert!(t.review_history.is_empty());
+        // Replacing the transcript cannot retain checkpoint identities.
+        t.load_from(&json!({"messages": []}));
+        assert!(t.review_checkpoints.is_empty());
+        assert!(t.review_history.is_empty());
+    }
+
+    #[gpui::test]
+    fn automatic_history_cards_preserve_follow_and_reader_anchor(cx: &mut gpui::TestAppContext) {
+        let mut t = Transcript::new();
+        let messages: Vec<_> = (0..40).map(|ix| {
+            if ix == 1 {
+                json!({"role":"assistant", "content":[{"type":"toolCall", "id":"a", "name":"write", "arguments":{"path":"a.rs", "content":"a"}}]})
+            } else {
+                json!({"role":"user", "content":format!("message {ix}")})
+            }
+        }).collect();
+        t.load_from(&json!({"messages": messages}));
+        let scroller = t.scroller.clone();
+        let cx = cx.add_empty_window();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(600.), px(400.)), |_, _| {
+                gpui::list(scroller.list_state(), |ix, _, _| {
+                    gpui::div().h(px(40.)).child(format!("row {ix}")).into_any_element()
+                }).size_full()
+            });
+        };
+        draw(cx);
+        assert!(scroller.is_scrollable());
+        t.set_review_ranges(&[(1, 0, 2), (2, 2, 40)]);
+        assert!(scroller.is_following_tail());
+        draw(cx);
+        assert_eq!(scroller.list_state().logical_scroll_top().item_ix, scroller.item_count());
+        scroller.scroll_to_item(1);
+        let anchor = scroller.list_state().logical_scroll_top();
+        t.set_review_card_worktree_files(0, vec![("shell.rs".into(), 2, 0)]);
+        t.set_review_ranges(&[(1, 0, 2), (2, 2, 40)]);
+        assert!(!scroller.is_following_tail());
+        let after = scroller.list_state().logical_scroll_top();
+        assert_eq!(after.item_ix, anchor.item_ix);
+        assert_eq!(after.offset_in_item, anchor.offset_in_item);
+        assert_eq!(t.review_history, vec![(1, 1, vec![("shell.rs".into(), 2, 0)])]);
+    }
+
+    #[test]
+    fn late_shell_only_checkpoint_creates_the_historical_card() {
+        let mut t = Transcript::new();
+        t.load_from(&json!({"messages": [
+            {"role":"user", "content":"first"},
+            {"role":"assistant", "content":"done"},
+            {"role":"user", "content":"second"},
+            {"role":"assistant", "content":"working"}
+        ]}));
+        t.set_review_card_scope(Some(2), None, true);
+        t.set_review_ranges(&[(1, 0, 2), (2, 2, 4)]);
+        assert!(t.review_history.is_empty());
+        t.set_review_card_worktree_files(0, vec![("shell.rs".into(), 2, 0)]);
+        t.set_review_ranges(&[(1, 0, 2), (2, 2, 4)]);
+        assert_eq!(t.review_history, vec![(1, 1, vec![("shell.rs".into(), 2, 0)])]);
+        assert!(t.changed_files_summary().is_empty());
+    }
+
+    #[test]
+    fn rebuilt_cards_use_each_recorded_range_without_checkpoints() {
+        let mut t = Transcript::new();
+        t.load_from(&json!({"messages": [
+            {"role":"user", "content":"first"},
+            {"role":"assistant", "content":[{"type":"toolCall", "id":"a", "name":"write", "arguments":{"path":"a.rs", "content":"a"}}]},
+            {"role":"user", "content":"second"},
+            {"role":"assistant", "content":[{"type":"toolCall", "id":"b", "name":"write", "arguments":{"path":"b.rs", "content":"b"}}]}
+        ]}));
+        t.set_review_card_scope(Some(2), None, false);
+        t.set_review_ranges(&[(1, 0, 2), (2, 2, 4)]);
+        assert_eq!(t.review_history, vec![(1, 1, vec![("a.rs".into(), 1, 0)])]);
+        assert_eq!(t.changed_files_summary(), vec![("b.rs".into(), 1, 0)]);
+    }
 
     #[test]
     fn rewind_prompt_for_response_does_not_cross_summary_boundaries() {
@@ -4755,7 +4935,7 @@ mod tests {
     }
 
     /// A read that lands after the reader moved on must not describe the turn
-    /// that replaced it, and an empty read leaves the recorded calls alone.
+    /// that replaced it, and an empty read clears the card.
     #[test]
     fn a_late_worktree_read_does_not_describe_another_turn() {
         let mut t = Transcript::new();
@@ -4773,11 +4953,41 @@ mod tests {
         assert!(t.changed_files_summary().is_empty());
         assert!(!t.tail_summary.get());
 
-        // A read that finds nothing keeps whatever the calls said.
+        // A successful empty checkpoint diff replaces earlier results.
         t.set_review_card_scope(Some(0), None, false);
         t.set_review_card_worktree_files(0, vec![("a.rs".to_string(), 1, 0)]);
         t.set_review_card_worktree_files(0, Vec::new());
-        assert_eq!(t.changed_files_summary(), vec![("a.rs".to_string(), 1, 0)]);
+        assert!(t.changed_files_summary().is_empty());
+        assert!(!t.tail_summary.get());
+    }
+
+    #[test]
+    fn reopening_the_same_turn_invalidates_its_cached_card() {
+        for use_scope in [false, true] {
+            let mut t = Transcript::new();
+            t.load_from(&json!({"messages": [
+                {"role": "user", "content": "build it"},
+                {"role": "assistant", "content": [
+                    {"type": "toolCall", "id": "c1", "name": "write",
+                     "arguments": {"path": "call.rs", "content": "new\n"}}
+                ]}
+            ]}));
+            t.set_review_card_scope(Some(0), None, false);
+            t.set_review_card_worktree_files(0, vec![]);
+            assert!(t.changed_files_summary().is_empty());
+
+            if use_scope {
+                t.set_review_card_scope(Some(0), None, true);
+            } else {
+                t.set_review_turn_open(true);
+            }
+            assert!(!t.tail_summary.get());
+            t.set_review_turn_open(false);
+            assert_eq!(t.changed_files_summary(), vec![("call.rs".into(), 1, 0)]);
+            assert!(t.tail_summary.get());
+            t.set_review_card_worktree_files(0, vec![("final.rs".into(), 2, 0)]);
+            assert_eq!(t.changed_files_summary(), vec![("final.rs".into(), 2, 0)]);
+        }
     }
 
     #[test]

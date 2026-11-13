@@ -363,7 +363,7 @@ impl OrbitApp {
     /// then from the turn's checkpoint range once that read lands. A missing
     /// repo or a failed capture does not hide the calls themselves.
     pub(super) fn finish_turn(&mut self, cx: &mut Context<Self>) {
-        let capture = self.turns.open;
+        let turn = self.turns.open.then_some(self.turns.latest).flatten();
         self.turns.finish();
         self.push_turn_records(cx);
         // Last Turn already reloaded from the records just pushed. Git
@@ -374,28 +374,29 @@ impl OrbitApp {
             .update(cx, |panel, cx| panel.mark_review_stale(cx));
         // Only a turn that was actually open settles here; a rejected prompt
         // reuses the clock without a run behind it.
-        if !capture || self.session_id.is_none() {
-            return;
+        if let Some(turn) = turn.filter(|_| self.session_id.is_some()) {
+            self.spawn_turn_worktree_read(turn, true, cx);
         }
-        let turn = self.turns.count;
-        self.spawn_turn_worktree_read(turn, true, cx);
     }
 
     /// Read the turn's checkpoint range off the UI thread and hand the result
     /// to the two surfaces that describe that turn: the transcript's
     /// changed-files card and Last Turn's worktree extras.
     ///
-    /// `capture` writes the turn's end checkpoint first, which only the settle
-    /// path may do — a reopened session reads the refs the run already left, so
-    /// a read must never move a finished turn's end ref onto today's worktree.
-    /// A missing repository or missing refs leave both surfaces on the recorded
-    /// `edit` / `write` calls.
+    /// `capture` writes the end checkpoint at settle. A later read is only
+    /// permitted for a turn opened by this process: rebuilt historical turn
+    /// numbers cannot safely identify persisted checkpoint refs. A missing
+    /// repository or refs leave both surfaces on recorded calls.
     pub(super) fn spawn_turn_worktree_read(
         &mut self,
         turn: usize,
         capture: bool,
         cx: &mut Context<Self>,
     ) {
+        // Reconstructed turn ordinals can coincide with unrelated Git refs.
+        if !self.turns.live.contains(&turn) {
+            return;
+        }
         let Some(session) = self.session_id.clone() else {
             return;
         };
@@ -421,36 +422,61 @@ impl OrbitApp {
                 )
             })
             .collect::<Vec<_>>();
+        let generation = self
+            .sidepane
+            .update(cx, |pane, cx| pane.begin_turn_checkpoint(turn, cx));
         cx.spawn(async move |this, cx| {
             let key = session.clone();
+            let capture_cwd = cwd.clone();
             let read = cx
                 .background_executor()
                 .spawn(async move {
                     if capture {
-                        checkpoint::capture_turn(&cwd, &key, turn).ok()?;
+                        checkpoint::capture_turn(&capture_cwd, &key, turn).ok()?;
                     }
-                    let extras = git_ops::changed_outside_calls(&cwd, &key, turn, &recorded)
-                        .ok()
-                        .flatten();
-                    let card = git_ops::turn_changed_files(&cwd, &key, turn, &recorded)
-                        .ok()
-                        .flatten();
-                    Some((extras, card))
+                    let diff = git_ops::collect_review_diff(
+                        &capture_cwd,
+                        crate::review::Source::LastTurn { turn_count: turn },
+                        Some(&key),
+                    )
+                    .ok()?;
+                    let card = git_ops::turn_files_from_numstat(
+                        crate::review::Source::LastTurn { turn_count: turn },
+                        &diff.numstat,
+                        &recorded,
+                    );
+                    let extras = git_ops::outside_call_paths(&card, &recorded);
+                    Some((extras, card, diff))
                 })
                 .await;
-            let Some((extras, card)) = read else { return };
             let _ = this.update(cx, |app, cx| {
-                if app.session_id.as_deref() != Some(session.as_str()) {
+                if !app.sidepane.read(cx).is_turn_checkpoint_pending(turn, generation) {
                     return;
                 }
-                if let Some(files) = card {
-                    app.transcript.set_review_card_worktree_files(start, files);
-                }
-                if let Some((paths, diff)) = extras {
+                if app.session_id.as_deref() != Some(session.as_str())
+                    || app
+                        .current_workspace
+                        .as_ref()
+                        .is_some_and(|current| current != &cwd)
+                    || app.turns.start_of(turn) != Some(start)
+                    || (app.turns.open && app.turns.latest == Some(turn))
+                {
                     app.sidepane.update(cx, |pane, cx| {
-                        pane.set_turn_extras(turn, paths, diff.numstat, diff.patch, cx);
+                        pane.finish_turn_checkpoint(turn, generation, cx);
+                    });
+                    return;
+                }
+                if let Some((extras, card, diff)) = read {
+                    app.transcript.set_review_card_worktree_files(start, card);
+                    let ranges = app.turns.ranges(app.transcript.message_count());
+                    app.transcript.set_review_ranges(&ranges);
+                    app.sidepane.update(cx, |pane, cx| {
+                        pane.set_turn_checkpoint(turn, extras, diff, cx);
                     });
                 }
+                app.sidepane.update(cx, |pane, cx| {
+                    pane.finish_turn_checkpoint(turn, generation, cx);
+                });
                 cx.notify();
             });
         })
@@ -460,6 +486,14 @@ impl OrbitApp {
     /// Forget the active session's turn clock and clear Last Turn's records.
     pub(super) fn reset_turns(&mut self, cx: &mut Context<Self>) {
         self.turns = crate::turn_review::TurnClock::default();
+        self.reset_turn_surfaces();
+        self.push_turn_records(cx);
+    }
+
+    /// Close the surfaces that point into the transcript's rows. The turn
+    /// clock is left alone: see the `switch_session` reply, where the session
+    /// is already on screen.
+    pub(super) fn reset_turn_surfaces(&mut self) {
         // The find hits belong to the previous session's transcript.
         self.transcript_search = None;
         // Fork points belong to the previous session's entries, and a picker
@@ -471,7 +505,6 @@ impl OrbitApp {
         self.rewind_intent = ForkIntent::Edit;
         self.pending_regenerate = None;
         self.rewind_prompt_images.clear();
-        self.push_turn_records(cx);
     }
 
     /// Push each turn's `edit` / `write` calls, and the latest turn number,
@@ -479,12 +512,14 @@ impl OrbitApp {
     /// receives the turn number so its stored context does not go stale.
     pub(super) fn push_turn_records(&mut self, cx: &mut Context<Self>) {
         let len = self.transcript.message_count();
-        let start = self.turns.ranges(len).last().map(|&(_, start, _)| start);
+        let ranges = self.turns.ranges(len);
+        let start = ranges.last().map(|&(_, start, _)| start);
         self.transcript.set_review_card_scope(
             start,
             self.current_workspace.as_deref(),
             self.turns.open,
         );
+        self.transcript.set_review_ranges(&ranges);
         let records = self.turn_records();
         let session = self.session_id.clone();
         let latest = self.turns.latest;
@@ -499,7 +534,7 @@ impl OrbitApp {
         });
     }
 
-    fn turn_records(&self) -> crate::turn_review::TurnRecords {
+    pub(super) fn turn_records(&self) -> crate::turn_review::TurnRecords {
         let len = self.transcript.message_count();
         let turns = self
             .turns
@@ -1414,6 +1449,11 @@ impl OrbitApp {
         // either way so the outgoing session cannot leak into the next one;
         // a warm resume puts its own clock back below.
         self.turns = crate::turn_review::TurnClock::default();
+        // pi names the incoming session on `get_state`. Until then its id is
+        // unknown: keeping the outgoing one resolved the incoming transcript's
+        // worktree read against that session's checkpoints, and the
+        // changed-files card listed its files.
+        self.session_id = None;
         self.push_turn_records(cx);
         // The queue belongs to the session we just left; the target's state
         // re-establishes it from `get_state`/`queue_update`.
@@ -3367,22 +3407,25 @@ impl OrbitApp {
 
     /// Hands the transcript's changed-files cards a way to open the side
     /// pane's Review tab on that run's **Last Turn** git diff (the pane lives
-    /// in the app, the cards don't know that). Cheap to build per frame — an
-    /// `Rc` closure over the entity and the latest captured turn.
+    /// in the app, the cards don't know that). Each card supplies its own turn
+    /// number, not the latest turn at the time of the click.
     pub(super) fn review_opener(&self, cx: &Context<Self>) -> crate::transcript_view::ReviewOpener {
         let pane = self.sidepane.clone();
         let app = cx.entity().downgrade();
-        Rc::new(move |_window, cx| {
-            // Opening Review replaces the Git page and the subagent dock.
-            // Slice the turn from the transcript at click time so a turn that
-            // is still streaming shows the tools that have already landed.
-            let mut latest = None;
+        Rc::new(move |turn, _window, cx| {
+            // Resolve the selected card, never the latest turn at click time.
             let _ = app.update(cx, |app, cx| {
                 app.push_turn_records(cx);
                 app.close_git_for_review(cx);
-                latest = app.turns.latest;
+                if app.turns.live.contains(&turn)
+                    && !pane.read(cx).has_turn_checkpoint(turn)
+                    && !pane.read(cx).has_pending_turn_checkpoint(turn)
+                    && !(app.turns.open && app.turns.latest == Some(turn))
+                {
+                    app.spawn_turn_worktree_read(turn, false, cx);
+                }
+                pane.update(cx, |pane, cx| pane.show_review_turn(Some(turn), cx));
             });
-            pane.update(cx, |pane, cx| pane.show_review_turn(latest, cx));
         })
     }
 
