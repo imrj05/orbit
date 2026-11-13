@@ -1153,12 +1153,15 @@ pub(crate) fn switch(
     .into_any_element()
 }
 
+/// What a switch runs when it flips, shared by its click and key paths.
+type SwitchToggleFn = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+
 #[derive(IntoElement)]
 struct Switch {
     id: SharedString,
     on: bool,
     theme: Theme,
-    on_toggle: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    on_toggle: SwitchToggleFn,
 }
 
 impl RenderOnce for Switch {
