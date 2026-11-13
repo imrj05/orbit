@@ -620,6 +620,11 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", SidebarEnd, Some("Sidebar")),
         KeyBinding::new("enter", SidebarConfirm, Some("Sidebar")),
         KeyBinding::new("escape", SidebarClose, Some("Sidebar")),
+        // `j`/`k` move the row cursor too, but only while no text field is
+        // focused: the sidebar's search input sits inside this context, and a
+        // plain letter binding would otherwise swallow what the user types.
+        KeyBinding::new("j", SidebarNext, Some("Sidebar && !Composer")),
+        KeyBinding::new("k", SidebarPrev, Some("Sidebar && !Composer")),
     ]);
 }
 

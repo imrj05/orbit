@@ -415,3 +415,72 @@ fn the_sidebar_yields_before_the_workspace_squashes() {
     // keeps a usable column; ⌘⇧B still brings the list back.
     assert!(!super::view::sidebar_shows(true, false, px(720.)));
 }
+
+/// `j`/`k` step the session cursor while the list itself has focus, and stay
+/// plain letters while the search field inside the sidebar is focused.
+#[gpui::test]
+fn j_and_k_move_the_cursor_but_still_type_in_search(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            for dependency in &mut app.deps {
+                dependency.installed = true;
+            }
+            app.setup_open = false;
+            app.settings_open = false;
+            app.sidebar_visible = true;
+            app.sidebar_group_by = SidebarGroupBy::OneList;
+            app.sidebar_archived_filter = SidebarArchivedFilter::Show;
+            app.workspaces = vec![PathBuf::from("/work/sidebar-jk")];
+            app.sessions = vec![
+                store_session("First", "", "/work/sidebar-jk", "first"),
+                store_session("Second", "", "/work/sidebar-jk", "second"),
+                store_session("Third", "", "/work/sidebar-jk", "third"),
+            ];
+            app.current_session_path = None;
+        });
+    });
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(820.)),
+            |_, _| app.clone(),
+        );
+    };
+    draw(cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.input.read(cx).focus(window));
+    });
+    draw(cx);
+
+    cx.simulate_keystrokes(crate::platform::shortcuts::FOCUS_SESSIONS);
+    draw(cx);
+    let start = cx.update(|_, cx| app.read(cx).sidebar_cursor);
+    cx.simulate_keystrokes("j j");
+    let after_j = cx.update(|_, cx| app.read(cx).sidebar_cursor);
+    assert_ne!(after_j, start, "j moves the cursor down the list");
+    cx.simulate_keystrokes("k");
+    let after_k = cx.update(|_, cx| app.read(cx).sidebar_cursor);
+    assert!(
+        after_k.unwrap_or(0) < after_j.unwrap_or(0),
+        "k moves it back up: {after_j:?} -> {after_k:?}"
+    );
+
+    cx.simulate_keystrokes(crate::platform::shortcuts::SESSION_SEARCH);
+    draw(cx);
+    cx.simulate_keystrokes("j k");
+    cx.update(|_, cx| {
+        assert_eq!(
+            app.read(cx).sidebar_search.read(cx).text(),
+            "jk",
+            "letters typed in search reach the field"
+        );
+    });
+}
