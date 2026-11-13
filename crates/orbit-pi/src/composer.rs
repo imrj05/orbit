@@ -1023,6 +1023,14 @@ impl ComposerInput {
     ) {
         let rows = self.last_total_rows.max(1);
         let visible = rows.min(self.max_lines);
+        // A field whose text all fits has nothing to scroll: leave the wheel
+        // to the page so hovering an input never stalls it.
+        if rows <= visible {
+            return;
+        }
+        // An overflowing field owns the wheel. Left to bubble, the scroll
+        // view behind it (the Report a bug form) scrolls too (issue #126).
+        cx.stop_propagation();
         let max_scroll = ((rows - visible) as f32 * self.last_line_height).max(px(0.));
         let dy = event.delta.pixel_delta(self.last_line_height).y;
         self.scroll_offset = (self.scroll_offset - dy).clamp(px(0.), max_scroll);
@@ -2632,8 +2640,8 @@ mod tests {
 mod geometry_tests {
     use super::*;
     use gpui::{
-        point, size, FocusHandle, KeyBinding, Modifiers, MouseButton, TestAppContext,
-        VisualTestContext,
+        point, size, FocusHandle, KeyBinding, Modifiers, MouseButton, ScrollDelta, ScrollHandle,
+        TestAppContext, VisualTestContext,
     };
 
     struct Harness {
@@ -2738,6 +2746,76 @@ mod geometry_tests {
             mid > wrapped_start && mid < wrapped_end,
             "click inside the wrapped line stayed inside it: {mid} not in {wrapped_start}..{wrapped_end}"
         );
+    }
+
+    /// A field inside a scrolling page, like the Report a bug form: a spacer
+    /// tall enough that the page always has room to scroll.
+    struct ScrollingPage {
+        input: Entity<ComposerInput>,
+        page: ScrollHandle,
+    }
+
+    impl Render for ScrollingPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("page")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.page)
+                .child(div().p(px(12.)).child(self.input.clone()))
+                .child(div().h(px(2000.)))
+        }
+    }
+
+    /// The wheel over an overflowing field scrolls the field, never the page
+    /// behind it; over a field whose text fits, it still scrolls the page
+    /// (issue #126).
+    #[gpui::test]
+    fn an_overflowing_field_keeps_the_wheel(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.new(|cx| ComposerInput::new(cx).with_max_lines(6))
+        });
+        let page = ScrollHandle::new();
+        let harness = cx.update(|_, cx| {
+            cx.new(|_| ScrollingPage {
+                input: input.clone(),
+                page: page.clone(),
+            })
+        });
+        let draw = |cx: &mut VisualTestContext| {
+            let _ = cx.draw(point(px(0.), px(0.)), size(px(500.), px(400.)), |_, _| {
+                harness.clone()
+            });
+        };
+        let wheel_over_input = |cx: &mut VisualTestContext| {
+            let bounds = cx.update(|_, cx| input.read(cx).last_bounds.expect("bounds"));
+            cx.simulate_event(ScrollWheelEvent {
+                position: bounds.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
+                ..Default::default()
+            });
+            draw(cx);
+        };
+
+        // Forty short lines: the field pins at six rows and scrolls inside.
+        let text = (1..=40)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.update(|_, cx| input.update(cx, |input, cx| input.set_text(text, cx)));
+        draw(cx);
+        wheel_over_input(cx);
+        let field = cx.update(|_, cx| input.read(cx).scroll_offset);
+        assert!(field > px(0.), "the field scrolled: {field:?}");
+        assert_eq!(page.offset().y, px(0.), "the page stayed still");
+
+        // One line fits, so the field has nothing to scroll and the page does.
+        cx.update(|_, cx| input.update(cx, |input, cx| input.set_text("short", cx)));
+        draw(cx);
+        wheel_over_input(cx);
+        assert!(page.offset().y < px(0.), "the page scrolled");
     }
 
     /// Up/Down move the caret one visual row across logical lines, the way a
