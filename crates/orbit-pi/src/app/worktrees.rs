@@ -20,6 +20,7 @@ use gpui::{AnyElement, MouseDownEvent, MouseUpEvent};
 
 use super::helpers::*;
 use super::*;
+use crate::motion::Hover;
 use crate::theme::tokens::{
     context_menu, input, list_item, modal, panel, picker, popover, ButtonSize, DynamicSpacing,
     IconSize, Radius, RaisedExt, TextSize,
@@ -2124,10 +2125,9 @@ impl OrbitApp {
             .filter(|menu| worktree::same_path(&menu.path, &worktree.path))
             .cloned();
 
-        div()
-            .id(ElementId::Name(
-                format!("worktree-row-{}", path.to_string_lossy()).into(),
-            ))
+        let row_name = format!("worktree-row-{}", path.to_string_lossy());
+        let row = div()
+            .id(ElementId::Name(row_name.clone().into()))
             .group("worktree-row")
             .relative()
             .w_full()
@@ -2138,7 +2138,6 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base12.px(&theme))
             .cursor_pointer()
             .when(active, |row| row.bg(theme.surface_selected))
-            .hover_state(&theme)
             .on_mouse_down(MouseButton::Right, {
                 let this = this.clone();
                 let path = path.clone();
@@ -2252,8 +2251,13 @@ impl OrbitApp {
                     theme.text_muted,
                 ))
                 .children(row_menu.map(|menu| worktree_row_menu(&menu, worktree, theme, menu_this)))
-            })
-            .into_any_element()
+            });
+        crate::motion::hover(
+            row,
+            row_name,
+            &theme,
+            Hover::over(active.then_some(theme.surface_selected), theme.hover_wash()),
+        )
     }
 
     /// The Worktrees dialog layer (create / permission / rename / move /
@@ -4713,18 +4717,23 @@ fn worktree_text_button<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
+    let button = button_frame(div().id(id), &theme, ButtonSize::Medium)
         .border_1()
         .border_color(theme.border)
         .raised(theme.surface_elevated, &theme)
         .cursor_pointer()
-        .hover_state(&theme)
         .text_color(theme.text_secondary)
         .child(label)
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
-        })
-        .into_any_element()
+        });
+    crate::motion::hover(
+        button,
+        id,
+        &theme,
+        Hover::fill(theme.surface_elevated, theme.surface_hover)
+            .with_ink(theme.text_secondary, theme.text_primary),
+    )
 }
 
 /// A quiet icon button (page refresh).
@@ -4738,12 +4747,11 @@ fn worktree_icon_button<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
+    let button = button_frame(div().id(id), &theme, ButtonSize::Medium)
         .border_1()
         .border_color(theme.border)
         .raised(theme.surface_elevated, &theme)
         .cursor_pointer()
-        .hover_state(&theme)
         .tip(tr!("common.refresh"))
         .child(icon(
             icon_path,
@@ -4752,8 +4760,13 @@ where
         ))
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
-        })
-        .into_any_element()
+        });
+    crate::motion::hover(
+        button,
+        id,
+        &theme,
+        Hover::fill(theme.surface_elevated, theme.surface_hover),
+    )
 }
 
 /// The dialog's primary action.
@@ -4794,11 +4807,10 @@ fn worktree_menu_row<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    picker_entry(div().id(id), &theme)
+    let row = picker_entry(div().id(id), &theme)
         .h(picker::entry_height(&theme))
         .flex_none()
         .cursor_pointer()
-        .hover_state(&theme)
         .child(icon(
             icon_path,
             context_menu::ICON.px(&theme),
@@ -4815,8 +4827,8 @@ where
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             cx.stop_propagation();
             this.update(cx, |app, cx| action(app, cx));
-        })
-        .into_any_element()
+        });
+    crate::motion::hover(row, id, &theme, Hover::wash(&theme))
 }
 
 /// A mode chip in the create dialog (New branch / Existing branch).
