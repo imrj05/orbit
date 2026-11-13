@@ -38,6 +38,7 @@ use crate::git::{self, CommitEntry, StatusRow};
 use crate::git_ops::{self, InProgress};
 use crate::issue_message::{self, DraftKind};
 use crate::model_selector::provider_icon;
+use crate::motion::Hover;
 use crate::sidepane::{FileActions, SectionActions, SidePane};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
@@ -66,6 +67,9 @@ pub type OpenPath = std::rc::Rc<dyn Fn(PathBuf, String, &mut Window, &mut gpui::
 /// Callback the app installs so the panel's Back button also leaves the Git
 /// page (the app owns that flag, not the panel).
 pub type Close = std::rc::Rc<dyn Fn(&mut Window, &mut gpui::App)>;
+
+/// Start a new task for a GitHub detail in the panel's workspace.
+pub type StartGithubTask = std::rc::Rc<dyn Fn(PathBuf, String, &mut Window, &mut gpui::App)>;
 
 const HISTORY_PAGE: usize = 40;
 
@@ -426,6 +430,7 @@ pub struct GitPanel {
     on_open_file: Option<OpenFile>,
     /// Opens a file in the Files editor (installed by the app).
     on_open_path: Option<OpenPath>,
+    on_start_github_task: Option<StartGithubTask>,
     /// Leaves the Git page entirely (installed by the app).
     on_close: Option<Close>,
 }
@@ -676,6 +681,7 @@ impl GitPanel {
             remote_web: None,
             on_open_file: None,
             on_open_path: None,
+            on_start_github_task: None,
             on_close: None,
         }
     }
@@ -829,6 +835,42 @@ impl GitPanel {
     /// Install the callback that opens a workspace file in the Files editor.
     pub fn set_open_path(&mut self, open: OpenPath) {
         self.on_open_path = Some(open);
+    }
+
+    /// Install the callback for starting a task from a GitHub detail.
+    pub fn set_start_github_task(&mut self, start: StartGithubTask) {
+        self.on_start_github_task = Some(start);
+    }
+
+    /// Queue a new task after the panel's event handler releases its borrow.
+    /// `review` selects a PR review rather than an issue fix.
+    fn start_github_task(
+        &mut self,
+        url: &str,
+        review: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(start) = self.on_start_github_task.clone() else {
+            return;
+        };
+        let Some(workspace) = self.workspace.clone() else {
+            self.set_status("No workspace is available for this task.");
+            cx.notify();
+            return;
+        };
+        let url = url.trim();
+        if !url.starts_with("https://") || url.chars().any(char::is_whitespace) {
+            self.set_status("The GitHub item has no valid URL. Refresh and try again.");
+            cx.notify();
+            return;
+        }
+        let prompt = if review {
+            format!("Review this pull request: {url}")
+        } else {
+            format!("Fix this issue: {url}")
+        };
+        window.defer(cx, move |window, cx| start(workspace, prompt, window, cx));
     }
 
     /// Keep the embedded review browser's session id and turn number current.
@@ -1737,48 +1779,51 @@ impl GitPanel {
         }
         for (index, template) in templates.iter().enumerate() {
             let selected = current == Some(index);
-            list = list.child(
-                picker_entry(
-                    div().id(gpui::ElementId::Name(
-                        format!("git-template-{index}").into(),
-                    )),
-                    &theme,
-                )
-                .cursor_pointer()
-                .text_color(theme.text_secondary)
-                .hover_state(&theme)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.set_template(target, Some(index), cx)
-                }))
-                .child(icon(
-                    "icons/file.svg",
+            let row = picker_entry(
+                div().id(gpui::ElementId::Name(
+                    format!("git-template-{index}").into(),
+                )),
+                &theme,
+            )
+            .cursor_pointer()
+            .text_color(theme.text_secondary)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.set_template(target, Some(index), cx)
+            }))
+            .child(icon(
+                "icons/file.svg",
+                context_menu::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(template.label())
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(template.path.clone()),
+                    ),
+            )
+            .when(selected, |row| {
+                row.child(icon(
+                    "icons/check.svg",
                     context_menu::ICON.px(&theme),
-                    theme.text_muted,
+                    theme.accent_text,
                 ))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(template.label())
-                        .child(
-                            div()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(TextSize::XSmall.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(template.path.clone()),
-                        ),
-                )
-                .when(selected, |row| {
-                    row.child(icon(
-                        "icons/check.svg",
-                        context_menu::ICON.px(&theme),
-                        theme.accent_text,
-                    ))
-                }),
-            );
+            });
+            list = list.child(crate::motion::hover(
+                row,
+                format!("git-template-{index}"),
+                &theme,
+                Hover::row(&theme),
+            ));
         }
 
         let menu = picker_surface(div().id(id), &theme)
@@ -4557,7 +4602,7 @@ impl GitPanel {
                     .px(DynamicSpacing::Base16.px(&theme))
                     .pt(DynamicSpacing::Base12.px(&theme))
                     .pb(DynamicSpacing::Base12.px(&theme))
-                    .rounded(input::composer_radius(&theme))
+                    .rounded(input::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.surface_secondary)
@@ -5844,14 +5889,32 @@ impl GitPanel {
             .flex_wrap()
             .items_center()
             .gap(DynamicSpacing::Base04.px(&theme))
-            .child(row_button(
-                "git-issue-back",
-                "icons/arrow-left.svg",
-                "git_panel.all_issues",
-                theme,
-                cx.listener(|this, _: &ClickEvent, _, cx| this.close_issue_detail(cx)),
-            ))
             .child(label_editor)
+            .child(
+                div()
+                    .debug_selector(|| "github-issue-agent-action".into())
+                    .child({
+                        let url = issue.url.clone();
+                        action_button(
+                            "git-issue-agent",
+                            &tr!("git_panel.fix_with_agent"),
+                            Some(
+                                icon(
+                                    "icons/spark.svg",
+                                    ButtonSize::Medium.icon_size().px(&theme),
+                                    theme.accent_text,
+                                )
+                                .into_any_element(),
+                            ),
+                            false,
+                            url.is_empty() || self.on_start_github_task.is_none(),
+                            theme,
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.start_github_task(&url, false, window, cx);
+                            }),
+                        )
+                    }),
+            )
             .children((!issue.url.is_empty()).then(|| {
                 let url = issue.url.clone();
                 action_button(
@@ -5871,7 +5934,18 @@ impl GitPanel {
                     cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)),
                 )
             }));
-        let mut header = github_detail_header(theme, "git-issue-header-scroll")
+        let header = github_detail_header(
+            row_button(
+                "git-issue-back",
+                "icons/arrow-left.svg",
+                "git_panel.all_issues",
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.close_issue_detail(cx)),
+            ),
+            &issue.title,
+            theme,
+        );
+        let mut details = github_detail_details(theme)
             .child(github_detail_eyebrow(
                 &tr!("git_panel.issue_kind"),
                 &issue.url,
@@ -5881,11 +5955,10 @@ impl GitPanel {
                 state_color,
                 theme,
             ))
-            .child(github_detail_title(&issue.title, theme))
             .child(meta)
             .child(actions);
         if !issue.labels.is_empty() {
-            header = header.child(
+            details = details.child(
                 div()
                     .w_full()
                     .min_w_0()
@@ -5902,8 +5975,7 @@ impl GitPanel {
             );
         }
 
-        // The header stays anchored while the complete Markdown description,
-        // discussion and composer move together in the reading column.
+        // Metadata and the document share one scroll surface below the fixed header.
         let mut main = div()
             .w_full()
             .min_w_0()
@@ -5979,7 +6051,8 @@ impl GitPanel {
                 )),
         );
 
-        github_detail_layout("git-issue-detail-scroll", header, main, theme).into_any_element()
+        github_detail_layout("git-issue-detail-scroll", header, details, main, theme)
+            .into_any_element()
     }
 
     fn issue_new_view(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -6162,12 +6235,12 @@ impl GitPanel {
                     self.issue_filter.label.as_deref() == Some(name.as_str())
                 }
             };
-            let id = gpui::ElementId::Name(format!("git-label-{name}").into());
-            list = list.child(
+            let hover_name = format!("git-label-{name}");
+            let id = gpui::ElementId::Name(hover_name.clone().into());
+            list = list.child(crate::motion::hover(
                 picker_entry(div().id(id), &theme)
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, _, cx| match target {
                             LabelMenuTarget::Issue => this.toggle_issue_label(name.clone(), cx),
@@ -6185,7 +6258,10 @@ impl GitPanel {
                             theme.accent_text,
                         ))
                     }),
-            );
+                hover_name,
+                &theme,
+                Hover::row(&theme),
+            ));
         }
         let menu = picker_surface(div().id("git-label-menu"), &theme)
             .w(px(260.))
@@ -6509,13 +6585,31 @@ impl GitPanel {
             .flex_wrap()
             .items_center()
             .gap(DynamicSpacing::Base04.px(&theme))
-            .child(row_button(
-                "git-pr-back",
-                "icons/arrow-left.svg",
-                "git_panel.all_pulls",
-                theme,
-                cx.listener(|this, _: &ClickEvent, _, cx| this.close_pull_detail(cx)),
-            ))
+            .child(
+                div()
+                    .debug_selector(|| "github-pr-agent-action".into())
+                    .child({
+                        let url = pull.url.clone();
+                        action_button(
+                            "git-pr-agent",
+                            &tr!("git_panel.review_with_agent"),
+                            Some(
+                                icon(
+                                    "icons/spark.svg",
+                                    ButtonSize::Medium.icon_size().px(&theme),
+                                    theme.accent_text,
+                                )
+                                .into_any_element(),
+                            ),
+                            false,
+                            url.is_empty() || self.on_start_github_task.is_none(),
+                            theme,
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.start_github_task(&url, true, window, cx);
+                            }),
+                        )
+                    }),
+            )
             .children((!pull.url.is_empty()).then(|| {
                 let url = pull.url.clone();
                 action_button(
@@ -6558,7 +6652,18 @@ impl GitPanel {
         } else {
             state_label
         };
-        let header = github_detail_header(theme, "git-pr-header-scroll")
+        let header = github_detail_header(
+            row_button(
+                "git-pr-back",
+                "icons/arrow-left.svg",
+                "git_panel.all_pulls",
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.close_pull_detail(cx)),
+            ),
+            &pull.title,
+            theme,
+        );
+        let details = github_detail_details(theme)
             .child(github_detail_eyebrow(
                 &tr!("git_panel.pull_request_kind"),
                 &pull.url,
@@ -6568,7 +6673,6 @@ impl GitPanel {
                 state_color,
                 theme,
             ))
-            .child(github_detail_title(&pull.title, theme))
             .child(meta)
             .child(branches)
             .child(summary)
@@ -7048,7 +7152,8 @@ impl GitPanel {
                     )
                 })),
         );
-        github_detail_layout("git-pr-detail-scroll", header, content, theme).into_any_element()
+        github_detail_layout("git-pr-detail-scroll", header, details, content, theme)
+            .into_any_element()
     }
 
     fn pr_new_view(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -7430,9 +7535,7 @@ impl GitPanel {
                 row.bg(theme.surface_selected)
                     .text_color(theme.selection_fg)
             })
-            .when(!selected, |row| {
-                row.text_color(theme.text_secondary).hover_state(&theme)
-            })
+            .when(!selected, |row| row.text_color(theme.text_secondary))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if selected {
                     this.dismiss_branch_menu(cx);
@@ -7501,7 +7604,16 @@ impl GitPanel {
                     .child(age),
             );
         }
-        row.into_any_element()
+        if selected {
+            row.into_any_element()
+        } else {
+            crate::motion::hover(
+                row,
+                format!("git-branch-{name}"),
+                &theme,
+                Hover::row(&theme),
+            )
+        }
     }
 
     /// The ref picker opened by "Merge branch…" / "Rebase onto…".
@@ -7585,14 +7697,14 @@ impl GitPanel {
             }
             let name = entry.name.clone();
             let label = entry.name.clone();
-            let id = gpui::ElementId::Name(format!("git-ref-{name}").into());
-            menu = menu.child(
+            let hover_name = format!("git-ref-{name}");
+            let id = gpui::ElementId::Name(hover_name.clone().into());
+            menu = menu.child(crate::motion::hover(
                 picker_entry(div().id(id), &theme)
                     .h(picker::entry_height(&theme))
                     .flex_none()
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, _, cx| match target {
                             RefTarget::Merge => this.merge_ref(&name, cx),
@@ -7616,7 +7728,10 @@ impl GitPanel {
                             .whitespace_nowrap()
                             .child(label),
                     ),
-            );
+                hover_name,
+                &theme,
+                Hover::row(&theme),
+            ));
         }
         Some(menu.into_any_element())
     }
@@ -8065,24 +8180,67 @@ fn github_split_view(
         .into_any_element()
 }
 
-/// The fixed identity and action area above a GitHub reading column.
-fn github_detail_header(theme: Theme, scroll_id: &'static str) -> gpui::Stateful<gpui::Div> {
+/// The fixed bar above a detail keeps the title beside the back button.
+fn github_detail_header(back: AnyElement, title: &str, theme: Theme) -> gpui::Div {
+    // Pull the button's frame out so its glyph, not its hover wash, sits on
+    // the content edge the document below is aligned to.
+    let inset =
+        (ButtonSize::Default.height(&theme) - ButtonSize::Default.icon_size().px(&theme)) / 2.;
     div()
-        .id(scroll_id)
         .debug_selector(|| "github-detail-header".into())
-        .max_h(px(280.))
-        .overflow_y_scroll()
         .w_full()
         .min_w_0()
         .flex_none()
         .px(DynamicSpacing::Base16.px(&theme))
-        .pt(DynamicSpacing::Base16.px(&theme))
-        .pb(DynamicSpacing::Base12.px(&theme))
-        .border_b_1()
-        .border_color(theme.border)
+        .py(DynamicSpacing::Base12.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(
+            div()
+                .debug_selector(|| "github-detail-back".into())
+                .flex_none()
+                .ml(-inset)
+                .child(back),
+        )
+        .child(github_detail_pinned_title(title, theme))
+}
+
+fn github_detail_details(theme: Theme) -> gpui::Div {
+    div()
+        .w_full()
+        .min_w_0()
         .flex()
         .flex_col()
         .gap(DynamicSpacing::Base12.px(&theme))
+}
+
+fn github_detail_pinned_title(title: &str, theme: Theme) -> AnyElement {
+    // Ellipsized at paint time: see `EllipsizedLine` for why the stock text
+    // element painted this title as a lone `…` in the split view.
+    let line = widgets::EllipsizedLine::new(single_line(title));
+    #[cfg(test)]
+    PINNED_TITLE_PAINTED.with(|slot| *slot.borrow_mut() = Some(line.painted()));
+    div()
+        .debug_selector(|| "github-detail-pinned-title".into())
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .text_size(TextSize::Large.px(&theme))
+        .line_height(theme.ui_px(22.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.text_primary)
+        .child(line)
+        .into_any_element()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The pinned title as last painted, so a test reads the painted text
+    /// rather than the bounds of its box.
+    static PINNED_TITLE_PAINTED: std::cell::RefCell<
+        Option<std::rc::Rc<std::cell::RefCell<gpui::SharedString>>>,
+    > = const { std::cell::RefCell::new(None) };
 }
 
 /// Type, number, state and repository form one quiet, wrapping eyebrow. State
@@ -8132,22 +8290,6 @@ fn github_detail_eyebrow(
         .into_any_element()
 }
 
-/// A title sized for reading, not marketing. It wraps in place at every pane
-/// width and never shares its line with the detail's action buttons.
-fn github_detail_title(title: &str, theme: Theme) -> AnyElement {
-    div()
-        .debug_selector(|| "github-detail-title".into())
-        .w_full()
-        .min_w_0()
-        .whitespace_normal()
-        .text_size(TextSize::Large.px(&theme))
-        .line_height(theme.ui_px(22.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_primary)
-        .child(title.to_string())
-        .into_any_element()
-}
-
 fn github_empty_description(theme: Theme) -> AnyElement {
     div()
         .w_full()
@@ -8158,22 +8300,42 @@ fn github_empty_description(theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// Keep the header fixed and let only the document move. A centered maximum
+/// Keep the identity fixed and let metadata and the document move. A centered maximum
 /// width preserves long-line readability on large monitors; on the smallest
 /// split detail it fills the available width with a consistent inset.
 fn github_detail_layout(
     scroll_id: &'static str,
     header: impl IntoElement,
+    details: gpui::Div,
     content: gpui::Div,
     theme: Theme,
 ) -> gpui::Div {
     div()
+        .w_full()
         .flex_1()
         .min_w_0()
         .min_h_0()
         .flex()
         .flex_col()
-        .child(header)
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .flex_none()
+                .flex()
+                .justify_center()
+                .border_b_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .max_w(px(860.) + DynamicSpacing::Base16.px(&theme) * 2.)
+                        .child(header),
+                ),
+        )
         .child(
             div()
                 .id(scroll_id)
@@ -8182,15 +8344,22 @@ fn github_detail_layout(
                 .min_h_0()
                 .min_w_0()
                 .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .items_center()
                 .child(
                     div()
                         .w_full()
                         .min_w_0()
-                        .flex()
-                        .justify_center()
+                        .flex_none()
+                        .max_w(px(860.) + DynamicSpacing::Base16.px(&theme) * 2.)
                         .px(DynamicSpacing::Base16.px(&theme))
                         .py(DynamicSpacing::Base20.px(&theme))
-                        .child(div().w_full().min_w_0().max_w(px(860.)).child(content)),
+                        .flex()
+                        .flex_col()
+                        .gap(DynamicSpacing::Base20.px(&theme))
+                        .child(details)
+                        .child(content),
                 ),
         )
 }
@@ -8277,22 +8446,25 @@ fn menu_row(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    press(
-        picker_entry(div().id(id).group(BUTTON_GROUP), &theme)
-            .h(picker::entry_height(&theme))
-            .flex_none()
-            .cursor_pointer()
-            .text_color(theme.text_secondary)
-            .hover_state(&theme),
+    crate::motion::hover(
+        press(
+            picker_entry(div().id(id).group(BUTTON_GROUP), &theme)
+                .h(picker::entry_height(&theme))
+                .flex_none()
+                .cursor_pointer()
+                .text_color(theme.text_secondary),
+        )
+        .on_click(listener)
+        .child(icon(
+            icon_path,
+            context_menu::ICON.px(&theme),
+            theme.text_muted,
+        ))
+        .child(div().flex_1().min_w_0().truncate().child(label.to_string())),
+        id,
+        &theme,
+        Hover::row(&theme),
     )
-    .on_click(listener)
-    .child(icon(
-        icon_path,
-        context_menu::ICON.px(&theme),
-        theme.text_muted,
-    ))
-    .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
-    .into_any_element()
 }
 
 /// A hairline between menu groups (Zed's `ListSeparator`).
@@ -8318,7 +8490,7 @@ fn ref_icon(kind: git::RefKind) -> &'static str {
 /// One row in the Stashes section: message plus pop / apply / drop.
 fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
     let index = stash.index;
-    div()
+    let row = div()
         .id(gpui::ElementId::Name(format!("git-stash-{index}").into()))
         .group("git-row")
         .mx(DynamicSpacing::Base12.px(&theme))
@@ -8328,7 +8500,6 @@ fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) 
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
-        .hover_state(&theme)
         .child(icon(
             "icons/clock.svg",
             IconSize::XSmall.px(&theme),
@@ -8374,8 +8545,13 @@ fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) 
                     theme,
                     cx.listener(move |this, _: &ClickEvent, _, cx| this.stash_drop(index, cx)),
                 )),
-        )
-        .into_any_element()
+        );
+    crate::motion::hover(
+        row,
+        format!("git-stash-{index}"),
+        &theme,
+        Hover::wash(&theme),
+    )
 }
 
 /// Whether the create action collapses to its plus glyph. The label remains in
@@ -8992,10 +9168,9 @@ fn github_list_row<P>(
 where
     P: Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(gpui::ElementId::Name(
-            format!("git-{}-{}", parts.kind, parts.number).into(),
-        ))
+    let name = format!("git-{}-{}", parts.kind, parts.number);
+    let row = div()
+        .id(gpui::ElementId::Name(name.clone().into()))
         .debug_selector(|| "github-row".into())
         .group("git-row")
         .px(DynamicSpacing::Base08.px(&theme))
@@ -9013,15 +9188,20 @@ where
         // row does not provide, so the row clips as well as the run does.
         .overflow_hidden()
         .cursor_pointer()
-        .hover_state(&theme)
-        .when(selected, |row| {
-            row.bg(theme.surface_selected).border_color(theme.border)
-        })
+        .when(selected, |row| row.border_color(theme.border))
         .on_click(on_click)
         .child(github_row_header(&parts, theme))
         .child(github_row_title(parts.title, parts.emphasized, theme))
-        .child(github_row_meta(parts.url, parts.labels, theme))
-        .into_any_element()
+        .child(github_row_meta(parts.url, parts.labels, theme));
+    crate::motion::hover(
+        row,
+        name,
+        &theme,
+        Hover::over(
+            selected.then_some(theme.surface_selected),
+            theme.hover_wash(),
+        ),
+    )
 }
 
 /// One issue row in the list: state, title, repository and labels.
@@ -9632,8 +9812,6 @@ fn graph_row(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover_state(&theme)
-        .when(selected, |s| s.bg(theme.surface_selected))
         .on_click(listener)
         .child(graph_gutter(row, theme))
         .child(
@@ -9691,17 +9869,24 @@ fn graph_row(
                 )),
         );
     }
-    element
-        .child(icon(
-            if selected {
-                "icons/arrow-down.svg"
-            } else {
-                "icons/arrow-right.svg"
-            },
-            IconSize::XSmall.px(&theme),
-            theme.text_muted,
-        ))
-        .into_any_element()
+    let element = element.child(icon(
+        if selected {
+            "icons/arrow-down.svg"
+        } else {
+            "icons/arrow-right.svg"
+        },
+        IconSize::XSmall.px(&theme),
+        theme.text_muted,
+    ));
+    crate::motion::hover(
+        element,
+        format!("git-graph-{}", commit.short),
+        &theme,
+        Hover::over(
+            selected.then_some(theme.surface_selected),
+            theme.hover_wash(),
+        ),
+    )
 }
 
 /// The lane drawing for one row: a canvas sized to the row's widest lane, with
@@ -9847,8 +10032,6 @@ fn commit_row(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover_state(&theme)
-        .when(selected, |row| row.bg(theme.surface_selected))
         .on_click(listener)
         .child(history_marker(theme))
         .child(
@@ -9908,7 +10091,7 @@ fn commit_row(
             move |_, _, cx| cx.open_url(&url),
         ));
     }
-    row.child(icon(
+    let row = row.child(icon(
         if selected {
             "icons/arrow-down.svg"
         } else {
@@ -9916,8 +10099,16 @@ fn commit_row(
         },
         IconSize::XSmall.px(&theme),
         theme.text_muted,
-    ))
-    .into_any_element()
+    ));
+    crate::motion::hover(
+        row,
+        format!("git-commit-{}", commit.short),
+        &theme,
+        Hover::over(
+            selected.then_some(theme.surface_selected),
+            theme.hover_wash(),
+        ),
+    )
 }
 
 /// Diameter of a row's leading git marker. The separator inset below is
@@ -10858,15 +11049,18 @@ mod tests {
             self.panel.update(cx, |panel, cx| {
                 let theme = *theme::get(cx);
                 match &self.fixture {
-                    GithubDetailFixture::Issue(issue) => panel.issue_detail_view(issue.as_ref(), theme, cx),
-                    GithubDetailFixture::Pull(pull) => panel.pr_detail_view(pull.as_ref(), theme, cx),
+                    GithubDetailFixture::Issue(issue) => {
+                        panel.issue_detail_view(issue.as_ref(), theme, cx)
+                    }
+                    GithubDetailFixture::Pull(pull) => {
+                        panel.pr_detail_view(pull.as_ref(), theme, cx)
+                    }
                 }
             })
         }
     }
 
-    /// The identity/action header does not scroll away, and neither its title
-    /// nor any rendered document or PR section can spill past the reading pane.
+    /// The bounded identity stays above the single document scroll surface.
     #[gpui::test]
     fn github_details_keep_header_and_content_inside_the_pane(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
@@ -10937,36 +11131,93 @@ mod tests {
                 change_type: "MODIFIED".into(),
             }],
         };
+        // Ensure every viewport has enough document to scroll the metadata away.
+        let mut issue = issue;
+        issue.body = issue.body.repeat(10);
+        let mut pull = pull;
+        pull.body = pull.body.repeat(10);
+        let mut long_issue = issue.clone();
+        long_issue.title = "An exceptionally long title stays bounded in the header ".repeat(40);
+        let mut long_pull = pull.clone();
+        long_pull.title = long_issue.title.clone();
         let cx = cx.add_empty_window();
-        for (width, height) in [(400., 320.), (400., 720.), (560., 720.), (760., 720.)] {
+        for (width, height) in [
+            (400., 320.),
+            (400., 720.),
+            (560., 720.),
+            (760., 720.),
+            (1200., 720.),
+        ] {
             for fixture in [
                 GithubDetailFixture::Issue(Box::new(issue.clone())),
                 GithubDetailFixture::Pull(Box::new(pull.clone())),
+                GithubDetailFixture::Issue(Box::new(long_issue.clone())),
+                GithubDetailFixture::Pull(Box::new(long_pull.clone())),
             ] {
                 let is_pr = matches!(fixture, GithubDetailFixture::Pull(_));
-                let _ = cx.draw(
-                    point(px(0.), px(0.)),
-                    size(px(width), px(height)),
-                    |_, cx| {
-                        cx.new(|_| GithubDetailProbe {
-                            panel: panel.clone(),
-                            fixture: fixture.clone(),
-                        })
-                    },
-                );
+                let probe = cx.update(|_, cx| {
+                    cx.new(|_| GithubDetailProbe {
+                        panel: panel.clone(),
+                        fixture: fixture.clone(),
+                    })
+                });
+                let draw = |cx: &mut gpui::VisualTestContext| {
+                    let _ = cx.draw(
+                        point(px(0.), px(0.)),
+                        size(px(width), px(height)),
+                        |_, _| {
+                            div()
+                                .w(px(width))
+                                .h(px(height))
+                                .flex()
+                                .flex_col()
+                                .child(probe.clone())
+                        },
+                    );
+                };
+                draw(cx);
                 let header = cx.debug_bounds("github-detail-header").unwrap();
+                let back = cx.debug_bounds("github-detail-back").unwrap();
+                let pinned = cx.debug_bounds("github-detail-pinned-title").unwrap();
                 let eyebrow = cx.debug_bounds("github-detail-eyebrow").unwrap();
-                let title = cx.debug_bounds("github-detail-title").unwrap();
+                assert!(cx.debug_bounds("github-detail-title").is_none());
                 let scroll = cx.debug_bounds("github-detail-scroll").unwrap();
                 let description = cx.debug_bounds("github-description").unwrap();
-                assert!(header.size.width <= px(width), "width {width}: {header:?}");
-                assert!(eyebrow.right() <= header.right(), "{eyebrow:?} {header:?}");
-                assert!(title.right() <= header.right(), "{title:?} {header:?}");
-                assert!(header.bottom() <= scroll.top(), "{header:?} {scroll:?}");
-                assert!(scroll.size.height > px(0.), "height {height}: {scroll:?}");
+                let agent_action = cx
+                    .debug_bounds(if is_pr {
+                        "github-pr-agent-action"
+                    } else {
+                        "github-issue-agent-action"
+                    })
+                    .unwrap();
                 assert!(
-                    description.top() < scroll.bottom(),
-                    "height {height}: description starts outside {scroll:?}: {description:?}"
+                    agent_action.right() <= scroll.right(),
+                    "{agent_action:?} {header:?}"
+                );
+                assert!(header.size.width <= px(width), "width {width}: {header:?}");
+                // Back and the header title share one line, in that order.
+                assert!(back.right() <= pinned.left(), "{back:?} {pinned:?}");
+                assert_eq!(
+                    back.top() + back.size.height / 2.,
+                    pinned.top() + pinned.size.height / 2.,
+                    "{back:?} {pinned:?}"
+                );
+                assert!(pinned.right() <= scroll.right(), "{pinned:?} {scroll:?}");
+                // The back glyph, not its hover frame, sits on the content edge.
+                let theme = Theme::for_id(crate::theme::ThemeId::Orbit);
+                assert_eq!(
+                    back.left()
+                        + (ButtonSize::Default.height(&theme)
+                            - ButtonSize::Default.icon_size().px(&theme))
+                            / 2.,
+                    description.left()
+                );
+                assert_eq!(eyebrow.left(), description.left());
+                assert!(eyebrow.right() <= scroll.right(), "{eyebrow:?} {scroll:?}");
+                assert!(header.bottom() <= scroll.top(), "{header:?} {scroll:?}");
+                assert!(
+                    scroll.size.height > px(height / 2.),
+                    "height {height}: {scroll:?}"
                 );
                 assert!(
                     description.left() >= scroll.left(),
@@ -10978,9 +11229,46 @@ mod tests {
                 );
                 let comment = cx.debug_bounds("github-comment").unwrap();
                 assert!(comment.right() <= scroll.right(), "{comment:?} {scroll:?}");
+                cx.simulate_event(gpui::ScrollWheelEvent {
+                    position: point(
+                        scroll.left() + scroll.size.width / 2.,
+                        scroll.top() + px(30.),
+                    ),
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-80.))),
+                    ..Default::default()
+                });
+                draw(cx);
+                let pinned_after = cx.debug_bounds("github-detail-pinned-title").unwrap();
+                let eyebrow_after = cx.debug_bounds("github-detail-eyebrow").unwrap();
+                assert_eq!(pinned.top(), pinned_after.top());
+                assert!(eyebrow_after.top() < eyebrow.top(), "document must scroll at {width}x{height}, pr={is_pr}: {eyebrow:?} -> {eyebrow_after:?}");
+                cx.simulate_event(gpui::ScrollWheelEvent {
+                    position: point(
+                        scroll.left() + scroll.size.width / 2.,
+                        scroll.top() + px(30.),
+                    ),
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-1000.))),
+                    ..Default::default()
+                });
+                draw(cx);
+                assert_eq!(
+                    pinned.top(),
+                    cx.debug_bounds("github-detail-pinned-title").unwrap().top()
+                );
+                assert_eq!(
+                    header.size.height,
+                    cx.debug_bounds("github-detail-header").unwrap().size.height
+                );
+                assert!(cx.debug_bounds("github-detail-title").is_none());
+                if let Some(eyebrow) = cx.debug_bounds("github-detail-eyebrow") {
+                    assert!(
+                        eyebrow.bottom() <= scroll.top(),
+                        "metadata should scroll away: {eyebrow:?} {scroll:?}"
+                    );
+                }
                 if is_pr {
                     let summary = cx.debug_bounds("github-pr-summary").unwrap();
-                    assert!(summary.right() <= header.right(), "{summary:?} {header:?}");
+                    assert!(summary.right() <= scroll.right(), "{summary:?} {scroll:?}");
                     for selector in ["github-checks", "github-commits", "github-files"] {
                         let section = cx.debug_bounds(selector).unwrap();
                         assert!(
@@ -10988,6 +11276,167 @@ mod tests {
                             "{selector}: {section:?} {scroll:?}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// The Git page as the app hosts it: a feature card in the main row.
+    struct GitPageProbe(Entity<GitPanel>);
+
+    impl Render for GitPageProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = *theme::get(cx);
+            div().size_full().flex().flex_col().child(
+                div().flex_1().min_h_0().w_full().flex().relative().child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .pl(DynamicSpacing::Base12.px(&theme))
+                        .child(
+                            div()
+                                .size_full()
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                .border_1()
+                                .child(self.0.clone()),
+                        ),
+                ),
+            )
+        }
+    }
+
+    /// The real page paints the title in its fixed header at every scroll
+    /// position, in single and split layouts on both tabs. Long titles retain
+    /// their words and end in `…` rather than painting a lone ellipsis.
+    #[gpui::test]
+    fn github_detail_pinned_title_paints_its_text_on_the_git_page(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
+        let short = "Can Orbit directly invoke the pi on a remote server?";
+        let long =
+            "chore(deps): bump the cargo group across 1 directory with 11 updates ".repeat(4);
+        let long = long.trim_end();
+        let panel = cx.update(|cx| cx.new(GitPanel::new));
+        let cx = cx.add_empty_window();
+        for tab in [GitTab::Issues, GitTab::Pulls] {
+            for title in [short, long] {
+                panel.update(cx, |panel, _| {
+                    panel.open = true;
+                    panel.tab = tab;
+                    panel.gh_installed = true;
+                    panel.gh_authenticated = true;
+                    panel.issue_detail = Some(gh::GhIssue {
+                        number: 123,
+                        title: title.into(),
+                        state: "OPEN".into(),
+                        body: "As the title states.\n\n".repeat(40),
+                        author: github_user("vimbackground"),
+                        labels: Vec::new(),
+                        assignees: Vec::new(),
+                        comments: Vec::new(),
+                        created_at: "2026-01-01T00:00:00Z".into(),
+                        updated_at: "2026-01-02T00:00:00Z".into(),
+                        url: "https://github.com/imrj05/orbit/issues/123".into(),
+                    });
+                    panel.pr_detail = Some(gh::GhPull {
+                        number: 121,
+                        title: title.into(),
+                        state: "OPEN".into(),
+                        is_draft: false,
+                        body: "Bumps the cargo group.\n\n".repeat(40),
+                        author: github_user("app/dependabot"),
+                        labels: Vec::new(),
+                        review_decision: Some("REVIEW_REQUIRED".into()),
+                        mergeable: Some("MERGEABLE".into()),
+                        merge_state_status: Some("BLOCKED".into()),
+                        head_ref: "dependabot/cargo/cargo-29041ad6f9".into(),
+                        base_ref: "main".into(),
+                        checks: Vec::new(),
+                        additions: 110,
+                        deletions: 108,
+                        changed_files: 2,
+                        created_at: "2026-01-01T00:00:00Z".into(),
+                        updated_at: "2026-01-02T00:00:00Z".into(),
+                        url: "https://github.com/imrj05/orbit/pull/121".into(),
+                        comments: Vec::new(),
+                        reviews: Vec::new(),
+                        commits: Vec::new(),
+                        files: Vec::new(),
+                    });
+                });
+                for width in [760., 1400.] {
+                    panel.update(cx, |panel, cx| panel.set_review_width(px(width - 14.), cx));
+                    let probe = cx.update(|_, cx| cx.new(|_| GitPageProbe(panel.clone())));
+                    let draw = |cx: &mut gpui::VisualTestContext| {
+                        let probe = probe.clone();
+                        let _ = cx.draw(
+                            point(px(0.), px(0.)),
+                            size(px(width), px(640.)),
+                            move |_, _| div().size_full().child(probe),
+                        );
+                    };
+                    draw(cx);
+                    let header = cx.debug_bounds("github-detail-header").unwrap();
+                    let back = cx.debug_bounds("github-detail-back").unwrap();
+                    let pinned = cx.debug_bounds("github-detail-pinned-title").unwrap();
+                    let scroll = cx.debug_bounds("github-detail-scroll").unwrap();
+                    let eyebrow = cx.debug_bounds("github-detail-eyebrow").unwrap();
+                    assert!(cx.debug_bounds("github-detail-title").is_none());
+                    assert!(back.right() <= pinned.left());
+                    assert!(pinned.right() <= header.right());
+                    assert!(header.bottom() <= scroll.top());
+                    let painted_title = || {
+                        PINNED_TITLE_PAINTED
+                            .with(|slot| slot.borrow().clone())
+                            .expect("pinned title rendered")
+                            .borrow()
+                            .to_string()
+                    };
+                    let painted = painted_title();
+                    let context = format!("{tab:?} at {width}: {painted:?}");
+                    if title == short {
+                        assert_eq!(painted, title, "{context}");
+                    } else {
+                        let kept = painted.strip_suffix('\u{2026}').expect(&context);
+                        assert!(kept.len() > 20 && title.starts_with(kept), "{context}");
+                    }
+                    cx.simulate_event(gpui::ScrollWheelEvent {
+                        position: point(
+                            scroll.left() + scroll.size.width / 2.,
+                            scroll.top() + px(30.),
+                        ),
+                        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-400.))),
+                        ..Default::default()
+                    });
+                    draw(cx);
+                    assert!(
+                        cx.debug_bounds("github-detail-eyebrow")
+                            .is_none_or(|after| after.top() < eyebrow.top()),
+                        "{context}"
+                    );
+                    assert_eq!(cx.debug_bounds("github-detail-header").unwrap(), header);
+                    assert_eq!(
+                        cx.debug_bounds("github-detail-pinned-title").unwrap(),
+                        pinned
+                    );
+                    assert_eq!(painted_title(), painted, "{context}");
+                    // Returning to the top leaves the same title in place.
+                    cx.simulate_event(gpui::ScrollWheelEvent {
+                        position: point(
+                            scroll.left() + scroll.size.width / 2.,
+                            scroll.top() + px(30.),
+                        ),
+                        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(400.))),
+                        ..Default::default()
+                    });
+                    draw(cx);
+                    assert_eq!(
+                        cx.debug_bounds("github-detail-pinned-title").unwrap(),
+                        pinned
+                    );
+                    assert_eq!(painted_title(), painted, "{context}");
                 }
             }
         }
@@ -11047,7 +11496,7 @@ mod tests {
         let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(640.)), |_, cx| {
             cx.new(|_| PullsPageProbe(panel.clone()))
         });
-        assert!(cx.debug_bounds("github-detail-title").is_some());
+        assert!(cx.debug_bounds("github-detail-pinned-title").is_some());
         assert!(cx.debug_bounds("github-pr-summary").is_some());
         assert!(cx.debug_bounds("github-merge-state").is_some());
         assert!(cx.debug_bounds("github-detail-error").is_some());

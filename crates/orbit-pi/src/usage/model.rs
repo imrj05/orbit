@@ -824,12 +824,7 @@ impl UsageFilter {
                 return false;
             }
         }
-        if !self.workspaces.is_empty()
-            && !self.workspaces.contains(&index.session(session).workspace)
-        {
-            return false;
-        }
-        true
+        self.workspaces.is_empty() || self.workspaces.contains(&index.session(session).workspace)
     }
 }
 

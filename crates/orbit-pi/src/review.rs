@@ -7,10 +7,9 @@
 //!
 //! Sources mirror the reference model: the working tree is compared via
 //! an isolated snapshot commit so untracked files and stage/unstage state are
-//! represented exactly. `LastTurn` is not a Git range — the docked pane
-//! builds it from that turn's `edit` / `write` calls, then appends the files
-//! the turn's checkpoint range changed with no call naming them, so a `bash`
-//! fix or a formatter is never silently missing.
+//! represented exactly. For a settled `LastTurn`, the docked pane prefers the
+//! captured checkpoint range and falls back to conversation calls when that
+//! range is unavailable.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -28,7 +27,7 @@ pub(crate) const MAX_RENDERED_DIFF_LINES: usize = 50_000;
 /// Which Git snapshot the Review panel is showing.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Source {
-    /// Files a single agent turn edited or wrote, from the conversation.
+    /// A single turn's checkpoint diff, or conversation calls as a fallback.
     LastTurn {
         turn_count: usize,
     },

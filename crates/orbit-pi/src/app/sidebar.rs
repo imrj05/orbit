@@ -740,9 +740,17 @@ fn session_status_lane(
             theme,
         ))
     } else {
-        status_lane_icon(lane).map(|path| icon(path, size, ink).into_any_element())
+        status_lane_icon(lane).map(|path| {
+            // The font's baseline places its visible ink above the centered
+            // line box. Lift the static glyph without moving the badge lane.
+            icon(path, size, ink)
+                .relative()
+                .top(px(-1.))
+                .into_any_element()
+        })
     };
     let lane_el = div()
+        .debug_selector(|| "session-status-lane".into())
         .flex_none()
         .size(px(SIDEBAR_STATUS_LANE))
         .flex()
@@ -1580,10 +1588,12 @@ pub(crate) fn render_side_row(
             let has_state = !matches!(lane, StatusLane::Idle | StatusLane::Unknown);
             let slot_text = sidebar_slot_text(slot_words, age, show_updated);
             let row_slot = div()
+                .debug_selector(|| "session-status-text".into())
                 .flex_none()
                 .max_w(px(110.))
                 .truncate()
                 .text_size(TextSize::XSmall.px(&theme))
+                .line_height(BufferLineHeight::Standard.relative())
                 .text_color(slot_ink)
                 .children(slot_text);
             let status_details = Some(
@@ -1608,6 +1618,7 @@ pub(crate) fn render_side_row(
                     })
                     .child(
                         div()
+                            .debug_selector(|| "session-status-badge".into())
                             .flex()
                             .items_center()
                             .gap(DynamicSpacing::Base02.px(&theme))
@@ -1648,12 +1659,14 @@ pub(crate) fn render_side_row(
                             .when(active && show_workspace, |line| {
                                 line.child(
                                     div()
+                                        .debug_selector(|| "session-current-badge".into())
                                         .flex_none()
                                         .px(DynamicSpacing::Base04.px(&theme))
                                         .py(DynamicSpacing::Base01.px(&theme))
                                         .rounded(Radius::Small.px(&theme))
                                         .bg(theme.surface_active)
                                         .text_size(TextSize::XSmall.px(&theme))
+                                        .line_height(BufferLineHeight::Standard.relative())
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.accent_text)
                                         .child(tr!("sidebar.current")),
@@ -1839,6 +1852,7 @@ fn session_title(
     let line_height = BufferLineHeight::Standard.relative();
     if !running {
         return div()
+            .debug_selector(|| "session-title".into())
             .flex_1()
             .min_w_0()
             .truncate()
@@ -4261,6 +4275,137 @@ fn clamp_cursor(index: usize, count: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SessionRowProbe {
+        app: Entity<OrbitApp>,
+        session: SessionInfo,
+        status: Option<SessionStatus>,
+        active: bool,
+        show_updated: bool,
+        theme: Theme,
+    }
+
+    impl gpui::Render for SessionRowProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let rows = Rc::new(vec![SideRow::Session(0)]);
+            let sessions = Rc::new(vec![self.session.clone()]);
+            let statuses = Rc::new(
+                self.status
+                    .map(|s| (self.session.path.clone(), s))
+                    .into_iter()
+                    .collect(),
+            );
+            render_side_row(
+                &rows,
+                &sessions,
+                self.active.then_some(self.session.path.as_path()),
+                0,
+                &self.app,
+                false,
+                &Rc::default(),
+                &Rc::default(),
+                &Rc::default(),
+                true,
+                false,
+                self.show_updated,
+                false,
+                &Rc::default(),
+                &Rc::default(),
+                &Rc::default(),
+                &Rc::default(),
+                &Rc::default(),
+                &Rc::default(),
+                &statuses,
+                None,
+                None,
+                false,
+                None,
+                false,
+                self.theme,
+            )
+            .into_any_element()
+        }
+    }
+
+    #[gpui::test]
+    fn session_row_badges_align_with_title_at_multiple_scales(cx: &mut gpui::TestAppContext) {
+        use std::time::{Duration, SystemTime};
+
+        cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        let session = SessionInfo {
+            path: "/tmp/row-alignment.jsonl".into(),
+            id: "alignment".into(),
+            cwd: "/tmp".into(),
+            title: "A long session title that should truncate in narrow rows".into(),
+            first_message: String::new(),
+            modified: SystemTime::now() - Duration::from_secs(60),
+        };
+        for (width, font_size, status, active, show_updated) in [
+            (320., 14., Some(SessionStatus::Completed), true, true),
+            (220., 18., Some(SessionStatus::Failed), true, true),
+            (
+                220.,
+                18.,
+                Some(SessionStatus::WaitingApproval),
+                false,
+                false,
+            ),
+            (320., 14., Some(SessionStatus::Running), false, true),
+            (320., 14., None, false, true),
+        ] {
+            let mut theme = Theme::for_id(crate::theme::ThemeId::Orbit);
+            theme.ui.ui_font_size = font_size;
+            let probe = cx.update(|_, cx| {
+                cx.new(|_| SessionRowProbe {
+                    app: app.clone(),
+                    session: session.clone(),
+                    status,
+                    active,
+                    show_updated,
+                    theme,
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(160.)),
+                |_, _| probe.clone(),
+            );
+            let mut bounds = |name| {
+                cx.debug_bounds(name)
+                    .unwrap_or_else(|| panic!("missing {name}"))
+            };
+            let center = |b: gpui::Bounds<gpui::Pixels>| b.origin.y + b.size.height / 2.;
+            let title = bounds("session-title");
+            let badge = bounds("session-status-badge");
+            let lane = bounds("session-status-lane");
+            let text = bounds("session-status-text");
+            for (name, b) in [("badge", badge), ("lane", lane), ("text", text)] {
+                assert!((center(title) - center(b)).abs() <= px(0.51),
+                    "{name} not centered: width={width}, font={font_size}, status={status:?}: title={title:?}, element={b:?}");
+            }
+            let expected_text = TextSize::XSmall.px(&theme) * 1.3;
+            assert!(
+                (text.size.height - expected_text).abs() <= px(0.51),
+                "status text should use the metadata leading: {text:?}, expected {expected_text:?}"
+            );
+            if active {
+                let current = bounds("session-current-badge");
+                assert!(
+                    (center(title) - center(current)).abs() <= px(0.51),
+                    "current not centered: title={title:?}, current={current:?}"
+                );
+                let expected =
+                    TextSize::XSmall.px(&theme) * 1.3 + DynamicSpacing::Base01.px(&theme) * 2.;
+                assert!((current.size.height - expected).abs() <= px(0.51),
+                    "current line height should use the metadata leading: {current:?}, expected {expected:?}");
+                assert!(badge.origin.x + badge.size.width <= current.origin.x);
+                assert!(current.origin.x + current.size.width <= px(width));
+            }
+            assert!(title.origin.x + title.size.width <= badge.origin.x);
+        }
+    }
 
     #[test]
     fn session_provider_labels_keep_each_provider_and_optional_model() {

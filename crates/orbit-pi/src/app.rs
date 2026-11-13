@@ -1673,6 +1673,7 @@ impl OrbitApp {
                 .with_key_context("Composer ChatComposer")
                 .with_autocomplete(autocomplete.clone())
                 .with_prompt_history(prompt_history.clone())
+                .with_attachments(true)
         });
         // The chat input is the workbench's home tab stop; every other
         // ComposerInput (filters, rename fields, pickers) stays out of the
@@ -2653,6 +2654,14 @@ impl OrbitApp {
             panel.set_open_path(Rc::new(move |path, display, _window, cx| {
                 let _ = app_weak.update(cx, |app, cx| {
                     app.open_file_in_viewer(path, display, cx);
+                });
+            }));
+        });
+        let app_weak = cx.entity().downgrade();
+        app.git_panel.update(cx, |panel, _| {
+            panel.set_start_github_task(Rc::new(move |workspace, prompt, window, cx| {
+                let _ = app_weak.update(cx, |app, cx| {
+                    app.start_github_task(workspace, prompt, window, cx);
                 });
             }));
         });
@@ -4121,6 +4130,8 @@ mod send_control_tests;
 mod send_progress_tests;
 #[cfg(test)]
 mod session_default_apply_tests;
+#[cfg(test)]
+mod session_open_card_tests;
 #[cfg(test)]
 mod session_park_tests;
 #[cfg(test)]

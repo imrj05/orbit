@@ -227,3 +227,106 @@ pub fn empty_note(
     }
     column.into_any_element()
 }
+
+/// One line of text that ellipsizes at the width it is painted at.
+///
+/// GPUI's text element truncates when it is first measured and keeps that
+/// result for the frame, and flex layout can measure a `min_w_0` descendant
+/// at zero width before it settles the pane. A truncated title then paints as
+/// a lone `…`. This element takes its parent's width and the line height, and
+/// shapes the text only in prepaint, when its final bounds are known. Font,
+/// size, weight and color come from the inherited text style.
+pub struct EllipsizedLine {
+    text: gpui::SharedString,
+    painted: std::rc::Rc<std::cell::RefCell<gpui::SharedString>>,
+}
+
+impl EllipsizedLine {
+    pub fn new(text: impl Into<gpui::SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            painted: Default::default(),
+        }
+    }
+
+    /// The text as last painted, ellipsis included.
+    #[cfg(test)]
+    pub fn painted(&self) -> std::rc::Rc<std::cell::RefCell<gpui::SharedString>> {
+        self.painted.clone()
+    }
+}
+
+impl IntoElement for EllipsizedLine {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for EllipsizedLine {
+    type RequestLayoutState = ();
+    type PrepaintState = Option<gpui::ShapedLine>;
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        let mut style = gpui::Style::default();
+        style.size.width = gpui::relative(1.).into();
+        style.size.height = window.line_height().into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        _: &mut gpui::App,
+    ) -> Self::PrepaintState {
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let mut runs = vec![style.to_run(self.text.len())];
+        let display = window
+            .text_system()
+            .line_wrapper(style.font(), font_size)
+            .truncate_line(self.text.clone(), bounds.size.width, "\u{2026}", &mut runs);
+        *self.painted.borrow_mut() = display.clone();
+        Some(
+            window
+                .text_system()
+                .shape_line(display, font_size, &runs, None),
+        )
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        line: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        let Some(line) = line else { return };
+        let line_height = window.line_height();
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            line.paint(bounds.origin, line_height, window, cx).ok();
+        });
+    }
+}

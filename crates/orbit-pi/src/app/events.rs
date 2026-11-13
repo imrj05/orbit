@@ -864,6 +864,23 @@ impl OrbitApp {
     /// `get_messages` response and the disk preview that paints a cold session
     /// before pi answers.
     pub(super) fn apply_messages_snapshot(&mut self, data: &Value, cx: &mut Context<Self>) {
+        // A preview and pi's snapshot describe the same active session. Keep
+        // its checkpoint only when the latest turn still has the same scope,
+        // prompts and recorded calls; switches replace or clear the transcript.
+        let old_clock = self.turns.clone();
+        let old_indices = self.transcript.user_message_indices();
+        let old_prompts = self.transcript.user_turn_texts();
+        let old_records = self.turn_records();
+        let old_len = self.transcript.message_count();
+        let checkpoints = self.transcript.review_checkpoints();
+        let checkpoint = self.transcript.review_card_checkpoint().map(|checkpoint| {
+            (
+                checkpoint,
+                self.turns.latest,
+                self.transcript.user_turn_texts(),
+                self.turn_records(),
+            )
+        });
         self.transcript.load_from(data);
         self.added = 0;
         self.removed = 0;
@@ -876,8 +893,40 @@ impl OrbitApp {
         }
         // Message indices moved. Rebuild the turn clock without letting the
         // latest number step backwards, then refresh Last Turn.
-        self.rebuild_turn_clock();
+        if old_len == self.transcript.message_count()
+            && old_indices == self.transcript.user_message_indices()
+            && old_prompts == self.transcript.user_turn_texts()
+        {
+            self.turns = old_clock.clone();
+        } else {
+            self.rebuild_turn_clock();
+        }
+        let same_turns = old_clock.starts == self.turns.starts
+            && old_clock.live == self.turns.live
+            && old_records == self.turn_records()
+            && old_prompts == self.transcript.user_turn_texts();
+        if !same_turns {
+            // Reconstructed indices are not checkpoint identities (steers are
+            // user rows too). Never mix cached diffs into a rebuilt turn.
+            self.sidepane
+                .update(cx, |pane, cx| pane.clear_turn_checkpoints(cx));
+        }
+        if same_turns {
+            self.transcript.restore_review_checkpoints(checkpoints);
+        }
         self.push_turn_records(cx);
+        if let Some(((start, files), latest, prompts, records)) = checkpoint {
+            if same_turns
+                && latest == self.turns.latest
+                && latest.and_then(|turn| self.turns.start_of(turn)) == Some(start)
+                && prompts == self.transcript.user_turn_texts()
+                && records == self.turn_records()
+            {
+                self.transcript.set_review_card_worktree_files(start, files);
+            }
+        }
+        // Rebuilt turn numbers cannot safely identify persisted checkpoints.
+        // Reopened history uses recorded calls rather than a potentially wrong diff.
     }
 
     /// Apply a command response to the app. The arguments are the response's
@@ -1141,6 +1190,7 @@ impl OrbitApp {
                         self.reset_quota_entries();
                         self.recover_latest_turn(cx);
                         self.sync_review_context(cx);
+                        self.push_turn_records(cx);
                     }
                 }
                 // Agent control surface: streaming/compaction state, queue
@@ -1310,7 +1360,18 @@ impl OrbitApp {
                 if success {
                     // A resumed session keeps the model in its file (D-D).
                     self.default_model_armed = false;
-                    self.reset_turns(cx);
+                    // The session is already on screen, painted from disk by
+                    // the preview or left there by the process this one
+                    // replaces, and its turn clock with it. Dropping a settled
+                    // clock took the changed-files card and Last Turn down
+                    // until `get_messages` put the same ones back a round trip
+                    // later. Only an open turn has to go: its run ended with
+                    // the process that owned it.
+                    if self.turns.open {
+                        self.reset_turns(cx);
+                    } else {
+                        self.reset_turn_surfaces();
+                    }
                     self.reset_queue();
                     self.sync_review_context(cx);
                     // Load the session *before* the slower auth/quota probes,

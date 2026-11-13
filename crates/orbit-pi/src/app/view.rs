@@ -1126,6 +1126,7 @@ impl Render for OrbitApp {
                         self.new_task_settle_at = Some(Instant::now());
                     }
                     let settling = !empty && new_task::settling(self.new_task_settle_at, &theme);
+                    let composer_theme = theme.for_composer(empty);
                     let settle_gen = self.new_task_settle_gen;
                     let page_w = new_task::column_width(main_width);
                     let session_w = px(session_column);
@@ -1304,21 +1305,16 @@ impl Render for OrbitApp {
                                                 .debug_selector(|| "composer-box".to_string())
                                                 .w_full()
                                                 .relative()
-                                                // Chrome you type into stays the
-                                                // palette's own surface, even over
-                                                // a wallpaper. A frosted box turns
-                                                // the picture behind it into
-                                                // blotches inside the field the
-                                                // reader is writing in, and the
-                                                // wallpaper is meant to sit behind
-                                                // the page, not inside it.
-                                                .bg(theme.surface_secondary)
+                                                .bg(composer_theme.composer_fill())
                                                 .rounded(input::composer_radius(&theme))
-                                                .border_1()
-                                                .border_color(Self::composer_border_color(
-                                                    &theme,
-                                                    self.file_drag_hovered,
-                                                ))
+                                                .frosted_card(
+                                                    &composer_theme,
+                                                    Self::composer_border_color(
+                                                        &theme,
+                                                        self.file_drag_hovered,
+                                                    ),
+                                                    input::composer_radius(&theme),
+                                                )
                                                 .shadow(theme.composer_shadow())
                                                 .text_size(TextSize::Default.px(&theme))
                                                 .flex()

@@ -4,6 +4,7 @@
 //! planned for.
 
 use super::*;
+use crate::app::composer_ops::QueuedPath;
 use crate::theme::{Theme, ThemeId};
 
 fn image_attachment(name: &str) -> Attachment {
@@ -172,6 +173,64 @@ fn a_file_attachment_records_the_name_and_size_it_will_reference(_cx: &mut gpui:
     );
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A multi-select batch keeps the picker's order and mixes images with files,
+/// and one budget governs the whole batch: what the cap turns away is counted
+/// in the status line rather than dropped without a word.
+#[gpui::test]
+fn a_picked_batch_keeps_picker_order_and_reports_what_the_cap_turns_away(
+    cx: &mut gpui::TestAppContext,
+) {
+    let app = app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.queue_picked(
+                vec![
+                    QueuedPath::Image(image_attachment("a.png")),
+                    QueuedPath::File(file("/tmp/notes.md", 12)),
+                    QueuedPath::Image(image_attachment("b.png")),
+                ],
+                None,
+                cx,
+            );
+            let names: Vec<&str> = app.attachments.iter().map(|a| a.name.as_str()).collect();
+            assert_eq!(names, ["a.png", "b.png"]);
+            assert_eq!(app.files.len(), 1);
+            assert_eq!(app.attachment_slots_used(), 3);
+
+            // One slot left under the cap: the first of three fits, two do not.
+            app.attachments.clear();
+            app.files.clear();
+            for ix in 0..MAX_ATTACHMENTS - 1 {
+                app.attachments.push(image_attachment(&format!("{ix}.png")));
+            }
+            app.queue_picked(
+                vec![
+                    QueuedPath::Image(image_attachment("x.png")),
+                    QueuedPath::Image(image_attachment("y.png")),
+                    QueuedPath::Image(image_attachment("z.png")),
+                ],
+                None,
+                cx,
+            );
+            assert_eq!(app.attachments.len(), MAX_ATTACHMENTS);
+            assert_eq!(
+                app.attachments.last().map(|a| a.name.as_str()),
+                Some("x.png")
+            );
+            assert_eq!(
+                app.status,
+                tr!(
+                    "composer_ops.batch_limit",
+                    added = 1,
+                    skipped = 2,
+                    count = MAX_ATTACHMENTS,
+                )
+                .to_string()
+            );
+        });
+    });
 }
 
 #[test]

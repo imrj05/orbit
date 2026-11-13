@@ -559,17 +559,30 @@ impl OrbitApp {
                         app.clear_bug_report(cx);
                         app.toast_success(tr!("bug_report.created"));
                     }
-                    Ok(crate::bug_report::Filed::Browser { url, screenshots }) => {
+                    Ok(crate::bug_report::Filed::Browser {
+                        url,
+                        screenshots,
+                        clipboard,
+                    }) => {
                         if let Err(err) = platform::open_url(&url) {
                             app.bug_report_error = Some(tr!("bug_report.open_failed", error = err));
-                        } else if let Some(directory) = screenshots {
-                            platform::open_path_default(&directory);
-                            app.toast_info(tr!(
-                                "bug_report.screenshots_saved",
-                                dir = directory.to_string_lossy()
-                            ));
                         } else {
-                            app.toast_info(tr!("bug_report.browser"));
+                            // A body too long for the URL travels on the
+                            // clipboard instead; the prefilled page says so.
+                            let copied = clipboard.is_some();
+                            if let Some(body) = clipboard {
+                                cx.write_to_clipboard(ClipboardItem::new_string(body));
+                                app.toast_info(tr!("bug_report.browser_clipboard"));
+                            }
+                            if let Some(directory) = screenshots {
+                                platform::open_path_default(&directory);
+                                app.toast_info(tr!(
+                                    "bug_report.screenshots_saved",
+                                    dir = directory.to_string_lossy()
+                                ));
+                            } else if !copied {
+                                app.toast_info(tr!("bug_report.browser"));
+                            }
                         }
                     }
                     Err(err) => {

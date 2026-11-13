@@ -1239,7 +1239,8 @@ float4 fill_color(Background background,
 }
 
 // Orbit: frosted glass. A quad carrying `Quad::border_color` from
-// `backdrop_blur_marker()` is not painted as a border; the renderer first copies
+// `backdrop_blur_marker()` or `backdrop_blur_fade_marker()` is not painted as
+// a border; the renderer first copies
 // what is already drawn behind it, blurs that copy, and composites the result
 // back through this shader, inside the quad's rounded bounds. The quad's own
 // translucent background then tints the frost.
@@ -1252,6 +1253,8 @@ struct BackdropCompositeParams {
   float2 region_size;
   float2 viewport_size;
   float corner_radii[4]; // top-left, top-right, bottom-left, bottom-right
+  uint fade; // 0: uniform frost, 1: clear top -> frosted bottom
+  uint padding;
 };
 
 struct BackdropCompositeOutput {
@@ -1292,5 +1295,10 @@ fragment float4 backdrop_composite_fragment(
   float2 corner = abs(center_to_point) - half_size + radius;
   float distance = length(max(corner, float2(0.))) +
                    min(max(corner.x, corner.y), 0.) - radius;
-  return mix(sharp, soft, saturate(0.5 - distance));
+  // Coverage changes, not sigma: both modes share the same single Gaussian
+  // pass. Normalize over the original bounds so clipping cannot restart the fade.
+  float coverage = params->fade != 0
+      ? smoothstep(0., 1., (position.y - params->origin.y) / params->size.y)
+      : 1.;
+  return mix(sharp, soft, saturate(0.5 - distance) * coverage);
 }

@@ -14,7 +14,7 @@
 //! The pane is a GPUI [`Entity`] owned by [`crate::app::OrbitApp`], so it can
 //! hold its own list state and background-job state.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -95,14 +95,13 @@ pub type FileActions = std::rc::Rc<dyn Fn(&review::File, Theme) -> Option<AnyEle
 /// the row is the sticky copy, so the host can mint unique element ids.
 pub type SectionActions = std::rc::Rc<dyn Fn(&str, bool, Theme) -> Option<AnyElement>>;
 
-/// Worktree changes a turn made that no `edit` / `write` call named, already
-/// rendered as `numstat` + patch text against the turn's start checkpoint.
-#[derive(Clone, Default)]
+/// A settled turn's checkpoint diff and paths no `edit` / `write` call named.
+#[derive(Clone)]
 struct TurnExtras {
-    numstat: String,
-    patch: String,
     /// Repository-relative paths, so a file header can say where it came from.
     paths: HashSet<String>,
+    /// Full net diff when both checkpoints are available, including empty diffs.
+    checkpoint: git::ReviewDiff,
 }
 
 /// How many settled turns keep their extra-worktree changes. Last Turn can be
@@ -125,18 +124,17 @@ pub struct SidePane {
 
     /// Workspace the pane operates on (kept in sync by the app).
     workspace: Option<PathBuf>,
-    /// pi session id. Git sources still key checkpoints with it; Last Turn
-    /// does not.
+    /// pi session id, used to identify the current turn's checkpoints.
     session: Option<String>,
     /// Latest turn the menu labels as Last Turn.
     latest_turn: Option<usize>,
-    /// Recorded `edit` / `write` calls per turn. Last Turn renders these
-    /// instead of a Git checkpoint diff.
+    /// Recorded calls for All Changes and the Last Turn fallback.
     turn_records: crate::turn_review::TurnRecords,
-    /// Files a turn changed in the worktree that no `edit` / `write` named,
-    /// as the turn's checkpoint range. Appended to Last Turn so a `bash` fix
-    /// or a formatter is not silently missing from the review.
+    /// Bounded checkpoint results and outside-call labels for settled turns.
     turn_extras: Vec<(usize, TurnExtras)>,
+    /// In-flight checkpoint reads, independently invalidated per turn.
+    checkpoint_pending: HashMap<usize, u64>,
+    checkpoint_generation: u64,
     /// A run is open: Last Turn is the state as of send, not the live turn.
     turn_running: bool,
 
@@ -152,6 +150,8 @@ pub struct SidePane {
     refresh_spin_until: Option<Instant>,
     /// Which git snapshot is shown; changing it reloads the diff.
     source: Source,
+    /// Last Turn follows the latest unless a transcript card selected a turn.
+    follow_latest_turn: bool,
     /// Monotonic id so a slow load for a previous source can be discarded.
     load_generation: u64,
     /// The source filter dropdown is open.
@@ -237,6 +237,8 @@ impl SidePane {
             latest_turn: None,
             turn_records: crate::turn_review::TurnRecords::default(),
             turn_extras: Vec::new(),
+            checkpoint_pending: HashMap::new(),
+            checkpoint_generation: 0,
             turn_running: false,
             review: None,
             review_loading: false,
@@ -244,6 +246,7 @@ impl SidePane {
             review_error: None,
             refresh_spin_until: None,
             source: Source::default(),
+            follow_latest_turn: true,
             load_generation: 0,
             source_menu_open: false,
             menu_dismissed_at: None,
@@ -519,6 +522,13 @@ impl SidePane {
     pub fn set_workspace(&mut self, workspace: Option<PathBuf>, cx: &mut Context<Self>) {
         if workspace != self.workspace {
             self.workspace = workspace;
+            self.turn_extras.clear();
+            self.checkpoint_pending.clear();
+            // Invalidate even a closed pane's in-flight read from the old workspace.
+            self.load_generation = self.load_generation.wrapping_add(1);
+            self.review_loading = false;
+            self.pending_select = None;
+            self.clear_diff();
             self.review_stale = true;
             if self.open {
                 self.load_review(cx);
@@ -547,17 +557,9 @@ impl SidePane {
             self.latest_turn = latest_turn;
             return;
         }
-        let previous_latest = self.latest_turn;
-        let retarget = match self.source {
-            // Turn 0 is the "no turn yet" placeholder. A session swap must
-            // leave Last Turn, but the previous session's turn number is not
-            // this session's. A source that was following the previous latest
-            // follows the new one. An explicitly chosen older turn stays put.
-            Source::LastTurn { turn_count } => {
-                turn_count == 0 || session_changed || previous_latest == Some(turn_count)
-            }
-            _ => false,
-        };
+        // A session swap cannot retain a turn identity from the old session.
+        let retarget = matches!(self.source, Source::LastTurn { .. })
+            && (session_changed || self.follow_latest_turn);
         let next_turn = latest_turn.unwrap_or(0);
         let source_changes = retarget
             && matches!(self.source, Source::LastTurn { turn_count } if turn_count != next_turn);
@@ -566,9 +568,19 @@ impl SidePane {
         }
         self.session = session;
         self.latest_turn = latest_turn;
+        // A deduplicated resend can retarget an already-running clock to the
+        // previous turn without another false-to-true running transition.
+        if latest_changed && self.turn_running {
+            self.invalidate_running_checkpoint();
+        }
         if session_changed {
             // Another session's turn number names another session's files.
+            self.follow_latest_turn = true;
             self.turn_extras.clear();
+            self.checkpoint_pending.clear();
+            if matches!(self.source, Source::LastTurn { .. }) {
+                self.clear_diff();
+            }
         }
         if source_changes {
             self.source = Source::LastTurn {
@@ -678,20 +690,78 @@ impl SidePane {
         cx.notify();
     }
 
-    /// Attach the worktree changes a settled turn made outside its tool
-    /// calls. A visible Last Turn for that turn reloads; other turns wait.
-    pub(crate) fn set_turn_extras(
+    pub(crate) fn has_turn_checkpoint(&self, turn: usize) -> bool {
+        self.turn_extras.iter().any(|(number, _)| *number == turn)
+    }
+
+    /// Rebuilt transcript ranges cannot safely reuse turn-numbered diffs.
+    pub(crate) fn clear_turn_checkpoints(&mut self, cx: &mut Context<Self>) {
+        self.turn_extras.clear();
+        self.checkpoint_pending.clear();
+        if matches!(self.source, Source::LastTurn { .. }) {
+            self.review_stale = true;
+            if self.open {
+                self.load_conversation_review(cx);
+            }
+        }
+    }
+
+    /// Wait for a checkpoint only while an actual read is in flight. Keep an
+    /// existing authoritative diff visible on refresh.
+    pub(crate) fn begin_turn_checkpoint(&mut self, turn: usize, cx: &mut Context<Self>) -> u64 {
+        self.checkpoint_generation = self.checkpoint_generation.wrapping_add(1);
+        let generation = self.checkpoint_generation;
+        self.checkpoint_pending.insert(turn, generation);
+        if matches!(self.source, Source::LastTurn { turn_count } if turn_count == turn)
+            && !self
+                .turn_extras
+                .iter()
+                .any(|(existing, _)| *existing == turn)
+        {
+            self.clear_diff();
+        }
+        cx.notify();
+        generation
+    }
+
+    pub(crate) fn has_pending_turn_checkpoint(&self, turn: usize) -> bool {
+        self.checkpoint_pending.contains_key(&turn)
+    }
+
+    pub(crate) fn is_turn_checkpoint_pending(&self, turn: usize, generation: u64) -> bool {
+        self.checkpoint_pending.get(&turn) == Some(&generation)
+    }
+
+    pub(crate) fn finish_turn_checkpoint(
+        &mut self,
+        turn: usize,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_turn_checkpoint_pending(turn, generation) {
+            return;
+        }
+        self.checkpoint_pending.remove(&turn);
+        if matches!(self.source, Source::LastTurn { turn_count } if turn_count == turn) {
+            self.review_stale = true;
+            if self.open {
+                self.load_conversation_review(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Replace the call-derived review with the complete checkpoint net diff.
+    pub(crate) fn set_turn_checkpoint(
         &mut self,
         turn: usize,
         paths: Vec<String>,
-        numstat: String,
-        patch: String,
+        diff: git::ReviewDiff,
         cx: &mut Context<Self>,
     ) {
         let extras = TurnExtras {
-            numstat,
-            patch,
             paths: paths.into_iter().collect(),
+            checkpoint: diff,
         };
         match self
             .turn_extras
@@ -706,19 +776,30 @@ impl SidePane {
                 && self
                     .turn_extras
                     .iter()
-                    .map(|(_, extras)| extras.numstat.len() + extras.patch.len())
+                    .map(|(_, extras)| {
+                        extras.checkpoint.numstat.len() + extras.checkpoint.patch.len()
+                    })
                     .sum::<usize>()
                     > MAX_TURN_EXTRAS_BYTES)
         {
             self.turn_extras.remove(0);
         }
-        if matches!(self.source, Source::LastTurn { turn_count } if turn_count == turn)
-            && self.open
-            && !self.review_loading
-        {
-            self.load_review(cx);
+        if matches!(self.source, Source::LastTurn { turn_count } if turn_count == turn) {
+            self.review_stale = true;
+            if self.open && !self.review_loading {
+                self.load_review(cx);
+            }
         }
         cx.notify();
+    }
+
+    /// Discard a settled result when that same turn can change again.
+    fn invalidate_running_checkpoint(&mut self) {
+        let Some(turn) = self.latest_turn else {
+            return;
+        };
+        self.turn_extras.retain(|(existing, _)| *existing != turn);
+        self.checkpoint_pending.remove(&turn);
     }
 
     /// Track whether a run is open. Last Turn paints the turn as of send, so
@@ -728,6 +809,15 @@ impl SidePane {
             return;
         }
         self.turn_running = running;
+        if running {
+            self.invalidate_running_checkpoint();
+            if self.showing_running_turn() {
+                self.review_stale = true;
+                if self.open {
+                    self.load_conversation_review(cx);
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -766,10 +856,8 @@ impl SidePane {
             .then(|| tr!("sidepane.no_tool_call"))
     }
 
-    /// Load the workspace's git diff off-thread. Last Turn and All Changes
-    /// are the exception: they paint the conversation's `edit` / `write`
-    /// calls on this thread and never ask Git whether the folder is a
-    /// repository.
+    /// Load Git sources off-thread. Conversation sources use records and any
+    /// checkpoint result already loaded by the app.
     fn load_review(&mut self, cx: &mut Context<Self>) {
         if !self.embedded && self.source.is_conversation() {
             self.load_conversation_review(cx);
@@ -845,29 +933,43 @@ impl SidePane {
         self.review_loading = false;
         self.review_stale = false;
         self.review_error = None;
+        if let Source::LastTurn { turn_count } = self.source {
+            if self.has_pending_turn_checkpoint(turn_count)
+                && !self.turn_extras.iter().any(|(turn, _)| *turn == turn_count)
+                && !self.showing_running_turn()
+            {
+                cx.notify();
+                return;
+            }
+            if !self.showing_running_turn() {
+                if let Some(diff) = self
+                    .turn_extras
+                    .iter()
+                    .find(|(turn, _)| *turn == turn_count)
+                    .map(|(_, entry)| &entry.checkpoint)
+                {
+                    let snapshot = review::parse_collected(
+                        self.source,
+                        &diff.numstat,
+                        &diff.patch,
+                        diff.complete_context,
+                    );
+                    self.apply_snapshot(snapshot);
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         let calls = match self.source {
             Source::LastTurn { turn_count } => self.turn_records.calls_for(turn_count).to_vec(),
             Source::AllChanges => self.turn_records.all_calls(),
             _ => return,
         };
-        let (mut numstat, mut patch, clipped) = crate::turn_review::patch_from_calls(
+        let (numstat, patch, clipped) = crate::turn_review::patch_from_calls(
             &calls,
             self.workspace.as_deref(),
             review::MAX_RENDERED_DIFF_LINES,
         );
-        // A turn can change the worktree without an `edit` / `write` behind
-        // it (a `bash` fix, a formatter, a subagent). Those files come from
-        // the turn's checkpoint range and land after the named ones.
-        if let Source::LastTurn { turn_count } = self.source {
-            if let Some((_, extras)) = self
-                .turn_extras
-                .iter()
-                .find(|(turn, _)| *turn == turn_count)
-            {
-                numstat.push_str(&extras.numstat);
-                patch.push_str(&extras.patch);
-            }
-        }
         let mut snapshot = review::parse_collected(self.source, &numstat, &patch, true);
         if clipped {
             snapshot.truncated = true;
@@ -903,6 +1005,9 @@ impl SidePane {
     }
 
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        if self.pending_select.is_none() && self.review.as_deref() == Some(&snapshot) {
+            return;
+        }
         let previous_dirs = self.review.as_ref().map_or_else(HashSet::new, |snapshot| {
             review::directory_paths(&snapshot.files)
         });
@@ -1032,6 +1137,9 @@ impl SidePane {
     fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
         self.source_menu_open = false;
         self.menu_dismissed_at = Some(Instant::now());
+        // Choosing Last Turn from the menu resumes following, even if it is
+        // currently the same turn as an explicitly selected card.
+        self.follow_latest_turn = true;
         if source == self.source {
             cx.notify();
             return;
@@ -1056,12 +1164,14 @@ impl SidePane {
         self.diff_list.reset(0);
     }
 
-    /// Open Review on **Last Turn** — the `edit` / `write` calls from that
-    /// conversation turn, not a Git checkpoint. A missing turn stays on Last
-    /// Turn so a non-repo workspace does not fall through to Uncommitted.
+    /// Open Review on **Last Turn**, preferring its checkpoint net diff.
+    /// A missing turn stays on Last Turn so a non-repo workspace does not fall
+    /// through to Uncommitted.
     pub fn show_review_turn(&mut self, turn: Option<usize>, cx: &mut Context<Self>) {
         self.open = true;
-        match turn.filter(|turn| *turn > 0) {
+        let turn = turn.filter(|turn| *turn > 0);
+        self.follow_latest_turn = turn.is_none();
+        match turn {
             Some(turn_count) => {
                 let target = Source::LastTurn { turn_count };
                 if self.source != target {
@@ -1070,8 +1180,11 @@ impl SidePane {
                 }
             }
             None => {
-                if !matches!(self.source, Source::LastTurn { .. }) {
-                    self.source = Source::LastTurn { turn_count: 0 };
+                let target = Source::LastTurn {
+                    turn_count: self.latest_turn.unwrap_or(0),
+                };
+                if self.source != target {
+                    self.source = target;
                     self.clear_diff();
                 }
             }
@@ -1738,7 +1851,10 @@ impl SidePane {
         tree_visible: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let diff = if self.review_loading && self.review.is_none() {
+        let checkpoint_loading = matches!(self.source, Source::LastTurn { turn_count }
+            if self.has_pending_turn_checkpoint(turn_count))
+            && !self.showing_running_turn();
+        let diff = if (self.review_loading || checkpoint_loading) && self.review.is_none() {
             empty_state(
                 theme,
                 "icons/loader.svg",
@@ -2835,6 +2951,249 @@ mod tests {
         })
     }
 
+    #[gpui::test]
+    fn checkpoint_loading_falls_back_on_failure_and_is_session_scoped(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("one".into()), Some(1), cx);
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "one.txt".into(),
+                                call: crate::turn_review::FileCall::Write("content\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.show_review_turn(Some(1), cx);
+                assert!(pane.review.is_some());
+                let old = pane.begin_turn_checkpoint(1, cx);
+                pane.load_conversation_review(cx);
+                assert!(
+                    pane.review.is_none(),
+                    "provisional diff must not paint while reading"
+                );
+                let current = pane.begin_turn_checkpoint(1, cx);
+                pane.finish_turn_checkpoint(1, old, cx);
+                assert!(pane.is_turn_checkpoint_pending(1, current));
+                pane.finish_turn_checkpoint(1, current, cx);
+                assert!(
+                    pane.review.is_some(),
+                    "failed or non-Git reads fall back to calls"
+                );
+                assert!(pane.checkpoint_pending.is_empty());
+
+                let old = pane.begin_turn_checkpoint(1, cx);
+                pane.set_turn_context(Some("two".into()), Some(1), cx);
+                assert!(pane.checkpoint_pending.is_empty());
+                pane.set_turn_records(crate::turn_review::TurnRecords::default(), cx);
+                pane.finish_turn_checkpoint(1, old, cx);
+                assert!(pane
+                    .review
+                    .as_ref()
+                    .is_none_or(|review| review.files.is_empty()));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn concurrent_turn_reads_do_not_discard_or_finish_each_other(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(1), cx);
+                let first = pane.begin_turn_checkpoint(1, cx);
+                pane.set_turn_context(Some("session".into()), Some(2), cx);
+                pane.set_turn_running(true, cx);
+                pane.set_turn_running(false, cx);
+                let second = pane.begin_turn_checkpoint(2, cx);
+                pane.show_review_turn(Some(2), cx);
+                assert!(pane.review.is_none());
+                assert!(pane.is_turn_checkpoint_pending(1, first));
+                pane.set_turn_checkpoint(
+                    1,
+                    vec![],
+                    git::ReviewDiff {
+                        numstat: "1\t0\tshell.txt\n".into(),
+                        patch: String::new(),
+                        complete_context: true,
+                    },
+                    cx,
+                );
+                pane.finish_turn_checkpoint(1, first, cx);
+                assert!(pane.has_turn_checkpoint(1));
+                assert!(pane.is_turn_checkpoint_pending(2, second));
+                assert!(pane.review.is_none(), "the selected turn is still loading");
+                let replacement = pane.begin_turn_checkpoint(2, cx);
+                pane.finish_turn_checkpoint(2, second, cx);
+                assert!(pane.is_turn_checkpoint_pending(2, replacement));
+                pane.finish_turn_checkpoint(2, replacement, cx);
+                assert!(!pane.has_pending_turn_checkpoint(2));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn failed_checkpoint_while_closed_reloads_calls_on_open(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "call.txt".into(),
+                                call: crate::turn_review::FileCall::Write("content\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.show_review_turn(Some(1), cx);
+                let generation = pane.begin_turn_checkpoint(1, cx);
+                pane.load_conversation_review(cx);
+                assert!(pane.review.is_none());
+                pane.close(cx);
+                pane.finish_turn_checkpoint(1, generation, cx);
+                assert!(pane.review_stale);
+                pane.show_review(cx);
+                assert_eq!(pane.review.as_ref().unwrap().files[0].path, "call.txt");
+                assert!(!pane.review_stale);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn workspace_change_discards_snapshot_and_inflight_old_result(cx: &mut gpui::TestAppContext) {
+        for open in [true, false] {
+            let pane = pane(cx);
+            cx.update(|cx| {
+                pane.update(cx, |pane, cx| {
+                    pane.workspace = Some("old".into());
+                    pane.open = open;
+                    let old =
+                        review::parse_collected(Source::Uncommitted, "1\t0\told.txt\n", "", false);
+                    pane.apply_snapshot(old.clone());
+                    pane.review_loading = true;
+                    let generation = pane.load_generation;
+                    pane.set_workspace(Some("new".into()), cx);
+                    assert!(pane.review.is_none());
+                    assert_eq!(pane.review_loading, open);
+                    pane.finish_review_load(generation, Ok(old), cx);
+                    assert!(
+                        pane.review.is_none(),
+                        "old workspace result must be ignored"
+                    );
+                    if !open {
+                        assert!(pane.review_stale);
+                    }
+                });
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn reopened_turn_discards_checkpoint_before_capture_or_fallback(cx: &mut gpui::TestAppContext) {
+        for deduplicated in [false, true] {
+            let pane = pane(cx);
+            cx.update(|cx| {
+                pane.update(cx, |pane, cx| {
+                    pane.set_turn_context(Some("session".into()), Some(1), cx);
+                    pane.set_turn_records(
+                        crate::turn_review::TurnRecords {
+                            turns: vec![(1, vec![crate::turn_review::RecordedCall {
+                                path: "call.txt".into(),
+                                call: crate::turn_review::FileCall::Write("call\n".into()),
+                            }])],
+                        },
+                        cx,
+                    );
+                    pane.show_review_turn(Some(1), cx);
+                    pane.set_turn_checkpoint(
+                        1,
+                        vec![],
+                        git::ReviewDiff {
+                            numstat: "1\t0\told.txt\n".into(),
+                            patch: "diff --git a/old.txt b/old.txt\n--- a/old.txt\n+++ b/old.txt\n@@ -0,0 +1 @@\n+old\n".into(),
+                            complete_context: true,
+                        },
+                        cx,
+                    );
+                    let old = pane.begin_turn_checkpoint(1, cx);
+                    if deduplicated {
+                        // Sending first opens a new turn; dedup then returns to turn 1.
+                        pane.set_turn_context(Some("session".into()), Some(2), cx);
+                        pane.set_turn_running(true, cx);
+                        pane.set_turn_context(Some("session".into()), Some(1), cx);
+                    } else {
+                        pane.set_turn_running(true, cx);
+                    }
+                    assert!(!pane.is_turn_checkpoint_pending(1, old));
+                    assert!(!pane.turn_extras.iter().any(|(turn, _)| *turn == 1));
+                    pane.set_turn_running(false, cx);
+                    let current = pane.begin_turn_checkpoint(1, cx);
+                    pane.load_conversation_review(cx);
+                    assert!(pane.review.is_none(), "must wait for the new capture");
+                    pane.finish_turn_checkpoint(1, current, cx);
+                    assert_eq!(pane.review.as_ref().unwrap().files[0].path, "call.txt");
+                });
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn checkpoint_refresh_keeps_the_authoritative_review_visible(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("one".into()), Some(1), cx);
+                pane.show_review_turn(Some(1), cx);
+                let generation = pane.begin_turn_checkpoint(1, cx);
+                pane.set_turn_checkpoint(
+                    1,
+                    Vec::new(),
+                    git::ReviewDiff {
+                        numstat: String::new(),
+                        patch: String::new(),
+                        complete_context: true,
+                    },
+                    cx,
+                );
+                pane.finish_turn_checkpoint(1, generation, cx);
+                let previous = pane.review.clone().unwrap();
+                let generation = pane.begin_turn_checkpoint(1, cx);
+                pane.load_conversation_review(cx);
+                assert!(Arc::ptr_eq(&previous, pane.review.as_ref().unwrap()));
+                pane.finish_turn_checkpoint(1, generation, cx);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn equivalent_snapshot_preserves_review_interaction_state(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, _| {
+                let snapshot = review::parse_collected(Source::Uncommitted, "", "", false);
+                pane.apply_snapshot(snapshot.clone());
+                pane.diff_cursor = Some(7);
+                pane.collapsed_files.insert(3);
+                let previous = pane.review.clone().unwrap();
+                pane.apply_snapshot(snapshot);
+                assert!(Arc::ptr_eq(&previous, pane.review.as_ref().unwrap()));
+                assert_eq!(pane.diff_cursor, Some(7));
+                assert!(pane.collapsed_files.contains(&3));
+            });
+        });
+    }
+
     /// A 10-line file with one change, so collapsing leaves a leading and a
     /// trailing gap.
     fn gap_patch() -> String {
@@ -3427,6 +3786,32 @@ mod tests {
     }
 
     #[gpui::test]
+    fn explicitly_selected_latest_stays_selected_and_menu_resumes_following(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(1), cx);
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_context(Some("session".into()), Some(2), cx);
+                assert_eq!(pane.source, Source::LastTurn { turn_count: 1 });
+                pane.set_source(Source::LastTurn { turn_count: 2 }, cx);
+                pane.set_turn_context(Some("session".into()), Some(3), cx);
+                assert_eq!(pane.source, Source::LastTurn { turn_count: 3 });
+                pane.show_review_turn(Some(3), cx);
+                pane.set_source(Source::LastTurn { turn_count: 3 }, cx);
+                pane.set_turn_context(Some("session".into()), Some(4), cx);
+                assert_eq!(pane.source, Source::LastTurn { turn_count: 4 });
+                pane.show_review_turn(Some(4), cx);
+                pane.set_turn_context(Some("other".into()), Some(1), cx);
+                pane.set_turn_context(Some("other".into()), Some(2), cx);
+                assert_eq!(pane.source, Source::LastTurn { turn_count: 2 });
+            });
+        });
+    }
+
+    #[gpui::test]
     fn an_older_turn_stays_selected_when_a_newer_one_finishes(cx: &mut gpui::TestAppContext) {
         let pane = pane(cx);
         cx.update(|cx| {
@@ -3597,9 +3982,217 @@ mod tests {
         });
     }
 
-    /// A `bash` fix or a formatter changes the worktree with no `edit` /
-    /// `write` behind it. Those files must land in Last Turn after the ones
-    /// the turn named, and say where they came from.
+    #[gpui::test]
+    fn rebuilt_turns_discard_cached_and_pending_checkpoints(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(1, vec![crate::turn_review::RecordedCall {
+                            path: "call.rs".into(),
+                            call: crate::turn_review::FileCall::Write("recorded\n".into()),
+                        }])],
+                    },
+                    cx,
+                );
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_checkpoint(1, vec![], git::ReviewDiff {
+                    numstat: "1\t0\twrong.rs\n".into(),
+                    patch: "diff --git a/wrong.rs b/wrong.rs\n--- a/wrong.rs\n+++ b/wrong.rs\n@@ -0,0 +1 @@\n+wrong\n".into(),
+                    complete_context: true,
+                }, cx);
+                let generation = pane.begin_turn_checkpoint(1, cx);
+                pane.clear_turn_checkpoints(cx);
+                assert!(!pane.is_turn_checkpoint_pending(1, generation));
+                let snapshot = pane.review.as_ref().unwrap();
+                assert_eq!(snapshot.files[0].path, "call.rs");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn checkpoint_net_diff_replaces_calls_including_empty_results(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(1, vec![crate::turn_review::RecordedCall {
+                            path: "named.rs".into(),
+                            call: crate::turn_review::FileCall::Write("intermediate\n".into()),
+                        }])],
+                    },
+                    cx,
+                );
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_checkpoint(
+                    1,
+                    vec![],
+                    git::ReviewDiff {
+                        numstat: "1\t0\tnamed.rs\n".into(),
+                        patch: "diff --git a/named.rs b/named.rs\n--- a/named.rs\n+++ b/named.rs\n@@ -0,0 +1 @@\n+final\n".into(),
+                        complete_context: true,
+                    },
+                    cx,
+                );
+                let snapshot = pane.review.as_ref().unwrap();
+                assert_eq!(snapshot.files.len(), 1);
+                assert!(snapshot.lines.iter().any(|line| line.content == "final"));
+                assert!(!snapshot.lines.iter().any(|line| line.content == "intermediate"));
+                pane.set_turn_checkpoint(
+                    1,
+                    vec![],
+                    git::ReviewDiff {
+                        numstat: String::new(),
+                        patch: String::new(),
+                        complete_context: true,
+                    },
+                    cx,
+                );
+                assert!(pane.review.as_ref().unwrap().files.is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn checkpoint_arriving_while_closed_reloads_selected_turn_on_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(Some(1), cx);
+                assert!(pane.review.as_ref().unwrap().files.is_empty());
+                pane.close(cx);
+                pane.set_turn_checkpoint(
+                    1,
+                    vec!["new.rs".into()],
+                    git::ReviewDiff {
+                        numstat: "1\t0\tnew.rs\n".into(),
+                        patch: "diff --git a/new.rs b/new.rs\n--- a/new.rs\n+++ b/new.rs\n@@ -0,0 +1 @@\n+new\n".into(),
+                        complete_context: true,
+                    },
+                    cx,
+                );
+                assert!(pane.review_stale);
+                pane.show_review(cx);
+                let snapshot = pane.review.as_ref().unwrap();
+                assert_eq!(snapshot.files[0].path, "new.rs");
+                assert!(snapshot.lines.iter().any(|line| line.content == "new"));
+                assert!(!pane.review_stale);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn checkpoint_does_not_replace_all_changes_or_the_call_fallback(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(1, vec![crate::turn_review::RecordedCall {
+                            path: "named.rs".into(),
+                            call: crate::turn_review::FileCall::Write("from_call\n".into()),
+                        }])],
+                    },
+                    cx,
+                );
+                pane.show_review_turn(Some(1), cx);
+                assert!(pane.review.as_ref().unwrap().lines.iter().any(|line| line.content == "from_call"));
+                pane.set_turn_checkpoint(
+                    1,
+                    vec![],
+                    git::ReviewDiff {
+                        numstat: "1\t0\tother.rs\n".into(),
+                        patch: "diff --git a/other.rs b/other.rs\n--- a/other.rs\n+++ b/other.rs\n@@ -0,0 +1 @@\n+from_checkpoint\n".into(),
+                        complete_context: true,
+                    },
+                    cx,
+                );
+                let snapshot = pane.review.as_ref().unwrap();
+                assert_eq!(snapshot.files.len(), 1);
+                assert_eq!(snapshot.files[0].path, "other.rs");
+                assert!(!snapshot.lines.iter().any(|line| line.content == "from_call"));
+                pane.set_source(Source::AllChanges, cx);
+                let snapshot = pane.review.as_ref().unwrap();
+                assert_eq!(snapshot.files[0].path, "named.rs");
+                assert!(snapshot.lines.iter().any(|line| line.content == "from_call"));
+                assert!(!snapshot.lines.iter().any(|line| line.content == "from_checkpoint"));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn checkpoint_from_git_renders_net_changes_without_recorded_calls(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        for args in [
+            &["init", "--quiet"][..],
+            &["config", "user.name", "Orbit Test"],
+            &["config", "user.email", "orbit@example.com"],
+        ] {
+            assert!(git::command(root).args(args).status().unwrap().success());
+        }
+        std::fs::write(root.join("named.txt"), "baseline\n").unwrap();
+        assert!(git::command(root)
+            .args(["add", "."])
+            .status()
+            .unwrap()
+            .success());
+        assert!(git::command(root)
+            .args(["commit", "--quiet", "-m", "base"])
+            .status()
+            .unwrap()
+            .success());
+        crate::checkpoint::capture_turn_start(root, "pane-net", 1).unwrap();
+        std::fs::write(root.join("named.txt"), "final\n").unwrap();
+        std::fs::write(root.join("shell.txt"), "shell\n").unwrap();
+        crate::checkpoint::capture_turn(root, "pane-net", 1).unwrap();
+        let diff =
+            git::collect_review_diff(root, Source::LastTurn { turn_count: 1 }, Some("pane-net"))
+                .unwrap();
+
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "named.txt".into(),
+                                call: crate::turn_review::FileCall::Write("intermediate\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_checkpoint(1, vec!["shell.txt".into()], diff, cx);
+                let snapshot = pane.review.as_ref().unwrap();
+                assert_eq!(
+                    snapshot
+                        .files
+                        .iter()
+                        .map(|file| file.path.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["named.txt", "shell.txt"]
+                );
+                assert!(snapshot.lines.iter().any(|line| line.content == "final"));
+                assert!(snapshot.lines.iter().any(|line| line.content == "shell"));
+                assert!(!snapshot
+                    .lines
+                    .iter()
+                    .any(|line| line.content == "intermediate"));
+            });
+        });
+    }
+
+    /// Checkpoint-only changes remain identifiable in the complete net diff.
     #[gpui::test]
     fn a_turn_adds_worktree_changes_no_call_named(cx: &mut gpui::TestAppContext) {
         let pane = pane(cx);
@@ -3618,16 +4211,24 @@ mod tests {
                     cx,
                 );
                 pane.show_review_turn(Some(1), cx);
-                pane.set_turn_extras(
+                pane.set_turn_checkpoint(
                     1,
                     vec!["src/formatted.rs".into()],
-                    "1\t0\tsrc/formatted.rs\n".into(),
-                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
-                     --- a/src/formatted.rs\n\
-                     +++ b/src/formatted.rs\n\
-                     @@ -0,0 +1 @@\n\
-                     +formatted\n"
-                        .into(),
+                    git::ReviewDiff {
+                        numstat: "1\t0\tsrc/named.rs\n1\t0\tsrc/formatted.rs\n".into(),
+                        patch: "diff --git a/src/named.rs b/src/named.rs\n\
+                                --- a/src/named.rs\n\
+                                +++ b/src/named.rs\n\
+                                @@ -0,0 +1 @@\n\
+                                +named\n\
+                                diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                                --- a/src/formatted.rs\n\
+                                +++ b/src/formatted.rs\n\
+                                @@ -0,0 +1 @@\n\
+                                +formatted\n"
+                            .into(),
+                        complete_context: true,
+                    },
                     cx,
                 );
 
@@ -3660,16 +4261,19 @@ mod tests {
         cx.update(|cx| {
             pane.update(cx, |pane, cx| {
                 pane.set_turn_context(Some("session".into()), Some(2), cx);
-                pane.set_turn_extras(
+                pane.set_turn_checkpoint(
                     1,
                     vec!["src/formatted.rs".into()],
-                    "1\t0\tsrc/formatted.rs\n".into(),
-                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
-                     --- a/src/formatted.rs\n\
-                     +++ b/src/formatted.rs\n\
-                     @@ -0,0 +1 @@\n\
-                     +formatted\n"
-                        .into(),
+                    git::ReviewDiff {
+                        numstat: "1\t0\tsrc/formatted.rs\n".into(),
+                        patch: "diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                                --- a/src/formatted.rs\n\
+                                +++ b/src/formatted.rs\n\
+                                @@ -0,0 +1 @@\n\
+                                +formatted\n"
+                            .into(),
+                        complete_context: true,
+                    },
                     cx,
                 );
                 pane.show_review_turn(Some(2), cx);
@@ -3693,16 +4297,19 @@ mod tests {
         cx.update(|cx| {
             pane.update(cx, |pane, cx| {
                 pane.set_turn_context(Some("session".into()), Some(1), cx);
-                pane.set_turn_extras(
+                pane.set_turn_checkpoint(
                     1,
                     vec!["src/formatted.rs".into()],
-                    "1\t0\tsrc/formatted.rs\n".into(),
-                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
-                     --- a/src/formatted.rs\n\
-                     +++ b/src/formatted.rs\n\
-                     @@ -0,0 +1 @@\n\
-                     +formatted\n"
-                        .into(),
+                    git::ReviewDiff {
+                        numstat: "1\t0\tsrc/formatted.rs\n".into(),
+                        patch: "diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                                --- a/src/formatted.rs\n\
+                                +++ b/src/formatted.rs\n\
+                                @@ -0,0 +1 @@\n\
+                                +formatted\n"
+                            .into(),
+                        complete_context: true,
+                    },
                     cx,
                 );
                 pane.set_turn_context(Some("other".into()), Some(1), cx);

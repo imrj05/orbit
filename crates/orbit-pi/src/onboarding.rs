@@ -246,9 +246,10 @@ fn install_hint(bin: &str) -> &'static str {
 }
 
 /// Locate a binary by name, honoring `PI_BIN` for `pi`, then `PATH`, then
-/// the common install dirs, Home-relative shim dirs, and version-manager
-/// version dirs. This keeps detection working from a bundled `.app` whose
-/// PATH doesn't include a user's node install (e.g. nvm, volta, mise).
+/// the common install dirs, Home-relative shim dirs, version-manager
+/// version dirs, and the Windows fallbacks. This keeps detection working
+/// from a bundled `.app` whose PATH doesn't include a user's node install
+/// (e.g. nvm, volta, mise, Scoop).
 pub(crate) fn locate(name: &str) -> Option<PathBuf> {
     if name == "pi" {
         if let Ok(bin) = std::env::var("PI_BIN") {
@@ -277,7 +278,12 @@ pub(crate) fn locate(name: &str) -> Option<PathBuf> {
             return Some(found);
         }
     }
-    None
+    // Windows package-manager dirs (Scoop, Chocolatey, nvm-windows, fnm) and
+    // the registry PATH, which sees an install made after Orbit launched —
+    // without it Refresh could never clear a missing row (issue #124).
+    orbit_rpc::fallback_bin_dirs()
+        .iter()
+        .find_map(|dir| existing_in(dir, name))
 }
 
 /// Search the home-relative shim dirs and version-manager version dirs for a
