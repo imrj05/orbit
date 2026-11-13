@@ -713,7 +713,10 @@ impl SidePane {
         let generation = self.checkpoint_generation;
         self.checkpoint_pending.insert(turn, generation);
         if matches!(self.source, Source::LastTurn { turn_count } if turn_count == turn)
-            && !self.turn_extras.iter().any(|(existing, _)| *existing == turn)
+            && !self
+                .turn_extras
+                .iter()
+                .any(|(existing, _)| *existing == turn)
         {
             self.clear_diff();
         }
@@ -1177,7 +1180,9 @@ impl SidePane {
                 }
             }
             None => {
-                let target = Source::LastTurn { turn_count: self.latest_turn.unwrap_or(0) };
+                let target = Source::LastTurn {
+                    turn_count: self.latest_turn.unwrap_or(0),
+                };
                 if self.source != target {
                     self.source = target;
                     self.clear_diff();
@@ -2947,17 +2952,22 @@ mod tests {
     }
 
     #[gpui::test]
-    fn checkpoint_loading_falls_back_on_failure_and_is_session_scoped(cx: &mut gpui::TestAppContext) {
+    fn checkpoint_loading_falls_back_on_failure_and_is_session_scoped(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let pane = pane(cx);
         cx.update(|cx| {
             pane.update(cx, |pane, cx| {
                 pane.set_turn_context(Some("one".into()), Some(1), cx);
                 pane.set_turn_records(
                     crate::turn_review::TurnRecords {
-                        turns: vec![(1, vec![crate::turn_review::RecordedCall {
-                            path: "one.txt".into(),
-                            call: crate::turn_review::FileCall::Write("content\n".into()),
-                        }])],
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "one.txt".into(),
+                                call: crate::turn_review::FileCall::Write("content\n".into()),
+                            }],
+                        )],
                     },
                     cx,
                 );
@@ -3006,11 +3016,16 @@ mod tests {
                 pane.show_review_turn(Some(2), cx);
                 assert!(pane.review.is_none());
                 assert!(pane.is_turn_checkpoint_pending(1, first));
-                pane.set_turn_checkpoint(1, vec![], git::ReviewDiff {
-                    numstat: "1\t0\tshell.txt\n".into(),
-                    patch: String::new(),
-                    complete_context: true,
-                }, cx);
+                pane.set_turn_checkpoint(
+                    1,
+                    vec![],
+                    git::ReviewDiff {
+                        numstat: "1\t0\tshell.txt\n".into(),
+                        patch: String::new(),
+                        complete_context: true,
+                    },
+                    cx,
+                );
                 pane.finish_turn_checkpoint(1, first, cx);
                 assert!(pane.has_turn_checkpoint(1));
                 assert!(pane.is_turn_checkpoint_pending(2, second));
@@ -3031,10 +3046,13 @@ mod tests {
             pane.update(cx, |pane, cx| {
                 pane.set_turn_records(
                     crate::turn_review::TurnRecords {
-                        turns: vec![(1, vec![crate::turn_review::RecordedCall {
-                            path: "call.txt".into(),
-                            call: crate::turn_review::FileCall::Write("content\n".into()),
-                        }])],
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "call.txt".into(),
+                                call: crate::turn_review::FileCall::Write("content\n".into()),
+                            }],
+                        )],
                     },
                     cx,
                 );
@@ -3060,12 +3078,8 @@ mod tests {
                 pane.update(cx, |pane, cx| {
                     pane.workspace = Some("old".into());
                     pane.open = open;
-                    let old = review::parse_collected(
-                        Source::Uncommitted,
-                        "1\t0\told.txt\n",
-                        "",
-                        false,
-                    );
+                    let old =
+                        review::parse_collected(Source::Uncommitted, "1\t0\told.txt\n", "", false);
                     pane.apply_snapshot(old.clone());
                     pane.review_loading = true;
                     let generation = pane.load_generation;
@@ -3772,7 +3786,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn explicitly_selected_latest_stays_selected_and_menu_resumes_following(cx: &mut gpui::TestAppContext) {
+    fn explicitly_selected_latest_stays_selected_and_menu_resumes_following(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let pane = pane(cx);
         cx.update(|cx| {
             pane.update(cx, |pane, cx| {
@@ -4040,7 +4056,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn checkpoint_arriving_while_closed_reloads_selected_turn_on_open(cx: &mut gpui::TestAppContext) {
+    fn checkpoint_arriving_while_closed_reloads_selected_turn_on_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let pane = pane(cx);
         cx.update(|cx| {
             pane.update(cx, |pane, cx| {
@@ -4107,7 +4125,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn checkpoint_from_git_renders_net_changes_without_recorded_calls(cx: &mut gpui::TestAppContext) {
+    fn checkpoint_from_git_renders_net_changes_without_recorded_calls(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let repo = tempfile::tempdir().unwrap();
         let root = repo.path();
         for args in [
@@ -4118,7 +4138,11 @@ mod tests {
             assert!(git::command(root).args(args).status().unwrap().success());
         }
         std::fs::write(root.join("named.txt"), "baseline\n").unwrap();
-        assert!(git::command(root).args(["add", "."]).status().unwrap().success());
+        assert!(git::command(root)
+            .args(["add", "."])
+            .status()
+            .unwrap()
+            .success());
         assert!(git::command(root)
             .args(["commit", "--quiet", "-m", "base"])
             .status()
@@ -4137,10 +4161,13 @@ mod tests {
             pane.update(cx, |pane, cx| {
                 pane.set_turn_records(
                     crate::turn_review::TurnRecords {
-                        turns: vec![(1, vec![crate::turn_review::RecordedCall {
-                            path: "named.txt".into(),
-                            call: crate::turn_review::FileCall::Write("intermediate\n".into()),
-                        }])],
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "named.txt".into(),
+                                call: crate::turn_review::FileCall::Write("intermediate\n".into()),
+                            }],
+                        )],
                     },
                     cx,
                 );
@@ -4148,12 +4175,19 @@ mod tests {
                 pane.set_turn_checkpoint(1, vec!["shell.txt".into()], diff, cx);
                 let snapshot = pane.review.as_ref().unwrap();
                 assert_eq!(
-                    snapshot.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+                    snapshot
+                        .files
+                        .iter()
+                        .map(|file| file.path.as_str())
+                        .collect::<Vec<_>>(),
                     vec!["named.txt", "shell.txt"]
                 );
                 assert!(snapshot.lines.iter().any(|line| line.content == "final"));
                 assert!(snapshot.lines.iter().any(|line| line.content == "shell"));
-                assert!(!snapshot.lines.iter().any(|line| line.content == "intermediate"));
+                assert!(!snapshot
+                    .lines
+                    .iter()
+                    .any(|line| line.content == "intermediate"));
             });
         });
     }
@@ -4191,7 +4225,8 @@ mod tests {
                                 --- a/src/formatted.rs\n\
                                 +++ b/src/formatted.rs\n\
                                 @@ -0,0 +1 @@\n\
-                                +formatted\n".into(),
+                                +formatted\n"
+                            .into(),
                         complete_context: true,
                     },
                     cx,
@@ -4235,7 +4270,8 @@ mod tests {
                                 --- a/src/formatted.rs\n\
                                 +++ b/src/formatted.rs\n\
                                 @@ -0,0 +1 @@\n\
-                                +formatted\n".into(),
+                                +formatted\n"
+                            .into(),
                         complete_context: true,
                     },
                     cx,
@@ -4270,7 +4306,8 @@ mod tests {
                                 --- a/src/formatted.rs\n\
                                 +++ b/src/formatted.rs\n\
                                 @@ -0,0 +1 @@\n\
-                                +formatted\n".into(),
+                                +formatted\n"
+                            .into(),
                         complete_context: true,
                     },
                     cx,

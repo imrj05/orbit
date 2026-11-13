@@ -15,6 +15,7 @@ use anyhow::{anyhow, bail};
 
 use crate::checkpoint::{self, EMPTY_TREE};
 use crate::review::{self, Source};
+use crate::turn_review::{ChangedFile, TurnFiles};
 
 /// One `git diff` capture: numstat summary plus the (possibly full-context)
 /// patch text.
@@ -363,97 +364,18 @@ fn collect_review_diff_inner(
     })
 }
 
-/// Files the turn changed in the worktree that no `edit` / `write` call named.
-///
-/// `recorded` holds that turn's recorded call paths; a repository path counts
-/// as recorded when it equals one or sits beneath it, so a session opened in a
-/// subdirectory still lines up with Git's repository-relative paths. Returns
-/// `None` when the turn changed nothing outside its tool calls, or when the
-/// turn's checkpoints are unavailable.
-pub fn changed_outside_calls(
-    cwd: &Path,
-    session: &str,
-    turn: usize,
-    recorded: &[String],
-) -> anyhow::Result<Option<(Vec<String>, ReviewDiff)>> {
-    if turn == 0 {
-        return Ok(None);
-    }
-    ensure_repository(cwd)?;
-    let (from, to) = resolve_range(cwd, Source::LastTurn { turn_count: turn }, Some(session))?;
-    let names = diff_output_paths(cwd, &from, &to, &["--name-only"], &["."])?;
-    let extras: Vec<String> = names
-        .lines()
-        .filter(|path| !path.is_empty())
-        .filter(|path| {
-            !recorded
-                .iter()
-                .any(|recorded| path == recorded || path.ends_with(&format!("/{recorded}")))
-        })
-        .map(str::to_owned)
-        .collect();
-    if extras.is_empty() {
-        return Ok(None);
-    }
-    let paths: Vec<&str> = extras.iter().map(String::as_str).collect();
-    let numstat = diff_output_paths(cwd, &from, &to, &["--numstat"], &paths)?;
-    let hydrated = diff_output_paths(cwd, &from, &to, &["--unified=2147483647"], &paths)?;
-    let (patch, complete_context) = if hydrated.len() <= MAX_HYDRATED_PATCH_BYTES {
-        (hydrated, true)
-    } else {
-        (
-            diff_output_paths(cwd, &from, &to, &["--unified=3"], &paths)?,
-            false,
-        )
-    };
-    Ok(Some((
-        extras,
-        ReviewDiff {
-            numstat,
-            patch,
-            complete_context,
-        },
-    )))
-}
-
-/// Every file a settled turn changed, with the counts the transcript's
-/// changed-files card shows.
-///
-/// The card used to count the turn's `edit` / `write` calls, so a `bash` fix, a
-/// formatter, a subagent's writes, or a deleted file left it empty while the
-/// turn had plainly changed files. The turn's checkpoint range is the same
-/// range Last Turn diffs, so the card and the Review pane its button opens
-/// describe one turn the same way.
+/// Build the card from the same checkpoint diff that Review displays.
 ///
 /// `recorded` holds the paths the calls named, so the card keeps the order the
-/// conversation produced and appends everything else in Git's order. Returns
-/// `None` for the baseline; an empty vector means the checkpoints exist but
-/// the turn has no net changes. Missing checkpoints return an error.
-pub fn turn_changed_files(
-    cwd: &Path,
-    session: &str,
-    turn: usize,
-    recorded: &[String],
-) -> anyhow::Result<Option<Vec<(String, u64, u64)>>> {
-    if turn == 0 {
-        return Ok(None);
-    }
-    ensure_repository(cwd)?;
-    let source = Source::LastTurn { turn_count: turn };
-    let (from, to) = resolve_range(cwd, source, Some(session))?;
-    // Numstat only: the card needs names and counts, and the pane parses the
-    // patch itself when it opens. An empty patch keeps this off the
-    // highlighter.
-    let numstat = diff_output_paths(cwd, &from, &to, &["--numstat"], &["."])?;
-    Ok(Some(turn_files_from_numstat(source, &numstat, recorded)))
-}
-
-/// Build the card from the same checkpoint diff that Review displays.
+/// conversation produced and appends everything else in Git's order. The turn's
+/// checkpoint range is the range Last Turn diffs, so the card and the Review
+/// pane its button opens describe one turn the same way. An empty vector means
+/// the checkpoints exist and the turn has no net changes.
 pub(crate) fn turn_files_from_numstat(
     source: Source,
     numstat: &str,
     recorded: &[String],
-) -> Vec<(String, u64, u64)> {
+) -> TurnFiles {
     let files = review::parse_collected(source, numstat, "", true)
         .files
         .into_iter()
@@ -463,10 +385,11 @@ pub(crate) fn turn_files_from_numstat(
 }
 
 /// Identify files in the collected checkpoint diff that no call named.
-pub(crate) fn outside_call_paths(
-    files: &[(String, u64, u64)],
-    recorded: &[String],
-) -> Vec<String> {
+///
+/// A repository path counts as recorded when it equals one of `recorded` or
+/// sits beneath it, so a session opened in a subdirectory still lines up with
+/// Git's repository-relative paths.
+pub(crate) fn outside_call_paths(files: &[ChangedFile], recorded: &[String]) -> Vec<String> {
     files
         .iter()
         .map(|(path, _, _)| path)
@@ -480,7 +403,7 @@ pub(crate) fn outside_call_paths(
 }
 
 /// The turn's named files in call order, then everything it changed silently.
-fn recorded_first(files: Vec<(String, u64, u64)>, recorded: &[String]) -> Vec<(String, u64, u64)> {
+fn recorded_first(files: TurnFiles, recorded: &[String]) -> TurnFiles {
     let mut ordered = Vec::with_capacity(files.len());
     let mut rest = files;
     for path in recorded {
@@ -509,8 +432,9 @@ fn resolve_range(
             // surviving diff-base ref is not authoritative without this start.
             let start = checkpoint::resolve(cwd, &checkpoint::turn_start_ref(session, turn_count))
                 .ok_or_else(|| anyhow!("the turn's starting checkpoint is unavailable"))?;
-            let from = checkpoint::resolve(cwd, &checkpoint::turn_diff_base_ref(session, turn_count))
-                .unwrap_or(start);
+            let from =
+                checkpoint::resolve(cwd, &checkpoint::turn_diff_base_ref(session, turn_count))
+                    .unwrap_or(start);
             let to = checkpoint::resolve(cwd, &checkpoint::checkpoint_ref(session, turn_count))
                 .ok_or_else(|| anyhow!("the turn's ending checkpoint is unavailable"))?;
             (from, to)
@@ -1885,6 +1809,14 @@ mod tests {
         collect_review_diff(root, source, session).unwrap()
     }
 
+    /// The card the app builds for one turn: the Last Turn diff the Review pane
+    /// opens, reduced to the paths and counts the card prints.
+    fn turn_card(root: &Path, session: &str, turn: usize, recorded: &[String]) -> TurnFiles {
+        let source = Source::LastTurn { turn_count: turn };
+        let data = collect(root, source, Some(session));
+        turn_files_from_numstat(source, &data.numstat, recorded)
+    }
+
     #[test]
     fn source_modes_compare_consistent_git_snapshots() {
         let root = repository();
@@ -2012,9 +1944,7 @@ mod tests {
         checkpoint::capture_turn(&root, session, 1).unwrap();
 
         let recorded = vec!["src/formatted.rs".to_string()];
-        let files = turn_changed_files(&root, session, 1, &recorded)
-            .unwrap()
-            .expect("the turn changed two files");
+        let files = turn_card(&root, session, 1, &recorded);
         assert_eq!(
             files
                 .iter()
@@ -2042,10 +1972,7 @@ mod tests {
         checkpoint::capture_turn_start(&root, session, 1).unwrap();
         checkpoint::capture_turn(&root, session, 1).unwrap();
 
-        assert_eq!(
-            turn_changed_files(&root, session, 1, &[]).unwrap(),
-            Some(vec![])
-        );
+        assert!(turn_card(&root, session, 1, &[]).is_empty());
         fs::remove_dir_all(root).ok();
     }
 
@@ -2062,12 +1989,14 @@ mod tests {
         checkpoint::capture_turn(&root, session, 1).unwrap();
 
         let recorded = vec!["src/lib.rs".to_string()];
-        let (paths, diff) = changed_outside_calls(&root, session, 1, &recorded)
-            .unwrap()
-            .expect("the unrecorded file is a worktree change");
-        assert_eq!(paths, vec!["src/formatted.rs".to_string()]);
+        let card = turn_card(&root, session, 1, &recorded);
+        assert_eq!(
+            outside_call_paths(&card, &recorded),
+            vec!["src/formatted.rs".to_string()]
+        );
+        // The same range the pane opens carries the unrecorded edit too.
+        let diff = collect(&root, Source::LastTurn { turn_count: 1 }, Some(session));
         assert!(diff.patch.contains("formatted"));
-        assert!(!diff.patch.contains("named"));
         fs::remove_dir_all(root).ok();
     }
 
@@ -2081,9 +2010,7 @@ mod tests {
         checkpoint::capture_turn(&root, session, 1).unwrap();
 
         let recorded = vec!["src/lib.rs".to_string()];
-        assert!(changed_outside_calls(&root, session, 1, &recorded)
-            .unwrap()
-            .is_none());
+        assert!(outside_call_paths(&turn_card(&root, session, 1, &recorded), &recorded).is_empty());
         fs::remove_dir_all(root).ok();
     }
 
@@ -2099,9 +2026,7 @@ mod tests {
         checkpoint::capture_turn(&root, session, 1).unwrap();
 
         let recorded = vec!["lib.rs".to_string()];
-        assert!(changed_outside_calls(&root, session, 1, &recorded)
-            .unwrap()
-            .is_none());
+        assert!(outside_call_paths(&turn_card(&root, session, 1, &recorded), &recorded).is_empty());
         fs::remove_dir_all(root).ok();
     }
 
@@ -2118,11 +2043,16 @@ mod tests {
         let source = Source::LastTurn { turn_count: 2 };
         let error = collect_review_diff(&root, source, Some(session)).unwrap_err();
         assert!(error.contains("starting checkpoint"), "{error}");
-        assert!(turn_changed_files(&root, session, 2, &[]).is_err());
-        assert!(changed_outside_calls(&root, session, 2, &[]).is_err());
         // An orphaned diff-base is not proof that this turn's start survived.
         let previous = checkpoint::resolve(&root, &checkpoint::checkpoint_ref(session, 1)).unwrap();
-        git_ok(&root, &["update-ref", &checkpoint::turn_diff_base_ref(session, 2), &previous]);
+        git_ok(
+            &root,
+            &[
+                "update-ref",
+                &checkpoint::turn_diff_base_ref(session, 2),
+                &previous,
+            ],
+        );
         assert!(collect_review_diff(&root, source, Some(session)).is_err());
         fs::remove_dir_all(root).ok();
     }
@@ -2151,7 +2081,14 @@ mod tests {
         checkpoint::capture_turn_start(&root, session, 1).unwrap();
         fs::write(root.join("during.txt"), "during turn\n").unwrap();
         checkpoint::capture_turn(&root, session, 1).unwrap();
-        git_ok(&root, &["update-ref", "-d", &checkpoint::turn_diff_base_ref(session, 1)]);
+        git_ok(
+            &root,
+            &[
+                "update-ref",
+                "-d",
+                &checkpoint::turn_diff_base_ref(session, 1),
+            ],
+        );
 
         let data = collect(&root, Source::LastTurn { turn_count: 1 }, Some(session));
         assert!(data.numstat.contains("during.txt"));

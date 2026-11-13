@@ -20,6 +20,7 @@ use gpui::{point, prelude::*, px, Image, Pixels, ScrollHandle};
 
 use crate::message_scroller::MessageScrollerState;
 use crate::transcript_view::{self, TranscriptView};
+use crate::turn_review::TurnFiles;
 use orbit_rpc::{AssistantMessageEvent, Event, MessageUsage};
 use serde_json::Value;
 
@@ -1072,6 +1073,10 @@ type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
 /// on the right row.
 type ToolPositions = Rc<RefCell<HashMap<String, (usize, usize, usize)>>>;
 
+/// A settled turn's card, anchored after its last message: `(last message row,
+/// turn number, files)`.
+pub(crate) type HistoryCard = (usize, usize, TurnFiles);
+
 /// How long the one-time rail hint stays up before dismissing itself.
 const RAIL_HINT_TTL: Duration = Duration::from_secs(10);
 
@@ -1234,19 +1239,19 @@ pub struct Transcript {
     /// Latest-turn file list. Every file the turn changed once its checkpoint
     /// range has been read, or the same paths and counts as that turn's
     /// `edit` / `write` calls until then.
-    review_card_files: Vec<(String, u64, u64)>,
+    review_card_files: TurnFiles,
     /// Files the settled turn changed in the worktree, from its checkpoint
     /// range. Complete where the recorded calls are not: a `bash` fix, a
     /// formatter, a subagent's writes, a deleted file.
-    review_card_worktree_files: Vec<(String, u64, u64)>,
+    review_card_worktree_files: TurnFiles,
     /// The turn [`Self::review_card_worktree_files`] describes, by its first
     /// message index. `None` until Git answers for the turn the card names.
     review_card_worktree_start: Option<usize>,
     /// Settled cards anchored after their last message, excluding the tail.
-    review_history: Vec<(usize, usize, Vec<(String, u64, u64)>)>,
+    review_history: Vec<HistoryCard>,
     review_turn_numbers: Vec<(usize, usize)>,
     /// Live checkpoint summaries keyed by their exact turn start.
-    review_checkpoints: HashMap<usize, Vec<(String, u64, u64)>>,
+    review_checkpoints: HashMap<usize, TurnFiles>,
     /// A prompt is out and no assistant step has streamed yet. Drives the
     /// same tail slot as the summary card, showing the live "Working for…"
     /// row from the moment the user hits send instead of from the first
@@ -2719,23 +2724,20 @@ impl Transcript {
     /// Files the latest turn edited or wrote, with the same paths and +/−
     /// counts Review shows for that turn. Empty until [`Self::set_review_card_scope`]
     /// names the turn, and empty when that turn has no such calls.
-    pub fn changed_files_summary(&self) -> Vec<(String, u64, u64)> {
+    pub fn changed_files_summary(&self) -> TurnFiles {
         self.review_card_files.clone()
     }
 
-    pub(crate) fn review_checkpoints(&self) -> HashMap<usize, Vec<(String, u64, u64)>> {
+    pub(crate) fn review_checkpoints(&self) -> HashMap<usize, TurnFiles> {
         self.review_checkpoints.clone()
     }
 
-    pub(crate) fn restore_review_checkpoints(
-        &mut self,
-        checkpoints: HashMap<usize, Vec<(String, u64, u64)>>,
-    ) {
+    pub(crate) fn restore_review_checkpoints(&mut self, checkpoints: HashMap<usize, TurnFiles>) {
         self.review_checkpoints = checkpoints;
     }
 
     /// The settled checkpoint result, including an authoritative empty list.
-    pub(crate) fn review_card_checkpoint(&self) -> Option<(usize, Vec<(String, u64, u64)>)> {
+    pub(crate) fn review_card_checkpoint(&self) -> Option<(usize, TurnFiles)> {
         let start = self.review_card_worktree_start?;
         (!self.review_turn_open && self.review_card_start == Some(start))
             .then(|| (start, self.review_card_worktree_files.clone()))
@@ -2762,16 +2764,12 @@ impl Transcript {
     }
 
     /// Attach the files the settled turn changed in the worktree, read from its
-    /// checkpoint range (see [`crate::git::turn_changed_files`]).
+    /// checkpoint range (see [`crate::git::turn_files_from_numstat`]).
     ///
     /// `start` identifies the turn even if it has become historical by the
     /// time the read lands. An empty list is authoritative: the turn has no
     /// net changes.
-    pub(crate) fn set_review_card_worktree_files(
-        &mut self,
-        start: usize,
-        files: Vec<(String, u64, u64)>,
-    ) {
+    pub(crate) fn set_review_card_worktree_files(&mut self, start: usize, files: TurnFiles) {
         if self.review_card_start != Some(start) {
             if self.review_turn_numbers.iter().any(|(_, s)| *s == start) {
                 self.review_checkpoints.insert(start, files);
@@ -2839,14 +2837,21 @@ impl Transcript {
                 if last < start || end > self.message_count() {
                     return None;
                 }
-                let files = self.review_checkpoints.get(&start).cloned().unwrap_or_else(|| {
-                    let calls = self.recorded_calls(start, end);
-                    crate::turn_review::file_counts(&calls, self.review_workspace.as_deref())
-                });
+                let files = self
+                    .review_checkpoints
+                    .get(&start)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let calls = self.recorded_calls(start, end);
+                        crate::turn_review::file_counts(&calls, self.review_workspace.as_deref())
+                    });
                 (!files.is_empty()).then_some((last, turn, files))
             })
             .collect::<Vec<_>>();
-        let changed_rows: HashSet<usize> = self.review_history.iter().chain(&history)
+        let changed_rows: HashSet<usize> = self
+            .review_history
+            .iter()
+            .chain(&history)
             .map(|(row, _, _)| *row)
             .filter(|row| {
                 self.review_history.iter().find(|(ix, _, _)| ix == row)
@@ -3285,7 +3290,10 @@ mod tests {
         t.set_review_card_worktree_files(0, vec![("shell.rs".into(), 2, 0)]);
         t.set_review_card_scope(Some(2), None, false);
         t.set_review_ranges(&[(7, 0, 2), (9, 2, 4)]);
-        assert_eq!(t.review_history, vec![(1, 7, vec![("shell.rs".into(), 2, 0)])]);
+        assert_eq!(
+            t.review_history,
+            vec![(1, 7, vec![("shell.rs".into(), 2, 0)])]
+        );
         assert_eq!(t.changed_files_summary(), vec![("b.rs".into(), 1, 0)]);
         assert_eq!(t.review_turn_numbers.last(), Some(&(9, 2)));
         // An empty checkpoint is authoritative over recorded writes.
@@ -3312,18 +3320,29 @@ mod tests {
         let scroller = t.scroller.clone();
         let cx = cx.add_empty_window();
         let draw = |cx: &mut gpui::VisualTestContext| {
-            let _ = cx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(600.), px(400.)), |_, _| {
-                gpui::list(scroller.list_state(), |ix, _, _| {
-                    gpui::div().h(px(40.)).child(format!("row {ix}")).into_any_element()
-                }).size_full()
-            });
+            let _ = cx.draw(
+                gpui::point(px(0.), px(0.)),
+                gpui::size(px(600.), px(400.)),
+                |_, _| {
+                    gpui::list(scroller.list_state(), |ix, _, _| {
+                        gpui::div()
+                            .h(px(40.))
+                            .child(format!("row {ix}"))
+                            .into_any_element()
+                    })
+                    .size_full()
+                },
+            );
         };
         draw(cx);
         assert!(scroller.is_scrollable());
         t.set_review_ranges(&[(1, 0, 2), (2, 2, 40)]);
         assert!(scroller.is_following_tail());
         draw(cx);
-        assert_eq!(scroller.list_state().logical_scroll_top().item_ix, scroller.item_count());
+        assert_eq!(
+            scroller.list_state().logical_scroll_top().item_ix,
+            scroller.item_count()
+        );
         scroller.scroll_to_item(1);
         let anchor = scroller.list_state().logical_scroll_top();
         t.set_review_card_worktree_files(0, vec![("shell.rs".into(), 2, 0)]);
@@ -3332,7 +3351,10 @@ mod tests {
         let after = scroller.list_state().logical_scroll_top();
         assert_eq!(after.item_ix, anchor.item_ix);
         assert_eq!(after.offset_in_item, anchor.offset_in_item);
-        assert_eq!(t.review_history, vec![(1, 1, vec![("shell.rs".into(), 2, 0)])]);
+        assert_eq!(
+            t.review_history,
+            vec![(1, 1, vec![("shell.rs".into(), 2, 0)])]
+        );
     }
 
     #[test]
@@ -3349,7 +3371,10 @@ mod tests {
         assert!(t.review_history.is_empty());
         t.set_review_card_worktree_files(0, vec![("shell.rs".into(), 2, 0)]);
         t.set_review_ranges(&[(1, 0, 2), (2, 2, 4)]);
-        assert_eq!(t.review_history, vec![(1, 1, vec![("shell.rs".into(), 2, 0)])]);
+        assert_eq!(
+            t.review_history,
+            vec![(1, 1, vec![("shell.rs".into(), 2, 0)])]
+        );
         assert!(t.changed_files_summary().is_empty());
     }
 

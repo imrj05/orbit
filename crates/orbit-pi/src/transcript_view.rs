@@ -60,7 +60,8 @@ use crate::theme::tokens::{
     DynamicSpacing, IconSize, Motion, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
-use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
+use crate::transcript::{ChatMessage, HistoryCard, Step, SummaryRow, ToolCall, ToolFacts};
+use crate::turn_review::{ChangedFile, TurnFiles};
 
 fn frosted_transcript_fill(theme: Theme) -> Hsla {
     if theme.glass_sigma().is_some() {
@@ -316,9 +317,9 @@ pub(crate) struct TranscriptView {
     pub rail_autoscroll: Rc<Cell<Option<usize>>>,
     /// End-of-task changed-files summary — `Some` renders one extra row
     /// after the last message (the list's tail slot).
-    pub summary_files: Option<Vec<(String, u64, u64)>>,
+    pub summary_files: Option<TurnFiles>,
     pub summary_turn: Option<usize>,
-    pub history_cards: Vec<(usize, usize, Vec<(String, u64, u64)>)>,
+    pub history_cards: Vec<HistoryCard>,
     /// When the settled run finished (last message's timestamp) — shown in
     /// the summary card's footer next to the copy affordance.
     pub summary_finished_at: Option<i64>,
@@ -1429,8 +1430,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 expanded_files.borrow().contains(&ix),
                 expanded_files.clone(),
                 scroller.clone(),
-                summary_turn
-                    .and_then(|turn| review_changes.clone().map(|open| (turn, open))),
+                summary_turn.and_then(|turn| review_changes.clone().map(|open| (turn, open))),
             );
             // One run footer, after the changed-files card (turn order:
             // answer → files card → Copy): the copy affordance copies the
@@ -8741,7 +8741,7 @@ fn workspace_relative_path(path: &str, workspace: Option<&Path>) -> String {
 /// rows; expanded shows up to 12 with a clip note.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_changed_files(
-    files: &[(String, u64, u64)],
+    files: &[ChangedFile],
     theme: Theme,
     nerd: Option<&SharedString>,
     message_ix: usize,

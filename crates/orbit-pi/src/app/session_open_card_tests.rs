@@ -135,12 +135,15 @@ fn the_card_stays_up_while_pi_attaches_to_a_previewed_session(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
-fn checkpoint_card_survives_equivalent_snapshot_but_not_a_different_turn(cx: &mut gpui::TestAppContext) {
+fn checkpoint_card_survives_equivalent_snapshot_but_not_a_different_turn(
+    cx: &mut gpui::TestAppContext,
+) {
     let app = test_app(cx);
     cx.update(|cx| {
         app.update(cx, |app, cx| {
             app.apply_messages_snapshot(&snapshot(), cx);
-            app.transcript.set_review_card_worktree_files(0, vec![("shell.txt".into(), 3, 1)]);
+            app.transcript
+                .set_review_card_worktree_files(0, vec![("shell.txt".into(), 3, 1)]);
             app.apply_messages_snapshot(&snapshot(), cx);
             assert_eq!(card_paths(app), vec!["shell.txt"]);
 

@@ -908,14 +908,16 @@ impl OrbitApp {
         if !same_turns {
             // Reconstructed indices are not checkpoint identities (steers are
             // user rows too). Never mix cached diffs into a rebuilt turn.
-            self.sidepane.update(cx, |pane, cx| pane.clear_turn_checkpoints(cx));
+            self.sidepane
+                .update(cx, |pane, cx| pane.clear_turn_checkpoints(cx));
         }
         if same_turns {
             self.transcript.restore_review_checkpoints(checkpoints);
         }
         self.push_turn_records(cx);
         if let Some(((start, files), latest, prompts, records)) = checkpoint {
-            if same_turns && latest == self.turns.latest
+            if same_turns
+                && latest == self.turns.latest
                 && latest.and_then(|turn| self.turns.start_of(turn)) == Some(start)
                 && prompts == self.transcript.user_turn_texts()
                 && records == self.turn_records()

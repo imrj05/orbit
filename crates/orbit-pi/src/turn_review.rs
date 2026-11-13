@@ -10,6 +10,12 @@ use serde_json::Value;
 
 use crate::review::{self, Snapshot, Source};
 
+/// One changed file as the changed-files card prints it: path, additions,
+/// deletions.
+pub(crate) type ChangedFile = (String, u64, u64);
+/// Every file one turn changed, in card order.
+pub(crate) type TurnFiles = Vec<ChangedFile>;
+
 /// One `oldText` / `newText` pair inside a single `edit` tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TextEdit {
@@ -294,10 +300,7 @@ pub(crate) fn diff_line_ops(
 
 /// File path and full +/− counts for a folded call list. Skips patch text so
 /// the chat card can match Review without tokenizing the diff.
-pub(crate) fn file_counts(
-    calls: &[RecordedCall],
-    workspace: Option<&Path>,
-) -> Vec<(String, u64, u64)> {
+pub(crate) fn file_counts(calls: &[RecordedCall], workspace: Option<&Path>) -> TurnFiles {
     let snapshot = snapshot_capped(Source::AllChanges, calls, workspace, 0);
     snapshot
         .files

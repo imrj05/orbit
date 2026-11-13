@@ -450,7 +450,11 @@ impl OrbitApp {
                 })
                 .await;
             let _ = this.update(cx, |app, cx| {
-                if !app.sidepane.read(cx).is_turn_checkpoint_pending(turn, generation) {
+                if !app
+                    .sidepane
+                    .read(cx)
+                    .is_turn_checkpoint_pending(turn, generation)
+                {
                     return;
                 }
                 if app.session_id.as_deref() != Some(session.as_str())
@@ -3417,11 +3421,14 @@ impl OrbitApp {
             let _ = app.update(cx, |app, cx| {
                 app.push_turn_records(cx);
                 app.close_git_for_review(cx);
-                if app.turns.live.contains(&turn)
-                    && !pane.read(cx).has_turn_checkpoint(turn)
-                    && !pane.read(cx).has_pending_turn_checkpoint(turn)
-                    && !(app.turns.open && app.turns.latest == Some(turn))
-                {
+                // The open latest turn's own checkpoint read lands when it
+                // settles; everything else is read here, once.
+                let latest_open = app.turns.open && app.turns.latest == Some(turn);
+                let checkpoint_known = {
+                    let pane = pane.read(cx);
+                    pane.has_turn_checkpoint(turn) || pane.has_pending_turn_checkpoint(turn)
+                };
+                if app.turns.live.contains(&turn) && !latest_open && !checkpoint_known {
                     app.spawn_turn_worktree_read(turn, false, cx);
                 }
                 pane.update(cx, |pane, cx| pane.show_review_turn(Some(turn), cx));
