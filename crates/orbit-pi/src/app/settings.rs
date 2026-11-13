@@ -6022,7 +6022,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        switch(id, on, &theme, move |_, _, cx| {
+        switch(id, on, &theme, move |_, cx| {
             this.update(cx, action);
         })
     }

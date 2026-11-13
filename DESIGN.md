@@ -1525,8 +1525,8 @@ Accessibility is part of the component contract.
 - Every interactive element must have an accessible name, role and relevant state.
   GPUI 0.2.2 does not provide a ready-made native accessibility tree API; native
   screen-reader semantics remain an implementation gap until a platform bridge is
-  implemented and verified. The shared switch also lacks keyboard activation and
-  native naming today. These limitations are not exemptions from the requirement.
+  implemented and verified. The shared switch is keyboard-operable (Tab, focus
+  ring, Space/Enter) but still lacks native naming. These limitations are not exemptions from the requirement.
 - Focus must remain visible.
 - Do not encode meaning with color alone.
 - Maintain sufficient contrast for text and controls.

@@ -178,8 +178,9 @@ fits. Keep text and icons legible against each actual state and palette.
   when supported by the actual font and renderer. Verify support; record gaps.
 - Do not claim a control is accessible without testing the path.
 
-**Status:** the tokens and shared helpers exist, but the shared switch currently
-has neither keyboard activation nor native accessible naming. GPUI 0.2.2 has no
+**Status:** the tokens and shared helpers exist. The shared switch is a tab
+stop with a visible focus ring and flips with Space or Enter, but it has no
+native accessible name. GPUI 0.2.2 has no
 ready-made native accessibility tree API; a platform bridge remains unverified.
 Treat screen-reader support and complete keyboard flows as requirements to
 implement and test, not as shipped features. In Explorer, an open file row uses
@@ -205,7 +206,7 @@ existing components before creating a new primitive.
 | New-task page | The same composer in the middle of the page, not a second template: the chat column with an empty transcript, centered by flex weights (`new_task::settle`) at `new_task::COMPOSER_MAX_W` and narrowing with the window. Its context header shares the composer surface: folder and branch controls on the left, and the working-directory control on the right when in a repository. The location control names the project at its main checkout and the worktree inside a linked worktree; its picker retains the Local row. The folder control opens the workspace picker beneath itself; the status row does not duplicate these controls. No headline, mark or card above it. The composer border remains a quiet hairline while its input is focused; the caret indicates text focus. The empty footer leaves out the context meter until real usage exists. The first send docks the composer into the session layout on one `Travel` clock; Reduce Motion paints the session frame at once. |
 | Dialogs | Identify the task and affected object; keep actions in a predictable footer. Trap focus while modal and restore it on close. Escape and scrim clicks cancel dismissible dialogs; a mandatory or in-progress dialog may prevent dismissal when interruption would be unsafe, while explaining the state and any available action. Make destructive consequences explicit. Verify the actual focus and keyboard implementation. |
 | Rows, tables and lists | Use shared list metrics and interaction states; keep hover, selection and focus distinct, metadata readable, and dense content inspectable. Use stable alignment and keyboard-accessible disclosure for truncated values. |
-| Toggles, tooltips and feedback | Inspect `switch`, `empty_state` and `error_state` in `app/helpers.rs`, and `usage/tooltip.rs`. `switch` provides the visual and mouse-up behavior, not keyboard activation or an accessible name; verify or supply those separately. Give switches clear state, avoid hover-only essential information, and place actionable errors near their cause. Use loading feedback without unnecessary layout shifts. |
+| Toggles, tooltips and feedback | Inspect `switch`, `empty_state` and `error_state` in `app/helpers.rs`, and `usage/tooltip.rs`. `switch` provides the visual, pointer and keyboard behavior (Tab focus, focus ring, Space/Enter), not an accessible name; supply or record that separately. Give switches clear state, avoid hover-only essential information, and place actionable errors near their cause. Use loading feedback without unnecessary layout shifts. |
 
 ## Icon policy
 

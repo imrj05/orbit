@@ -1129,59 +1129,109 @@ fn dropdown_angle(value: f32) -> f32 {
 /// ends on [`Motion::Interaction`], with the track cross-fading from
 /// `surface_elevated` to `accent`.
 ///
-/// The three settings switches (Reduce Motion, automatic updates, a skill's
-/// enablement) all render through this, so a switch cannot drift in shape or in
-/// motion. `id` must be unique per switch — it keys the transition as well as
-/// the element.
+/// The settings switches (Reduce Motion, automatic updates, a skill's or a
+/// subagent's enablement) all render through this, so a switch cannot drift in
+/// shape, motion or behavior. `id` must be unique per switch — it keys the
+/// transition, the element and the switch's focus.
+///
+/// It is a keyboard control as well: Tab reaches it, it draws the focus ring
+/// while focused, and Space or Enter flips it (`SwitchToggle` in the `Switch`
+/// context) through the same `on_toggle` a click runs. A native accessible
+/// name is still a GPUI gap.
 pub(crate) fn switch(
     id: impl Into<SharedString>,
     on: bool,
     theme: &Theme,
-    on_click: impl Fn(&gpui::MouseUpEvent, &mut Window, &mut App) + 'static,
+    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let theme = *theme;
-    let id = id.into();
-    let padding = DynamicSpacing::Base02.px(&theme);
-    let travel = switch_travel(&theme);
-    let track = div()
-        .id(gpui::ElementId::Name(id.clone()))
-        .w(px(36.))
-        .h(DynamicSpacing::Base20.px(&theme))
-        .rounded_full()
-        .p(padding)
-        .border_1()
-        .border_color(theme.border)
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .hover_border(&theme)
-        .on_mouse_up(MouseButton::Left, on_click);
-    crate::motion::state(
-        track,
-        id,
-        &theme,
-        Motion::Interaction,
-        if on { 1.0 } else { 0.0 },
-        move |track, value| {
-            track
-                .bg(crate::motion::blend(
-                    theme.surface_elevated,
-                    theme.accent,
-                    value,
-                ))
-                .child(
-                    div()
-                        .flex_none()
-                        .size(px(14.))
-                        .rounded_full()
-                        .bg(theme.toggle_knob)
-                        // Relative, so the knob travels without re-laying out the
-                        // track — and without moving the hitbox the click lands on.
-                        .relative()
-                        .left(travel * value),
-                )
-        },
-    )
+    Switch {
+        id: id.into(),
+        on,
+        theme: *theme,
+        on_toggle: std::rc::Rc::new(on_toggle),
+    }
+    .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct Switch {
+    id: SharedString,
+    on: bool,
+    theme: Theme,
+    on_toggle: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
+impl RenderOnce for Switch {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Switch {
+            id,
+            on,
+            theme,
+            on_toggle,
+        } = self;
+        // The handle has to outlive the frame so focus survives a repaint;
+        // keyed state lives as long as this switch keeps being drawn.
+        let focus = window
+            .use_keyed_state(
+                gpui::ElementId::Name(format!("{id}-focus").into()),
+                cx,
+                |_, cx| cx.focus_handle().tab_stop(true),
+            )
+            .read(cx)
+            .clone();
+        let focused = focus.is_focused(window);
+        let padding = DynamicSpacing::Base02.px(&theme);
+        let travel = switch_travel(&theme);
+        let track = div()
+            .id(gpui::ElementId::Name(id.clone()))
+            .track_focus(&focus)
+            .key_context("Switch")
+            .w(px(36.))
+            .h(DynamicSpacing::Base20.px(&theme))
+            .rounded_full()
+            .p(padding)
+            .border_1()
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            // Focus wins over the hover edge, so the ring never blinks off
+            // under the pointer.
+            .when(focused, |track| track.border_color(theme.focus_ring))
+            .when(!focused, |track| {
+                track.border_color(theme.border).hover_border(&theme)
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let on_toggle = on_toggle.clone();
+                move |_, window, cx| on_toggle(window, cx)
+            })
+            .on_action(move |_: &crate::SwitchToggle, window, cx| on_toggle(window, cx));
+        crate::motion::state(
+            track,
+            id,
+            &theme,
+            Motion::Interaction,
+            if on { 1.0 } else { 0.0 },
+            move |track, value| {
+                track
+                    .bg(crate::motion::blend(
+                        theme.surface_elevated,
+                        theme.accent,
+                        value,
+                    ))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(14.))
+                            .rounded_full()
+                            .bg(theme.toggle_knob)
+                            // Relative, so the knob travels without re-laying out the
+                            // track — and without moving the hitbox the click lands on.
+                            .relative()
+                            .left(travel * value),
+                    )
+            },
+        )
+    }
 }
 
 /// How far a switch's knob travels: the track, less its padding and the knob.

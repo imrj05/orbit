@@ -4206,6 +4206,8 @@ mod stale_error_tests;
 #[cfg(test)]
 mod stop_escalation_tests;
 #[cfg(test)]
+mod switch_tests;
+#[cfg(test)]
 mod theme_switch_tests;
 #[cfg(test)]
 mod titlebar_layout_tests;

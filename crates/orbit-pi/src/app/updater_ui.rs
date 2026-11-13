@@ -589,7 +589,7 @@ impl OrbitApp {
             "settings-automatic-updates",
             self.automatic_updates_enabled,
             &theme,
-            move |_, _, cx| {
+            move |_, cx| {
                 this.update(cx, |app, cx| {
                     let next = !app.automatic_updates_enabled;
                     app.set_automatic_updates(next, cx);

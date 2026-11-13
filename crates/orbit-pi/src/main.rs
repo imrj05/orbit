@@ -236,6 +236,7 @@ actions!(
 // New-task folder chip: native button activation while its focus handle owns
 // the keyboard. Scoped so Enter cannot fall through to the composer's Submit.
 actions!(new_task_keys, [OpenWorkspacePicker]);
+actions!(switch_keys, [SwitchToggle]);
 actions!(
     git_list_keys,
     [
@@ -647,6 +648,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("home", GitListHome, Some("GitList")),
         KeyBinding::new("end", GitListEnd, Some("GitList")),
         KeyBinding::new("enter", GitListConfirm, Some("GitList")),
+        // A focused switch flips with Space or Enter, the way a native toggle
+        // does. Its context rides the switch's own focus handle.
+        KeyBinding::new("space", SwitchToggle, Some("Switch")),
+        KeyBinding::new("enter", SwitchToggle, Some("Switch")),
     ]);
 }
 
