@@ -3442,7 +3442,9 @@ impl Default for WorkspaceStore {
             sort: WorkspaceSort::default(),
             group_by: SidebarGroupBy::default(),
             archived_filter: SidebarArchivedFilter::default(),
-            show_first_message: true,
+            // A session row is one line by default: title, status and age.
+            // The first-message preview is opt-in from the sidebar view menu.
+            show_first_message: false,
             show_updated: true,
         }
     }
@@ -3496,7 +3498,7 @@ fn parse_workspace_store(value: &Value) -> WorkspaceStore {
         show_first_message: value
             .get("show_first_message")
             .and_then(Value::as_bool)
-            .unwrap_or(true),
+            .unwrap_or(false),
         show_updated: value
             .get("show_updated")
             .and_then(Value::as_bool)

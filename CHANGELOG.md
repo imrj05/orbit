@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off the UI thread. The shared eight-item cap still applies; when a selection
   overflows it, the status line says how many were added and how many were
   turned away.
+- **Quieter, shorter sidebar rows.** The open session is marked by the
+  `surface_selected` fill alone: a custom accent no longer tints it, and the
+  "current" badge, selected border and semibold title are gone, so the title
+  never changes width when the selection moves. A grouped row stops repeating
+  its workspace's branch down the list — the location strip now appears in flat
+  lists and search, and under a project header only for a session in another
+  folder. First-message previews are off by default (the sidebar view menu still
+  turns them on), leaving a grouped row one 28px line: title, status and age.
 
 ## [0.2.18] - 2026-11-12
 
