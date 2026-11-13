@@ -14,4 +14,4 @@ serde_json = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 # Reads the user's current PATH, which a running process does not see change.
 # Already in the dependency graph through gpui.
-windows-registry = "0.5"
+windows-registry = "0.100"
