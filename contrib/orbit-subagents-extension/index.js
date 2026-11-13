@@ -21,6 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn as nodeSpawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { buildDescription, buildPromptGuidelines, discoverAgents, loadBuiltins, userAgentDir } from "./agents.js";
 import {
@@ -105,6 +106,19 @@ export const PARAMETERS = {
 const sessionCounts = new Map();
 
 /**
+ * This file, so an ownership check can tell our own registration from a
+ * foreign one. Orbit materializes the extension at a stable path and passes
+ * that path with `--extension`, so the resolved path is the identity.
+ */
+const SELF_PATH = (() => {
+  try {
+    return fileURLToPath(import.meta.url);
+  } catch {
+    return null;
+  }
+})();
+
+/**
  * Activate the extension. `overrides` exists for tests: `spawn`, `home`,
  * `env`, `now`, `tempDir`, `piBinary`.
  */
@@ -118,23 +132,16 @@ export default function activate(pi, overrides = {}) {
     piBinary: overrides.piBinary ?? "pi",
   };
 
-  // D-C: stand down if anything else already owns the name.
-  const existing = safeGetAllTools(pi);
-  if (existing.some((tool) => tool?.name === TOOL_NAME)) {
-    pi?.on?.("session_start", (_event, ctx) => {
-      ctx?.ui?.notify?.(
-        "Orbit subagents is inactive: another extension (for example pi-subagents) already provides a `subagent` tool.",
-        "warning",
-      );
-    });
-    return { active: false, reason: "tool name already registered" };
-  }
-
   if (typeof pi?.registerTool !== "function") {
     return { active: false, reason: "no tool registration API" };
   }
 
   let registered = null;
+  /**
+   * Whether the `subagent` name is ours to register (D-C). Decided once the
+   * runtime is bound, so `null` until the first session starts.
+   */
+  let ownership = null;
 
   /** Build the prompt surface from the enabled agents and register on change. */
   function refreshDescription() {
@@ -162,28 +169,122 @@ export default function activate(pi, overrides = {}) {
     return enabled;
   }
 
-  refreshDescription();
-
-  // A new session may have different agent files; re-register if the catalog
-  // changed. This is the only place the request prefix changes (D-S).
-  pi.on?.("session_start", () => {
-    refreshDescription();
+  // D-C is decided here rather than at load, and the tool is registered here
+  // too: during load `pi.getAllTools()` is an unbound stub that throws, and
+  // reading that throw as "no tools yet" made us register second, so pi exited
+  // on `Tool "subagent" conflicts with …` before it served the session (issue
+  // #122). At `session_start` the list is bound and every entry carries
+  // `sourceInfo.path`, so a foreign owner is distinguishable from our own
+  // earlier registration in this process.
+  // A new session may also have different agent files, so this is where the
+  // catalog is read and re-registered when it changed — the one place the
+  // request prefix changes (D-S).
+  pi.on?.("session_start", (_event, ctx) => {
+    ownership ??= decideOwnership(pi);
+    if (ownership.active) {
+      refreshDescription();
+      // pi keeps the *first* registration for a name (`getAllRegisteredTools`
+      // is first-wins), so an inert registration has to be reported, not
+      // pretended.
+      const winner = findTool(pi, TOOL_NAME);
+      if (winner && !isSelf(winner?.sourceInfo?.path)) {
+        ownership = { active: false, reason: "shadowed", owner: winner?.sourceInfo?.path ?? null };
+      }
+    }
+    recordStatus(deps, ownership);
+    if (!ownership.active) announceInactive(ctx);
   });
 
-  return { active: true };
+  // `deferred`: nothing is registered yet; `session_start` decides (D-C).
+  return { active: true, deferred: true };
+}
+
+/**
+ * Read pi's tool list, `null` when the call throws.
+ *
+ * The distinction matters: an unreadable list is not an empty one, and a
+ * decision taken on a guess is what produced the conflict this guards against.
+ */
+function readToolList(pi) {
+  try {
+    const all = pi?.getAllTools?.();
+    return Array.isArray(all) ? all : null;
+  } catch {
+    return null;
+  }
+}
+
+function findTool(pi, name) {
+  return readToolList(pi)?.find((tool) => tool?.name === name) ?? null;
+}
+
+function isSelf(sourcePath) {
+  if (!sourcePath || !SELF_PATH) return false;
+  try {
+    return path.resolve(sourcePath) === path.resolve(SELF_PATH);
+  } catch {
+    return false;
+  }
+}
+
+/** D-C: is the `subagent` name ours to register in this process? */
+function decideOwnership(pi) {
+  const all = readToolList(pi);
+  if (all === null) {
+    return { active: false, reason: "tool list unavailable", owner: null };
+  }
+  const claimed = all.find((tool) => tool?.name === TOOL_NAME && !isSelf(tool?.sourceInfo?.path));
+  if (claimed) {
+    return {
+      active: false,
+      reason: "owned by another extension",
+      owner: claimed?.sourceInfo?.path ?? null,
+    };
+  }
+  return { active: true, reason: "available", owner: SELF_PATH };
+}
+
+/** Stand down out loud, through the one channel a session has. */
+function announceInactive(ctx) {
+  ctx?.ui?.notify?.(
+    "Orbit subagents is inactive: another extension (for example pi-subagents) already provides a `subagent` tool.",
+    "warning",
+  );
+}
+
+function statusPath(deps) {
+  return path.join(deps.home ?? os.homedir(), ".orbit-pi", "subagents-status.json");
+}
+
+/**
+ * Leave the decision where Settings → Subagents can read it (D-C). A toast is
+ * the only channel a session has, and it is gone in seconds; the page has to be
+ * able to say this in plain words.
+ *
+ * Best effort by design: a read-only home must not take the session down with
+ * it, and a stale file is worse than a new one but better than a crash.
+ */
+function recordStatus(deps, ownership) {
+  const file = statusPath(deps);
+  const payload = {
+    active: ownership.active === true,
+    tool: TOOL_NAME,
+    reason: ownership.reason ?? "",
+    owner: ownership.owner ?? null,
+    updatedAt: deps.now(),
+  };
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`);
+    fs.renameSync(temporary, file);
+  } catch {
+    // The session matters more than the page's copy of this fact.
+  }
 }
 
 function configPath(deps) {
   return path.join(deps.home ?? os.homedir(), ".orbit-pi", "subagents.json");
-}
-
-function safeGetAllTools(pi) {
-  try {
-    const all = pi?.getAllTools?.();
-    return Array.isArray(all) ? all : [];
-  } catch {
-    return [];
-  }
 }
 
 function safeBuiltins() {

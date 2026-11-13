@@ -29,7 +29,7 @@ order; each phase is releasable on its own, and stopping after any gate leaves t
 | Phase | Implementation | Automated tests | Manual gate |
 |---|---|---|---|
 | 0 — spike | Done (the seam was proven with a real `pi` rather than committed fixtures) | — | One real child run captured and inspected |
-| 1 — one child | Done, plus chain/parallel from Phase 3 | `node --test contrib/orbit-subagents-extension/*.test.mjs` (70), guard (31), `bundled_extensions` (6) | One real delegation returned its report and cost; abort and refusal paths covered by tests |
+| 1 — one child | Done, plus chain/parallel from Phase 3 | `node --test contrib/orbit-subagents-extension/*.test.mjs` (85, including the real-`pi` seam), guard (31), `bundled_extensions` (6) | One real delegation returned its report and cost; abort and refusal paths covered by tests |
 | 2 — the card | Done: `ToolCall.details`, `subagent.rs`, the three zoom levels | `subagent::` (13), transcript details (3), card render | Not inspected in the running app |
 | 3 — fan-out | Done (folded into Phase 1) | Chain `{previous}`, 5-task pool ≤ 4 concurrent, depth/cap refusals | Real 5-child pool not exercised |
 | 4 — the page | Done: `subagent_file.rs`, `subagents.rs`, Settings → Subagents | `subagent_file` (14), `subagents` (6), page render (2) | Not inspected in the running app |
@@ -157,10 +157,36 @@ warm pool in `sessions` exists for user-visible sessions, not for delegated work
 
 ### D-C — The tool is named `subagent`, and Orbit stands down if something else provides it
 
-The name is what prompts and muscle memory already use. At activation the extension asks
-`pi.getAllTools()`; if a tool named `subagent` is already registered (for example `pi-subagents` is
-installed), Orbit's extension **does not register** and Settings → Subagents says so in plain
-words. Two implementations racing for one name is worse than one honest message.
+The name is what prompts and muscle memory already use. The extension asks `pi.getAllTools()` at
+`session_start` — **not** while it loads — and if a tool named `subagent` is already registered by
+some other file (for example `pi-subagents` is installed), Orbit's extension **does not register**
+and says so, naming the owner. Two implementations racing for one name is worse than one honest
+message.
+
+**Why `session_start`, in one paragraph (issue #122).** pi 1.5 treats two extensions registering one
+tool name as a fatal load error: it records `Tool "subagent" conflicts with …`, then exits before
+serving the session — so every Orbit session died, not just the tool. Orbit loads its extensions with
+`--extension`, which pi appends *after* discovered extensions and packages, so Orbit was always the
+second registration. The check that should have prevented that ran at load, where `getAllTools()` is
+an unbound stub that throws; the guard swallowed the throw, read it as an empty list, and registered
+anyway. At `session_start` the list is bound and every entry carries `sourceInfo.path`, so a foreign
+owner is distinguishable from our own earlier registration in the same process. The rule that came
+out of this: **an unreadable tool list is not an empty one, and nothing registers on a guess.**
+
+**The scan no longer protects us.** Once nobody registers at load, pi's conflict check has nothing to
+compare, so a missed ownership check cannot crash the app — it does something quieter. pi keeps the
+*first* registration for a name, and discovered extensions sort before `--extension` ones, so a
+shadowed Orbit registration is inert while the app believes the feature is on. That is why the check
+is repeated at every `session_start` and followed by a read-back: if `subagent` in the registry is
+not ours, Orbit records that it stood down instead of reporting a catalog with no effect.
+
+**Where the page learns it.** The extension writes `~/.orbit-pi/subagents-status.json` at every
+`session_start` (`{ active, tool, reason, owner, updatedAt }`), and Settings → Subagents reads it
+when the section opens. `subagents::load_status` returns `None` for a missing or unparsable file —
+absence is not a verdict, so the page claims nothing until a session has actually decided. A banner
+above the list names the owner and links to Settings → Plugins; the agent list stays editable,
+because those files are what the owning extension reads too. The extension also raises a toast with
+the same sentence, for the user who is not in Settings when it happens.
 
 **Decided here rather than left open:** standing down, not namespacing. A `orbit_subagent` name
 would be predictable for us and unknown to every prompt the user already has. The cost of standing

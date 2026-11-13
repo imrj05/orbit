@@ -155,7 +155,6 @@ grep /auth/ in src/`, or `2 agents working` — and the turn header reads
 **Settings → Subagents** is the whole library in one page. The left column
 groups **Built in** and **Your agents**; the right column edits the selected
 one:
-
 - **What it can do** — read only, edits files, or runs commands. This is the
   single input: it writes the file's `tools:` line and it is what the child's
   ceiling is derived from, so the page cannot claim a capability the child does
@@ -188,6 +187,19 @@ reload — an external edit is never clobbered silently.
 Writing a builtin's page creates `~/.pi/agent/agents/<name>.md`, which overrides
 the shipped definition for Orbit **and** for `pi-subagents`; the page labels the
 row *modified* so the divergence is visible.
+
+### When another extension provides `subagent`
+
+Orbit's tool is named `subagent`, and a session can only have one. If something
+else already registered that name — usually the `pi-subagents` package — Orbit
+stands down instead of colliding, and the page says so in a banner above the
+list, naming the file that owns it. The model then calls that extension's tool.
+
+The page stays editable in that state on purpose: agents are markdown files in
+`~/.pi/agent/agents/`, and the extension that owns the name reads the same
+directory, so what you set here still applies. Turn the other extension off
+under **Settings → Plugins** to use Orbit's tool again, and the banner clears at
+the next session.
 
 ## Running the checks
 

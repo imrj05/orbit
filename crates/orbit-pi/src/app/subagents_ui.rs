@@ -45,6 +45,9 @@ pub(super) enum SubagentAction {
     ConfirmDelete,
     CancelDelete,
     UndoDelete,
+    /// The banner's remedy: the other extension owns the name because it was
+    /// installed from Settings → Plugins.
+    OpenPlugins,
 }
 
 /// The limits `subagents.json` owns, in the order the page lists them.
@@ -118,11 +121,109 @@ impl OrbitApp {
             .min_w_0()
             .min_h_0()
             .flex()
+            .flex_col()
             .bg(theme.background)
             .font_family(theme::ui_font_family())
-            .child(self.subagents_list(theme, this.clone(), cx))
-            .child(self.subagent_detail(theme, this, cx))
+            .when_some(
+                self.subagent_inactive_banner(theme, this.clone()),
+                |page, banner| page.child(banner),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .child(self.subagents_list(theme, this.clone(), cx))
+                    .child(self.subagent_detail(theme, this, cx)),
+            )
             .into_any_element()
+    }
+
+    /// The truth about the `subagent` name when this session does not use it.
+    ///
+    /// The extension reports this every time a session starts: without it the
+    /// page would present a catalog the model never sees, which is the silent
+    /// lie D-C exists to prevent. The agents stay editable — they are the files
+    /// whichever extension owns the name reads.
+    fn subagent_inactive_banner(&self, theme: Theme, this: Entity<OrbitApp>) -> Option<AnyElement> {
+        let status = self
+            .subagent_status
+            .as_ref()
+            .filter(|status| !status.active)?;
+        let detail = match status.owner.as_deref() {
+            Some(owner) if !owner.is_empty() => {
+                tr!("subagents_ui.inactive_owner", owner = owner.to_string())
+            }
+            // No owner and no useful reason means the extension could not read
+            // pi's tool list at all; say nothing rather than guess.
+            _ => status.reason.clone(),
+        };
+
+        let mut column = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base02.px(&theme))
+            .child(
+                div()
+                    .text_size(TextSize::Default.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .child(tr!("subagents_ui.inactive_title")),
+            )
+            .child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
+                    .child(tr!("subagents_ui.inactive_body")),
+            );
+        if !detail.trim().is_empty() {
+            // Truncated like every other path in the workbench: the full value
+            // is the tooltip, and the file is reachable from Plugins either way.
+            column = column.child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .truncate()
+                    .tip(detail.clone())
+                    .child(detail),
+            );
+        }
+
+        Some(
+            div()
+                .id("subagents-inactive")
+                .debug_selector(|| "subagents-inactive".to_string())
+                .w_full()
+                .mx(DynamicSpacing::Base16.px(&theme))
+                .mt(DynamicSpacing::Base12.px(&theme))
+                .bg(theme.surface_secondary)
+                .border_1()
+                .border_color(theme.border)
+                .rounded(Radius::XLarge.px(&theme))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base12.px(&theme))
+                .flex()
+                .items_start()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(icon(
+                    "icons/info.svg",
+                    IconSize::Medium.px(&theme),
+                    theme.warning,
+                ))
+                .child(column)
+                .child(self.subagent_button(
+                    "subagents-inactive-plugins",
+                    tr!("subagents_ui.open_plugins"),
+                    SubagentButtonKind::Secondary,
+                    theme,
+                    this,
+                    SubagentAction::OpenPlugins,
+                ))
+                .into_any_element(),
+        )
     }
 
     // ── list column ─────────────────────────────────────────────────
@@ -2040,6 +2141,10 @@ impl OrbitApp {
         self.subagents = agents;
         self.subagents_skipped = skipped;
         self.subagent_config = subagents::load();
+        // Read fresh too: the answer changes when the user installs or removes
+        // the extension that owns the name, and the page must not go on
+        // claiming the opposite.
+        self.subagent_status = subagents::load_status();
         let still_there = self
             .selected_subagent
             .as_ref()
@@ -2257,6 +2362,7 @@ impl OrbitApp {
                 self.subagent_delete_confirm = false;
                 self.rebuild_subagent_editor(cx);
             }
+            SubagentAction::OpenPlugins => self.set_settings_section(SettingsSection::Plugins, cx),
             SubagentAction::New => self.start_new_subagent(cx),
             SubagentAction::Save => self.save_subagent(cx),
             SubagentAction::Duplicate => self.duplicate_subagent(cx),
@@ -2697,6 +2803,66 @@ mod tests {
             });
         });
         cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    }
+
+    /// The page must not present a catalog the model never sees (D-C). The
+    /// extension reports who owns `subagent` at every session start; this is
+    /// that report reaching the surface, and it must vanish again when a later
+    /// session owns the name.
+    #[gpui::test]
+    fn the_page_says_when_another_extension_owns_the_name(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        let viewport = gpui::size(px(960.), px(640.));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings_open = true;
+                app.settings_section = SettingsSection::Subagents;
+                app.subagents = crate::subagent_file::builtin_agents();
+                app.selected_subagent = Some("scout".into());
+                app.rebuild_subagent_editor(cx);
+            });
+        });
+
+        // No report yet: absence is not a verdict, so nothing is claimed.
+        cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+        assert!(cx.debug_bounds("subagents-inactive").is_none());
+
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.subagent_status = Some(crate::subagents::Status {
+                    active: false,
+                    reason: "owned by another extension".into(),
+                    owner: Some("/home/me/.pi/agent/extensions/pi-subagents/index.js".into()),
+                });
+                cx.notify();
+            });
+        });
+        cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+        let banner = cx
+            .debug_bounds("subagents-inactive")
+            .expect("the stand-down banner rendered");
+        assert!(banner.size.width > px(0.), "{banner:?}");
+        // The agents stay editable: they are the files the owner reads.
+        assert!(
+            cx.debug_bounds("subagents-detail").is_some(),
+            "the agent form still renders under the banner"
+        );
+
+        // A later session that owns the name clears the claim.
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.subagent_status = Some(crate::subagents::Status {
+                    active: true,
+                    reason: "available".into(),
+                    owner: None,
+                });
+                cx.notify();
+            });
+        });
+        cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+        assert!(cx.debug_bounds("subagents-inactive").is_none());
     }
 
     #[test]

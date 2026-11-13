@@ -1261,6 +1261,9 @@ pub struct OrbitApp {
     subagent_editor: Option<subagents_ui::SubagentEditor>,
     /// Orbit-only agent settings (`~/.orbit-pi/subagents.json`).
     subagent_config: crate::subagents::Config,
+    /// What the extension last reported about the `subagent` name
+    /// (`~/.orbit-pi/subagents-status.json`), `None` before any session says.
+    subagent_status: Option<crate::subagents::Status>,
     /// A user agent deleted this session; Undo restores its exact bytes.
     subagent_undo: Option<subagents_ui::SubagentUndo>,
     /// The Delete button has been pressed once.
@@ -2545,6 +2548,7 @@ impl OrbitApp {
             selected_subagent: None,
             subagent_editor: None,
             subagent_config: crate::subagents::Config::default(),
+            subagent_status: None,
             subagent_undo: None,
             subagent_delete_confirm: false,
             subagent_error: None,

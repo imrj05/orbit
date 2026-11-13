@@ -24,6 +24,7 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "已打开预填好的 GitHub 页面，请登录后提交。",
         "Couldn't create the issue: %{error}": "无法创建 issue：%{error}",
         "Couldn't open the browser: %{error}": "无法打开浏览器：%{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "已打开 GitHub 并将报告复制到剪贴板，请粘贴到描述中，然后登录提交。",
     },
     "ja": {
         "Report a bug": "バグを報告",
@@ -44,6 +45,7 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "報告を入力済みの GitHub を開きました。サインインして送信してください。",
         "Couldn't create the issue: %{error}": "issue を作成できませんでした: %{error}",
         "Couldn't open the browser: %{error}": "ブラウザを開けませんでした: %{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "GitHub を開き、報告をクリップボードにコピーしました。説明欄に貼り付けてから、サインインして送信してください。",
     },
     "ko": {
         "Report a bug": "버그 신고",
@@ -64,6 +66,7 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "신고 내용이 채워진 GitHub를 열었습니다. 로그인 후 제출하세요.",
         "Couldn't create the issue: %{error}": "이슈를 만들지 못했습니다: %{error}",
         "Couldn't open the browser: %{error}": "브라우저를 열지 못했습니다: %{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "GitHub를 열고 신고 내용을 클립보드에 복사했습니다. 설명란에 붙여넣은 뒤 로그인하여 제출하세요.",
     },
     "es": {
         "Report a bug": "Reportar un error",
@@ -84,6 +87,7 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "Se abrió GitHub con tu informe completado; inicia sesión allí para enviarlo.",
         "Couldn't create the issue: %{error}": "No se pudo crear el issue: %{error}",
         "Couldn't open the browser: %{error}": "No se pudo abrir el navegador: %{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "Se abrió GitHub y se copió tu informe al portapapeles; pégalo en la descripción e inicia sesión para enviarlo.",
     },
     "fr": {
         "Report a bug": "Signaler un bug",
@@ -104,6 +108,7 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "GitHub s'est ouvert avec votre rapport prérempli ; connectez-vous pour l'envoyer.",
         "Couldn't create the issue: %{error}": "Impossible de créer le ticket : %{error}",
         "Couldn't open the browser: %{error}": "Impossible d'ouvrir le navigateur : %{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "GitHub s'est ouvert et votre rapport a été copié dans le presse-papiers ; collez-le dans la description, puis connectez-vous pour l'envoyer.",
     },
     "de": {
         "Report a bug": "Fehler melden",
@@ -124,6 +129,7 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "GitHub mit vorausgefülltem Bericht geöffnet; melde dich dort an, um ihn zu senden.",
         "Couldn't create the issue: %{error}": "Issue konnte nicht erstellt werden: %{error}",
         "Couldn't open the browser: %{error}": "Browser konnte nicht geöffnet werden: %{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "GitHub geöffnet und deinen Bericht in die Zwischenablage kopiert; füge ihn in die Beschreibung ein und melde dich zum Senden an.",
     },
     "pt-BR": {
         "Report a bug": "Reportar um bug",
@@ -144,6 +150,7 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "O GitHub foi aberto com seu relatório preenchido; faça login lá para enviá-lo.",
         "Couldn't create the issue: %{error}": "Não foi possível criar a issue: %{error}",
         "Couldn't open the browser: %{error}": "Não foi possível abrir o navegador: %{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "O GitHub foi aberto e seu relatório foi copiado para a área de transferência; cole-o na descrição e faça login para enviá-lo.",
     },
     "ru": {
         "Report a bug": "Сообщить об ошибке",
@@ -164,6 +171,7 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "GitHub открыт с заполненным отчётом; войдите, чтобы отправить его.",
         "Couldn't create the issue: %{error}": "Не удалось создать issue: %{error}",
         "Couldn't open the browser: %{error}": "Не удалось открыть браузер: %{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "GitHub открыт, а отчёт скопирован в буфер обмена; вставьте его в описание и войдите, чтобы отправить.",
     },
     "it": {
         "Report a bug": "Segnala un bug",
@@ -184,5 +192,6 @@ GLOSSARY = {
         "Opened GitHub with your report prefilled; sign in there to submit it.": "GitHub aperto con il tuo report precompilato; accedi per inviarlo.",
         "Couldn't create the issue: %{error}": "Impossibile creare la issue: %{error}",
         "Couldn't open the browser: %{error}": "Impossibile aprire il browser: %{error}",
+        "Opened GitHub and copied your report to the clipboard; paste it into the description, then sign in to submit.": "GitHub aperto e report copiato negli appunti; incollalo nella descrizione, poi accedi per inviarlo.",
     },
 }

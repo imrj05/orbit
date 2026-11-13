@@ -214,7 +214,6 @@ pub(crate) fn path() -> PathBuf {
         .join(".orbit-pi")
         .join("subagents.json")
 }
-
 /// Read the store; any failure is the default configuration.
 pub(crate) fn load() -> Config {
     load_from(&path())
@@ -247,6 +246,54 @@ pub(crate) fn save_to(file: &Path, config: &Config) -> Result<(), String> {
     fs::rename(&temporary, file).map_err(|error| {
         let _ = fs::remove_file(&temporary);
         error.to_string()
+    })
+}
+
+/// `~/.orbit-pi/subagents-status.json`.
+pub(crate) fn status_path() -> PathBuf {
+    crate::platform::home_dir_opt()
+        .unwrap_or_default()
+        .join(".orbit-pi")
+        .join("subagents-status.json")
+}
+
+/// What the bundled extension last decided about the `subagent` name (D-C).
+///
+/// The extension writes this at every `session_start`, because its only other
+/// channel is a toast: the page has to be able to say it in plain words rather
+/// than showing a catalog that has no effect on the session.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Status {
+    /// Whether Orbit's tool is the one the session can call.
+    pub active: bool,
+    /// Why it is not, in the extension's own words.
+    pub reason: String,
+    /// The file that owns the name when Orbit stood down.
+    pub owner: Option<String>,
+}
+
+/// `None` when no session has reported yet — absence is not a verdict, so the
+/// page shows nothing rather than claiming a state nobody checked.
+pub(crate) fn load_status() -> Option<Status> {
+    load_status_from(&status_path())
+}
+
+pub(crate) fn load_status_from(file: &Path) -> Option<Status> {
+    let text = fs::read_to_string(file).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let active = value.get("active").and_then(Value::as_bool)?;
+    Some(Status {
+        active,
+        reason: value
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        owner: value
+            .get("owner")
+            .and_then(Value::as_str)
+            .filter(|owner| !owner.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -386,5 +433,58 @@ mod tests {
         let saved: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(saved["maxConcurrent"], json!(4));
         assert_eq!(saved["agents"]["worker"]["mode"], "plan");
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_status_is_no_verdict() {
+        let file = scratch("status-missing").with_file_name("subagents-status.json");
+        assert_eq!(load_status_from(&file), None, "absence is not inactive");
+        fs::write(&file, "{not json").unwrap();
+        assert_eq!(load_status_from(&file), None);
+        fs::write(
+            &file,
+            json!({ "reason": "owned by another extension" }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            load_status_from(&file),
+            None,
+            "a report without `active` says nothing"
+        );
+    }
+
+    #[test]
+    fn the_extension_s_report_reaches_the_page() {
+        let file = scratch("status").with_file_name("subagents-status.json");
+        fs::write(
+            &file,
+            json!({
+                "active": false,
+                "tool": "subagent",
+                "reason": "owned by another extension",
+                "owner": "/home/me/.pi/agent/extensions/pi-subagents/index.js",
+                "updatedAt": 1767225600000i64
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let status = load_status_from(&file).expect("a report is a verdict");
+        assert!(!status.active);
+        assert_eq!(status.reason, "owned by another extension");
+        assert_eq!(
+            status.owner.as_deref(),
+            Some("/home/me/.pi/agent/extensions/pi-subagents/index.js")
+        );
+
+        // Active reports clear an old stand-down, and carry no owner.
+        fs::write(
+            &file,
+            json!({ "active": true, "tool": "subagent", "reason": "available", "owner": null })
+                .to_string(),
+        )
+        .unwrap();
+        let status = load_status_from(&file).expect("a report is a verdict");
+        assert!(status.active);
+        assert_eq!(status.owner, None);
     }
 }
