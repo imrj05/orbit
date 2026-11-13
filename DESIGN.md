@@ -1762,7 +1762,10 @@ these tests, which run over every shipped palette:
 `scripts/check_motion.py` enforces the two negative rules mechanically: no animation
 types its own duration, and no file outside `theme/tokens.rs` calls `.nominal()`.
 `scripts/check_states.py` enforces that a call site does not name a state colour, which
-is the same contract one layer down.
+is the same contract one layer down. `scripts/check_hovers.py` holds the one-frame
+`ControlExt` hover treatments to a per-file budget (`scripts/hover_budget.json`): a new
+hover fades through `motion::hover`, and converting an old one lowers the budget
+(`--update`).
 
 A change to this file that is not also a change to those tests is a wish, not a rule.
 The micro-interaction set is the one deliberate exception: it is the gate the

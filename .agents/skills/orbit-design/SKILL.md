@@ -325,8 +325,8 @@ The `gpui-bench` skill is optional further guidance.
 
 Colour and theme work has its own commands: `cargo test -p orbit-pi --bin
 orbit-pi theme` covers the palette, contrast, surface-ramp and interaction-state
-contracts; `scripts/check_states.py`, `check_motion.py` and `check_keyboard.py`
-enforce the call-site rules that a palette cannot express. Re-run them after any
+contracts; `scripts/check_states.py`, `check_motion.py`, `check_hovers.py` and
+`check_keyboard.py` enforce the call-site rules that a palette cannot express. Re-run them after any
 role, palette or component-treatment change. A palette is not "tested" by
 opening it once: check a light palette, a dark palette, one with a non-blue
 accent, and Operational against the same screen.

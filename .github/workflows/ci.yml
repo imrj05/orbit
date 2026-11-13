@@ -115,6 +115,9 @@ jobs:
       - name: Animations use a motion primitive
         run: python3 scripts/check_motion.py
 
+      - name: One-frame hovers stay within their budget
+        run: python3 scripts/check_hovers.py
+
       - name: Every key binding lands in a declared context
         run: python3 scripts/check_keyboard.py
 
