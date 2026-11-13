@@ -4685,11 +4685,10 @@ impl OrbitApp {
                                 error = retry.error
                             )),
                     )
-                    .child(
+                    .child(crate::motion::hover(
                         button_frame(div().id("cancel-retry"), &theme, ButtonSize::Compact)
                             .text_color(theme.text_secondary)
                             .cursor_pointer()
-                            .hover_state(&theme)
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
@@ -4697,7 +4696,10 @@ impl OrbitApp {
                                 }),
                             )
                             .child(tr!("view.cancel")),
-                    )
+                        "cancel-retry",
+                        &theme,
+                        Hover::wash(&theme).with_ink(theme.text_secondary, theme.text_primary),
+                    ))
                     .into_any_element(),
             );
         }
@@ -5367,7 +5369,7 @@ impl OrbitApp {
                                 .text_color(theme.text_muted)
                                 .child(format!("{label} · {count}").to_uppercase()),
                         )
-                        .child(
+                        .child(crate::motion::hover(
                             icon_button_frame(
                                 div()
                                     .id("clear-queue")
@@ -5379,14 +5381,16 @@ impl OrbitApp {
                             .tip(tr!("view.clear_queue"))
                             .cursor_pointer()
                             .text_color(theme.text_muted)
-                            .hover_state(&theme)
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_clear_queue))
                             .child(icon(
                                 "icons/x.svg",
                                 ButtonSize::Compact.icon_size().px(&theme),
                                 theme.text_muted,
                             )),
-                        ),
+                            "clear-queue",
+                            &theme,
+                            Hover::wash(&theme).with_ink(theme.text_muted, theme.text_primary),
+                        )),
                 )
                 .children(rows)
                 .into_any_element(),
@@ -5486,7 +5490,7 @@ impl OrbitApp {
                             },
                         )),
                     )
-                    .child(
+                    .child(crate::motion::hover(
                         icon_button_frame(
                             div().id(ElementId::NamedInteger("queue-edit-cancel".into(), slot)),
                             &theme,
@@ -5497,7 +5501,6 @@ impl OrbitApp {
                         .tip(tr!("view.queue_cancel"))
                         .cursor_pointer()
                         .text_color(theme.text_muted)
-                        .hover_state(&theme)
                         .on_mouse_up(
                             MouseButton::Left,
                             cx.listener(Self::on_queue_edit_cancel_click),
@@ -5507,7 +5510,10 @@ impl OrbitApp {
                             ButtonSize::Compact.icon_size().px(&theme),
                             theme.text_muted,
                         )),
-                    )
+                        format!("queue-edit-cancel-{slot}"),
+                        &theme,
+                        Hover::wash(&theme).with_ink(theme.text_muted, theme.text_primary),
+                    ))
                     .into_any_element()
             }
             _ => div()
@@ -5535,7 +5541,7 @@ impl OrbitApp {
                             .flex()
                             .items_center()
                             .gap(px(2.))
-                            .child(
+                            .child(crate::motion::hover(
                                 icon_button_frame(
                                     div().id(ElementId::NamedInteger("queue-edit".into(), slot)),
                                     &theme,
@@ -5546,7 +5552,6 @@ impl OrbitApp {
                                 .tip(tr!("view.queue_edit"))
                                 .cursor_pointer()
                                 .text_color(theme.text_muted)
-                                .hover_state(&theme)
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, window, cx| {
@@ -5558,7 +5563,10 @@ impl OrbitApp {
                                     ButtonSize::Compact.icon_size().px(&theme),
                                     theme.text_muted,
                                 )),
-                            )
+                                format!("queue-edit-{slot}"),
+                                &theme,
+                                Hover::wash(&theme).with_ink(theme.text_muted, theme.text_primary),
+                            ))
                             .when(can_promote, |actions| {
                                 actions.child(
                                     icon_button_frame(
@@ -5716,12 +5724,11 @@ impl OrbitApp {
             );
         }
         actions = actions
-            .child(
+            .child(crate::motion::hover(
                 icon_button_frame(div().id("copy-error"), &theme, ButtonSize::Compact)
                     .tip(tr!("common.copy"))
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |_, _, _, cx| {
@@ -5733,20 +5740,25 @@ impl OrbitApp {
                         ButtonSize::Compact.icon_size().px(&theme),
                         theme.text_secondary,
                     )),
-            )
-            .child(
+                "copy-error",
+                &theme,
+                Hover::wash(&theme).with_ink(theme.text_secondary, theme.text_primary),
+            ))
+            .child(crate::motion::hover(
                 icon_button_frame(div().id("dismiss-error"), &theme, ButtonSize::Compact)
                     .tip(tr!("common.dismiss"))
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::dismiss_error))
                     .child(icon(
                         "icons/x.svg",
                         ButtonSize::Compact.icon_size().px(&theme),
                         theme.text_secondary,
                     )),
-            );
+                "dismiss-error",
+                &theme,
+                Hover::wash(&theme).with_ink(theme.text_secondary, theme.text_primary),
+            ));
         Some(
             div()
                 .w_full()
