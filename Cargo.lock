@@ -4503,6 +4503,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "windows-registry 0.5.3",
 ]
 
 [[package]]

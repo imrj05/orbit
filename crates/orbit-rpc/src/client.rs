@@ -888,43 +888,152 @@ fn version_key(version: &str) -> Vec<u64> {
 }
 
 /// Install dirs probed for `pi` when it isn't on `PATH`: the absolute
-/// [`PI_SEARCH_DIRS`], the home-relative [`HOME_SEARCH_DIRS`], and (on
-/// Windows) the npm/pnpm/bun global dirs.
+/// [`PI_SEARCH_DIRS`], the home-relative [`HOME_SEARCH_DIRS`], and the
+/// [`fallback_bin_dirs`] (on Windows, the npm/pnpm/bun global dirs and the
+/// registry PATH).
 fn search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = PI_SEARCH_DIRS.iter().map(PathBuf::from).collect();
     if let Some(home) = home_dir() {
         dirs.extend(HOME_SEARCH_DIRS.iter().map(|sub| home.join(sub)));
     }
-    #[cfg(windows)]
-    dirs.extend(windows_search_dirs());
+    dirs.extend(fallback_bin_dirs());
     dirs
 }
 
-/// npm and friends put their global launchers under `%APPDATA%` or
-/// `%LOCALAPPDATA%` on Windows, none of which appear in [`HOME_SEARCH_DIRS`].
+/// Install dirs a GUI launch may not see on its own `PATH`, beyond the
+/// Unix-style dirs every caller already probes. On Windows: the package- and
+/// version-manager dirs, then the user's *current* PATH read from the
+/// registry. A process keeps the PATH it was launched with, so a tool
+/// installed (or a PATH entry added) after Orbit started would otherwise stay
+/// invisible to the setup page's Refresh (issue #124). Empty elsewhere.
+pub fn fallback_bin_dirs() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut dirs = windows_search_dirs();
+        dirs.extend(registry_path_dirs());
+        dirs
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
 #[cfg(windows)]
 fn windows_search_dirs() -> Vec<PathBuf> {
+    windows_search_dirs_from(|name| std::env::var_os(name))
+}
+
+/// npm and friends put their global launchers under `%APPDATA%` or
+/// `%LOCALAPPDATA%` on Windows, none of which appear in [`HOME_SEARCH_DIRS`];
+/// Node.js itself lands wherever its Windows installer or package manager
+/// puts it. Takes the variable lookup so tests can fake a Windows host.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_search_dirs_from(var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let var = |name: &str| {
+        var(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
     let mut dirs = Vec::new();
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        dirs.push(PathBuf::from(appdata).join("npm"));
+    if let Some(appdata) = var("APPDATA") {
+        dirs.push(appdata.join("npm"));
     }
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        dirs.push(PathBuf::from(&local).join("pnpm"));
-        dirs.push(PathBuf::from(&local).join("Volta").join("bin"));
-        dirs.push(PathBuf::from(&local).join("Yarn").join("bin"));
-        dirs.push(PathBuf::from(&local).join("mise").join("shims"));
-        dirs.push(
-            PathBuf::from(&local)
-                .join("Programs")
-                .join("bun")
-                .join("bin"),
-        );
+    if let Some(local) = var("LOCALAPPDATA") {
+        dirs.push(local.join("pnpm"));
+        dirs.push(local.join("Volta").join("bin"));
+        dirs.push(local.join("Yarn").join("bin"));
+        dirs.push(local.join("mise").join("shims"));
+        dirs.push(local.join("Programs").join("bun").join("bin"));
     }
-    if let Some(profile) = std::env::var_os("USERPROFILE") {
-        dirs.push(PathBuf::from(&profile).join(".bun").join("bin"));
-        dirs.push(PathBuf::from(&profile).join(".volta").join("bin"));
+    if let Some(profile) = var("USERPROFILE") {
+        dirs.push(profile.join(".bun").join("bin"));
+        dirs.push(profile.join(".volta").join("bin"));
+    }
+    // Scoop puts `apps\nodejs\current` itself on the user PATH rather than
+    // shimming `node.exe`, for both user and global (`-g`) installs.
+    let scoop = var("SCOOP").or_else(|| var("USERPROFILE").map(|p| p.join("scoop")));
+    let scoop_global = var("SCOOP_GLOBAL").or_else(|| var("ProgramData").map(|p| p.join("scoop")));
+    for root in [scoop, scoop_global].into_iter().flatten() {
+        dirs.push(root.join("shims"));
+        for app in ["nodejs", "nodejs-lts"] {
+            dirs.push(root.join("apps").join(app).join("current"));
+        }
+    }
+    // Chocolatey shims every package's executables into one bin dir.
+    let choco =
+        var("ChocolateyInstall").or_else(|| var("ProgramData").map(|p| p.join("chocolatey")));
+    if let Some(choco) = choco {
+        dirs.push(choco.join("bin"));
+    }
+    // nvm-windows links the active version here; it defaults to the same
+    // `Program Files\nodejs` the official installer and winget use.
+    if let Some(symlink) = var("NVM_SYMLINK") {
+        dirs.push(symlink);
+    }
+    if let Some(program_files) = var("ProgramFiles") {
+        dirs.push(program_files.join("nodejs"));
+    }
+    // fnm on Windows keeps `node.exe` directly in each version's
+    // `installation` dir, with no `bin` beneath it.
+    let fnm = var("FNM_DIR").or_else(|| var("APPDATA").map(|p| p.join("fnm")));
+    if let Some(fnm) = fnm {
+        dirs.extend(newest_version_bin(
+            &fnm.join("node-versions"),
+            Path::new("installation"),
+        ));
     }
     dirs
+}
+
+/// The machine and user `Path` as the registry holds them *now*, system
+/// first as Windows builds a new process's PATH. `%VAR%` references are
+/// expanded against the process environment, then against the registry's own
+/// variables — one a package manager just added (Scoop's `SCOOP`) is not in
+/// a process environment that predates it.
+#[cfg(windows)]
+fn registry_path_dirs() -> Vec<PathBuf> {
+    use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
+    const SYSTEM_ENVIRONMENT: &str =
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
+    let system = LOCAL_MACHINE.open(SYSTEM_ENVIRONMENT).ok();
+    let user = CURRENT_USER.open("Environment").ok();
+    let lookup = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .or_else(|| user.as_ref()?.get_string(name).ok())
+            .or_else(|| system.as_ref()?.get_string(name).ok())
+    };
+    [system.as_ref(), user.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter_map(|key| key.get_string("Path").ok())
+        .flat_map(|raw| std::env::split_paths(&expand_env_refs(&raw, lookup)).collect::<Vec<_>>())
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .collect()
+}
+
+/// Expand `%NAME%` references the way Windows expands a `REG_EXPAND_SZ`
+/// value. An unknown name, an empty `%%` or an unpaired `%` is kept as
+/// written.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn expand_env_refs(value: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    let mut expanded = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        expanded.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            expanded.push_str(&rest[start..]);
+            return expanded;
+        };
+        let name = &after[..end];
+        match (!name.is_empty()).then(|| lookup(name)).flatten() {
+            Some(found) => expanded.push_str(&found),
+            None => expanded.push_str(&rest[start..start + end + 2]),
+        }
+        rest = &after[end + 1..];
+    }
+    expanded.push_str(rest);
+    expanded
 }
 
 /// The user's home directory (`HOME`, falling back to `USERPROFILE`).
@@ -954,6 +1063,10 @@ pub fn augmented_path(bin_dir: Option<&Path>) -> OsString {
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
+    // Last, so the PATH the app was launched with keeps precedence: a `node`
+    // added to the user PATH since then (Scoop, issue #124) still resolves.
+    #[cfg(windows)]
+    dirs.extend(registry_path_dirs());
     std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
 }
 
@@ -1052,6 +1165,95 @@ mod augmented_path_tests {
             &home.join("Library/Application Support/fnm/node-versions/v22.4.1/installation/bin")
         ));
         let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A Scoop Node.js is never shimmed: Scoop puts `apps\nodejs\current` on
+    /// the user PATH instead, which a GUI launch may not have (issue #124).
+    /// Chocolatey, the official installer and fnm each have their own dir.
+    #[test]
+    fn windows_node_installs_are_searched() {
+        let home = scratch_home();
+        let fnm = home.join("fnm/node-versions");
+        for version in ["v20.11.0", "v26.13.1"] {
+            fs::create_dir_all(fnm.join(version).join("installation")).unwrap();
+        }
+        let profile = PathBuf::from(r"C:\Users\me");
+        let program_data = PathBuf::from(r"C:\ProgramData");
+        let vars = |name: &str| -> Option<OsString> {
+            match name {
+                "USERPROFILE" => Some(profile.clone().into()),
+                "ProgramData" => Some(program_data.clone().into()),
+                "ProgramFiles" => Some(r"C:\Program Files".into()),
+                "FNM_DIR" => Some(home.join("fnm").into()),
+                // Set but empty is the same as unset.
+                "SCOOP_GLOBAL" => Some(OsString::new()),
+                _ => None,
+            }
+        };
+        let dirs = windows_search_dirs_from(vars);
+        for expected in [
+            profile
+                .join("scoop")
+                .join("apps")
+                .join("nodejs")
+                .join("current"),
+            profile
+                .join("scoop")
+                .join("apps")
+                .join("nodejs-lts")
+                .join("current"),
+            profile.join("scoop").join("shims"),
+            program_data
+                .join("scoop")
+                .join("apps")
+                .join("nodejs")
+                .join("current"),
+            program_data.join("chocolatey").join("bin"),
+            PathBuf::from(r"C:\Program Files").join("nodejs"),
+            fnm.join("v26.13.1").join("installation"),
+        ] {
+            assert!(dirs.contains(&expected), "{expected:?} missing: {dirs:?}");
+        }
+        assert!(!dirs.contains(&fnm.join("v20.11.0").join("installation")));
+
+        // An explicit `SCOOP` root replaces the default under the profile.
+        let custom =
+            |name: &str| -> Option<OsString> { (name == "SCOOP").then(|| r"D:\scoop".into()) };
+        let dirs = windows_search_dirs_from(custom);
+        assert!(dirs.contains(
+            &PathBuf::from(r"D:\scoop")
+                .join("apps")
+                .join("nodejs")
+                .join("current")
+        ));
+        assert!(
+            !dirs.iter().any(|dir| dir.starts_with(&profile)),
+            "{dirs:?}"
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Registry PATH entries are `REG_EXPAND_SZ`: `%SCOOP%` and friends have
+    /// to be expanded before a dir can be probed, and anything unresolvable
+    /// is kept verbatim rather than silently mangled.
+    #[test]
+    fn env_refs_expand_like_windows() {
+        let lookup = |name: &str| match name {
+            "SCOOP" => Some(r"C:\Users\me\scoop".to_string()),
+            "SystemRoot" => Some(r"C:\Windows".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            expand_env_refs(r"%SCOOP%\apps\nodejs\current;%SystemRoot%\system32", lookup),
+            r"C:\Users\me\scoop\apps\nodejs\current;C:\Windows\system32"
+        );
+        assert_eq!(
+            expand_env_refs(r"%MISSING%\bin;%SCOOP%\shims", lookup),
+            r"%MISSING%\bin;C:\Users\me\scoop\shims"
+        );
+        assert_eq!(expand_env_refs("100%", lookup), "100%");
+        assert_eq!(expand_env_refs("a%%b", lookup), "a%%b");
+        assert_eq!(expand_env_refs(r"C:\plain", lookup), r"C:\plain");
     }
 
     /// Only real dirs go on a child's PATH, and a home with no version
