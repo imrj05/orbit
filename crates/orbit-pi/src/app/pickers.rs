@@ -684,6 +684,10 @@ impl OrbitApp {
             CommandId::OpenSettings => {
                 self.on_open_settings(&crate::OpenSettings, window, cx);
             }
+            CommandId::OpenAbout => {
+                self.command_palette = None;
+                self.on_open_about(&crate::OpenAbout, window, cx);
+            }
             CommandId::ManageSubagents => {
                 self.command_palette = None;
                 self.settings_open = true;
