@@ -94,6 +94,8 @@ pub enum CommandId {
     OpenSettings,
     OpenShortcutHelp,
     CheckForUpdates,
+    /// Settings → About, palette-only (the app menu carries it too).
+    OpenAbout,
     Quit,
     /// Settings → Subagents, palette-only.
     ManageSubagents,
@@ -827,6 +829,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         )),
         shortcuts::CHECK_UPDATES,
     ),
+    command(
+        CommandId::OpenAbout,
+        Application,
+        "icons/info.svg",
+        "settings.about",
+        "about version release notes license credits",
+    ),
     with_chord(
         help_only(command(
             CommandId::Quit,
@@ -1288,6 +1297,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         | CommandId::AddMcpServer
         | CommandId::RefreshMcpServers
         | CommandId::ReconnectMcpServers
+        | CommandId::OpenAbout
         | CommandId::ManageSubagents => return None,
     })
 }

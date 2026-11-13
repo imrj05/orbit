@@ -3,6 +3,7 @@ use super::sidebar::*;
 use super::*;
 
 use crate::commands::{self, CommandId};
+use crate::motion::Hover;
 use gpui::StyledText;
 
 use crate::theme::tokens::{
@@ -149,13 +150,12 @@ fn header_menu_row(
     theme: Theme,
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    press(
+    let row = press(
         picker_entry(div().id(id).group(BUTTON_GROUP), &theme)
             .h(picker::entry_height(&theme))
             .flex_none()
             .cursor_pointer()
-            .text_color(theme.text_secondary)
-            .hover_state(&theme),
+            .text_color(theme.text_secondary),
     )
     .on_mouse_up(MouseButton::Left, listener)
     .child(icon(
@@ -177,8 +177,8 @@ fn header_menu_row(
             context_menu::ICON.px(&theme),
             theme.accent_text,
         ))
-    })
-    .into_any_element()
+    });
+    crate::motion::hover(row, id, &theme, Hover::row(&theme))
 }
 
 /// The Access and Workflow mode picker popups share one width.
@@ -582,7 +582,9 @@ impl Render for OrbitApp {
         if let Some(dialog) = &dialog_layer {
             if self.dialog_focus_pending {
                 self.dialog_focus_pending = false;
-                window.focus(&dialog.read(cx).focus_handle(cx));
+                let focus = dialog.read(cx).focus_handle(cx);
+                self.dialog_return_focus.capture(&focus, window, cx);
+                window.focus(&focus);
             }
         }
         // A custom-UI surface owns the keyboard while it is open; the newest
@@ -598,11 +600,34 @@ impl Render for OrbitApp {
         // The inline approval bar owns the keyboard the same way.
         if self.approval_focus_pending {
             self.approval_focus_pending = false;
+            self.approval_return_focus
+                .capture(&self.approval_focus, window, cx);
             window.focus(&self.approval_focus);
+        }
+        // The rename/move field takes the keyboard when its dialog opens, and
+        // hands it back on the first frame after the dialog is gone. Closing
+        // runs through many paths (buttons, scrim, Escape, a finished move),
+        // and this is the one place that sees all of them.
+        if self.worktree_field_focus_pending {
+            self.worktree_field_focus_pending = false;
+            if matches!(
+                self.worktree_dialog,
+                Some(WorktreeDialog::Rename { .. } | WorktreeDialog::Move { .. })
+            ) {
+                let field = self.worktree_field_input.read(cx).focus_handle(cx);
+                self.worktree_return_focus.capture(&field, window, cx);
+                window.focus(&field);
+            }
+        } else if self.worktree_dialog.is_none() {
+            if let Some(opener) = self.worktree_return_focus.take() {
+                self.return_focus(Some(opener), window, cx);
+            }
         }
         // The update modal owns the keyboard (Escape dismisses) once open.
         if self.updater_dialog_focus_pending {
             self.updater_dialog_focus_pending = false;
+            self.updater_return_focus
+                .capture(&self.updater_dialog_focus, window, cx);
             window.focus(&self.updater_dialog_focus);
         }
         // The inline ask panel owns the keyboard while it is open.
@@ -2022,11 +2047,10 @@ impl OrbitApp {
             .flex_col()
             .items_start()
             .children(self.access_popup(cx))
-            .child(
+            .child(crate::motion::hover(
                 button_frame(div().id("access-chip"), &theme, ButtonSize::Default)
                     .debug_selector(|| "access-chip".to_string())
                     .cursor_pointer()
-                    .hover_state(&theme)
                     .when(self.access_menu_open, |chip| {
                         chip.bg(theme.surface_active).text_color(theme.text_primary)
                     })
@@ -2060,7 +2084,13 @@ impl OrbitApp {
                             cx,
                         ))
                     }),
-            )
+                "access-chip",
+                &theme,
+                Hover::over(
+                    self.access_menu_open.then_some(theme.surface_active),
+                    theme.hover_wash(),
+                ),
+            ))
     }
 
     /// The shared picker caret. `chevron-down` at rest, so the chip reads as a
@@ -2234,11 +2264,10 @@ impl OrbitApp {
             .flex_col()
             .items_start()
             .children(self.workflow_popup(cx))
-            .child(
+            .child(crate::motion::hover(
                 button_frame(div().id("workflow-chip"), &theme, ButtonSize::Default)
                     .debug_selector(|| "workflow-chip".to_string())
                     .cursor_pointer()
-                    .hover_state(&theme)
                     .when(self.workflow_menu_open, |chip| {
                         chip.bg(theme.surface_active).text_color(theme.text_primary)
                     })
@@ -2275,7 +2304,13 @@ impl OrbitApp {
                         "workflow-caret-turn",
                         cx,
                     )),
-            )
+                "workflow-chip",
+                &theme,
+                Hover::over(
+                    self.workflow_menu_open.then_some(theme.surface_active),
+                    theme.hover_wash(),
+                ),
+            ))
     }
 
     /// The workflow-mode picker popup, while open. Same construction as the
@@ -2459,12 +2494,11 @@ impl OrbitApp {
             .flex_col()
             .items_start()
             .children(self.add_menu_popup(cx))
-            .child(
+            .child(crate::motion::hover(
                 icon_button_frame(div().id("attach-chip"), &theme, ButtonSize::Default)
                     .tip(tr!("composer.add"))
                     .group(BUTTON_GROUP)
                     .cursor_pointer()
-                    .hover_state(&theme)
                     .pressed_state(&theme, PressedRamp::Wash)
                     .when(self.add_menu_open, |b| {
                         b.bg(theme.surface_active).text_color(theme.text_primary)
@@ -2475,7 +2509,13 @@ impl OrbitApp {
                         theme.text_muted,
                     ))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_add_trigger_click)),
-            )
+                "attach-chip",
+                &theme,
+                Hover::over(
+                    self.add_menu_open.then_some(theme.surface_active),
+                    theme.hover_wash(),
+                ),
+            ))
     }
 
     /// The add menu popup, while open. Real actions only: attach an image,
@@ -2613,62 +2653,67 @@ impl OrbitApp {
         // A run in flight dims the chip and swallows clicks until it settles.
         let disabled = self.is_running();
         let open = !disabled && self.picker_is_open(PickerKind::Model);
+        let chip = button_frame(div().id("model-chip"), &theme, ButtonSize::Medium)
+            .debug_selector(|| "model-chip".to_string())
+            .min_w_0()
+            .max_w_full()
+            .tip(self.model_label.clone())
+            .when(!disabled, |chip| {
+                chip.cursor_pointer()
+                    .when(open, |chip| chip.bg(theme.surface_active))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_model_trigger_click))
+            })
+            .when(disabled, |chip| chip.disabled_state(&theme))
+            .child(icon_dyn(
+                provider_icon(&self.model_provider),
+                ButtonSize::Medium.icon_size().px(&theme),
+                provider_mark_color(
+                    &self.model_provider,
+                    &theme,
+                    if disabled {
+                        theme.text_disabled
+                    } else {
+                        theme.text_muted
+                    },
+                ),
+            ))
+            .child(
+                div()
+                    .min_w_0()
+                    .max_w(px(if compact { 120. } else { 220. }))
+                    .truncate()
+                    .text_color(if disabled {
+                        theme.text_disabled
+                    } else if open {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    })
+                    .child(self.model_label.clone()),
+            )
+            .child(Self::chip_caret(
+                open,
+                theme.text_primary,
+                "model-caret-turn",
+                cx,
+            ));
+        let chip = if disabled {
+            chip.into_any_element()
+        } else {
+            crate::motion::hover(
+                chip,
+                "model-chip",
+                &theme,
+                Hover::over(open.then_some(theme.surface_active), theme.hover_wash()),
+            )
+        };
         div()
             .min_w_0()
             .flex()
             .flex_col()
             .items_start()
             .children(self.chip_popup(PickerKind::Model, &theme))
-            .child(
-                button_frame(div().id("model-chip"), &theme, ButtonSize::Medium)
-                    .debug_selector(|| "model-chip".to_string())
-                    .min_w_0()
-                    .max_w_full()
-                    .tip(self.model_label.clone())
-                    .when(!disabled, |chip| {
-                        chip.cursor_pointer()
-                            .hover_state(&theme)
-                            .when(open, |chip| chip.bg(theme.surface_active))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(Self::on_model_trigger_click),
-                            )
-                    })
-                    .when(disabled, |chip| chip.disabled_state(&theme))
-                    .child(icon_dyn(
-                        provider_icon(&self.model_provider),
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        provider_mark_color(
-                            &self.model_provider,
-                            &theme,
-                            if disabled {
-                                theme.text_disabled
-                            } else {
-                                theme.text_muted
-                            },
-                        ),
-                    ))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .max_w(px(if compact { 120. } else { 220. }))
-                            .truncate()
-                            .text_color(if disabled {
-                                theme.text_disabled
-                            } else if open {
-                                theme.text_primary
-                            } else {
-                                theme.text_secondary
-                            })
-                            .child(self.model_label.clone()),
-                    )
-                    .child(Self::chip_caret(
-                        open,
-                        theme.text_primary,
-                        "model-caret-turn",
-                        cx,
-                    )),
-            )
+            .child(chip)
     }
 
     /// The thinking-level chip: level icon + reasoning level + caret. Ghost
@@ -2687,55 +2732,63 @@ impl OrbitApp {
         // A run in flight dims the chip and swallows clicks until it settles.
         let disabled = self.is_running();
         let open = !disabled && self.picker_is_open(PickerKind::Thinking);
+        let chip = button_frame(div().id("thinking-chip"), &theme, ButtonSize::Medium)
+            .debug_selector(|| "thinking-chip".to_string())
+            .when(!disabled, |chip| {
+                chip.cursor_pointer()
+                    .when(open, |chip| chip.bg(theme.surface_active))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(Self::on_thinking_trigger_click),
+                    )
+            })
+            .when(disabled, |chip| chip.disabled_state(&theme))
+            .child({
+                let (path, _) = thinking_icon(&self.thinking_label, &theme);
+                icon(
+                    path,
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    if disabled {
+                        theme.text_disabled
+                    } else {
+                        theme.text_muted
+                    },
+                )
+            })
+            .child(
+                div()
+                    .text_color(if disabled {
+                        theme.text_disabled
+                    } else if open {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    })
+                    .child(thinking_display(&self.thinking_label)),
+            )
+            .child(Self::chip_caret(
+                open,
+                theme.text_primary,
+                "thinking-caret-turn",
+                cx,
+            ));
+        let chip = if disabled {
+            chip.into_any_element()
+        } else {
+            crate::motion::hover(
+                chip,
+                "thinking-chip",
+                &theme,
+                Hover::over(open.then_some(theme.surface_active), theme.hover_wash()),
+            )
+        };
         Some(
             div()
                 .flex()
                 .flex_col()
                 .items_start()
                 .children(self.chip_popup(PickerKind::Thinking, &theme))
-                .child(
-                    button_frame(div().id("thinking-chip"), &theme, ButtonSize::Medium)
-                        .debug_selector(|| "thinking-chip".to_string())
-                        .when(!disabled, |chip| {
-                            chip.cursor_pointer()
-                                .hover_state(&theme)
-                                .when(open, |chip| chip.bg(theme.surface_active))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(Self::on_thinking_trigger_click),
-                                )
-                        })
-                        .when(disabled, |chip| chip.disabled_state(&theme))
-                        .child({
-                            let (path, _) = thinking_icon(&self.thinking_label, &theme);
-                            icon(
-                                path,
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                if disabled {
-                                    theme.text_disabled
-                                } else {
-                                    theme.text_muted
-                                },
-                            )
-                        })
-                        .child(
-                            div()
-                                .text_color(if disabled {
-                                    theme.text_disabled
-                                } else if open {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_secondary
-                                })
-                                .child(thinking_display(&self.thinking_label)),
-                        )
-                        .child(Self::chip_caret(
-                            open,
-                            theme.text_primary,
-                            "thinking-caret-turn",
-                            cx,
-                        )),
-                )
+                .child(chip)
                 .into_any_element(),
         )
     }
@@ -3824,8 +3877,8 @@ impl OrbitApp {
                 })
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_sidebar)),
             )
-            .child(
-                div()
+            .child({
+                let button = div()
                     .id("history-back")
                     .block_mouse_except_scroll()
                     .size(px(HEADER_CTRL_H))
@@ -3835,7 +3888,6 @@ impl OrbitApp {
                     .justify_center()
                     .when(back_enabled, |b| {
                         b.cursor_pointer()
-                            .hover_state(&theme)
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_history_back))
                     })
                     .tooltip({
@@ -3850,10 +3902,15 @@ impl OrbitApp {
                         } else {
                             theme.text_muted
                         },
-                    )),
-            )
-            .child(
-                div()
+                    ));
+                if back_enabled {
+                    crate::motion::hover(button, "history-back", &theme, Hover::wash(&theme))
+                } else {
+                    button.into_any_element()
+                }
+            })
+            .child({
+                let button = div()
                     .id("history-forward")
                     .block_mouse_except_scroll()
                     .size(px(HEADER_CTRL_H))
@@ -3863,7 +3920,6 @@ impl OrbitApp {
                     .justify_center()
                     .when(forward_enabled, |b| {
                         b.cursor_pointer()
-                            .hover_state(&theme)
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_history_forward))
                     })
                     .tooltip({
@@ -3878,8 +3934,13 @@ impl OrbitApp {
                         } else {
                             theme.text_muted
                         },
-                    )),
-            )
+                    ));
+                if forward_enabled {
+                    crate::motion::hover(button, "history-forward", &theme, Hover::wash(&theme))
+                } else {
+                    button.into_any_element()
+                }
+            })
     }
 
     /// The right dock's top-bar affordance: the working tree's `+N −N` change
@@ -4624,11 +4685,10 @@ impl OrbitApp {
                                 error = retry.error
                             )),
                     )
-                    .child(
+                    .child(crate::motion::hover(
                         button_frame(div().id("cancel-retry"), &theme, ButtonSize::Compact)
                             .text_color(theme.text_secondary)
                             .cursor_pointer()
-                            .hover_state(&theme)
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
@@ -4636,7 +4696,10 @@ impl OrbitApp {
                                 }),
                             )
                             .child(tr!("view.cancel")),
-                    )
+                        "cancel-retry",
+                        &theme,
+                        Hover::wash(&theme).with_ink(theme.text_secondary, theme.text_primary),
+                    ))
                     .into_any_element(),
             );
         }
@@ -5306,7 +5369,7 @@ impl OrbitApp {
                                 .text_color(theme.text_muted)
                                 .child(format!("{label} · {count}").to_uppercase()),
                         )
-                        .child(
+                        .child(crate::motion::hover(
                             icon_button_frame(
                                 div()
                                     .id("clear-queue")
@@ -5318,14 +5381,16 @@ impl OrbitApp {
                             .tip(tr!("view.clear_queue"))
                             .cursor_pointer()
                             .text_color(theme.text_muted)
-                            .hover_state(&theme)
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_clear_queue))
                             .child(icon(
                                 "icons/x.svg",
                                 ButtonSize::Compact.icon_size().px(&theme),
                                 theme.text_muted,
                             )),
-                        ),
+                            "clear-queue",
+                            &theme,
+                            Hover::wash(&theme).with_ink(theme.text_muted, theme.text_primary),
+                        )),
                 )
                 .children(rows)
                 .into_any_element(),
@@ -5425,7 +5490,7 @@ impl OrbitApp {
                             },
                         )),
                     )
-                    .child(
+                    .child(crate::motion::hover(
                         icon_button_frame(
                             div().id(ElementId::NamedInteger("queue-edit-cancel".into(), slot)),
                             &theme,
@@ -5436,7 +5501,6 @@ impl OrbitApp {
                         .tip(tr!("view.queue_cancel"))
                         .cursor_pointer()
                         .text_color(theme.text_muted)
-                        .hover_state(&theme)
                         .on_mouse_up(
                             MouseButton::Left,
                             cx.listener(Self::on_queue_edit_cancel_click),
@@ -5446,7 +5510,10 @@ impl OrbitApp {
                             ButtonSize::Compact.icon_size().px(&theme),
                             theme.text_muted,
                         )),
-                    )
+                        format!("queue-edit-cancel-{slot}"),
+                        &theme,
+                        Hover::wash(&theme).with_ink(theme.text_muted, theme.text_primary),
+                    ))
                     .into_any_element()
             }
             _ => div()
@@ -5474,7 +5541,7 @@ impl OrbitApp {
                             .flex()
                             .items_center()
                             .gap(px(2.))
-                            .child(
+                            .child(crate::motion::hover(
                                 icon_button_frame(
                                     div().id(ElementId::NamedInteger("queue-edit".into(), slot)),
                                     &theme,
@@ -5485,7 +5552,6 @@ impl OrbitApp {
                                 .tip(tr!("view.queue_edit"))
                                 .cursor_pointer()
                                 .text_color(theme.text_muted)
-                                .hover_state(&theme)
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, window, cx| {
@@ -5497,7 +5563,10 @@ impl OrbitApp {
                                     ButtonSize::Compact.icon_size().px(&theme),
                                     theme.text_muted,
                                 )),
-                            )
+                                format!("queue-edit-{slot}"),
+                                &theme,
+                                Hover::wash(&theme).with_ink(theme.text_muted, theme.text_primary),
+                            ))
                             .when(can_promote, |actions| {
                                 actions.child(
                                     icon_button_frame(
@@ -5655,12 +5724,11 @@ impl OrbitApp {
             );
         }
         actions = actions
-            .child(
+            .child(crate::motion::hover(
                 icon_button_frame(div().id("copy-error"), &theme, ButtonSize::Compact)
                     .tip(tr!("common.copy"))
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |_, _, _, cx| {
@@ -5672,20 +5740,25 @@ impl OrbitApp {
                         ButtonSize::Compact.icon_size().px(&theme),
                         theme.text_secondary,
                     )),
-            )
-            .child(
+                "copy-error",
+                &theme,
+                Hover::wash(&theme).with_ink(theme.text_secondary, theme.text_primary),
+            ))
+            .child(crate::motion::hover(
                 icon_button_frame(div().id("dismiss-error"), &theme, ButtonSize::Compact)
                     .tip(tr!("common.dismiss"))
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::dismiss_error))
                     .child(icon(
                         "icons/x.svg",
                         ButtonSize::Compact.icon_size().px(&theme),
                         theme.text_secondary,
                     )),
-            );
+                "dismiss-error",
+                &theme,
+                Hover::wash(&theme).with_ink(theme.text_secondary, theme.text_primary),
+            ));
         Some(
             div()
                 .w_full()

@@ -35,8 +35,18 @@ const MAX_SAMPLES: usize = 20_000;
 /// startup as interaction cost.
 const WARMUP: Duration = Duration::from_secs(1);
 
-/// One frame at 60 Hz. A longer interval is a frame the app missed.
-const BUDGET_60HZ_MS: f32 = 16.7;
+/// An interval longer than this is a frame the app missed.
+///
+/// Not the 16.7 ms budget itself: frames paced by vsync land with jitter, so a
+/// smooth 60 Hz stream alternates ~15.7 and ~17.6 ms intervals and half of it
+/// would read as slow. One missed vsync is ~33 ms; 25 ms sits halfway, so only
+/// a frame that actually skipped a refresh is counted.
+const MISSED_FRAME_MS: f32 = 25.0;
+
+/// Whether one frame interval is a missed frame rather than vsync jitter.
+fn is_missed_frame(ms: f32) -> bool {
+    ms > MISSED_FRAME_MS
+}
 
 /// One running capture.
 struct Capture {
@@ -70,7 +80,7 @@ pub struct Summary {
     pub p95_ms: f64,
     pub p99_ms: f64,
     pub max_ms: f64,
-    /// Frames over the 60 Hz budget.
+    /// Frames that missed a vsync (see [`MISSED_FRAME_MS`]).
     pub slow_frames: usize,
     /// Median distance, in frames, between two slow frames. Periodic slow
     /// frames (a heartbeat landing on a frame) show a small, stable number;
@@ -279,7 +289,7 @@ pub fn tick(now: Instant) -> bool {
                 let gap = now.duration_since(previous);
                 if gap <= IDLE_GAP && previous >= capture.warmup_until {
                     let ms = gap.as_secs_f32() * 1000.;
-                    if ms > BUDGET_60HZ_MS {
+                    if is_missed_frame(ms) {
                         capture.slow.push(capture.samples.len());
                     }
                     capture.samples.push(ms);
@@ -558,6 +568,17 @@ mod tests {
         // Idle again: nothing to do.
         auto_capture(false);
         assert!(!is_active());
+    }
+
+    /// Vsync jitter around the budget is a smooth stream, not a slow one; a
+    /// skipped refresh is.
+    #[test]
+    fn only_a_skipped_refresh_is_a_slow_frame() {
+        assert!(!is_missed_frame(15.7));
+        assert!(!is_missed_frame(17.6));
+        assert!(!is_missed_frame(22.7));
+        assert!(is_missed_frame(33.3));
+        assert!(is_missed_frame(50.0));
     }
 
     /// A periodic tail and a scattered tail look the same in the percentiles and

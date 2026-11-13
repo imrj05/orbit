@@ -527,7 +527,7 @@ impl OrbitApp {
         // One switch per skill: the id keys the transition, so two rows sharing
         // one id would share a knob.
         let id = format!("skill-toggle-{}", skill.file.display());
-        switch(id, skill.enabled, &theme, move |_, _, cx| {
+        switch(id, skill.enabled, &theme, move |_, cx| {
             this.update(cx, |app, cx| {
                 app.apply_skill_action(SkillAction::Toggle, cx)
             });

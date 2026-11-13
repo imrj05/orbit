@@ -102,7 +102,7 @@ def main(argv: list[str]) -> int:
     print()
     print("Frame budget: 8.33ms at 120Hz, 16.67ms at 60Hz.")
     print(
-        "slow = frames over 16.7ms · gap = median frames between two slow frames.\n"
+        "slow = frames over 25ms (a missed vsync) · gap = median frames between two slow frames.\n"
         "A small, stable gap means the tail is periodic (a heartbeat landing on a\n"
         "frame); a large or noisy one means it is scattered (allocation, stalls)."
     )

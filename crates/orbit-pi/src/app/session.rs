@@ -835,6 +835,17 @@ impl OrbitApp {
             self.rename_session(cx);
             return;
         }
+        // Enter in the worktree rename/move field is the dialog's primary
+        // button.
+        if self
+            .worktree_field_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            self.confirm_worktree_dialog(cx);
+            return;
+        }
         // Shared Composer fields must never submit the main chat draft.
         self.submit_composer_as(theme::get(cx).ui.composer_send_mode, window, cx);
     }
@@ -3176,10 +3187,15 @@ impl OrbitApp {
 
     /// Switch the Git page's tab (⌘1–⌘6). A no-op unless the page is open, so
     /// the shortcuts never surprise a chat session.
-    pub(super) fn on_git_tab(&mut self, index: usize, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_git_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.git_open {
             self.git_panel
                 .update(cx, |panel, cx| panel.set_tab(index, cx));
+            // A tab with a keyboard list takes focus, so ↑/↓ and Enter work
+            // straight after the shortcut.
+            if let Some(list) = self.git_panel.read(cx).list_focus_handle() {
+                window.focus(&list);
+            }
         }
     }
 

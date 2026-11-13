@@ -20,6 +20,7 @@ use gpui::{AnyElement, MouseDownEvent, MouseUpEvent};
 
 use super::helpers::*;
 use super::*;
+use crate::motion::Hover;
 use crate::theme::tokens::{
     context_menu, input, list_item, modal, panel, picker, popover, ButtonSize, DynamicSpacing,
     IconSize, Radius, RaisedExt, TextSize,
@@ -277,8 +278,16 @@ impl OrbitApp {
         self.clone_url_input.update(cx, |input, cx| input.clear(cx));
         self.clone_name_input
             .update(cx, |input, cx| input.clear(cx));
-        self.clone_url_input.read(cx).focus(window);
+        let url_focus = self.clone_url_input.read(cx).focus_handle(cx);
+        self.clone_return_focus.capture(&url_focus, window, cx);
+        window.focus(&url_focus);
         cx.notify();
+    }
+
+    /// A cancelled clone hands focus back to whatever opened the dialog.
+    fn restore_clone_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let opener = self.clone_return_focus.take();
+        self.return_focus(opener, window, cx);
     }
 
     fn clone_focus_step(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -336,7 +345,7 @@ impl OrbitApp {
     ) {
         if self.clone_cancel_focus.is_focused(window) {
             self.cancel_worktree_dialog(cx);
-            self.input.read(cx).focus(window);
+            self.restore_clone_focus(window, cx);
         } else if self.clone_browse_focus.is_focused(window) && self.clone_operation.is_none() {
             self.browse_clone_parent(window, cx);
         } else if self.clone_operation.is_none() {
@@ -610,7 +619,7 @@ impl OrbitApp {
         let clone = matches!(self.worktree_dialog, Some(WorktreeDialog::Clone));
         self.cancel_worktree_dialog(cx);
         if clone {
-            self.input.read(cx).focus(window);
+            self.restore_clone_focus(window, cx);
         }
     }
 
@@ -1092,6 +1101,7 @@ impl OrbitApp {
         self.worktree_dialog = Some(WorktreeDialog::Rename { path });
         self.worktree_dialog_error = None;
         self.worktree_menu = None;
+        self.worktree_field_focus_pending = true;
         cx.notify();
     }
 
@@ -1108,6 +1118,7 @@ impl OrbitApp {
         self.worktree_dialog = Some(WorktreeDialog::Move { path });
         self.worktree_dialog_error = None;
         self.worktree_menu = None;
+        self.worktree_field_focus_pending = true;
         cx.notify();
     }
 
@@ -2124,10 +2135,9 @@ impl OrbitApp {
             .filter(|menu| worktree::same_path(&menu.path, &worktree.path))
             .cloned();
 
-        div()
-            .id(ElementId::Name(
-                format!("worktree-row-{}", path.to_string_lossy()).into(),
-            ))
+        let row_name = format!("worktree-row-{}", path.to_string_lossy());
+        let row = div()
+            .id(ElementId::Name(row_name.clone().into()))
             .group("worktree-row")
             .relative()
             .w_full()
@@ -2138,7 +2148,6 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base12.px(&theme))
             .cursor_pointer()
             .when(active, |row| row.bg(theme.surface_selected))
-            .hover_state(&theme)
             .on_mouse_down(MouseButton::Right, {
                 let this = this.clone();
                 let path = path.clone();
@@ -2252,8 +2261,13 @@ impl OrbitApp {
                     theme.text_muted,
                 ))
                 .children(row_menu.map(|menu| worktree_row_menu(&menu, worktree, theme, menu_this)))
-            })
-            .into_any_element()
+            });
+        crate::motion::hover(
+            row,
+            row_name,
+            &theme,
+            Hover::over(active.then_some(theme.surface_selected), theme.hover_wash()),
+        )
     }
 
     /// The Worktrees dialog layer (create / permission / rename / move /
@@ -2390,7 +2404,7 @@ impl OrbitApp {
                     this.clone(),
                     |app, window, cx| {
                         app.cancel_worktree_dialog(cx);
-                        app.input.read(cx).focus(window);
+                        app.restore_clone_focus(window, cx);
                     },
                 ));
         } else {
@@ -2466,7 +2480,7 @@ impl OrbitApp {
                             this.clone(),
                             |app, window, cx| {
                                 app.cancel_worktree_dialog(cx);
-                                app.input.read(cx).focus(window);
+                                app.restore_clone_focus(window, cx);
                             },
                         ))
                         .child(clone_dialog_button(
@@ -4713,18 +4727,23 @@ fn worktree_text_button<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
+    let button = button_frame(div().id(id), &theme, ButtonSize::Medium)
         .border_1()
         .border_color(theme.border)
         .raised(theme.surface_elevated, &theme)
         .cursor_pointer()
-        .hover_state(&theme)
         .text_color(theme.text_secondary)
         .child(label)
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
-        })
-        .into_any_element()
+        });
+    crate::motion::hover(
+        button,
+        id,
+        &theme,
+        Hover::fill(theme.surface_elevated, theme.surface_hover)
+            .with_ink(theme.text_secondary, theme.text_primary),
+    )
 }
 
 /// A quiet icon button (page refresh).
@@ -4738,12 +4757,11 @@ fn worktree_icon_button<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
+    let button = button_frame(div().id(id), &theme, ButtonSize::Medium)
         .border_1()
         .border_color(theme.border)
         .raised(theme.surface_elevated, &theme)
         .cursor_pointer()
-        .hover_state(&theme)
         .tip(tr!("common.refresh"))
         .child(icon(
             icon_path,
@@ -4752,8 +4770,13 @@ where
         ))
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
-        })
-        .into_any_element()
+        });
+    crate::motion::hover(
+        button,
+        id,
+        &theme,
+        Hover::fill(theme.surface_elevated, theme.surface_hover),
+    )
 }
 
 /// The dialog's primary action.
@@ -4794,11 +4817,10 @@ fn worktree_menu_row<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    picker_entry(div().id(id), &theme)
+    let row = picker_entry(div().id(id), &theme)
         .h(picker::entry_height(&theme))
         .flex_none()
         .cursor_pointer()
-        .hover_state(&theme)
         .child(icon(
             icon_path,
             context_menu::ICON.px(&theme),
@@ -4815,8 +4837,8 @@ where
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             cx.stop_propagation();
             this.update(cx, |app, cx| action(app, cx));
-        })
-        .into_any_element()
+        });
+    crate::motion::hover(row, id, &theme, Hover::wash(&theme))
 }
 
 /// A mode chip in the create dialog (New branch / Existing branch).

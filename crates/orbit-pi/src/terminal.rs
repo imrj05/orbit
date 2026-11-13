@@ -57,8 +57,8 @@ use crate::app::{
     button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, ControlExt,
     PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
-use crate::theme::tokens::RaisedExt;
-use crate::theme::tokens::{button, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{button, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{RaisedExt, StyledExt};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
@@ -2105,11 +2105,9 @@ impl TerminalPanel {
                         .gap(DynamicSpacing::Base08.px(&theme))
                         .px(DynamicSpacing::Base16.px(&theme))
                         .py(DynamicSpacing::Base12.px(&theme))
-                        .rounded(panel::RADIUS.px(&theme))
-                        .bg(theme.surface_elevated)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow(theme.composer_shadow())
+                        // A notice floating over the dead session: the shared
+                        // elevated layer, not the composer's contact shadow.
+                        .elevation_2(&theme)
                         .child(
                             div()
                                 .text_size(TextSize::Small.px(&theme))

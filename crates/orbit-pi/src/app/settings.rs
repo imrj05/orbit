@@ -746,7 +746,6 @@ impl OrbitApp {
                                             row.font_weight(FontWeight::MEDIUM)
                                                 .bg(theme.surface_hover)
                                         })
-                                        .when(!selected, |row| row.hover_state(&theme))
                                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                                             this.update(cx, |app, cx| {
                                                 app.set_settings_section(section, cx);
@@ -773,6 +772,18 @@ impl OrbitApp {
                                                 })
                                                 .child(label.to_string()),
                                         );
+                                    // The open section holds its wash; the
+                                    // others fade it in under the pointer.
+                                    let row = if selected {
+                                        row.into_any_element()
+                                    } else {
+                                        crate::motion::hover(
+                                            row,
+                                            format!("settings-nav-{label_key}"),
+                                            &theme,
+                                            Hover::wash(&theme),
+                                        )
+                                    };
                                     if group_start {
                                         div()
                                             .flex_none()
@@ -6011,7 +6022,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        switch(id, on, &theme, move |_, _, cx| {
+        switch(id, on, &theme, move |_, cx| {
             this.update(cx, action);
         })
     }

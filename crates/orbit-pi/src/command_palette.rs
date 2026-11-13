@@ -132,6 +132,9 @@ pub struct PaletteMcpServer {
 /// open time. The palette never reaches back into app state — render reads
 /// only this in-memory snapshot (render-purity rule).
 pub struct PaletteSnapshot {
+    /// Commands most recently run from the palette, newest first. They lead
+    /// the Commands section of an empty query.
+    pub recent_commands: Vec<CommandId>,
     pub sessions: Vec<SessionInfo>,
     /// The open session's path, so its row can be emphasized.
     pub active_path: Option<PathBuf>,
@@ -203,7 +206,8 @@ struct PaletteItem {
     keywords: &'static str,
     /// Declaration order — the stable tie-break for commands/settings.
     order: usize,
-    /// Last-activity seconds (sessions only; 0 for commands).
+    /// Sessions: last-activity seconds. Commands: how recently the palette
+    /// ran it (higher is newer), 0 for one it has not run.
     recency: u64,
 }
 
@@ -222,7 +226,12 @@ impl PaletteItem {
             haystack: label.to_lowercase(),
             keywords: spec.keywords,
             order,
-            recency: 0,
+            // Newest first in the list, so the first entry ranks highest.
+            recency: snapshot
+                .recent_commands
+                .iter()
+                .position(|id| *id == spec.id)
+                .map_or(0, |pos| (snapshot.recent_commands.len() - pos) as u64),
         }
     }
 
@@ -660,7 +669,16 @@ impl CommandPalette {
         let query = query.trim();
         if query.is_empty() {
             let mut rows: Vec<usize> = sessions.take(EMPTY_SESSION_ROWS).collect();
-            rows.extend(commands);
+            // Recently run commands lead their section, newest first; the rest
+            // keep registry order. Only command rows carry a command recency,
+            // so the section stays contiguous.
+            let mut recent: Vec<usize> = commands
+                .clone()
+                .filter(|&ix| self.items[ix].recency > 0)
+                .collect();
+            recent.sort_by(|a, b| self.items[*b].recency.cmp(&self.items[*a].recency));
+            rows.extend(recent);
+            rows.extend(commands.filter(|&ix| self.items[ix].recency == 0));
             return rows;
         }
         let query: Vec<char> = query.to_lowercase().chars().collect();
@@ -1258,6 +1276,7 @@ mod tests {
     /// A snapshot holding nothing but the given MCP servers.
     fn test_snapshot(mcp_servers: Vec<PaletteMcpServer>) -> PaletteSnapshot {
         PaletteSnapshot {
+            recent_commands: Vec::new(),
             sessions: Vec::new(),
             active_path: None,
             active_pinned: false,
@@ -1293,6 +1312,71 @@ mod tests {
             window.focus(&palette.read(cx).focus_handle(cx));
             palette
         })
+    }
+
+    /// The command a row runs, if it is a registry command row.
+    fn row_command(palette: &CommandPalette, row: usize) -> Option<CommandId> {
+        match palette.items[row].action {
+            PaletteAction::Run(PaletteCommand::Run(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// An empty query leads its Commands section with the recently run
+    /// commands, newest first, then the rest in registry order; nothing is
+    /// listed twice and the section stays whole.
+    #[gpui::test]
+    fn recent_commands_lead_an_empty_query(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let mut snapshot = test_snapshot(Vec::new());
+        snapshot.recent_commands = vec![CommandId::OpenSettings, CommandId::NewSession];
+        let palette = cx.update(|window, cx| {
+            let palette = cx.new(|cx| {
+                CommandPalette::new(
+                    snapshot,
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    cx,
+                )
+            });
+            window.focus(&palette.read(cx).focus_handle(cx));
+            palette
+        });
+        cx.update(|_, cx| {
+            let palette = palette.read(cx);
+            let rows = palette.results("");
+            let commands: Vec<CommandId> = rows
+                .iter()
+                .filter_map(|&row| row_command(palette, row))
+                .collect();
+            assert_eq!(
+                &commands[..2],
+                &[CommandId::OpenSettings, CommandId::NewSession],
+                "recent commands come first, newest first"
+            );
+            for id in [CommandId::OpenSettings, CommandId::NewSession] {
+                assert_eq!(
+                    commands.iter().filter(|&&c| c == id).count(),
+                    1,
+                    "{id:?} is listed once"
+                );
+            }
+            assert_eq!(
+                rows.len(),
+                palette.command_items().len(),
+                "every command is still listed"
+            );
+            let first_settings = rows
+                .iter()
+                .position(|&row| palette.section(row) == Section::Settings);
+            let last_command = rows
+                .iter()
+                .rposition(|&row| palette.section(row) == Section::Commands);
+            if let (Some(settings), Some(command)) = (first_settings, last_command) {
+                assert!(command < settings, "the Commands section stays contiguous");
+            }
+        });
     }
 
     /// A palette over an explicit snapshot with counting callbacks, so a test

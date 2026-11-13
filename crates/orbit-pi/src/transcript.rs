@@ -3317,21 +3317,32 @@ mod tests {
             }
         }).collect();
         t.load_from(&json!({"messages": messages}));
+        // `List::paint` reads the view being rendered, so the list has to be
+        // drawn from inside an entity rather than straight from the closure.
+        struct ListProbe(gpui::ListState);
+        impl gpui::Render for ListProbe {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                gpui::list(self.0.clone(), |ix, _, _| {
+                    gpui::div()
+                        .h(px(40.))
+                        .child(format!("row {ix}"))
+                        .into_any_element()
+                })
+                .size_full()
+            }
+        }
         let scroller = t.scroller.clone();
         let cx = cx.add_empty_window();
+        let probe = cx.update(|_, cx| cx.new(|_| ListProbe(scroller.list_state())));
         let draw = |cx: &mut gpui::VisualTestContext| {
             let _ = cx.draw(
                 gpui::point(px(0.), px(0.)),
                 gpui::size(px(600.), px(400.)),
-                |_, _| {
-                    gpui::list(scroller.list_state(), |ix, _, _| {
-                        gpui::div()
-                            .h(px(40.))
-                            .child(format!("row {ix}"))
-                            .into_any_element()
-                    })
-                    .size_full()
-                },
+                |_, _| gpui::div().size_full().child(probe.clone()),
             );
         };
         draw(cx);
