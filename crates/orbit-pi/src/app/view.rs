@@ -604,6 +604,25 @@ impl Render for OrbitApp {
                 .capture(&self.approval_focus, window, cx);
             window.focus(&self.approval_focus);
         }
+        // The rename/move field takes the keyboard when its dialog opens, and
+        // hands it back on the first frame after the dialog is gone. Closing
+        // runs through many paths (buttons, scrim, Escape, a finished move),
+        // and this is the one place that sees all of them.
+        if self.worktree_field_focus_pending {
+            self.worktree_field_focus_pending = false;
+            if matches!(
+                self.worktree_dialog,
+                Some(WorktreeDialog::Rename { .. } | WorktreeDialog::Move { .. })
+            ) {
+                let field = self.worktree_field_input.read(cx).focus_handle(cx);
+                self.worktree_return_focus.capture(&field, window, cx);
+                window.focus(&field);
+            }
+        } else if self.worktree_dialog.is_none() {
+            if let Some(opener) = self.worktree_return_focus.take() {
+                self.return_focus(Some(opener), window, cx);
+            }
+        }
         // The update modal owns the keyboard (Escape dismisses) once open.
         if self.updater_dialog_focus_pending {
             self.updater_dialog_focus_pending = false;

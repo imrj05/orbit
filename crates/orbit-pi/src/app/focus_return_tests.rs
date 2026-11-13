@@ -110,3 +110,41 @@ fn an_opener_in_a_hidden_sidebar_hands_focus_to_the_composer(cx: &mut gpui::Test
         );
     });
 }
+
+/// The worktree rename field takes focus when its dialog opens (it opens from a
+/// row menu, with no window to focus with) and hands it back to the opener on
+/// the first frame after the dialog closes, whichever path closed it.
+#[gpui::test]
+fn the_rename_field_takes_focus_and_returns_it_when_the_dialog_closes(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (app, cx) = open_app(cx);
+    cx.simulate_keystrokes(crate::platform::shortcuts::FOCUS_SESSIONS);
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(app.read(cx).sidebar_focus.is_focused(window));
+        app.update(cx, |app, cx| {
+            app.start_rename_worktree(std::path::PathBuf::from("/work/focus-return"), cx)
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(
+            app.worktree_field_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            "the field is ready to type into"
+        );
+    });
+
+    app.update(cx, |app, cx| app.cancel_worktree_dialog(cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(
+            app.read(cx).sidebar_focus.is_focused(window),
+            "closing hands focus back to the session list"
+        );
+    });
+}

@@ -878,6 +878,12 @@ pub struct OrbitApp {
     worktree_start_input: Entity<ComposerInput>,
     /// Rename / Move dialog: the new name or destination.
     worktree_field_input: Entity<ComposerInput>,
+    /// Focus the rename/move field on the next paint: the dialog opens from a
+    /// row menu with no window to focus with.
+    worktree_field_focus_pending: bool,
+    /// Whatever held focus when the rename/move field took it; handed back
+    /// on the first frame after the dialog closes, whichever path closed it.
+    worktree_return_focus: ReturnFocus,
     /// Branches loaded for the create dialog's branch choices.
     worktree_branches: Vec<String>,
     /// Create dialog: use a new branch or an existing one.
@@ -2441,6 +2447,8 @@ impl OrbitApp {
             worktree_branch_input: worktree_branch_input.clone(),
             worktree_start_input: worktree_start_input.clone(),
             worktree_field_input: worktree_field_input.clone(),
+            worktree_field_focus_pending: false,
+            worktree_return_focus: ReturnFocus::default(),
             _worktree_name_sub: worktree_name_sub,
             _worktree_branch_sub: worktree_branch_sub,
             worktree_branches: Vec::new(),

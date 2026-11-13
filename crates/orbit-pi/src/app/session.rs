@@ -835,6 +835,17 @@ impl OrbitApp {
             self.rename_session(cx);
             return;
         }
+        // Enter in the worktree rename/move field is the dialog's primary
+        // button.
+        if self
+            .worktree_field_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            self.confirm_worktree_dialog(cx);
+            return;
+        }
         // Shared Composer fields must never submit the main chat draft.
         self.submit_composer_as(theme::get(cx).ui.composer_send_mode, window, cx);
     }

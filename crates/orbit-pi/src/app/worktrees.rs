@@ -1101,6 +1101,7 @@ impl OrbitApp {
         self.worktree_dialog = Some(WorktreeDialog::Rename { path });
         self.worktree_dialog_error = None;
         self.worktree_menu = None;
+        self.worktree_field_focus_pending = true;
         cx.notify();
     }
 
@@ -1117,6 +1118,7 @@ impl OrbitApp {
         self.worktree_dialog = Some(WorktreeDialog::Move { path });
         self.worktree_dialog_error = None;
         self.worktree_menu = None;
+        self.worktree_field_focus_pending = true;
         cx.notify();
     }
 
