@@ -3176,10 +3176,15 @@ impl OrbitApp {
 
     /// Switch the Git page's tab (⌘1–⌘6). A no-op unless the page is open, so
     /// the shortcuts never surprise a chat session.
-    pub(super) fn on_git_tab(&mut self, index: usize, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_git_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.git_open {
             self.git_panel
                 .update(cx, |panel, cx| panel.set_tab(index, cx));
+            // A tab with a keyboard list takes focus, so ↑/↓ and Enter work
+            // straight after the shortcut.
+            if let Some(list) = self.git_panel.read(cx).list_focus_handle() {
+                window.focus(&list);
+            }
         }
     }
 

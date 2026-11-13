@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     canvas, deferred, div, fill, hsla, img, point, prelude::*, px, size, AnyElement, Background,
-    Bounds, ClickEvent, Context, Corner, CursorStyle, Entity, Focusable, FontWeight, Hsla,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Pixels,
-    Render, ScrollHandle, Subscription, Window,
+    Bounds, ClickEvent, Context, Corner, CursorStyle, Div, Entity, FocusHandle, Focusable,
+    FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
+    PathBuilder, Pixels, Render, ScrollHandle, Stateful, Subscription, Window,
 };
 
 use crate::app::{
@@ -264,6 +264,18 @@ pub struct GitPanel {
     commit_detail_loading: bool,
     /// The commit row currently expanded, if any.
     selected_commit: Option<String>,
+    /// Focus for the History / Issues / Pull requests list (`GitList`).
+    list_focus: FocusHandle,
+    /// The keyboard cursor in the active tab's list. Separate from the
+    /// selection: opening a row runs `git` or `gh`, so stepping through rows
+    /// only moves this, and Enter opens.
+    list_cursor: Option<usize>,
+    /// Whether `list_focus` held focus at the last render; the tab bodies
+    /// draw the cursor only then.
+    list_focused: bool,
+    /// The active tab's list scroller. One row is one child, so a moved
+    /// cursor can be scrolled into view by index.
+    list_scroll: ScrollHandle,
     /// Active History filters (all-branches, author, path, grep).
     history_filter: git::HistoryFilter,
     /// An open per-file actions menu: (workspace-relative path, commit hash).
@@ -591,6 +603,10 @@ impl GitPanel {
             commit_detail: None,
             commit_detail_loading: false,
             selected_commit: None,
+            list_focus: cx.focus_handle().tab_stop(true),
+            list_cursor: None,
+            list_focused: false,
+            list_scroll: ScrollHandle::new(),
             history_filter: git::HistoryFilter::default(),
             file_menu: None,
             graph: Vec::new(),
@@ -719,6 +735,7 @@ impl GitPanel {
         };
         if self.tab != tab {
             self.tab = tab;
+            self.list_cursor = None;
             self.branch_menu_open = false;
             self.branch_more_open = false;
             self.commit_model_menu_open = false;
@@ -2447,6 +2464,122 @@ impl GitPanel {
                 cx.notify();
             },
         );
+    }
+
+    // ── keyboard list ──────────────────────────────────────────────────
+
+    /// Make a tab's scroller the keyboard list: it carries the `GitList`
+    /// context and focus, answers the cursor actions, and takes focus when
+    /// clicked so the keys that follow land here.
+    fn keyboard_list(&self, el: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
+        el.track_focus(&self.list_focus)
+            .key_context("GitList")
+            .track_scroll(&self.list_scroll)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, _| {
+                    window.focus(&this.list_focus);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::GitListPrev, _, cx| {
+                this.move_list_cursor(|ix, _| ix.saturating_sub(1), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitListNext, _, cx| {
+                this.move_list_cursor(|ix, _| ix + 1, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitListHome, _, cx| {
+                this.move_list_cursor(|_, _| 0, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitListEnd, _, cx| {
+                this.move_list_cursor(|_, len| len.saturating_sub(1), cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::GitListConfirm, _, cx| this.open_list_cursor(cx)),
+            )
+    }
+
+    /// Rows in the active tab's keyboard list.
+    fn list_len(&self) -> usize {
+        match self.tab {
+            GitTab::History => self.history.len(),
+            GitTab::Issues => self.issues.len(),
+            GitTab::Pulls => self.pulls.len(),
+            GitTab::Changes | GitTab::Graph | GitTab::Stashes => 0,
+        }
+    }
+
+    /// The open row of the active list, where a fresh cursor starts.
+    fn list_selected_index(&self) -> Option<usize> {
+        match self.tab {
+            GitTab::History => {
+                let hash = self.selected_commit.as_deref()?;
+                self.history.iter().position(|commit| commit.hash == hash)
+            }
+            GitTab::Issues => {
+                let number = self.selected_issue?;
+                self.issues.iter().position(|issue| issue.number == number)
+            }
+            GitTab::Pulls => {
+                let number = self.selected_pr?;
+                self.pulls.iter().position(|pull| pull.number == number)
+            }
+            GitTab::Changes | GitTab::Graph | GitTab::Stashes => None,
+        }
+    }
+
+    /// Whether row `ix` carries the keyboard cursor, drawn only while the list
+    /// has focus so a pointer user never sees a stale one.
+    fn list_cursor_at(&self, ix: usize) -> bool {
+        self.list_focused && self.list_cursor == Some(ix)
+    }
+
+    /// Step the cursor. `step` gets the current row (the open row, or the
+    /// first, on a fresh cursor) and the row count; the result is clamped, and
+    /// the row is scrolled into view.
+    fn move_list_cursor(&mut self, step: impl Fn(usize, usize) -> usize, cx: &mut Context<Self>) {
+        let len = self.list_len();
+        if len == 0 {
+            self.list_cursor = None;
+            return;
+        }
+        let next = match self.list_cursor.or_else(|| self.list_selected_index()) {
+            Some(current) => step(current.min(len - 1), len),
+            // A fresh cursor lands on the first row rather than skipping it.
+            None => 0,
+        }
+        .min(len - 1);
+        self.list_cursor = Some(next);
+        self.list_scroll.scroll_to_item(next);
+        cx.notify();
+    }
+
+    /// Enter: open (or, for a commit, expand/collapse) the row under the cursor.
+    fn open_list_cursor(&mut self, cx: &mut Context<Self>) {
+        let Some(ix) = self.list_cursor.filter(|&ix| ix < self.list_len()) else {
+            return;
+        };
+        match self.tab {
+            GitTab::History => {
+                let hash = self.history[ix].hash.clone();
+                self.toggle_commit(hash, cx);
+            }
+            GitTab::Issues => {
+                let number = self.issues[ix].number;
+                self.open_issue(number, cx);
+            }
+            GitTab::Pulls => {
+                let number = self.pulls[ix].number;
+                self.open_pull(number, cx);
+            }
+            GitTab::Changes | GitTab::Graph | GitTab::Stashes => {}
+        }
+    }
+
+    /// The list's focus handle when the active tab has a keyboard list, so a
+    /// tab shortcut can land on it.
+    pub fn list_focus_handle(&self) -> Option<FocusHandle> {
+        matches!(self.tab, GitTab::History | GitTab::Issues | GitTab::Pulls)
+            .then(|| self.list_focus.clone())
     }
 
     /// Expand or collapse a commit's detail panel.
@@ -4998,12 +5131,19 @@ impl GitPanel {
             ));
         } else {
             let history_entity = cx.entity();
-            let mut list = div()
+            let mut list = self
+                .keyboard_list(div().id("git-history-scroll"), cx)
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .py(DynamicSpacing::Base06.px(&theme));
             let total = self.history.len();
             for (ix, commit) in self.history.iter().enumerate() {
+                // One child per commit (row, detail, separator), so the
+                // cursor's index is the scroller's child index.
+                let mut entry = div().flex().flex_col();
                 let url = self
                     .remote_web
                     .as_ref()
@@ -5015,10 +5155,11 @@ impl GitPanel {
                         entity.update(cx, |panel, cx| panel.filter_history_author(author, cx));
                     }
                 };
-                list = list.child(commit_row(
+                entry = entry.child(commit_row(
                     commit,
                     url.as_deref(),
                     selected,
+                    self.list_cursor_at(ix),
                     theme,
                     cx.listener({
                         let hash = commit.hash.clone();
@@ -5033,7 +5174,7 @@ impl GitPanel {
                         .filter(|detail| detail.hash == commit.hash)
                     {
                         Some(detail) => {
-                            list = list.child(self.commit_detail_body(
+                            entry = entry.child(self.commit_detail_body(
                                 detail,
                                 url.as_deref(),
                                 theme,
@@ -5041,7 +5182,7 @@ impl GitPanel {
                             ));
                         }
                         None => {
-                            list = list.child(detail_note(
+                            entry = entry.child(detail_note(
                                 theme,
                                 &tr!(if self.commit_detail_loading {
                                     "git_panel.reading_commit"
@@ -5053,22 +5194,16 @@ impl GitPanel {
                     }
                 }
                 if ix + 1 < total {
-                    list = list.child(commit_separator(theme));
+                    entry = entry.child(commit_separator(theme));
                 }
+                list = list.child(entry);
             }
             list = list.child(load_more(
                 theme,
                 self.history_loading,
                 cx.listener(|this, _: &ClickEvent, _, cx| this.refresh_history(cx)),
             ));
-            body = body.child(
-                div()
-                    .id("git-history-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(list),
-            );
+            body = body.child(list);
         }
         div()
             .flex_1()
@@ -5751,27 +5886,25 @@ impl GitPanel {
                 Some(&tr!("git_panel.no_issues_detail")),
             ));
         } else {
-            let mut list = div()
+            let mut list = self
+                .keyboard_list(div().id("git-issue-scroll"), cx)
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .gap(DynamicSpacing::Base02.px(&theme))
                 .p(DynamicSpacing::Base06.px(&theme));
-            for issue in &self.issues {
+            for (ix, issue) in self.issues.iter().enumerate() {
                 list = list.child(issue_row(
                     issue,
                     self.selected_issue == Some(issue.number),
+                    self.list_cursor_at(ix),
                     theme,
                     cx,
                 ));
             }
-            body = body.child(
-                div()
-                    .id("git-issue-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(list),
-            );
+            body = body.child(list);
         }
         div()
             .flex_1()
@@ -6454,27 +6587,25 @@ impl GitPanel {
                 Some(&tr!("git_panel.no_pulls_detail")),
             ));
         } else {
-            let mut list = div()
+            let mut list = self
+                .keyboard_list(div().id("git-pr-scroll"), cx)
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .gap(DynamicSpacing::Base02.px(&theme))
                 .p(DynamicSpacing::Base06.px(&theme));
-            for pull in &self.pulls {
+            for (ix, pull) in self.pulls.iter().enumerate() {
                 list = list.child(pr_row(
                     pull,
                     self.selected_pr == Some(pull.number),
+                    self.list_cursor_at(ix),
                     theme,
                     cx,
                 ));
             }
-            body = body.child(
-                div()
-                    .id("git-pr-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(list),
-            );
+            body = body.child(list);
         }
         div()
             .flex_1()
@@ -8049,11 +8180,12 @@ impl GitPanel {
 // (The `OpenFile` callback type is declared near the top of the module.)
 
 impl Render for GitPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
             return div().into_any_element();
         }
         let theme = *theme::get(cx);
+        self.list_focused = self.list_focus.is_focused(window);
         let content = match self.tab {
             GitTab::Changes => self.changes_tab(theme, cx),
             GitTab::History => self.history_tab(theme, cx),
@@ -9162,6 +9294,7 @@ struct GithubRowParts<'a> {
 fn github_list_row<P>(
     parts: GithubRowParts<'_>,
     selected: bool,
+    cursor: bool,
     theme: Theme,
     on_click: P,
 ) -> AnyElement
@@ -9197,10 +9330,7 @@ where
         row,
         name,
         &theme,
-        Hover::over(
-            selected.then_some(theme.surface_selected),
-            theme.hover_wash(),
-        ),
+        Hover::over(row_rest(selected, cursor, theme), theme.hover_wash()),
     )
 }
 
@@ -9208,6 +9338,7 @@ where
 fn issue_row(
     issue: &gh::GhIssue,
     selected: bool,
+    cursor: bool,
     theme: Theme,
     cx: &Context<GitPanel>,
 ) -> AnyElement {
@@ -9232,6 +9363,7 @@ fn issue_row(
             emphasized: open,
         },
         selected,
+        cursor,
         theme,
         cx.listener(move |this, _: &ClickEvent, _, cx| this.open_issue(number, cx)),
     )
@@ -9518,7 +9650,13 @@ fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
 /// One PR row in the list: state, title, repository and labels — the same
 /// three lines as an issue row, plus the compact draft marker on the header
 /// line. Review state, checks, diff stats and branches are in the detail pane.
-fn pr_row(pull: &gh::GhPull, selected: bool, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
+fn pr_row(
+    pull: &gh::GhPull,
+    selected: bool,
+    cursor: bool,
+    theme: Theme,
+    cx: &Context<GitPanel>,
+) -> AnyElement {
     let number = pull.number;
     // Same glyph logic as the detail header, so a merged PR reads as merged
     // here too instead of always drawing the open-PR glyph recoloured.
@@ -9551,6 +9689,7 @@ fn pr_row(pull: &gh::GhPull, selected: bool, theme: Theme, cx: &Context<GitPanel
             emphasized: pull.is_open(),
         },
         selected,
+        cursor,
         theme,
         cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pull(number, cx)),
     )
@@ -9974,6 +10113,18 @@ fn lane_color(lane: usize, theme: Theme) -> Hsla {
     hsla(HUES[lane % HUES.len()] / 360., saturation, lightness, 1.)
 }
 
+/// A list row's rest fill: the open row's selection, else the keyboard
+/// cursor's quiet wash (the Explorer's convention), else nothing.
+fn row_rest(selected: bool, cursor: bool, theme: Theme) -> Option<Hsla> {
+    if selected {
+        Some(theme.surface_selected)
+    } else if cursor {
+        Some(theme.overlay)
+    } else {
+        None
+    }
+}
+
 /// One row in the History list: an author monogram, the subject with its ref
 /// badges, an author · relative-time meta line, and the short hash with an
 /// external-link mark when the commit can be opened on the remote.
@@ -9981,6 +10132,7 @@ fn commit_row(
     commit: &CommitEntry,
     url: Option<&str>,
     selected: bool,
+    cursor: bool,
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
     on_author: impl Fn(String, &mut Window, &mut gpui::App) + 'static,
@@ -10104,10 +10256,7 @@ fn commit_row(
         row,
         format!("git-commit-{}", commit.short),
         &theme,
-        Hover::over(
-            selected.then_some(theme.surface_selected),
-            theme.hover_wash(),
-        ),
+        Hover::over(row_rest(selected, cursor, theme), theme.hover_wash()),
     )
 }
 
@@ -10513,6 +10662,61 @@ mod tests {
         });
     }
 
+    /// The History list's keyboard cursor: arrows and `j`/`k` step it without
+    /// opening anything, Home/End jump, and Enter expands the commit under it.
+    #[gpui::test]
+    fn the_history_list_steps_a_cursor_and_enter_opens_its_row(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit));
+            crate::bind_keys(cx);
+        });
+        let commit = |n: usize| CommitEntry {
+            hash: format!("{n:040}"),
+            short: format!("{n:07}"),
+            author: "Ada".into(),
+            author_email: "ada@example.com".into(),
+            relative: "now".into(),
+            subject: format!("commit {n}"),
+            refs: Vec::new(),
+        };
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let mut panel = GitPanel::new(cx);
+            panel.open = true;
+            panel.tab = GitTab::History;
+            panel.history = vec![commit(1), commit(2), commit(3)];
+            panel
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.focus(&panel.read(cx).list_focus));
+        cx.run_until_parked();
+
+        let cursor =
+            |cx: &mut gpui::VisualTestContext| cx.update(|_, cx| panel.read(cx).list_cursor);
+        cx.simulate_keystrokes("down");
+        assert_eq!(cursor(cx), Some(0), "a fresh cursor lands on the first row");
+        cx.simulate_keystrokes("j j");
+        assert_eq!(cursor(cx), Some(2));
+        cx.simulate_keystrokes("down");
+        assert_eq!(cursor(cx), Some(2), "the cursor stops at the last row");
+        cx.simulate_keystrokes("k");
+        assert_eq!(cursor(cx), Some(1));
+        cx.simulate_keystrokes("home");
+        assert_eq!(cursor(cx), Some(0));
+        cx.simulate_keystrokes("end");
+        assert_eq!(cursor(cx), Some(2));
+        assert_eq!(
+            cx.update(|_, cx| panel.read(cx).selected_commit.clone()),
+            None,
+            "moving the cursor opens nothing"
+        );
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            cx.update(|_, cx| panel.read(cx).selected_commit.clone()),
+            Some(commit(3).hash),
+            "Enter expands the commit under the cursor"
+        );
+    }
+
     #[gpui::test]
     fn switching_comment_drafts_clears_undo_history(cx: &mut gpui::TestAppContext) {
         let cx = cx.add_empty_window();
@@ -10814,6 +11018,7 @@ mod tests {
                     emphasized: true,
                 },
                 false,
+                false,
                 theme,
                 |_, _, _| {},
             );
@@ -10893,7 +11098,7 @@ mod tests {
             };
             div()
                 .w_full()
-                .child(github_list_row(parts, false, theme, |_, _, _| {}))
+                .child(github_list_row(parts, false, false, theme, |_, _, _| {}))
         }
     }
 
