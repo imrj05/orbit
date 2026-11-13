@@ -868,15 +868,9 @@ pub fn open_path_default(path: &Path) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn open_path_default(path: &Path) {
-    // Windows has no `xdg-open`; the shell's `start` verb is the equivalent
-    // (`""` is the window title `start` would otherwise read as the path).
+    // Windows has no `xdg-open`; the shell's default verb is the equivalent.
     #[cfg(target_os = "windows")]
-    {
-        let mut command = std::process::Command::new("cmd");
-        command.args(["/C", "start", ""]).arg(path);
-        orbit_rpc::hide_console(&mut command);
-        let _ = command.spawn();
-    }
+    let _ = shell_open(path.as_os_str());
     #[cfg(not(target_os = "windows"))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
@@ -1234,27 +1228,58 @@ pub fn open_url(url: &str) -> Result<(), String> {
         .map_err(|err| tr!("platform.browser_failed", error = err))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 pub fn open_url(url: &str) -> Result<(), String> {
     if !is_safe_browser_url(url) {
         return Err(tr!("platform.unsafe_url"));
     }
-    let opener = if cfg!(target_os = "windows") {
-        "cmd"
-    } else {
-        "xdg-open"
-    };
-    let mut command = std::process::Command::new(opener);
-    if cfg!(target_os = "windows") {
-        command.args(["/C", "start", "", url]);
-    } else {
-        command.arg(url);
+    // Not `cmd /C start`: cmd reads each `&` in a query string as a command
+    // separator, so a prefilled issue URL arrived with only its first
+    // parameter (issue #127).
+    shell_open(std::ffi::OsStr::new(url)).map_err(|err| tr!("platform.browser_failed", error = err))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !is_safe_browser_url(url) {
+        return Err(tr!("platform.unsafe_url"));
     }
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(url);
     orbit_rpc::hide_console(&mut command);
     command
         .spawn()
         .map(|_| ())
         .map_err(|err| tr!("platform.browser_failed", error = err))
+}
+
+/// Open a URL or path with its registered handler through `ShellExecuteW`,
+/// which takes the target verbatim instead of reparsing it as a cmd.exe
+/// command line.
+#[cfg(target_os = "windows")]
+fn shell_open(target: &std::ffi::OsStr) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let target: Vec<u16> = target.encode_wide().chain(Some(0)).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecute reports success as any value above 32.
+    if result as isize <= 32 {
+        return Err(std::io::Error::other(format!(
+            "ShellExecute failed (error {})",
+            result as isize
+        )));
+    }
+    Ok(())
 }
 
 /// Start a second instance of this build without waiting for it. Used by the

@@ -99,9 +99,13 @@ pub enum Filed {
     /// images were written to, when the report carried any — GitHub only
     /// accepts binary attachments in its web editor, so the user drags them in
     /// from there.
+    ///
+    /// `clipboard` is the full body when it was too long to travel in the URL;
+    /// the caller copies it and the prefilled body asks the user to paste it.
     Browser {
         url: String,
         screenshots: Option<PathBuf>,
+        clipboard: Option<String>,
     },
 }
 
@@ -129,9 +133,11 @@ pub fn file(
             return gh::create_issue(cwd, Some(REPO), title, &body, &kind_labels(kind), &[], &[])
                 .map(Filed::Created);
         }
+        let (url, clipboard) = browser_issue_url(title, &body, kind.label());
         return Ok(Filed::Browser {
-            url: new_issue_url(title, &body, kind.label()),
+            url,
             screenshots: None,
+            clipboard,
         });
     }
 
@@ -161,9 +167,11 @@ pub fn file(
         }
     }
     let body = issue_body(kind, what, steps, diagnostics, true);
+    let (url, clipboard) = browser_issue_url(title, &body, kind.label());
     Ok(Filed::Browser {
-        url: new_issue_url(title, &body, kind.label()),
+        url,
         screenshots: Some(directory),
+        clipboard,
     })
 }
 
@@ -361,6 +369,29 @@ pub fn new_issue_url(title: &str, body: &str, label: Option<&str>) -> String {
     )
 }
 
+/// The longest prefilled URL handed to the browser. Windows' `ShellExecute`
+/// silently truncates URLs at 2083 characters (`INTERNET_MAX_URL_LENGTH`),
+/// which cut a long report off mid-body (issue #127); Chromium caps its own
+/// shell launches at 2K for the same reason.
+const MAX_PREFILL_URL: usize = 2000;
+
+/// The prefilled body used when the real one is too long for the URL.
+const PASTE_PROMPT: &str =
+    "_Orbit copied the full report to your clipboard. Paste it here to replace this line._\n";
+
+/// The new-issue URL for the browser fallback, and the body to put on the
+/// clipboard when it did not fit in [`MAX_PREFILL_URL`].
+fn browser_issue_url(title: &str, body: &str, label: Option<&str>) -> (String, Option<String>) {
+    let url = new_issue_url(title, body, label);
+    if url.len() <= MAX_PREFILL_URL {
+        return (url, None);
+    }
+    (
+        new_issue_url(title, PASTE_PROMPT, label),
+        Some(body.to_string()),
+    )
+}
+
 /// How this build was installed. A packaged macOS app runs from
 /// `<App>.app/Contents/MacOS/`; anything else is a source build (or a Linux /
 /// Windows artifact), which is enough to route a bug.
@@ -479,6 +510,23 @@ mod tests {
         assert!(url.contains("labels=bug"), "{url}");
         // Other carries no label, so none is appended.
         assert!(!new_issue_url("t", "b", None).contains("labels="));
+    }
+
+    #[test]
+    fn a_body_too_long_for_the_url_moves_to_the_clipboard() {
+        let (url, clipboard) = browser_issue_url("short", "fits", Some("bug"));
+        assert!(url.contains("body=fits"), "{url}");
+        assert_eq!(clipboard, None);
+
+        let long = "word & more\n".repeat(200);
+        let (url, clipboard) = browser_issue_url("long", &long, Some("bug"));
+        assert!(url.len() <= MAX_PREFILL_URL, "{}", url.len());
+        assert!(
+            url.contains("title=long") && url.contains("labels=bug"),
+            "{url}"
+        );
+        assert!(url.contains("clipboard"), "{url}");
+        assert_eq!(clipboard.as_deref(), Some(long.as_str()));
     }
 
     #[test]
