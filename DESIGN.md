@@ -496,9 +496,11 @@ existing contact-shadow exception is listed separately below:
   dialogs, the command palette.
 - **`ElevationIndex::Background` / `Surface` / `EditorSurface`** cast nothing. A panel
   is a tonal step and a hairline, not a shadow.
-- **`Theme::composer_shadow`** is an existing tight contact-shadow treatment used by
-  the composer, usage board and some terminal/Git surfaces. It is an exception to the
-  flat structural default, not permission to add shadows to ordinary cards.
+- **`Theme::composer_shadow`** is a tight contact-shadow treatment for the chat
+  composer and the Git commit box that mirrors it. It is an exception to the flat
+  structural default, not permission to add shadows to ordinary cards: usage-board
+  cards stay flat with their hairline, and a notice floating over a pane takes
+  `elevation_2`.
 
 ### Named Rules
 **The Separation Rule.** Structural surfaces use hairlines and spacing, not

@@ -3916,7 +3916,6 @@ fn card(
         // Translucent whenever a wallpaper is behind the column, whatever the
         // renderer can do with it: the frost is the extra, not the condition.
         .bg(theme.card_fill(theme.surface_elevated))
-        .shadow(theme.composer_shadow())
         .flex()
         .flex_col()
         .child(
