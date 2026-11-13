@@ -418,13 +418,36 @@ impl OrbitApp {
         self.toggle_command_palette_with(true, window, cx);
     }
 
-    /// Hand focus back to whatever opened the palette, or to the composer when
-    /// that control is gone. Every close path goes through here.
-    pub(super) fn restore_palette_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.palette_return_focus.take().and_then(|h| h.upgrade()) {
+    /// Hand focus back from a closing surface to the control that opened it.
+    ///
+    /// The composer takes it instead when the opener is gone, or when it is
+    /// mounted but out of sight: the sidebar slides shut rather than
+    /// unmounting, so a list or search field inside a hidden sidebar would
+    /// still accept keys nobody can see land.
+    pub(super) fn return_focus(
+        &mut self,
+        opener: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sidebar_hidden = !super::view::sidebar_shows(
+            self.sidebar_visible,
+            self.settings_open,
+            window.viewport_size().width,
+        );
+        let target = opener
+            .filter(|opener| !(sidebar_hidden && self.sidebar_focus.contains(opener, window)));
+        match target {
             Some(handle) => window.focus(&handle),
             None => self.input.read(cx).focus(window),
         }
+    }
+
+    /// Hand focus back to whatever opened the palette, or to the composer when
+    /// that control is gone. Every close path goes through here.
+    pub(super) fn restore_palette_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let opener = self.palette_return_focus.take();
+        self.return_focus(opener, window, cx);
     }
 
     fn toggle_command_palette_with(
@@ -523,15 +546,11 @@ impl OrbitApp {
 
         let palette =
             cx.new(|cx| CommandPalette::new(snapshot, on_open, on_command, on_dismiss, cx));
-        // Remember who opened it (the focused control, or the composer when the
-        // palette is opened from a menu that took focus), then focus the filter.
-        self.palette_return_focus = Some(
-            window
-                .focused(cx)
-                .unwrap_or_else(|| self.input.read(cx).focus_handle(cx))
-                .downgrade(),
-        );
-        window.focus(&palette.read(cx).focus_handle(cx));
+        // Remember who opened it, then focus the filter.
+        let palette_focus = palette.read(cx).focus_handle(cx);
+        self.palette_return_focus
+            .capture(&palette_focus, window, cx);
+        window.focus(&palette_focus);
         self.command_palette = Some(palette);
         cx.notify();
     }

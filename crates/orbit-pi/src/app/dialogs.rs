@@ -223,8 +223,9 @@ impl OrbitApp {
                     app.dialog_focus_pending = false;
                     app.respond_to_dialog(&id, &response);
                     // The dialog's focus handle dies with it; hand focus back
-                    // to the composer so typing continues.
-                    app.input.read(cx).focus(window);
+                    // to whatever it was taken from.
+                    let opener = app.dialog_return_focus.take();
+                    app.return_focus(opener, window, cx);
                     cx.notify();
                 })
                 .ok();
@@ -293,7 +294,8 @@ impl OrbitApp {
             None => DialogResponse::Cancelled,
         };
         self.respond_to_dialog(&request.id, &response);
-        self.input.read(cx).focus(window);
+        let opener = self.approval_return_focus.take();
+        self.return_focus(opener, window, cx);
         cx.notify();
     }
 

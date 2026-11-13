@@ -278,8 +278,16 @@ impl OrbitApp {
         self.clone_url_input.update(cx, |input, cx| input.clear(cx));
         self.clone_name_input
             .update(cx, |input, cx| input.clear(cx));
-        self.clone_url_input.read(cx).focus(window);
+        let url_focus = self.clone_url_input.read(cx).focus_handle(cx);
+        self.clone_return_focus.capture(&url_focus, window, cx);
+        window.focus(&url_focus);
         cx.notify();
+    }
+
+    /// A cancelled clone hands focus back to whatever opened the dialog.
+    fn restore_clone_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let opener = self.clone_return_focus.take();
+        self.return_focus(opener, window, cx);
     }
 
     fn clone_focus_step(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -337,7 +345,7 @@ impl OrbitApp {
     ) {
         if self.clone_cancel_focus.is_focused(window) {
             self.cancel_worktree_dialog(cx);
-            self.input.read(cx).focus(window);
+            self.restore_clone_focus(window, cx);
         } else if self.clone_browse_focus.is_focused(window) && self.clone_operation.is_none() {
             self.browse_clone_parent(window, cx);
         } else if self.clone_operation.is_none() {
@@ -611,7 +619,7 @@ impl OrbitApp {
         let clone = matches!(self.worktree_dialog, Some(WorktreeDialog::Clone));
         self.cancel_worktree_dialog(cx);
         if clone {
-            self.input.read(cx).focus(window);
+            self.restore_clone_focus(window, cx);
         }
     }
 
@@ -2394,7 +2402,7 @@ impl OrbitApp {
                     this.clone(),
                     |app, window, cx| {
                         app.cancel_worktree_dialog(cx);
-                        app.input.read(cx).focus(window);
+                        app.restore_clone_focus(window, cx);
                     },
                 ));
         } else {
@@ -2470,7 +2478,7 @@ impl OrbitApp {
                             this.clone(),
                             |app, window, cx| {
                                 app.cancel_worktree_dialog(cx);
-                                app.input.read(cx).focus(window);
+                                app.restore_clone_focus(window, cx);
                             },
                         ))
                         .child(clone_dialog_button(

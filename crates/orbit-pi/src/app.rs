@@ -314,6 +314,31 @@ pub(crate) enum QuitPlan {
     Wait,
 }
 
+/// The control to hand focus back to when a modal surface closes
+/// (`DESIGN.md`: restore focus to the control that opened it).
+///
+/// Weak, because the opener can be torn down while the surface is up. Where
+/// focus finally goes is [`OrbitApp::return_focus`]'s call: it also turns away
+/// an opener that is still mounted but out of sight.
+#[derive(Default)]
+pub(crate) struct ReturnFocus(Option<gpui::WeakFocusHandle>);
+
+impl ReturnFocus {
+    /// Remember what holds focus now. A surface that already holds focus
+    /// (re-focused after a session switch) keeps its original opener.
+    pub(crate) fn capture(&mut self, surface: &FocusHandle, window: &Window, cx: &App) {
+        if surface.contains_focused(window, cx) {
+            return;
+        }
+        self.0 = window.focused(cx).map(|handle| handle.downgrade());
+    }
+
+    /// The remembered opener, if it is still alive. Clears the slot.
+    pub(crate) fn take(&mut self) -> Option<FocusHandle> {
+        self.0.take().and_then(|handle| handle.upgrade())
+    }
+}
+
 pub struct OrbitApp {
     client: Option<PiClient>,
     /// Live state of the active pi process, surfaced in Settings → Runtime.
@@ -550,17 +575,16 @@ pub struct OrbitApp {
     /// The window-wide command palette (⌘P / ⌘K / sidebar Search row), if open.
     command_palette: Option<Entity<CommandPalette>>,
     /// Whatever held focus when the palette opened, so dismissing it can hand
-    /// focus back rather than guessing (`DESIGN.md`: restore focus to the
-    /// control that opened a modal). Weak: the opener may be torn down while
-    /// the palette is up, in which case `restore_palette_focus` falls back to
-    /// the composer.
-    palette_return_focus: Option<gpui::WeakFocusHandle>,
+    /// focus back rather than guessing.
+    palette_return_focus: ReturnFocus,
     /// A blocking extension dialog (`extension_ui_request`), if one is open.
     /// pi holds the run until the answer is sent, so this is a modal surface.
     dialog: Option<Entity<Dialog>>,
     /// Focus the dialog (or its text field) on the next paint — `tick` has no
     /// window to focus with.
     dialog_focus_pending: bool,
+    /// Whatever held focus when the extension dialog took it.
+    dialog_return_focus: ReturnFocus,
     /// The open inline access-guard approval, if any: a compact bar above the
     /// composer rather than the modal above. pi holds the tool call until it
     /// is answered.
@@ -572,6 +596,8 @@ pub struct OrbitApp {
     approval_focus: FocusHandle,
     /// Focus the approval bar on the next paint (`tick` has no window).
     approval_focus_pending: bool,
+    /// Whatever held focus when the approval bar took it.
+    approval_return_focus: ReturnFocus,
     /// The id of the running `ask_user_question` tool call, if any. Set on
     /// `tool_execution_start`, cleared on its `tool_execution_end`.
     ask_tool_id: Option<String>,
@@ -836,6 +862,8 @@ pub struct OrbitApp {
     clone_confirm_focus: FocusHandle,
     clone_cancel_focus: FocusHandle,
     clone_window: Option<gpui::AnyWindowHandle>,
+    /// Whatever held focus when the clone dialog opened.
+    clone_return_focus: ReturnFocus,
     #[cfg(test)]
     clone_test_parent: Option<PathBuf>,
     clone_parent: Option<PathBuf>,
@@ -951,6 +979,8 @@ pub struct OrbitApp {
     branch_picker: Option<Entity<BranchPicker>>,
     /// Rewind picker (the `fork` list), a centered modal.
     rewind_picker: Option<Entity<crate::rewind_picker::RewindPicker>>,
+    /// Whatever held focus when the rewind picker opened.
+    rewind_return_focus: ReturnFocus,
     /// A `get_fork_messages` request is in flight (the picker shows a quiet
     /// loading row until it lands).
     rewind_fetching: bool,
@@ -1300,6 +1330,8 @@ pub struct OrbitApp {
     updater_dialog_focus: FocusHandle,
     /// Focus the update modal on the next paint (`tick` has no window).
     updater_dialog_focus_pending: bool,
+    /// Whatever held focus when the update modal took it.
+    updater_return_focus: ReturnFocus,
     /// True while the pointer is over the sidebar updater pill, which expands
     /// it from the download icon into the "Update" label (the reference app's
     /// pattern).
@@ -2278,7 +2310,9 @@ impl OrbitApp {
             available_thinking_levels: Vec::new(),
             model_selector: None,
             command_palette: None,
-            palette_return_focus: None,
+            palette_return_focus: ReturnFocus::default(),
+            dialog_return_focus: ReturnFocus::default(),
+            approval_return_focus: ReturnFocus::default(),
             dialog: None,
             dialog_focus_pending: false,
             approval: None,
@@ -2395,6 +2429,7 @@ impl OrbitApp {
             clone_confirm_focus: cx.focus_handle(),
             clone_cancel_focus: cx.focus_handle(),
             clone_window: None,
+            clone_return_focus: ReturnFocus::default(),
             #[cfg(test)]
             clone_test_parent: None,
             clone_parent: None,
@@ -2447,6 +2482,7 @@ impl OrbitApp {
             add_menu_focus: cx.focus_handle(),
             branch_picker: None,
             rewind_picker: None,
+            rewind_return_focus: ReturnFocus::default(),
             rewind_fetching: false,
             rewind_fetch_id: None,
             rewind_fork_id: None,
@@ -2618,6 +2654,7 @@ impl OrbitApp {
                 }),
             updater_dialog_focus: cx.focus_handle(),
             updater_dialog_focus_pending: false,
+            updater_return_focus: ReturnFocus::default(),
             updater_button_hovered: false,
             updater_button_width: Rc::new(Cell::new(updater_ui::UPDATER_PILL_COLLAPSED_W)),
             updater_button_label_reveal: Rc::new(Cell::new(0.)),
@@ -2763,7 +2800,14 @@ impl OrbitApp {
         let closed = cx.on_window_closed(move |cx| {
             this.update(cx, |app, _| app.window_active = false).ok();
         });
-        self._window_watchers = vec![activation, closed];
+        // A surface hands focus back to its opener (`ReturnFocus`), which may
+        // have stopped painting meanwhile (the sidebar hidden under a dialog).
+        // With nothing focused the keyboard would reach no handler, so the
+        // composer takes it.
+        let focus_lost = cx.on_focus_lost(window, |app, window, cx| {
+            app.input.read(cx).focus(window);
+        });
+        self._window_watchers = vec![activation, closed, focus_lost];
     }
 
     /// Sidebar view of the session store: the sessions on disk plus a
@@ -4098,6 +4142,8 @@ mod context_meter_tests;
 mod devicons_tests;
 #[cfg(test)]
 mod error_label_tests;
+#[cfg(test)]
+mod focus_return_tests;
 #[cfg(test)]
 mod git_chip_tests;
 #[cfg(test)]

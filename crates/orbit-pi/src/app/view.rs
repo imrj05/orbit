@@ -582,7 +582,9 @@ impl Render for OrbitApp {
         if let Some(dialog) = &dialog_layer {
             if self.dialog_focus_pending {
                 self.dialog_focus_pending = false;
-                window.focus(&dialog.read(cx).focus_handle(cx));
+                let focus = dialog.read(cx).focus_handle(cx);
+                self.dialog_return_focus.capture(&focus, window, cx);
+                window.focus(&focus);
             }
         }
         // A custom-UI surface owns the keyboard while it is open; the newest
@@ -598,11 +600,15 @@ impl Render for OrbitApp {
         // The inline approval bar owns the keyboard the same way.
         if self.approval_focus_pending {
             self.approval_focus_pending = false;
+            self.approval_return_focus
+                .capture(&self.approval_focus, window, cx);
             window.focus(&self.approval_focus);
         }
         // The update modal owns the keyboard (Escape dismisses) once open.
         if self.updater_dialog_focus_pending {
             self.updater_dialog_focus_pending = false;
+            self.updater_return_focus
+                .capture(&self.updater_dialog_focus, window, cx);
             window.focus(&self.updater_dialog_focus);
         }
         // The inline ask panel owns the keyboard while it is open.

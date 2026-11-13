@@ -225,12 +225,13 @@ impl OrbitApp {
     }
 
     /// Close the modal without acting. A staged release stays staged, so the
-    /// download control keeps offering it. Focus returns to the composer so
-    /// typing continues after the modal closes.
+    /// download control keeps offering it. Focus returns to whatever the
+    /// modal took it from.
     pub(super) fn dismiss_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.updater_history_open = false;
         if self.updater_dialog.take().is_some() {
-            self.input.read(cx).focus(window);
+            let opener = self.updater_return_focus.take();
+            self.return_focus(opener, window, cx);
             cx.notify();
         }
     }
