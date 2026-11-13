@@ -211,6 +211,10 @@ pub struct ComposerInput {
     /// Long pasted text since the app last drained it — the app turns these
     /// into collapsible pills instead of flooding the box.
     pub pasted_texts: Vec<String>,
+    /// Whether a paste may set files, images and long text aside in the
+    /// `pasted_*` queues above. Only the chat composer's are ever drained, so
+    /// any other field takes the clipboard's text inline instead.
+    attachments: bool,
     /// Caret blink: whether the caret paints this frame, the epoch that
     /// invalidates superseded timers, and the pending timer task (dropped
     /// when a newer wake replaces it, which cancels it).
@@ -277,6 +281,7 @@ impl ComposerInput {
             pasted_texts: Vec::new(),
             pasted_images: Vec::new(),
             pasted_files: Vec::new(),
+            attachments: false,
             caret_visible: true,
             blink_active: false,
             blink_epoch: 0,
@@ -405,6 +410,13 @@ impl ComposerInput {
     /// `max_lines`.
     pub fn with_fill(mut self, fill: bool) -> Self {
         self.fill = fill;
+        self
+    }
+
+    /// Let a paste become attachments: files, images and long-text pills the
+    /// app drains (chat composer only).
+    pub fn with_attachments(mut self, attachments: bool) -> Self {
+        self.attachments = attachments;
         self
     }
 
@@ -1041,56 +1053,69 @@ impl ComposerInput {
         if self.is_composing() {
             return;
         }
-        // Finder also supplies a generic file icon as an image; use the
-        // actual file URL before considering that preview.
-        let files = crate::platform::clipboard_file_paths();
-        if !files.is_empty() {
-            self.pasted_files.extend(files);
-            cx.notify();
-            return;
-        }
-        let item = cx.read_from_clipboard();
-        // Pasted images become message attachments ("Show pasted
-        // images as attachments") — the app drains `pasted_images` and
-        // renders chips above the composer.
-        let mut images: Vec<Image> = item
-            .as_ref()
-            .map(|item| {
-                item.entries()
-                    .iter()
-                    .filter_map(|entry| match entry {
-                        ClipboardEntry::Image(image) => Some(image.clone()),
-                        ClipboardEntry::String(_) => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        // GPUI misses the formats screenshot tools actually write: a CF_DIB
-        // bitmap on Windows, and a TIFF that it never reaches on macOS once
-        // the pasteboard also carries a path or caption. Read that image
-        // before the text branch, or the shortcut pastes the caption and
-        // drops the picture.
-        if images.is_empty() {
-            if let Some(bytes) = crate::platform::clipboard_image_png() {
-                images.push(Image::from_bytes(gpui::ImageFormat::Png, bytes));
-            }
-        }
-        if !images.is_empty() {
-            self.pasted_images.extend(images);
-            cx.notify();
-            return;
-        }
-        if let Some(text) = item.as_ref().and_then(|item| item.text()) {
-            #[cfg(target_os = "linux")]
-            if let Some(files) = crate::platform::clipboard_uri_list(&text) {
+        // Only the chat composer's attachment queues are ever drained. Any
+        // other field (Report a bug, dialogs, commit messages) would swallow
+        // what it set aside, so it pastes the clipboard's text, however long
+        // (issue #125).
+        if self.attachments {
+            // Finder also supplies a generic file icon as an image; use the
+            // actual file URL before considering that preview.
+            let files = crate::platform::clipboard_file_paths();
+            if !files.is_empty() {
                 self.pasted_files.extend(files);
                 cx.notify();
                 return;
             }
+        }
+        let item = cx.read_from_clipboard();
+        if self.attachments {
+            // Pasted images become message attachments ("Show pasted
+            // images as attachments") — the app drains `pasted_images` and
+            // renders chips above the composer.
+            let mut images: Vec<Image> = item
+                .as_ref()
+                .map(|item| {
+                    item.entries()
+                        .iter()
+                        .filter_map(|entry| match entry {
+                            ClipboardEntry::Image(image) => Some(image.clone()),
+                            ClipboardEntry::String(_) => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // GPUI misses the formats screenshot tools actually write: a
+            // CF_DIB bitmap on Windows, and a TIFF that it never reaches on
+            // macOS once the pasteboard also carries a path or caption. Read
+            // that image before the text branch, or the shortcut pastes the
+            // caption and drops the picture.
+            if images.is_empty() {
+                if let Some(bytes) = crate::platform::clipboard_image_png() {
+                    images.push(Image::from_bytes(gpui::ImageFormat::Png, bytes));
+                }
+            }
+            if !images.is_empty() {
+                self.pasted_images.extend(images);
+                cx.notify();
+                return;
+            }
+        }
+        if let Some(text) = item.as_ref().and_then(|item| item.text()) {
+            // Windows terminals copy `\r\n`; lines here split on `\n` alone,
+            // so a bare `\r` would linger at the end of every pasted row.
+            let text = normalize_newlines(&text);
+            #[cfg(target_os = "linux")]
+            if self.attachments {
+                if let Some(files) = crate::platform::clipboard_uri_list(&text) {
+                    self.pasted_files.extend(files);
+                    cx.notify();
+                    return;
+                }
+            }
             // A long paste collapses into a pill above the composer — pasting
             // 200 lines of log must not turn the box into a scroll trap. The
             // app drains `pasted_texts` and folds the text back in on send.
-            if should_pill_paste(&text) {
+            if self.attachments && should_pill_paste(&text) {
                 self.pasted_texts.push(text);
                 cx.notify();
             } else {
@@ -1391,6 +1416,12 @@ fn cx_focus_handle(cx: &mut Context<ComposerInput>) -> FocusHandle {
 /// than landing inline in the composer.
 pub(crate) const PASTE_PILL_MIN_LINES: usize = 10;
 pub(crate) const PASTE_PILL_MIN_CHARS: usize = 1000;
+
+/// `text` with Windows (`\r\n`) and classic Mac (`\r`) line endings turned
+/// into the `\n` the editor splits lines on.
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
 
 /// True when pasted `text` is long enough to become an attachment-style pill
 /// instead of flooding the box (see `paste` above).
@@ -2393,8 +2424,8 @@ impl Render for ComposerInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        horizontal_scroll, line_at_offset, line_range_at, mention_runs, resolve_placeholder,
-        scrollbar_thumb_height, word_range_at, PromptHistory,
+        horizontal_scroll, line_at_offset, line_range_at, mention_runs, normalize_newlines,
+        resolve_placeholder, scrollbar_thumb_height, word_range_at, PromptHistory,
     };
     use gpui::{px, SharedString, TextRun};
 
@@ -2623,6 +2654,14 @@ mod tests {
 
     /// A long single-line value scrolls so the caret stays inside the field,
     /// capped at the line's own width and zero once the caret is back in view.
+    /// Windows and classic Mac line endings become the `\n` lines split on.
+    #[test]
+    fn pasted_line_endings_normalize() {
+        assert_eq!(normalize_newlines("a\r\nb\rc\nd"), "a\nb\nc\nd");
+        assert_eq!(normalize_newlines("\r\n\r\n"), "\n\n");
+        assert_eq!(normalize_newlines("plain"), "plain");
+    }
+
     #[test]
     fn horizontal_scroll_follows_the_caret() {
         // Caret already inside the field: no scroll.
@@ -2816,6 +2855,37 @@ mod geometry_tests {
         draw(cx);
         wheel_over_input(cx);
         assert!(page.offset().y < px(0.), "the page scrolled");
+    }
+
+    /// A field outside the chat composer has nobody to drain a long-paste
+    /// pill, so a multi-line terminal copy must land inline, whole, with its
+    /// `\r\n` endings folded to `\n` (issue #125).
+    #[gpui::test]
+    fn a_plain_field_pastes_long_terminal_text_inline(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.new(|cx| ComposerInput::new(cx).with_max_lines(8))
+        });
+        let lines: Vec<String> = (1..=40).map(|n| format!("pi output {n}  ")).collect();
+        let copied = lines.join("\r\n");
+        assert!(
+            should_pill_paste(&copied),
+            "long enough to pill in the composer"
+        );
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(copied));
+            input.update(cx, |input, cx| input.paste(&Paste, window, cx));
+        });
+        let (text, pills) = cx.update(|_, cx| {
+            let input = input.read(cx);
+            (input.text(), input.pasted_texts.len())
+        });
+        assert_eq!(text, lines.join("\n"));
+        assert_eq!(
+            pills, 0,
+            "nothing was set aside for a drain that never runs"
+        );
     }
 
     /// Up/Down move the caret one visual row across logical lines, the way a

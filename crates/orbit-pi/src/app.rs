@@ -1673,6 +1673,7 @@ impl OrbitApp {
                 .with_key_context("Composer ChatComposer")
                 .with_autocomplete(autocomplete.clone())
                 .with_prompt_history(prompt_history.clone())
+                .with_attachments(true)
         });
         // The chat input is the workbench's home tab stop; every other
         // ComposerInput (filters, rename fields, pickers) stays out of the
