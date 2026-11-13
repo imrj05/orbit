@@ -707,6 +707,8 @@ pub struct OrbitApp {
     /// tool output (persisted to `~/.orbit-pi/exports.json`). Off by default —
     /// the visible projection is what the conversation reads as.
     export_prefs: crate::export_prefs::Prefs,
+    /// Commands most recently run from the palette, newest first.
+    palette_recents: crate::palette_recents::Recents,
     notification_auth: notifications::DesktopAuth,
     notification_auth_pending: bool,
     /// Whether this window is frontmost. Notifications are held while it is:
@@ -2364,6 +2366,7 @@ impl OrbitApp {
             bug_report_error: None,
             notification_prefs: notifications::Prefs::load(),
             export_prefs: crate::export_prefs::Prefs::load(),
+            palette_recents: crate::palette_recents::Recents::load(),
             notification_auth: notifications::DesktopAuth::Unknown,
             notification_auth_pending: false,
             window_active: true,

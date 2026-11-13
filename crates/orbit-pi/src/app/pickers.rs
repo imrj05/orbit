@@ -484,6 +484,7 @@ impl OrbitApp {
         // the palette hides those two commands while a run is in flight.
         let running = self.is_running();
         let snapshot = PaletteSnapshot {
+            recent_commands: self.palette_recents.commands().to_vec(),
             sessions: self.sidebar_sessions(),
             active_path: self.current_session_path.clone(),
             active_pinned: self
@@ -565,7 +566,14 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         match command {
-            PaletteCommand::Run(id) => self.run_command(id, window, cx),
+            PaletteCommand::Run(id) => {
+                self.palette_recents.record(id);
+                // Tests build the app against the real home directory; only a
+                // running app writes the user's list.
+                #[cfg(not(test))]
+                self.palette_recents.persist();
+                self.run_command(id, window, cx)
+            }
             PaletteCommand::OpenSettings(section) => {
                 self.settings_open = true;
                 self.set_settings_section(section, cx);

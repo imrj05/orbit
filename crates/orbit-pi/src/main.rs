@@ -85,6 +85,7 @@ mod model_selector_match;
 mod motion;
 mod notifications;
 mod onboarding;
+mod palette_recents;
 mod pi_install;
 mod pi_update;
 mod pins;
