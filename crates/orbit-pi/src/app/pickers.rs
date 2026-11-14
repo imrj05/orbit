@@ -370,6 +370,19 @@ impl OrbitApp {
             })
             .ok();
         }) as Box<dyn Fn(bool, &mut Window, &mut App)>;
+        let this = cx.weak_entity();
+        let on_manage_models = Box::new(
+            move |provider: Option<&str>, window: &mut Window, cx: &mut App| {
+                let provider = provider.map(str::to_owned);
+                this.update(cx, |app, cx| {
+                    // Close first, so the picker's focus is handed back
+                    // before Settings takes over the main pane.
+                    app.close_model_selector(window, cx);
+                    app.open_models_settings(provider, cx);
+                })
+                .ok();
+            },
+        ) as Box<dyn Fn(Option<&str>, &mut Window, &mut App)>;
 
         let selector = cx.new(|cx| {
             ModelSelector::new(
@@ -383,6 +396,7 @@ impl OrbitApp {
                 on_select_model,
                 on_select_level,
                 on_dismiss,
+                on_manage_models,
                 cx,
             )
         });

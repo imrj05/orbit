@@ -479,6 +479,8 @@ pub struct OrbitApp {
     queue_edit: Option<QueueEdit>,
     /// Settings → Agent: `set_follow_up_mode` value.
     follow_up_mode: String,
+    /// Settings → Agent: `set_steering_mode` value.
+    steering_mode: String,
     /// Settings → Agent: `set_auto_compaction` value (read back from state).
     auto_compaction: bool,
     /// Settings → Agent: `set_auto_retry` value. pi's `get_state` does not
@@ -729,6 +731,14 @@ pub struct OrbitApp {
     /// opens): the activation observer that gates notifications, and the
     /// window-closed observer that clears that gate.
     _window_watchers: Vec<Subscription>,
+    /// The main window's last frame (#131), written to `window.json` on a
+    /// debounce, on close and on quit. `None` until a window registers.
+    window_state: Option<crate::window_state::Saved>,
+    /// The pending debounced write of `window_state`; replacing it cancels
+    /// the previous one.
+    window_state_save: Option<gpui::Task<()>>,
+    /// Keeps the bounds, close and quit observers behind `window_state`.
+    _window_state_watchers: Vec<Subscription>,
     /// Visited sessions, oldest first — drives the top-bar back/forward
     /// navigation. `history_index` points at the active entry.
     session_history: Vec<SessionInfo>,
@@ -2285,6 +2295,7 @@ impl OrbitApp {
             queue_replaced: false,
             queue_edit: None,
             follow_up_mode: "one-at-a-time".into(),
+            steering_mode: "one-at-a-time".into(),
             auto_compaction: true,
             auto_retry: true,
             auto_title: crate::auto_title::AutoTitleConfig::load(),
@@ -2391,6 +2402,9 @@ impl OrbitApp {
             awaiting_review: HashMap::new(),
             activate_window_pending: false,
             _window_watchers: Vec::new(),
+            window_state: None,
+            window_state_save: None,
+            _window_state_watchers: Vec::new(),
             session_history: Vec::new(),
             history_index: 0,
             collapsed_workspaces: HashSet::new(),
@@ -2834,6 +2848,61 @@ impl OrbitApp {
             app.input.read(cx).focus(window);
         });
         self._window_watchers = vec![activation, closed, focus_lost];
+    }
+
+    /// Remember where the main window is, so the next launch reopens it
+    /// there (#131). `opened_as` is the frame the window was asked to open
+    /// with: macOS reports a zoomed window's zoomed frame, so the restore
+    /// frame has to be carried from before the zoom.
+    ///
+    /// A resize or move updates the in-memory state at once and writes
+    /// `window.json` after the frame has been still for half a second;
+    /// closing the window or quitting writes it immediately.
+    pub(crate) fn watch_window_bounds(
+        &mut self,
+        opened_as: crate::window_state::Saved,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.window_state = Some(opened_as);
+        let bounds = cx.observe_window_bounds(window, |app, window, cx| {
+            let display = window
+                .display(cx)
+                .and_then(|d| d.uuid().ok())
+                .map(|uuid| uuid.to_string());
+            let state = crate::window_state::Saved::observe(
+                app.window_state.as_ref(),
+                window.window_bounds(),
+                window.is_maximized(),
+                display,
+            );
+            if app.window_state.as_ref() == Some(&state) {
+                return;
+            }
+            app.window_state = Some(state.clone());
+            app.window_state_save = Some(cx.background_spawn(async move {
+                gpui::Timer::after(std::time::Duration::from_millis(500)).await;
+                state.persist();
+            }));
+        });
+        let this = cx.weak_entity();
+        let closed = cx.on_window_closed(move |cx| {
+            this.update(cx, |app, _| app.flush_window_state()).ok();
+        });
+        let quit = cx.on_app_quit(|app, _| {
+            app.flush_window_state();
+            async {}
+        });
+        self._window_state_watchers = vec![bounds, closed, quit];
+    }
+
+    /// Write the pending window frame now instead of after the debounce.
+    fn flush_window_state(&mut self) {
+        if self.window_state_save.take().is_some() {
+            if let Some(state) = &self.window_state {
+                state.persist();
+            }
+        }
     }
 
     /// Sidebar view of the session store: the sessions on disk plus a
@@ -4175,6 +4244,8 @@ mod focus_return_tests;
 #[cfg(test)]
 mod git_chip_tests;
 #[cfg(test)]
+mod manage_models_tests;
+#[cfg(test)]
 mod mention_index_tests;
 #[cfg(test)]
 mod new_task_layout_tests;
@@ -4228,6 +4299,8 @@ mod sidebar_sort_tests;
 mod sidepane_full_width_tests;
 #[cfg(test)]
 mod stale_error_tests;
+#[cfg(test)]
+mod steering_mode_tests;
 #[cfg(test)]
 mod stop_escalation_tests;
 #[cfg(test)]

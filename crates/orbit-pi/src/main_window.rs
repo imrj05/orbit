@@ -17,7 +17,7 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 
-use crate::{app::OrbitApp, platform, theme};
+use crate::{app::OrbitApp, platform, theme, window_state};
 
 /// The shell model, parked while no window is open.
 ///
@@ -77,25 +77,15 @@ fn shell(cx: &mut App) -> Entity<OrbitApp> {
 pub fn open(cx: &mut App) {
     let app = shell(cx);
 
-    // Open maximized: full width of the screen, filling the visible
-    // frame. The computed bounds are the
-    // restore size macOS returns to when the window is un-zoomed,
-    // sized relative to the display so it always fits even on
-    // small/scaled screens.
-    let (w, h) = match cx.primary_display().map(|d| d.bounds().size) {
-        Some(s) => (
-            (f32::from(s.width) * 0.85).min(1440.),
-            (f32::from(s.height) * 0.9).min(920.),
-        ),
-        None => (1240., 840.),
-    };
-    let restore_bounds = Bounds::centered(None, size(px(w), px(h)), cx);
+    // Keep the window usable when shrunk: sidebar (min 200px) + a
+    // readable transcript + the composer.
+    let min_size = size(px(960.), px(640.));
+    let (window_bounds, display_id, opened_as) = initial_bounds(min_size, cx);
     let Ok(_window) = cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Maximized(restore_bounds)),
-            // Keep the window usable when shrunk: sidebar (min
-            // 200px) + a readable transcript + the composer.
-            window_min_size: Some(size(px(960.), px(640.))),
+            window_bounds: Some(window_bounds),
+            display_id,
+            window_min_size: Some(min_size),
             titlebar: Some(platform::titlebar_options()),
             app_id: Some("dev.orbit.pi".into()),
             focus: true,
@@ -109,6 +99,7 @@ pub fn open(cx: &mut App) {
             // the user is already looking at the transcript.
             app.update(cx, |app, cx| {
                 app.watch_window_activation(window, cx);
+                app.watch_window_bounds(opened_as, window, cx);
                 let handle = app.input.read(cx).focus_handle(cx);
                 window.focus(&handle);
             });
@@ -135,6 +126,62 @@ pub fn open(cx: &mut App) {
     // nor macOS's reopen notification activates `NSApp` on its own, so the
     // window would otherwise stay behind whatever is frontmost.
     cx.activate(true);
+}
+
+/// Where the main window opens: the frame it last had (#131), clamped onto
+/// a display that is still attached, or — on first launch, or when that
+/// display is gone — maximized over a centred restore frame sized to the
+/// primary display so it fits even on small or scaled screens.
+///
+/// Also returns the state the window opened as, which seeds the bounds
+/// watcher: macOS reports a zoomed window's zoomed frame, so the restore
+/// frame must be known before the first zoom.
+fn initial_bounds(
+    min_size: gpui::Size<gpui::Pixels>,
+    cx: &mut App,
+) -> (WindowBounds, Option<gpui::DisplayId>, window_state::Saved) {
+    let displays = cx.displays();
+    let restored = window_state::Saved::load().and_then(|saved| {
+        let infos: Vec<_> = displays
+            .iter()
+            .map(|d| window_state::DisplayInfo {
+                uuid: d.uuid().ok().map(|u| u.to_string()),
+                bounds: d.bounds(),
+            })
+            .collect();
+        let restore = window_state::restore(&saved, &infos, min_size)?;
+        Some((restore, infos))
+    });
+    if let Some((restore, infos)) = restored {
+        let display = &displays[restore.display];
+        return (
+            restore.window_bounds(),
+            Some(display.id()),
+            window_state::Saved {
+                bounds: restore.bounds,
+                maximized: restore.maximized,
+                display: infos[restore.display].uuid.clone(),
+            },
+        );
+    }
+
+    let (w, h) = match cx.primary_display().map(|d| d.bounds().size) {
+        Some(s) => (
+            (f32::from(s.width) * 0.85).min(1440.),
+            (f32::from(s.height) * 0.9).min(920.),
+        ),
+        None => (1240., 840.),
+    };
+    let restore_bounds = Bounds::centered(None, size(px(w), px(h)), cx);
+    (
+        WindowBounds::Maximized(restore_bounds),
+        None,
+        window_state::Saved {
+            bounds: restore_bounds,
+            maximized: true,
+            display: None,
+        },
+    )
 }
 
 /// Drain pi events into the UI for the life of the app.

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Orbit reopens the window where you left it.** The main window's frame, whether it
+  was maximized, and the display it was on are saved to `~/.orbit-pi/window.json` (half a
+  second after a move or resize stops, and on close and quit) and restored on the next
+  launch. A frame that no longer fits is shrunk and moved onto its display, and a display
+  that is no longer attached falls back to the first-launch layout, so a window can never
+  open off-screen (#131).
+- **Manage models… from the model picker.** The picker's footer links to Settings →
+  Models, filtered to the provider in view (the scoped provider, or the active model's).
+  ⌘, (Ctrl+, on Windows and Linux) does the same while the picker has focus. The model
+  picker's footer drops its arrow and Enter hints to make room; the thinking picker keeps
+  them (#131).
+- **Steering delivery mode in Settings → Agent.** Steering messages get the same
+  `One at a time` / `All` choice that follow-ups already had, read back from pi's session
+  state (#131).
+
 ### Fixed
 
 - **Orbit no longer fails to start when `pi-subagents` is installed.** pi 1.5 treats two

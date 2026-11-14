@@ -126,6 +126,7 @@ mod wallpaper;
 mod wallpaper_fx;
 mod watch;
 mod widgets;
+mod window_state;
 mod workflow;
 mod working_folder;
 mod workspace_logo;

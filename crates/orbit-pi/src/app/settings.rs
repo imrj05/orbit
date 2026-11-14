@@ -5465,6 +5465,13 @@ impl OrbitApp {
             ),
             self.setting_row(
                 theme,
+                &tr!("settings.steering_messages"),
+                Some(&tr!("settings.steering_messages_hint")),
+                None,
+                Some(self.steering_mode_toggle(theme, this.clone())),
+            ),
+            self.setting_row(
+                theme,
                 &tr!("settings.follow_up_messages"),
                 Some(&tr!(
                     "settings.messages_sent_while_the_agent_is_running_wait_in"
@@ -5959,10 +5966,38 @@ impl OrbitApp {
 
     /// Two-button segmented control for the follow-up delivery mode.
     pub(super) fn follow_up_mode_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let all = self.follow_up_mode == "all";
+        Self::delivery_mode_toggle(
+            self.follow_up_mode == "all",
+            ["follow-up-mode-one", "follow-up-mode-all"],
+            Self::set_follow_up_mode,
+            theme,
+            this,
+        )
+    }
+
+    /// Two-button segmented control for the steering delivery mode (#131):
+    /// the same choice as follow-ups, for the lane that jumps the queue.
+    pub(super) fn steering_mode_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        Self::delivery_mode_toggle(
+            self.steering_mode == "all",
+            ["steering-mode-one", "steering-mode-all"],
+            Self::set_steering_mode,
+            theme,
+            this,
+        )
+    }
+
+    /// `One at a time` / `All`: how pi drains one of its two message queues.
+    fn delivery_mode_toggle(
+        all: bool,
+        ids: [&'static str; 2],
+        set: fn(&mut OrbitApp, bool, &mut Context<OrbitApp>),
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
         let segments = [
-            (tr!("settings.one_at_a_time"), false, "follow-up-mode-one"),
-            (tr!("settings.all"), true, "follow-up-mode-all"),
+            (tr!("settings.one_at_a_time"), false, ids[0]),
+            (tr!("settings.all"), true, ids[1]),
         ];
         let count = segments.len();
         // One segmented control: only its outer corners round, and the two
@@ -5997,7 +6032,7 @@ impl OrbitApp {
                                 .hover_state(&theme)
                         })
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                            this.update(cx, |app, cx| app.set_follow_up_mode(value_all, cx));
+                            this.update(cx, |app, cx| set(app, value_all, cx));
                         })
                         .child(label)
                     }),
@@ -6010,6 +6045,14 @@ impl OrbitApp {
         let mode = if all { "all" } else { "one-at-a-time" }.to_string();
         self.follow_up_mode = mode.clone();
         self.send(CommandBody::SetFollowUpMode { mode }, "set_follow_up_mode");
+        cx.notify();
+    }
+
+    /// Update the steering mode locally and push it to pi.
+    pub(super) fn set_steering_mode(&mut self, all: bool, cx: &mut Context<Self>) {
+        let mode = if all { "all" } else { "one-at-a-time" }.to_string();
+        self.steering_mode = mode.clone();
+        self.send(CommandBody::SetSteeringMode { mode }, "set_steering_mode");
         cx.notify();
     }
 
@@ -8436,6 +8479,28 @@ impl OrbitApp {
         self.settings_open = true;
         self.set_settings_section(SettingsSection::General, cx);
         self.sync_terminal_active(cx);
+    }
+
+    /// Settings → Models, filtered to `provider` when the catalog has it —
+    /// the model picker's **Manage models…** (#131). An unknown or missing
+    /// provider shows every provider rather than an empty page.
+    pub(super) fn open_models_settings(
+        &mut self,
+        provider: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        // Switch before opening so a retained section is refreshed on re-entry.
+        self.set_settings_section(SettingsSection::Models, cx);
+        if self.settings_section != SettingsSection::Models {
+            // An unsaved subagent edit asked to stay; its guard owns the
+            // navigation from here.
+            return;
+        }
+        let providers = self.model_providers();
+        self.models_provider_filter = provider.filter(|p| providers.contains(p));
+        self.settings_open = true;
+        self.sync_terminal_active(cx);
+        cx.notify();
     }
 
     pub(super) fn on_open_settings(

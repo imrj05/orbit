@@ -1209,6 +1209,7 @@ impl OrbitApp {
                     || self.execution.status().is_in_progress();
                 self.is_compacting = state.is_compacting;
                 self.follow_up_mode = state.follow_up_mode;
+                self.steering_mode = state.steering_mode;
                 self.auto_compaction = state.auto_compaction_enabled;
                 match &state.session_name {
                     Some(name) if self.session_name.as_deref() != Some(name.as_str()) => {
