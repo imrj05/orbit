@@ -99,7 +99,7 @@ function deps(spawn, extra = {}) {
     spawn,
     home,
     tempDir: home,
-    env: { PATH: process.env.PATH ?? "" },
+    env: { PATH: process.env.PATH ?? "", ORBIT_SUBAGENT_STATUS_TOKEN: "test" },
     now: () => 1000,
     piBinary: "pi",
     ...extra,
@@ -214,10 +214,25 @@ test("a later session decides again, so one unreadable list is not permanent", (
   readable = true;
   pi.fire("session_start", ctx);
   assert.equal(pi.tools.length, 1, "the next session registers");
+  pi.fire("before_agent_start", ctx);
   const status = JSON.parse(
-    fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status.json"), "utf8"),
+    fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status-test.json"), "utf8"),
   );
   assert.equal(status.active, true, "and the stand-down banner is cleared");
+});
+
+test("a later registration is detected before the first agent turn", () => {
+  let winner = [];
+  const pi = fakePi({ getAllTools: () => winner });
+  activate(pi, deps(fakeSpawn()));
+  const eventCtx = { ...ctx("session-a"), ui: { notify() {} } };
+  pi.fire("session_start", eventCtx);
+  winner = [{ name: "subagent", sourceInfo: { path: "/foreign/index.js" } }];
+  pi.fire("before_agent_start", eventCtx);
+  const status = JSON.parse(fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status-test.json"), "utf8"));
+  assert.equal(status.active, false);
+  assert.equal(status.owner, "/foreign/index.js");
+  assert.equal(status.sessionId, "session-a");
 });
 
 test("an owner that reports no file is named in words, not invented", () => {
@@ -228,7 +243,7 @@ test("an owner that reports no file is named in words, not invented", () => {
   pi.fire("session_start", { ui: { notify() {} } });
   assert.equal(pi.tools.length, 0);
   const status = JSON.parse(
-    fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status.json"), "utf8"),
+    fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status-test.json"), "utf8"),
   );
   assert.equal(status.active, false);
   assert.equal(status.owner, null, "no path was reported, so none is claimed");
@@ -255,12 +270,14 @@ test("a registration that another extension shadows is reported, not pretended",
 });
 
 test("the decision reaches the file Settings → Subagents reads", () => {
-  const statusFile = path.join(home, ".orbit-pi", "subagents-status.json");
+  const statusFile = path.join(home, ".orbit-pi", "subagents-status-test.json");
 
   // Free name: reported as active, so an old stand-down cannot outlive the
   // cause of it.
   const free = fakePi();
   startSession(free);
+  assert.equal(fs.existsSync(statusFile), false, "startup has not finished all handlers");
+  free.fire("before_agent_start", ctx());
   let status = JSON.parse(fs.readFileSync(statusFile, "utf8"));
   assert.equal(status.active, true);
   assert.equal(status.tool, "subagent");

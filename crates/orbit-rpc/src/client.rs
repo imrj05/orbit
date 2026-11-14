@@ -90,6 +90,7 @@ const PI_BIN_NAMES: &[&str] = &["pi"];
 
 pub struct PiClient {
     child: Child,
+    subagent_status_token: String,
     commands_tx: Sender<Outgoing>,
     events_rx: Receiver<Event>,
     pending: Arc<Mutex<HashMap<String, Sender<Event>>>>,
@@ -262,6 +263,17 @@ impl PiClient {
         env: &[(&str, &str)],
         extra_args: &[String],
     ) -> Result<Self> {
+        static NEXT_STATUS_TOKEN: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let token = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            NEXT_STATUS_TOKEN.fetch_add(1, Ordering::Relaxed)
+        );
         let mut command = std::process::Command::new(bin);
         // `--approve` grants *project trust* (load project-local settings,
         // extensions, and skills) — it is not tool-call approval. This is the
@@ -294,6 +306,7 @@ impl PiClient {
         for (key, value) in env {
             command.env(key, value);
         }
+        command.env("ORBIT_SUBAGENT_STATUS_TOKEN", &token);
         let mut child = command
             .spawn()
             .with_context(|| format!("failed to spawn `{bin} --mode rpc`"))?;
@@ -314,6 +327,7 @@ impl PiClient {
 
         Ok(Self {
             child,
+            subagent_status_token: token,
             commands_tx,
             events_rx,
             pending,
@@ -393,6 +407,10 @@ impl PiClient {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         ring.iter().rev().take(limit).rev().cloned().collect()
+    }
+
+    pub fn subagent_status_token(&self) -> &str {
+        &self.subagent_status_token
     }
 
     pub fn child_pid(&self) -> u32 {

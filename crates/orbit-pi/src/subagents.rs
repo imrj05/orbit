@@ -249,12 +249,12 @@ pub(crate) fn save_to(file: &Path, config: &Config) -> Result<(), String> {
     })
 }
 
-/// `~/.orbit-pi/subagents-status.json`.
-pub(crate) fn status_path() -> PathBuf {
+/// Status files belong to a single spawned process, never to the home globally.
+pub(crate) fn status_path(token: &str) -> PathBuf {
     crate::platform::home_dir_opt()
         .unwrap_or_default()
         .join(".orbit-pi")
-        .join("subagents-status.json")
+        .join(format!("subagents-status-{token}.json"))
 }
 
 /// What the bundled extension last decided about the `subagent` name (D-C).
@@ -274,13 +274,26 @@ pub(crate) struct Status {
 
 /// `None` when no session has reported yet — absence is not a verdict, so the
 /// page shows nothing rather than claiming a state nobody checked.
-pub(crate) fn load_status() -> Option<Status> {
-    load_status_from(&status_path())
+pub(crate) fn load_status(token: &str, session_id: &str) -> Option<Status> {
+    load_session_status_from(&status_path(token), session_id)
+}
+
+fn load_session_status_from(file: &Path, session_id: &str) -> Option<Status> {
+    let text = fs::read_to_string(file).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    if value.get("sessionId").and_then(Value::as_str) != Some(session_id) {
+        return None;
+    }
+    parse_status(&value)
 }
 
 pub(crate) fn load_status_from(file: &Path) -> Option<Status> {
     let text = fs::read_to_string(file).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
+    parse_status(&value)
+}
+
+fn parse_status(value: &Value) -> Option<Status> {
     let active = value.get("active").and_then(Value::as_bool)?;
     Some(Status {
         active,
@@ -433,6 +446,19 @@ mod tests {
         let saved: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(saved["maxConcurrent"], json!(4));
         assert_eq!(saved["agents"]["worker"]["mode"], "plan");
+    }
+
+    #[test]
+    fn status_is_scoped_to_the_live_session() {
+        let file = scratch("status-session");
+        fs::write(
+            &file,
+            json!({"sessionId": "one", "active": false}).to_string(),
+        )
+        .unwrap();
+        assert!(load_session_status_from(&file, "one").is_some());
+        assert_eq!(load_session_status_from(&file, "two"), None);
+        assert_ne!(status_path("process-one"), status_path("process-two"));
     }
 
     #[test]

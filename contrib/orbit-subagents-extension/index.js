@@ -201,8 +201,25 @@ export default function activate(pi, overrides = {}) {
         };
       }
     }
-    recordStatus(deps, ownership);
-    if (!ownership.active) announceInactive(ctx, ownership);
+    // Later session_start handlers may still register this name. Do not
+    // publish a provisional active verdict as if startup had completed.
+    if (ownership.active) clearStatus(deps);
+    else {
+      recordStatus(deps, ownership, ctx);
+      announceInactive(ctx, ownership);
+    }
+  });
+
+  // Unlike a timer scheduled from session_start, this hook runs after every
+  // session_start handler has completed, including handlers that await I/O.
+  pi.on?.("before_agent_start", (_event, ctx) => {
+    const winner = findTool(pi, TOOL_NAME);
+    if (winner && !isSelf(winner.sourceInfo?.path)) {
+      const wasActive = ownership?.active;
+      ownership = { active: false, reason: "shadowed by another registration", owner: winner.sourceInfo?.path ?? null };
+      if (wasActive) announceInactive(ctx, ownership);
+    }
+    if (ownership) recordStatus(deps, ownership, ctx);
   });
 
   // `deferred`: nothing is registered yet; `session_start` decides (D-C).
@@ -273,7 +290,9 @@ function announceInactive(ctx, ownership) {
 }
 
 function statusPath(deps) {
-  return path.join(deps.home ?? os.homedir(), ".orbit-pi", "subagents-status.json");
+  const token = deps.env.ORBIT_SUBAGENT_STATUS_TOKEN;
+  if (!token || !/^[a-zA-Z0-9-]+$/.test(token)) return null;
+  return path.join(deps.home ?? os.homedir(), ".orbit-pi", `subagents-status-${token}.json`);
 }
 
 /**
@@ -284,9 +303,18 @@ function statusPath(deps) {
  * Best effort by design: a read-only home must not take the session down with
  * it, and a stale file is worse than a new one but better than a crash.
  */
-function recordStatus(deps, ownership) {
+function clearStatus(deps) {
   const file = statusPath(deps);
+  if (file) {
+    try { fs.unlinkSync(file); } catch { /* no previous report */ }
+  }
+}
+
+function recordStatus(deps, ownership, ctx) {
+  const file = statusPath(deps);
+  if (!file) return;
   const payload = {
+    sessionId: ctx?.sessionManager?.getSessionId?.() ?? null,
     active: ownership.active === true,
     tool: TOOL_NAME,
     reason: ownership.reason ?? "",
@@ -722,7 +750,7 @@ export async function runChild(state, {
     toolsPresent: agent?.toolsPresent === true,
     ceiling: state.capability,
   });
-  const env = { ...deps.env, ...buildEnv({
+  const env = { ...deps.env, ORBIT_SUBAGENT_STATUS_TOKEN: "", ...buildEnv({
     parentSessionId: sessionId,
     agentName: state.agent,
     ceiling: state.capability,

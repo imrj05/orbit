@@ -52,6 +52,13 @@ pub(super) enum SubagentAction {
     /// The banner's remedy: the other extension owns the name because it was
     /// installed from Settings → Plugins.
     OpenPlugins,
+    NavigateSettings(SettingsSection),
+    CloseSettings,
+    OpenWorktrees,
+    OpenFile(PathBuf, String),
+    NewSession,
+    NewSessionInWorkspace(PathBuf),
+    NewGithubTask(PathBuf, String),
 }
 
 /// The limits `subagents.json` owns, in the order the page lists them.
@@ -2147,9 +2154,15 @@ impl OrbitApp {
         };
         press(button)
             .child(div().child(label))
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                 let action = action.clone();
-                this.update(cx, |app, cx| app.apply_subagent_action(action, cx));
+                this.update(cx, |app, cx| {
+                    if matches!(action, SubagentAction::ConfirmDiscard) {
+                        app.confirm_subagent_discard(window, cx);
+                    } else {
+                        app.apply_subagent_action(action, cx);
+                    }
+                });
             })
             .into_any_element()
     }
@@ -2162,10 +2175,26 @@ impl OrbitApp {
         self.subagents = agents;
         self.subagents_skipped = skipped;
         self.subagent_config = subagents::load();
-        // Read fresh too: the answer changes when the user installs or removes
-        // the extension that owns the name, and the page must not go on
-        // claiming the opposite.
-        self.subagent_status = subagents::load_status();
+        self.refresh_subagent_status(cx);
+        // Reports can arrive after the page opens, and the active client or
+        // session can change underneath it. Never rebuild the editor for this.
+        if self.subagent_status_task.is_none() {
+            self.subagent_status_task = Some(cx.spawn(async move |this, cx| loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                if this
+                    .update(cx, |app, cx| {
+                        if app.settings_open && app.settings_section == SettingsSection::Subagents {
+                            app.refresh_subagent_status(cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }));
+        }
         let still_there = self
             .selected_subagent
             .as_ref()
@@ -2176,6 +2205,24 @@ impl OrbitApp {
         self.subagent_error = None;
         self.rebuild_subagent_editor(cx);
         cx.notify();
+    }
+
+    fn refresh_subagent_status(&mut self, cx: &mut Context<Self>) {
+        let status = self
+            .client
+            .as_ref()
+            .zip(self.session_id.as_deref())
+            .and_then(|(client, session)| {
+                subagents::load_status(client.subagent_status_token(), session)
+            });
+        self.set_subagent_status(status, cx);
+    }
+
+    fn set_subagent_status(&mut self, status: Option<subagents::Status>, cx: &mut Context<Self>) {
+        if self.subagent_status != status {
+            self.subagent_status = status;
+            cx.notify();
+        }
     }
 
     fn selected_agent(&self) -> Option<Agent> {
@@ -2374,13 +2421,63 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// Hold a destructive navigation until the existing discard prompt is answered.
+    pub(super) fn guard_subagent_navigation(
+        &mut self,
+        action: SubagentAction,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.settings_open
+            && self.settings_section == SettingsSection::Subagents
+            && self
+                .subagent_editor
+                .as_ref()
+                .is_some_and(|editor| editor.has_unsaved_edits(cx))
+        {
+            self.subagent_delete_confirm = false;
+            self.subagent_discard_pending = Some(action);
+            self.settings_search.update(cx, |input, cx| input.clear(cx));
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn confirm_subagent_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.subagent_discard_pending.take() {
+            Some(SubagentAction::NewSession) => {
+                self.close_settings_unchecked(cx);
+                self.on_new_session(&crate::NewSession, window, cx);
+            }
+            Some(SubagentAction::NewSessionInWorkspace(cwd)) => {
+                self.close_settings_unchecked(cx);
+                self.on_new_session_in_workspace(cwd, window, cx);
+            }
+            Some(SubagentAction::NewGithubTask(cwd, prompt)) => {
+                self.close_settings_unchecked(cx);
+                self.start_github_task(cwd, prompt, window, cx);
+            }
+            Some(SubagentAction::CloseSettings) => {
+                self.close_settings_unchecked(cx);
+                self.input.read(cx).focus(window);
+            }
+            Some(action) => self.run_subagent_action(action, cx),
+            None => {}
+        }
+    }
+
     /// Single dispatch point for every Subagents-page control.
     pub(super) fn apply_subagent_action(&mut self, action: SubagentAction, cx: &mut Context<Self>) {
         // Leaving the form rebuilds it from disk, so an action that leaves
         // it waits for an answer while there are edits to lose.
         let leaves_form = matches!(
             action,
-            SubagentAction::Select(_) | SubagentAction::New | SubagentAction::Duplicate
+            SubagentAction::Select(_)
+                | SubagentAction::New
+                | SubagentAction::Duplicate
+                | SubagentAction::ConfirmDelete
+                | SubagentAction::UndoDelete
+                | SubagentAction::OpenPlugins
         );
         if leaves_form
             && self
@@ -2418,7 +2515,25 @@ impl OrbitApp {
                 self.subagent_delete_confirm = false;
                 self.rebuild_subagent_editor(cx);
             }
-            SubagentAction::OpenPlugins => self.set_settings_section(SettingsSection::Plugins, cx),
+            SubagentAction::OpenPlugins => {
+                self.set_settings_section_unchecked(SettingsSection::Plugins, cx)
+            }
+            SubagentAction::NavigateSettings(section) => {
+                self.set_settings_section_unchecked(section, cx)
+            }
+            SubagentAction::CloseSettings => self.close_settings_unchecked(cx),
+            // These require the window and are resumed by confirm_subagent_discard.
+            SubagentAction::NewSession
+            | SubagentAction::NewSessionInWorkspace(_)
+            | SubagentAction::NewGithubTask(_, _) => {}
+            SubagentAction::OpenWorktrees => {
+                self.close_settings_unchecked(cx);
+                self.open_worktrees(cx);
+            }
+            SubagentAction::OpenFile(path, display) => {
+                self.close_settings_unchecked(cx);
+                self.open_file_in_viewer(path, display, cx);
+            }
             SubagentAction::New => self.start_new_subagent(cx),
             SubagentAction::Save => self.save_subagent(cx),
             SubagentAction::Duplicate => self.duplicate_subagent(cx),
@@ -2881,18 +2996,23 @@ mod tests {
             });
         });
 
+        let editor_name =
+            cx.update(|_, cx| app.read(cx).subagent_editor.as_ref().unwrap().name.clone());
         // No report yet: absence is not a verdict, so nothing is claimed.
         cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
         assert!(cx.debug_bounds("subagents-inactive").is_none());
 
         cx.update(|_, cx| {
             app.update(cx, |app, cx| {
-                app.subagent_status = Some(crate::subagents::Status {
-                    active: false,
-                    reason: "owned by another extension".into(),
-                    owner: Some("/home/me/.pi/agent/extensions/pi-subagents/index.js".into()),
-                });
-                cx.notify();
+                app.set_subagent_status(
+                    Some(crate::subagents::Status {
+                        active: false,
+                        reason: "owned by another extension".into(),
+                        owner: Some("/home/me/.pi/agent/extensions/pi-subagents/index.js".into()),
+                    }),
+                    cx,
+                );
+                assert_eq!(app.subagent_editor.as_ref().unwrap().name, editor_name);
             });
         });
         cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
@@ -2909,16 +3029,53 @@ mod tests {
         // A later session that owns the name clears the claim.
         cx.update(|_, cx| {
             app.update(cx, |app, cx| {
-                app.subagent_status = Some(crate::subagents::Status {
-                    active: true,
-                    reason: "available".into(),
-                    owner: None,
-                });
-                cx.notify();
+                app.set_subagent_status(
+                    Some(crate::subagents::Status {
+                        active: true,
+                        reason: "available".into(),
+                        owner: None,
+                    }),
+                    cx,
+                );
             });
         });
         cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
         assert!(cx.debug_bounds("subagents-inactive").is_none());
+    }
+
+    #[gpui::test]
+    fn status_poll_clears_a_departed_session_without_rebuilding_the_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        let name = cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings_open = true;
+                app.settings_section = SettingsSection::Subagents;
+                app.refresh_subagents(cx);
+                app.start_new_subagent(cx);
+                let name = app.subagent_editor.as_ref().unwrap().name.clone();
+                app.subagent_status = Some(subagents::Status {
+                    active: false,
+                    reason: "old session".into(),
+                    owner: None,
+                });
+                name
+            })
+        });
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                assert!(app.subagent_status.is_none());
+                assert_eq!(app.subagent_editor.as_ref().unwrap().name, name);
+                assert!(app.subagent_editor.as_ref().unwrap().is_new);
+            });
+        });
     }
 
     #[test]
@@ -3022,6 +3179,181 @@ mod tests {
                 assert!(app.subagent_discard_pending.is_none());
                 assert_eq!(app.selected_subagent.as_deref(), Some(names[0].as_str()));
             });
+        });
+    }
+
+    #[gpui::test]
+    fn settings_navigation_and_close_preserve_unsaved_edits_until_confirmed(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings_open = true;
+                app.settings_section = SettingsSection::Subagents;
+                app.subagents = crate::subagent_file::builtin_agents();
+                app.selected_subagent = Some(app.subagents[0].name().to_string());
+                app.rebuild_subagent_editor(cx);
+                let prompt = app.subagent_editor.as_ref().unwrap().prompt.clone();
+                prompt.update(cx, |input, cx| input.set_text("edited", cx));
+
+                app.set_settings_section(SettingsSection::Subagents, cx);
+                assert_eq!(prompt.read(cx).text(), "edited");
+                app.set_settings_section(SettingsSection::Appearance, cx);
+                assert_eq!(app.settings_section, SettingsSection::Subagents);
+                assert!(app.subagent_discard_pending.is_some());
+                app.apply_subagent_action(SubagentAction::CancelDiscard, cx);
+                assert_eq!(prompt.read(cx).text(), "edited");
+
+                assert!(!app.close_settings(cx));
+                assert!(app.settings_open);
+                app.apply_subagent_action(SubagentAction::CancelDiscard, cx);
+                app.set_settings_section(SettingsSection::Appearance, cx);
+                app.apply_subagent_action(SubagentAction::ConfirmDiscard, cx);
+                assert_eq!(app.settings_section, SettingsSection::Appearance);
+
+                app.settings_section = SettingsSection::Subagents;
+                app.rebuild_subagent_editor(cx);
+                let prompt = app.subagent_editor.as_ref().unwrap().prompt.clone();
+                prompt.update(cx, |input, cx| input.set_text("edited again", cx));
+                assert!(!app.close_settings(cx));
+                app.apply_subagent_action(SubagentAction::ConfirmDiscard, cx);
+                assert!(!app.settings_open);
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn reopening_subagents_refreshes_the_editor_from_both_palette_routes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.run_command(crate::commands::CommandId::ManageSubagents, window, cx);
+                assert!(app.subagent_editor.is_some());
+                assert!(app.close_settings(cx));
+                assert!(app.subagent_editor.is_none());
+
+                app.run_command(crate::commands::CommandId::ManageSubagents, window, cx);
+                assert!(app.settings_open);
+                assert!(
+                    app.subagent_editor.is_some(),
+                    "Manage Subagents rebuilds the editor"
+                );
+                assert!(app.close_settings(cx));
+
+                app.run_palette_command(
+                    crate::command_palette::PaletteCommand::OpenSettings(
+                        SettingsSection::Subagents,
+                    ),
+                    window,
+                    cx,
+                );
+                assert!(app.settings_open);
+                assert!(
+                    app.subagent_editor.is_some(),
+                    "the settings palette route rebuilds the editor"
+                );
+
+                // Other main-area navigation hides Settings without clearing the editor.
+                let previous_name = app.subagent_editor.as_ref().unwrap().name.clone();
+                app.open_file_in_viewer("example.txt".into(), "example.txt".into(), cx);
+                assert!(!app.settings_open);
+                app.run_command(crate::commands::CommandId::ManageSubagents, window, cx);
+                assert_ne!(app.subagent_editor.as_ref().unwrap().name, previous_name);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn discard_close_restores_composer_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings_open = true;
+                app.settings_section = SettingsSection::Subagents;
+                app.start_new_subagent(cx);
+                let prompt = app.subagent_editor.as_ref().unwrap().prompt.clone();
+                prompt.update(cx, |input, cx| input.set_text("draft", cx));
+                prompt.read(cx).focus(window);
+                assert!(!app.close_settings(cx));
+                app.confirm_subagent_discard(window, cx);
+                assert!(!app.settings_open);
+                assert!(app.input.read(cx).focus_handle(cx).is_focused(window));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn new_task_waits_for_discard_and_resumes(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings_open = true;
+                app.settings_section = SettingsSection::Subagents;
+                app.start_new_subagent(cx);
+                let prompt = app.subagent_editor.as_ref().unwrap().prompt.clone();
+                prompt.update(cx, |input, cx| input.set_text("draft", cx));
+                let path = PathBuf::from("/tmp/orbit-guard-test-session");
+                app.current_session_path = Some(path.clone());
+                app.git_open = true;
+                app.on_new_session(&crate::NewSession, window, cx);
+                assert!(app.settings_open && app.git_open);
+                assert_eq!(app.current_session_path.as_ref(), Some(&path));
+                assert_eq!(prompt.read(cx).text(), "draft");
+                app.apply_subagent_action(SubagentAction::CancelDiscard, cx);
+                assert!(app.settings_open);
+                let cwd = std::env::current_dir().unwrap();
+                app.on_new_session_in_workspace(cwd.clone(), window, cx);
+                assert!(app.settings_open && app.git_open);
+                assert_eq!(app.current_session_path.as_ref(), Some(&path));
+                app.confirm_subagent_discard(window, cx);
+                assert!(!app.settings_open && !app.git_open);
+                assert!(app.current_session_path.is_none());
+                assert_eq!(app.current_workspace.as_ref(), Some(&cwd));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn edited_draft_guards_plugins_worktrees_and_undo(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings_open = true;
+                app.settings_section = SettingsSection::Subagents;
+                app.start_new_subagent(cx);
+                let prompt = app.subagent_editor.as_ref().unwrap().prompt.clone();
+                prompt.update(cx, |input, cx| input.set_text("draft", cx));
+                for action in [
+                    SubagentAction::OpenPlugins,
+                    SubagentAction::UndoDelete,
+                    SubagentAction::ConfirmDelete,
+                ] {
+                    app.apply_subagent_action(action, cx);
+                    assert!(app.subagent_discard_pending.is_some());
+                    assert_eq!(prompt.read(cx).text(), "draft");
+                    app.apply_subagent_action(SubagentAction::CancelDiscard, cx);
+                }
+                app.open_worktrees(cx);
+                assert!(!app.worktrees_open);
+                assert!(app.subagent_discard_pending.is_some());
+                app.apply_subagent_action(SubagentAction::CancelDiscard, cx);
+                app.apply_subagent_action(SubagentAction::OpenPlugins, cx);
+                app.apply_subagent_action(SubagentAction::ConfirmDiscard, cx);
+                assert_eq!(app.settings_section, SettingsSection::Plugins);
+            })
         });
     }
 

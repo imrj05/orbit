@@ -8470,10 +8470,7 @@ impl OrbitApp {
         // Toggle: the gear sits in the sessions sidebar, which stays visible
         // while settings is open, so clicking it again should go back.
         if self.settings_open {
-            self.settings_open = false;
-            self.provider_editor = None;
-            self.provider_key_editor = None;
-            self.sync_terminal_active(cx);
+            self.close_settings(cx);
         } else {
             self.open_settings(cx);
             return;
@@ -8487,10 +8484,24 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.close_settings(cx) {
+            self.input.read(cx).focus(window);
+        }
+    }
+
+    pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.guard_subagent_navigation(subagents_ui::SubagentAction::CloseSettings, cx) {
+            return false;
+        }
+        self.close_settings_unchecked(cx);
+        true
+    }
+
+    pub(super) fn close_settings_unchecked(&mut self, cx: &mut Context<Self>) {
+        self.subagent_editor = None;
         self.settings_open = false;
         self.provider_editor = None;
         self.provider_key_editor = None;
-        self.input.read(cx).focus(window);
         self.sync_terminal_active(cx);
         cx.notify();
     }
@@ -8502,6 +8513,30 @@ impl OrbitApp {
         section: SettingsSection,
         cx: &mut Context<Self>,
     ) {
+        if self.settings_open && self.settings_section == SettingsSection::Subagents {
+            if section == SettingsSection::Subagents {
+                return;
+            }
+            if self.guard_subagent_navigation(
+                subagents_ui::SubagentAction::NavigateSettings(section),
+                cx,
+            ) {
+                return;
+            }
+        }
+        self.set_settings_section_unchecked(section, cx);
+    }
+
+    pub(super) fn set_settings_section_unchecked(
+        &mut self,
+        section: SettingsSection,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_section == SettingsSection::Subagents
+            && section != SettingsSection::Subagents
+        {
+            self.subagent_editor = None;
+        }
         self.settings_section = section;
         if section != SettingsSection::ReportBug
             && self.settings_select == Some(SettingsSelect::ReportModel)

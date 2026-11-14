@@ -170,6 +170,34 @@ fn an_idle_live_session_reuses_the_process_for_the_new_task(cx: &mut gpui::TestA
     });
 }
 
+#[gpui::test]
+fn reusable_new_task_waits_for_discard_before_sending(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = FakePi::start();
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            adopt_fake_pi(app, &fake);
+            assert!(app.can_reuse_session());
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Subagents;
+            app.apply_subagent_action(subagents_ui::SubagentAction::New, cx);
+            let prompt = app.subagent_editor.as_ref().unwrap().prompt.clone();
+            prompt.update(cx, |input, cx| input.set_text("draft", cx));
+            app.on_new_session(&crate::NewSession, window, cx);
+            assert!(app.settings_open);
+            assert!(app.subagent_discard_pending.is_some());
+            assert_eq!(prompt.read(cx).text(), "draft");
+            assert!(std::fs::read_to_string(&fake.log)
+                .unwrap_or_default()
+                .is_empty());
+            app.confirm_subagent_discard(window, cx);
+            assert!(!app.settings_open);
+        });
+    });
+    assert!(fake.stdin().contains("\"type\":\"new_session\""));
+}
+
 /// Dropping the dead process supersedes the exit banner it left behind, so
 /// starting a fresh task does not keep a stale "pi process exited" on screen.
 #[gpui::test]
