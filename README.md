@@ -170,7 +170,7 @@ assets/icons/         App icon (logo-icon.png source, icon.icns, icon.png)
 marketing/            Next.js landing page
 PRODUCT.md            Product definition, capabilities, constraints
 INTENT.md             Architecture decisions + phase plan
-AGENT.md              Conventions for agents and humans working on this repo
+AGENTS.md             Conventions for agents and humans working on this repo
 PRIVACY.md            What Orbit does and does not send
 ```
 

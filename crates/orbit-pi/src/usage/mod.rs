@@ -18,7 +18,7 @@
 //! The data tables and the timeline plot are drawn with GPUI's own elements —
 //! `div`, `canvas` and the app's theme — so they read exactly like the rest of
 //! the surface. The page is one continuous read: Summary, Usage over time,
-//! Breakdown, Records.
+//! Breakdown, Records, Daily activity.
 
 pub mod aggregate;
 pub mod chart;

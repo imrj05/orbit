@@ -354,7 +354,7 @@ fallbacks.)
 
 ### 9. Docs
 
-- `AGENT.md`: repo-layout rows for `src/workflow.rs` and
+- `AGENTS.md`: repo-layout rows for `src/workflow.rs` and
   `contrib/orbit-workflow-extension/`; a `Workflow modes` row in the Current
   state table (mode chip + todo bar); mention the entry poll.
 - `PRODUCT.md`: move Workflow modes from Roadmap to Current with the final

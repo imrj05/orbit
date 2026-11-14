@@ -28,6 +28,13 @@ too:
   mathematical constant. With these, the vendored crate lints clean on its own
   instead of only through the app.
 
+A third change is unrelated to glass: Linux can keep running with no windows
+open, for Orbit's tray icon (#131). `src/platform.rs` adds
+`set_keep_alive_without_windows(bool)`, and the X11 and Wayland clients
+(`src/platform/linux/{x11,wayland}/client.rs`) skip `signal.stop()` when their
+last window closes while it is set. Upstream always stops there, which made
+"hide to tray" impossible on Linux; macOS and Windows are untouched.
+
 ## 1. `src/scene.rs` — the marker
 
 A quad asks for frost in its border colour, because that field is per-quad,

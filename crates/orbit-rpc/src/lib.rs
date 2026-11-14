@@ -4,7 +4,7 @@
 //! commands on stdin, events on stdout. This crate owns one pi child process
 //! per [`PiClient`], routes responses, and streams typed [`Event`]s.
 //!
-//! Design rules (see AGENT.md):
+//! Design rules (see AGENTS.md):
 //! - framing is LF-only; never split on Unicode separators
 //! - envelopes parse loosely; unknown shapes flow through as raw JSON
 //! - the client never blocks a UI frame: draining is `try_recv`-based

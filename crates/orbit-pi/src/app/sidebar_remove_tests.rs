@@ -98,3 +98,55 @@ fn parse_workspace_store_collapses_symlinked_duplicates() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+/// The workspace menu's **Archive all sessions** (#131): every session of
+/// that workspace is archived, and nothing from another workspace.
+#[gpui::test]
+fn archiving_a_workspace_archives_only_its_sessions(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    let session = |name: &str, cwd: &str| SessionInfo {
+        path: PathBuf::from(format!("/archive-test/{name}.jsonl")),
+        id: name.into(),
+        cwd: PathBuf::from(cwd),
+        title: name.into(),
+        first_message: String::new(),
+        modified: SystemTime::UNIX_EPOCH,
+    };
+    let app = cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.workspaces = vec![
+                PathBuf::from("/archive-test/alpha"),
+                PathBuf::from("/archive-test/beta"),
+            ];
+            app.sessions = vec![
+                session("a1", "/archive-test/alpha"),
+                session("a2", "/archive-test/alpha"),
+                session("b1", "/archive-test/beta"),
+            ];
+            app.workspace_menu = Some(WorkspaceMenu {
+                label: sessions::workspace_label(Path::new("/archive-test/alpha")),
+                cwd: PathBuf::from("/archive-test/alpha"),
+                at: None,
+                picker: false,
+            });
+            app.on_workspace_archive_sessions(cx);
+
+            assert!(app.workspace_menu.is_none(), "the menu closes");
+            assert!(crate::archive::contains(Path::new(
+                "/archive-test/a1.jsonl"
+            )));
+            assert!(crate::archive::contains(Path::new(
+                "/archive-test/a2.jsonl"
+            )));
+            assert!(
+                !crate::archive::contains(Path::new("/archive-test/b1.jsonl")),
+                "another workspace's session is left alone"
+            );
+        });
+    });
+}

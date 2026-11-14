@@ -388,6 +388,36 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    /// Every outcome, in the order the filter menu offers them.
+    pub const ALL: [Self; 5] = [
+        Self::Stop,
+        Self::ToolUse,
+        Self::Length,
+        Self::Error,
+        Self::Aborted,
+    ];
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Stop => tr!("usage.outcome_completed"),
+            Self::ToolUse => tr!("usage.outcome_tool_use"),
+            Self::Length => tr!("usage.outcome_length"),
+            Self::Error => tr!("usage.outcome_failed"),
+            Self::Aborted => tr!("usage.stat_aborted"),
+        }
+    }
+
+    /// Stable identifier for element ids — never localized.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::ToolUse => "tool_use",
+            Self::Length => "length",
+            Self::Error => "error",
+            Self::Aborted => "aborted",
+        }
+    }
+
     pub fn parse(raw: Option<&str>) -> Self {
         match raw {
             Some("toolUse") => Self::ToolUse,
@@ -639,6 +669,11 @@ impl UsageIndex {
         &self.providers[self.model(model).provider as usize]
     }
 
+    /// The provider index a model belongs to.
+    pub fn provider_id_of(&self, model: u16) -> u16 {
+        self.model(model).provider
+    }
+
     pub fn workspace_of_session(&self, session: u16) -> &WorkspaceEntry {
         &self.workspaces[self.session(session).workspace as usize]
     }
@@ -669,6 +704,44 @@ impl UsageIndex {
 
 // ── filters ────────────────────────────────────────────────────────────────
 
+/// Which requests the cache filter keeps. A request is "cached" when part of
+/// its prompt was read from the provider's cache.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CacheFilter {
+    #[default]
+    Any,
+    Cached,
+    Uncached,
+}
+
+impl CacheFilter {
+    pub const ALL: [Self; 3] = [Self::Any, Self::Cached, Self::Uncached];
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Any => tr!("usage.cache_any"),
+            Self::Cached => tr!("usage.cache_cached"),
+            Self::Uncached => tr!("usage.cache_uncached"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Cached => "cached",
+            Self::Uncached => "uncached",
+        }
+    }
+
+    pub fn matches(self, tokens: &TokenCounts) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Cached => tokens.cache_read > 0,
+            Self::Uncached => tokens.cache_read == 0,
+        }
+    }
+}
+
 /// The one shared filter state. Every chart, table, and KPI on the page reads
 /// through this; no section keeps its own filters.
 #[derive(Clone, PartialEq, Debug)]
@@ -682,10 +755,11 @@ pub struct UsageFilter {
     pub session: Option<u16>,
     /// A single time bucket selected from a chart (drill-down).
     pub focus: Option<TimeFocus>,
-    /// Show only failed requests (toggled from the Errors metric).
-    pub errors_only: bool,
-    /// Show only requests served partly from cache.
-    pub cached_only: bool,
+    /// How a request ended; empty means every outcome. "View failures" is
+    /// this set to just [`Outcome::Error`].
+    pub outcomes: Vec<Outcome>,
+    /// Whether a request was served partly from cache.
+    pub cache: CacheFilter,
 }
 
 impl UsageFilter {
@@ -697,8 +771,8 @@ impl UsageFilter {
             models: Vec::new(),
             session: None,
             focus: None,
-            errors_only: false,
-            cached_only: false,
+            outcomes: Vec::new(),
+            cache: CacheFilter::Any,
         }
     }
 
@@ -709,8 +783,25 @@ impl UsageFilter {
             || !self.models.is_empty()
             || self.session.is_some()
             || self.focus.is_some()
-            || self.errors_only
-            || self.cached_only
+            || self.narrows_requests()
+    }
+
+    /// True when a request-only dimension (outcome, cache) is narrowing.
+    /// Tool runs and prompts have neither, so they drop out of such a view
+    /// rather than being counted as if they matched.
+    pub fn narrows_requests(&self) -> bool {
+        !self.outcomes.is_empty() || self.cache != CacheFilter::Any
+    }
+
+    /// Only failed requests: the "View failures" drill-down.
+    pub fn errors_only(&self) -> bool {
+        self.outcomes == [Outcome::Error]
+    }
+
+    /// The outcome and cache tests every request match shares.
+    fn matches_request_kind(&self, r: &UsageRecord) -> bool {
+        (self.outcomes.is_empty() || self.outcomes.contains(&r.outcome))
+            && self.cache.matches(&r.tokens)
     }
 
     /// A filter that keeps only the date range (used by "Clear filters").
@@ -768,10 +859,7 @@ impl UsageFilter {
         if !self.matches_time(r.ts_ms) {
             return false;
         }
-        if self.errors_only && !r.outcome.is_error() {
-            return false;
-        }
-        if self.cached_only && r.tokens.cache_read == 0 {
+        if !self.matches_request_kind(r) {
             return false;
         }
         self.matches_scope(index, r.session, r.model)
@@ -791,10 +879,7 @@ impl UsageFilter {
         if !window.contains(r.ts_ms) {
             return false;
         }
-        if self.errors_only && !r.outcome.is_error() {
-            return false;
-        }
-        if self.cached_only && r.tokens.cache_read == 0 {
+        if !self.matches_request_kind(r) {
             return false;
         }
         self.matches_scope(index, r.session, r.model)
@@ -804,11 +889,8 @@ impl UsageFilter {
         if !self.matches_time(t.ts_ms) {
             return false;
         }
-        if self.errors_only {
-            return false; // "errors only" narrows to failed *requests*
-        }
-        if self.cached_only {
-            return false; // tools carry no cache semantics
+        if self.narrows_requests() {
+            return false; // outcome and cache describe requests, not tools
         }
         self.matches_scope(index, t.session, t.model)
     }
@@ -816,7 +898,7 @@ impl UsageFilter {
     /// Turns are prompts, so only the dimensions a prompt actually has apply:
     /// date, session, and workspace.
     pub fn matches_turn(&self, index: &UsageIndex, session: u16, ts_ms: i64) -> bool {
-        if !self.matches_time(ts_ms) || self.errors_only || self.cached_only {
+        if !self.matches_time(ts_ms) || self.narrows_requests() {
             return false;
         }
         if let Some(only) = self.session {

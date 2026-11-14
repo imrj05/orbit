@@ -69,10 +69,6 @@ impl Totals {
         (self.requests > 0).then(|| self.tokens.prompt() as f64 / self.requests as f64)
     }
 
-    pub fn output_input_ratio(&self) -> Option<f64> {
-        (self.tokens.input > 0).then(|| self.tokens.output as f64 / self.tokens.input as f64)
-    }
-
     pub fn cache_hit_rate(&self) -> Option<f64> {
         self.tokens.cache_hit_rate()
     }
@@ -313,6 +309,153 @@ pub struct SeriesPoint {
 pub struct TimeSeries {
     pub granularity: Granularity,
     pub points: Vec<SeriesPoint>,
+}
+
+// ── highlight ──────────────────────────────────────────────────────────────
+
+/// One model, provider or workspace the trend singles out against the total.
+/// The chart draws the total in quiet ink and this slice in the accent, so a
+/// comparison never needs a second hue.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Highlight {
+    Model(u16),
+    Provider(u16),
+    Workspace(u16),
+}
+
+impl Highlight {
+    /// Whether a request belongs to this slice.
+    pub fn matches(self, index: &UsageIndex, record: &UsageRecord) -> bool {
+        match self {
+            Self::Model(id) => record.model == id,
+            Self::Provider(id) => index.model(record.model).provider == id,
+            Self::Workspace(id) => index.session(record.session).workspace == id,
+        }
+    }
+
+    /// The display name, or `None` when the id is no longer in the index.
+    pub fn label(self, index: &UsageIndex) -> Option<String> {
+        match self {
+            Self::Model(id) => index.models.get(id as usize).map(|e| e.label.clone()),
+            Self::Provider(id) => index.providers.get(id as usize).map(|e| e.label.clone()),
+            Self::Workspace(id) => index.workspaces.get(id as usize).map(|e| e.label.clone()),
+        }
+    }
+
+    /// Whether the snapshot's breakdown still has a row for this slice — a
+    /// filter change can leave it with nothing to show.
+    pub fn present_in(self, snapshot: &UsageSnapshot) -> bool {
+        let (rows, id) = match self {
+            Self::Model(id) => (&snapshot.models.rows, id),
+            Self::Provider(id) => (&snapshot.providers.rows, id),
+            Self::Workspace(id) => (&snapshot.workspaces.rows, id),
+        };
+        rows.iter().any(|row| row.id == id)
+    }
+}
+
+/// The highlighted slice's series on exactly the base series' buckets: the
+/// same filter, narrowed to the slice. One pass over the requests, so pointing
+/// the chart at a model costs a scan, not a second snapshot.
+pub fn highlight_series(
+    index: &UsageIndex,
+    filter: &UsageFilter,
+    highlight: Highlight,
+    base: &TimeSeries,
+) -> TimeSeries {
+    let granularity = base.granularity;
+    let mut buckets: HashMap<i64, Totals> = HashMap::new();
+    let mut durations: HashMap<i64, Vec<u32>> = HashMap::new();
+    for record in &index.requests {
+        if !filter.matches_request(index, record) || !highlight.matches(index, record) {
+            continue;
+        }
+        let bucket = bucket_start(record.ts_ms, granularity);
+        index.add_request(buckets.entry(bucket).or_default(), record);
+        if let Some(duration) = record.duration_ms {
+            durations.entry(bucket).or_default().push(duration);
+        }
+    }
+    TimeSeries {
+        granularity,
+        points: base
+            .points
+            .iter()
+            .map(|point| SeriesPoint {
+                start_ms: point.start_ms,
+                label: point.label.clone(),
+                stamp: point.stamp.clone(),
+                totals: buckets.remove(&point.start_ms).unwrap_or_default(),
+                latency: LatencyStats::from_samples(
+                    durations.remove(&point.start_ms).unwrap_or_default(),
+                ),
+            })
+            .collect(),
+    }
+}
+
+/// The window just before the range, laid on the base series' bucket
+/// *positions*: point `i` is the previous window's `i`-th bucket, so the two
+/// lines overlay by position (day 3 against day 3), not by date. With a
+/// `highlight` the previous line is that same slice, so the comparison is like
+/// for like. `None` when the range has no previous window ("All time") or a
+/// chart bucket is selected (the comparison is of ranges, not of one bucket).
+pub fn previous_series(
+    index: &UsageIndex,
+    filter: &UsageFilter,
+    highlight: Option<Highlight>,
+    base: &TimeSeries,
+) -> Option<TimeSeries> {
+    if filter.focus.is_some() || base.points.is_empty() {
+        return None;
+    }
+    let window = filter.range.previous()?;
+    let mut scope = filter.clone();
+    scope.range = window.clone();
+    let granularity = base.granularity;
+    let count = base.points.len();
+    let mut starts = Vec::with_capacity(count);
+    let mut start = bucket_start(window.start_ms, granularity);
+    for _ in 0..count {
+        starts.push(start);
+        start = next_bucket(start, granularity);
+    }
+    let position: HashMap<i64, usize> = starts
+        .iter()
+        .enumerate()
+        .map(|(ix, start)| (*start, ix))
+        .collect();
+    let mut totals = vec![Totals::default(); count];
+    let mut durations: Vec<Vec<u32>> = vec![Vec::new(); count];
+    for record in &index.requests {
+        if !scope.matches_request(index, record)
+            || highlight.is_some_and(|slice| !slice.matches(index, record))
+        {
+            continue;
+        }
+        let Some(&ix) = position.get(&bucket_start(record.ts_ms, granularity)) else {
+            continue;
+        };
+        index.add_request(&mut totals[ix], record);
+        if let Some(duration) = record.duration_ms {
+            durations[ix].push(duration);
+        }
+    }
+    Some(TimeSeries {
+        granularity,
+        points: starts
+            .into_iter()
+            .zip(totals)
+            .zip(durations)
+            .map(|((start, totals), durations)| SeriesPoint {
+                start_ms: start,
+                label: bucket_label(start, granularity),
+                stamp: stamp_label(start, granularity),
+                totals,
+                latency: LatencyStats::from_samples(durations),
+            })
+            .collect(),
+    })
 }
 
 // ── breakdowns ─────────────────────────────────────────────────────────────

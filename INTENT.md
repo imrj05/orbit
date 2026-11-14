@@ -1,7 +1,7 @@
 # INTENT.md — Decisions, rationale, and plan
 
 This file captures **why** Orbit was rebuilt as a native app and the decisions that shape it.
-It is the source of truth for architecture choices; when AGENT.md or README.md conflict with
+It is the source of truth for architecture choices; when AGENTS.md or README.md conflict with
 a decision recorded here, this file wins. Update it when a decision changes (and say why).
 
 **Maintenance contract:** every shipped feature updates the *Implementation status* below — and
@@ -739,7 +739,7 @@ Open: migrating the remaining surfaces (the settings page's toolbars / cards / c
 
 The staged plan below is history: P0–P4 shipped and P5/P6 are partial. The GPUI app is the only
 app (D3), so this is a status board rather than a forward schedule. `cargo run -p orbit-pi` is
-the product; the per-item detail lives in AGENT.md.
+the product; the per-item detail lives in AGENTS.md.
 
 | Phase | Deliverable | Status |
 |---|---|---|
@@ -756,14 +756,14 @@ for the visible projection, from the command palette; it excludes thinking, tool
 output and image data and refuses to overwrite existing files. Manual GUI
 verification remains open (`docs/plans/transcript-actions.md`).
 
-Open backlog (detail in AGENT.md): on-device scroll-perf measurement,
+Open backlog (detail in AGENTS.md): on-device scroll-perf measurement,
 stream veil, explicit streaming commit pipeline, app-wide focus rings, screen-reader labeling, richer
 per-tool renderers, Windows/Linux native polish.
 
 ## Top risks (with mitigations)
 
 1. **P3 scope** — *resolved:* was the dominant estimate (25–40 days); it shipped by keeping the
-   Waku pattern map (AGENT.md), one-StyledText-per-block markdown from day one, and tool
+   Waku pattern map (AGENTS.md), one-StyledText-per-block markdown from day one, and tool
    renderers by spec.
 2. **Tool approval protocol gap (D1 residual)** — resolved: pi exposes no native per-tool permission in RPC mode, so Orbit enforces access modes through a bundled `tool_call` extension that prompts via `ctx.ui.select` (Allow once / Always allow this tool / Deny), rendered natively as an inline bar. Settings → Permissions adds per-command and per-agent rules over the same guard (D19), so "`bash` may run but `rm` asks" no longer needs a mode change.
 3. **Composer editor** — *resolved:* the multi-line `ComposerInput` (`EntityInputHandler`) has

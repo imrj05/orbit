@@ -911,6 +911,97 @@ pub(crate) fn provider_brand(provider: &str) -> Option<(u32, u32)> {
     })
 }
 
+/// The model-list endpoint for a custom provider's API family (#131), when
+/// Orbit knows how to ask: OpenAI-compatible servers (OpenAI, OpenRouter,
+/// Ollama, LM Studio, vLLM, Mistral) and Anthropic all answer `GET
+/// {base}/models` with `{"data": [{"id": …}, …]}`. Other families have their
+/// own catalogs and return `None`.
+pub(crate) fn models_endpoint(base_url: &str, api: &str) -> Option<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return None;
+    }
+    matches!(
+        api,
+        "openai-completions" | "openai-responses" | "mistral-conversations" | "anthropic-messages"
+    )
+    .then(|| format!("{base}/models"))
+}
+
+/// Model ids from a `/models` response, in the server's order, deduplicated.
+pub(crate) fn parse_model_ids(body: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let entries = body
+        .get("data")
+        .or_else(|| body.get("models"))
+        .and_then(Value::as_array);
+    for entry in entries.into_iter().flatten() {
+        let id = entry
+            .get("id")
+            .or_else(|| entry.get("name"))
+            .and_then(Value::as_str)
+            .map(str::trim);
+        if let Some(id) = id.filter(|id| !id.is_empty()) {
+            if !ids.iter().any(|known| known == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
+}
+
+/// The editor's model field after a fetch: the ids already typed stay first
+/// and in their order, followed by every fetched id not yet listed, one per
+/// line — so a fetch only ever adds, and pruning stays the user's choice.
+pub(crate) fn merge_model_ids(existing: &str, fetched: &[String]) -> String {
+    let mut ids: Vec<String> = existing
+        .split(['\n', ','])
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for id in fetched {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids.join("\n")
+}
+
+/// Ask a custom provider for its model list. Blocking: run it off the UI
+/// thread. Only called from the editor's explicit **Fetch models** action,
+/// and only against the base URL the user typed, with the key they typed.
+pub(crate) fn fetch_model_ids(
+    url: &str,
+    api: &str,
+    key: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let mut request = client
+        .get(url)
+        .header("User-Agent", concat!("Orbit/", env!("CARGO_PKG_VERSION")));
+    if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+        request = if api == "anthropic-messages" {
+            request
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+        } else {
+            request.bearer_auth(key)
+        };
+    }
+    let response = request.send().map_err(|err| err.to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(status.to_string());
+    }
+    let text = response.text().map_err(|err| err.to_string())?;
+    let body: Value = serde_json::from_str(&text).map_err(|err| err.to_string())?;
+    Ok(parse_model_ids(&body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1225,5 +1316,40 @@ mod tests {
         )
         .is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+    }
+
+    #[test]
+    fn models_endpoint_covers_the_families_with_a_models_route() {
+        assert_eq!(
+            models_endpoint(" https://openrouter.ai/api/v1/ ", "openai-completions").as_deref(),
+            Some("https://openrouter.ai/api/v1/models")
+        );
+        assert_eq!(
+            models_endpoint("http://localhost:11434/v1", "openai-responses").as_deref(),
+            Some("http://localhost:11434/v1/models")
+        );
+        assert!(models_endpoint("https://api.anthropic.com/v1", "anthropic-messages").is_some());
+        assert_eq!(models_endpoint("https://x", "google-vertex"), None);
+        assert_eq!(models_endpoint("ftp://x", "openai-completions"), None);
+        assert_eq!(models_endpoint("", "openai-completions"), None);
+    }
+
+    #[test]
+    fn model_ids_parse_from_openai_and_ollama_shapes() {
+        let openai = serde_json::json!({
+            "object": "list",
+            "data": [{"id": "gpt-5"}, {"id": " o4-mini "}, {"id": "gpt-5"}, {"id": ""}, {"x": 1}]
+        });
+        assert_eq!(parse_model_ids(&openai), ["gpt-5", "o4-mini"]);
+        let tags = serde_json::json!({ "models": [{"name": "llama3:8b"}] });
+        assert_eq!(parse_model_ids(&tags), ["llama3:8b"]);
+        assert!(parse_model_ids(&serde_json::json!({"error": "nope"})).is_empty());
+    }
+
+    #[test]
+    fn a_fetch_only_adds_ids_after_the_typed_ones() {
+        let fetched = vec!["b".to_string(), "c".to_string(), "a".to_string()];
+        assert_eq!(merge_model_ids("a, x\n\n", &fetched), "a\nx\nb\nc");
+        assert_eq!(merge_model_ids("", &fetched), "b\nc\na");
     }
 }

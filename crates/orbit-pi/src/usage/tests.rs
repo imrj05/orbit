@@ -468,11 +468,12 @@ fn filters_compose_across_dimensions() {
 
     // Error and cache toggles.
     let mut filter = UsageFilter::new(range.clone());
-    filter.errors_only = true;
+    filter.outcomes = vec![Outcome::Error];
+    assert!(filter.errors_only());
     let snapshot = UsageSnapshot::compute(&index, &filter);
     assert!(snapshot.is_empty());
     let mut filter = UsageFilter::new(range);
-    filter.cached_only = true;
+    filter.cache = CacheFilter::Cached;
     let snapshot = UsageSnapshot::compute(&index, &filter);
     assert!(snapshot.is_empty());
 }
@@ -1386,4 +1387,321 @@ fn calendar_drops_records_older_than_a_year() {
     // The snapshot itself still counts both — the calendar is a calendar, not
     // the page's totals.
     assert_eq!(snapshot.summary.totals.requests, 2);
+}
+
+fn breakdown_row(
+    id: u16,
+    totals: super::aggregate::Totals,
+    share: f64,
+) -> super::aggregate::GroupRow {
+    super::aggregate::GroupRow {
+        id,
+        label: format!("row-{id}"),
+        sub: None,
+        totals,
+        share,
+    }
+}
+
+#[test]
+fn breakdown_sort_ranks_unknown_cost_and_latency_below_real_values() {
+    use super::aggregate::Totals;
+    use super::page::BreakdownSort;
+
+    let priced_free = breakdown_row(
+        0,
+        Totals {
+            requests: 2,
+            priced_requests: 2,
+            cost_usd: 0.0,
+            duration_ms: 400,
+            duration_samples: 2,
+            ..Totals::default()
+        },
+        0.5,
+    );
+    let unpriced = breakdown_row(
+        1,
+        Totals {
+            requests: 3,
+            ..Totals::default()
+        },
+        0.5,
+    );
+    // A model without a price table is unknown, so it never sorts as cheaper
+    // than one that really cost nothing.
+    assert!(BreakdownSort::Cost.key(&unpriced) < BreakdownSort::Cost.key(&priced_free));
+    // Same for a model with no measured request.
+    assert!(
+        BreakdownSort::AvgResponse.key(&unpriced) < BreakdownSort::AvgResponse.key(&priced_free)
+    );
+    assert_eq!(BreakdownSort::AvgResponse.key(&priced_free), 200.0);
+}
+
+#[test]
+fn breakdown_sort_error_rate_and_share_read_the_row() {
+    use super::aggregate::Totals;
+    use super::page::BreakdownSort;
+
+    let row = breakdown_row(
+        0,
+        Totals {
+            requests: 8,
+            errors: 2,
+            ..Totals::default()
+        },
+        0.25,
+    );
+    assert_eq!(BreakdownSort::ErrorRate.key(&row), 25.0);
+    assert_eq!(BreakdownSort::Share.key(&row), 0.25);
+    let empty = breakdown_row(1, Totals::default(), 0.0);
+    assert!(BreakdownSort::ErrorRate.key(&empty) < 0.0);
+}
+
+#[test]
+fn breakdown_sort_keys_round_trip_their_persisted_names() {
+    use super::page::BreakdownSort;
+
+    for key in BreakdownSort::ALL {
+        assert_eq!(BreakdownSort::parse(key.as_str()), Some(key));
+    }
+    // Every measure the table offers is also a sort key.
+    for key in BreakdownSort::MEASURES {
+        assert!(BreakdownSort::ALL.contains(&key));
+        assert!(key.width() > 0.0);
+    }
+}
+
+#[test]
+fn a_highlighted_model_is_its_own_slice_of_the_total_on_the_same_buckets() {
+    use super::aggregate::{highlight_series, Highlight};
+
+    let now = anchor();
+    let day = 86_400_000;
+    let mut fixture = Fixture::default();
+    let session = fixture.session("/tmp/orbit", "split", now - 5 * day, vec![]);
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        now - 3 * day,
+        100,
+        20,
+        0,
+        0,
+    );
+    fixture.request(session, ("openai", "gpt"), now - 3 * day, 40, 10, 0, 0);
+    fixture.request(session, ("anthropic", "claude"), now - day, 60, 5, 0, 0);
+    let index = fixture.build();
+    let snapshot = scope(&index, DateRange::for_preset(RangePreset::Last7, now));
+
+    let claude = snapshot
+        .models
+        .rows
+        .iter()
+        .find(|row| row.label.contains("claude"))
+        .expect("claude row")
+        .id;
+    let highlight = Highlight::Model(claude);
+    assert!(highlight.present_in(&snapshot));
+    let slice = highlight_series(&index, &snapshot.filter, highlight, &snapshot.series);
+
+    // Same buckets as the total, so the chart can overlay them point for point.
+    assert_eq!(slice.points.len(), snapshot.series.points.len());
+    for (part, whole) in slice.points.iter().zip(&snapshot.series.points) {
+        assert_eq!(part.start_ms, whole.start_ms);
+        assert!(part.totals.tokens.total <= whole.totals.tokens.total);
+    }
+    let tokens: u64 = slice.points.iter().map(|p| p.totals.tokens.total).sum();
+    assert_eq!(tokens, 120 + 65);
+    assert_eq!(
+        slice.points.iter().map(|p| p.totals.requests).sum::<u64>(),
+        2
+    );
+}
+
+#[test]
+fn a_highlight_the_filter_excludes_is_not_present() {
+    use super::aggregate::Highlight;
+
+    let now = anchor();
+    let day = 86_400_000;
+    let mut fixture = Fixture::default();
+    let session = fixture.session("/tmp/orbit", "gone", now - 5 * day, vec![]);
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        now - 2 * day,
+        100,
+        20,
+        0,
+        0,
+    );
+    fixture.request(session, ("openai", "gpt"), now - 2 * day, 40, 10, 0, 0);
+    let index = fixture.build();
+    let all = scope(&index, DateRange::for_preset(RangePreset::Last7, now));
+    let gpt = all
+        .models
+        .rows
+        .iter()
+        .find(|row| row.label.contains("gpt"))
+        .expect("gpt row")
+        .id;
+    let claude = all
+        .models
+        .rows
+        .iter()
+        .find(|row| row.label.contains("claude"))
+        .expect("claude row")
+        .id;
+
+    // Filtering the page to Claude leaves nothing of GPT to draw.
+    let mut filter = all.filter.clone();
+    filter.models = vec![claude];
+    let narrowed = UsageSnapshot::compute(&index, &filter);
+    assert!(!Highlight::Model(gpt).present_in(&narrowed));
+    assert!(Highlight::Model(claude).present_in(&narrowed));
+}
+
+#[test]
+fn outcome_and_cache_filters_narrow_requests_and_drop_tools_and_turns() {
+    let now = anchor();
+    let day = 86_400_000;
+    let mut fixture = Fixture::default();
+    let session = fixture.session("/tmp/orbit", "kinds", now - 5 * day, vec![now - day]);
+    let model = ("anthropic", "claude");
+    fixture.request_full(
+        session,
+        model,
+        now - day,
+        10,
+        1,
+        0,
+        0,
+        None,
+        None,
+        Outcome::Stop,
+    );
+    fixture.request_full(
+        session,
+        model,
+        now - day,
+        10,
+        1,
+        50,
+        0,
+        None,
+        None,
+        Outcome::Error,
+    );
+    fixture.request_full(
+        session,
+        model,
+        now - day,
+        10,
+        1,
+        0,
+        0,
+        None,
+        None,
+        Outcome::Length,
+    );
+    let index = fixture.build();
+    let range = DateRange::for_preset(RangePreset::Last7, now);
+
+    let mut filter = UsageFilter::new(range.clone());
+    filter.outcomes = vec![Outcome::Error, Outcome::Length];
+    assert!(filter.has_narrowing() && filter.narrows_requests());
+    assert!(!filter.errors_only());
+    let snapshot = UsageSnapshot::compute(&index, &filter);
+    assert_eq!(snapshot.summary.totals.requests, 2);
+    // Outcome describes requests; prompts have none, so they drop out.
+    assert_eq!(snapshot.summary.turns, 0);
+
+    let mut filter = UsageFilter::new(range.clone());
+    filter.cache = CacheFilter::Uncached;
+    assert_eq!(
+        UsageSnapshot::compute(&index, &filter)
+            .summary
+            .totals
+            .requests,
+        2
+    );
+    filter.cache = CacheFilter::Cached;
+    assert_eq!(
+        UsageSnapshot::compute(&index, &filter)
+            .summary
+            .totals
+            .requests,
+        1
+    );
+
+    // Clearing restores everything.
+    let cleared = filter.cleared();
+    assert!(!cleared.has_narrowing());
+    assert_eq!(
+        UsageSnapshot::compute(&index, &cleared)
+            .summary
+            .totals
+            .requests,
+        3
+    );
+}
+
+#[test]
+fn the_previous_period_lines_up_by_bucket_position_and_follows_the_highlight() {
+    use super::aggregate::{previous_series, Highlight};
+
+    let now = anchor();
+    let day = 86_400_000;
+    let mut fixture = Fixture::default();
+    let session = fixture.session("/tmp/orbit", "weeks", now - 20 * day, vec![]);
+    // This week: one claude request. The week before: claude and gpt.
+    fixture.request(session, ("anthropic", "claude"), now - day, 100, 0, 0, 0);
+    fixture.request(session, ("anthropic", "claude"), now - 8 * day, 30, 0, 0, 0);
+    fixture.request(session, ("openai", "gpt"), now - 9 * day, 7, 0, 0, 0);
+    let index = fixture.build();
+    let snapshot = scope(&index, DateRange::for_preset(RangePreset::Last7, now));
+
+    let earlier = previous_series(&index, &snapshot.filter, None, &snapshot.series)
+        .expect("a week has a week before it");
+    assert_eq!(earlier.points.len(), snapshot.series.points.len());
+    let tokens: u64 = earlier.points.iter().map(|p| p.totals.tokens.total).sum();
+    assert_eq!(tokens, 37);
+    // Every previous bucket starts before the range does.
+    assert!(earlier
+        .points
+        .iter()
+        .all(|p| p.start_ms < snapshot.filter.range.start_ms));
+
+    // With a highlight, the previous line is the same slice.
+    let claude = snapshot.models.rows[0].id;
+    let slice = previous_series(
+        &index,
+        &snapshot.filter,
+        Some(Highlight::Model(claude)),
+        &snapshot.series,
+    )
+    .expect("previous slice");
+    let tokens: u64 = slice.points.iter().map(|p| p.totals.tokens.total).sum();
+    assert_eq!(tokens, 30);
+
+    // "All time" has no window before it.
+    let all = scope(&index, DateRange::for_preset(RangePreset::All, now));
+    assert!(previous_series(&index, &all.filter, None, &all.series).is_none());
+}
+
+#[test]
+fn the_pager_lists_every_page_when_few_and_a_window_with_gaps_when_many() {
+    use super::view::page_window;
+
+    assert_eq!(page_window(1, 1), vec![Some(1)]);
+    assert_eq!(page_window(3, 5), (1..=5).map(Some).collect::<Vec<_>>());
+    // First, last, the current page and its neighbours; a gap where pages hide.
+    assert_eq!(
+        page_window(10, 20),
+        vec![Some(1), None, Some(9), Some(10), Some(11), None, Some(20)]
+    );
+    // At an edge there is no gap on that side.
+    assert_eq!(page_window(1, 20), vec![Some(1), Some(2), None, Some(20)]);
+    assert_eq!(page_window(20, 20), vec![Some(1), None, Some(19), Some(20)]);
 }

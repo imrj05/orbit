@@ -396,7 +396,7 @@ subject because the status-bar popover has no type-to-filter (see §17).
 | **P3** | `Clone(CloneSpec)`: directory choice, off-thread clone with progress, cancel, then `Local`; sidebar registration | clone tests against a local bare repo fixture, including the Windows job-object case, which now runs on the `windows-latest` CI leg; manual clone of a public repo |
 | **P4** | polish: recents merge, keycaps, CHANGELOG + README/INTENT *Implementation status* | docs consistency pass |
 
-**Verification per phase** (AGENT.md): `cargo check -p orbit-pi` → filtered `cargo test -p orbit-pi
+**Verification per phase** (AGENTS.md): `cargo check -p orbit-pi` → filtered `cargo test -p orbit-pi
 --bin orbit-pi <filter>` → `bacon run` for the flow → `python3 scripts/check_i18n.py` after string
 edits → `python3 scripts/check_states.py` / `check_motion.py` / `check_keyboard.py` because new
 interactive elements and one focus context are added.

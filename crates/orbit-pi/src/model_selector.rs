@@ -26,7 +26,10 @@
 //! - keyboard highlight uses `overlay_strong`; the current choice keeps the
 //!   `active` fill plus an accent check, so "highlighted" and "chosen" never
 //!   read as the same state
-//! - a quiet footer shows the result count and keyboard navigation hints
+//! - a quiet footer shows the result count; the model picker's footer also
+//!   carries **Manage models…** (⌘, / Ctrl+, while the picker has focus),
+//!   which closes the picker and opens Settings → Providers & models searched to the
+//!   provider in view (#131). The thinking picker keeps its keyboard hints
 //! - keyboard navigation: `up`/`down`/`enter`/`escape` are bound to the
 //!   `Picker` key context on the filter input
 
@@ -108,6 +111,9 @@ type SelectModel = Box<dyn Fn(&str, &str, &mut Window, &mut App)>;
 type SelectLevel = Box<dyn Fn(&str, &mut Window, &mut App)>;
 /// Dismiss callback; `bool` is true when an outside mouse-down closed it.
 type SelectorDismiss = Box<dyn Fn(bool, &mut Window, &mut App)>;
+/// "Manage models…": close the picker and open Settings → Providers & models, filtered
+/// to the provider (when there is one) the picker was showing.
+type ManageModels = Box<dyn Fn(Option<&str>, &mut Window, &mut App)>;
 
 /// Which single-section dropdown a picker popup shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +208,7 @@ pub struct ModelSelector {
     /// `bool` = dismissed by an outside mouse-down (vs. escape), so the
     /// owner can suppress the trigger chip's click-through.
     on_dismiss: SelectorDismiss,
+    on_manage_models: ManageModels,
 }
 
 impl ModelSelector {
@@ -217,6 +224,7 @@ impl ModelSelector {
         on_select_model: SelectModel,
         on_select_level: SelectLevel,
         on_dismiss: SelectorDismiss,
+        on_manage_models: ManageModels,
         cx: &mut Context<Self>,
     ) -> Self {
         // The filter input carries both the `Composer` context (so backspace,
@@ -281,6 +289,7 @@ impl ModelSelector {
             on_select_model,
             on_select_level,
             on_dismiss,
+            on_manage_models,
         }
     }
 
@@ -905,6 +914,29 @@ impl ModelSelector {
         self.step(-1, cx);
     }
 
+    /// The settings chord, while the model picker has focus, opens its
+    /// models page instead of Settings → General: the keyboard route to the
+    /// footer's **Manage models…**.
+    fn on_open_settings(
+        &mut self,
+        _: &crate::OpenSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.manage_models(window, cx);
+    }
+
+    /// Hand off to Settings → Providers & models. A provider scope names the provider
+    /// the user is looking at; otherwise the active model's provider is the
+    /// one in question.
+    fn manage_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let provider = match &self.scope {
+            Scope::Provider(provider) => Some(provider.as_str()),
+            _ => Some(self.current_model_provider.as_str()).filter(|p| !p.is_empty()),
+        };
+        (self.on_manage_models)(provider, window, cx);
+    }
+
     /// Outside mouse-down anywhere dismisses the popup.
     fn on_outside_down(&mut self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         (self.on_dismiss)(true, window, cx);
@@ -1108,6 +1140,9 @@ impl Render for ModelSelector {
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
+            .when(self.kind == PickerKind::Model, |surface| {
+                surface.on_action(cx.listener(Self::on_open_settings))
+            })
             // search field — grouped above the list with a divider
             .child(
                 picker_search_frame(div(), &theme)
@@ -1134,7 +1169,18 @@ impl Render for ModelSelector {
             })
             // A quiet total, not a keyboard cheatsheet: the list is the
             // interface, and the count is the one fact the rows cannot show.
-            .child(footer(count_label, theme))
+            // The model picker's footer is also the way out to the catalog
+            // settings — visible under an empty result too, where the user is
+            // most likely stuck.
+            .child(match self.kind {
+                PickerKind::Thinking => footer(count_label, theme).into_any_element(),
+                PickerKind::Model => footer_shell(count_label, theme)
+                    .child(manage_models_button(
+                        cx.listener(|selector, _, window, cx| selector.manage_models(window, cx)),
+                        theme,
+                    ))
+                    .into_any_element(),
+            })
     }
 }
 
@@ -1433,6 +1479,14 @@ fn rail_shadow_opacities(offset_x: f32, max_x: f32) -> (f32, f32) {
 
 /// A quiet footer keeps the result count and keyboard controls discoverable.
 fn footer(count_label: String, theme: Theme) -> gpui::Div {
+    footer_shell(count_label, theme)
+        .child(tr!("model_selector.navigate"))
+        .child(tr!("model_selector.select"))
+        .child(tr!("model_selector.esc_close"))
+}
+
+/// The footer strip with the result count leading; callers append the rest.
+fn footer_shell(count_label: String, theme: Theme) -> gpui::Div {
     div()
         .debug_selector(|| "picker-footer".to_string())
         .flex_none()
@@ -1445,10 +1499,40 @@ fn footer(count_label: String, theme: Theme) -> gpui::Div {
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
-        .child(div().flex_1().child(count_label))
-        .child(tr!("model_selector.navigate"))
-        .child(tr!("model_selector.select"))
-        .child(tr!("model_selector.esc_close"))
+        .child(div().flex_1().min_w_0().truncate().child(count_label))
+}
+
+/// **Manage models…** with its chord: a quiet text button whose wash and ink
+/// fade in on hover, like a menu row. The chord is the keyboard route — the
+/// filter input keeps focus while the picker is open, so the button itself
+/// is not a tab stop.
+fn manage_models_button(
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    theme: Theme,
+) -> AnyElement {
+    let button = crate::app::press(
+        button_frame(
+            div()
+                .id("picker-manage-models")
+                .debug_selector(|| "picker-manage-models".to_string()),
+            &theme,
+            ButtonSize::Compact,
+        )
+        .text_size(TextSize::XSmall.px(&theme))
+        .cursor_pointer()
+        .tip(tr!("model_selector.manage_models_tooltip"))
+        .on_click(on_click)
+        .child(tr!("model_selector.manage_models"))
+        .child(div().text_color(theme.text_muted).child(
+            crate::platform::shortcuts::label(crate::platform::shortcuts::SETTINGS),
+        )),
+    );
+    crate::motion::hover(
+        button,
+        "picker-manage-models",
+        &theme,
+        crate::motion::Hover::row(&theme),
+    )
 }
 
 fn label_column<P: IntoElement, S: IntoElement>(
@@ -2240,6 +2324,7 @@ mod tests {
                     Box::new(|_, _, _, _| {}),
                     Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
                     cx,
                 )
             });
@@ -2315,6 +2400,7 @@ mod tests {
                     "opencode-go".into(),
                     "low".into(),
                     Box::new(|_, _, _, _| {}),
+                    Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
                     cx,
@@ -2409,6 +2495,7 @@ mod tests {
                     "provider-0".into(),
                     "low".into(),
                     Box::new(|_, _, _, _| {}),
+                    Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
                     cx,
@@ -2606,6 +2693,85 @@ mod tests {
         );
     }
 
+    /// **Manage models…** (#131): the settings chord and the footer button
+    /// both hand the provider in view to the owner — the active model's
+    /// provider under `All`, the scoped provider under a provider scope.
+    #[gpui::test]
+    fn manage_models_hands_off_the_provider_in_view(cx: &mut gpui::TestAppContext) {
+        use crate::theme::ThemeId;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.update(|cx| {
+            cx.set_global(Theme::for_id(ThemeId::Orbit));
+            crate::bind_keys(cx);
+        });
+        let asked: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+        // The selector is the window's root view, so the repaint GPUI
+        // requests between a click's down and up still paints it.
+        let (selector, cx) = {
+            let asked = asked.clone();
+            cx.add_window_view(|_, cx| {
+                ModelSelector::new(
+                    PickerKind::Model,
+                    test_models(),
+                    Vec::new(),
+                    "Model 0".into(),
+                    "m0".into(),
+                    "opencode-go".into(),
+                    "low".into(),
+                    Box::new(|_, _, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    Box::new(move |provider: Option<&str>, _, _| {
+                        asked.borrow_mut().push(provider.map(str::to_owned));
+                    }),
+                    cx,
+                )
+            })
+        };
+        cx.update(|window, cx| window.focus(&selector.read(cx).focus_handle(cx)));
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes("secondary-,");
+        assert_eq!(*asked.borrow(), vec![Some("opencode-go".to_string())]);
+
+        cx.run_until_parked();
+        let button = cx
+            .debug_bounds("picker-manage-models")
+            .expect("the model picker's footer carries Manage models");
+        cx.simulate_click(button.center(), gpui::Modifiers::none());
+        assert_eq!(asked.borrow().len(), 2, "the footer button hands off too");
+
+        cx.update(|_, cx| {
+            selector.update(cx, |selector, cx| {
+                selector.set_scope(Scope::Provider("other".into()), cx)
+            })
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("secondary-,");
+        assert_eq!(
+            asked.borrow().last().cloned().flatten().as_deref(),
+            Some("other"),
+            "a provider scope names the provider in view"
+        );
+    }
+
+    /// The thinking picker has no catalog to manage: no button, and the
+    /// settings chord is not claimed by it.
+    #[gpui::test]
+    fn the_thinking_picker_has_no_manage_models(cx: &mut gpui::TestAppContext) {
+        use crate::theme::ThemeId;
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let selector = open_thinking_selector(cx);
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(900.)),
+            |_, _| selector.clone(),
+        );
+        assert!(cx.debug_bounds("picker-manage-models").is_none());
+    }
+
     /// A thinking selector with the built-in levels, muted callbacks, focused.
     fn open_thinking_selector(cx: &mut gpui::VisualTestContext) -> Entity<ModelSelector> {
         cx.update(|window, cx| {
@@ -2625,6 +2791,7 @@ mod tests {
                     String::new(),
                     "low".into(),
                     Box::new(|_, _, _, _| {}),
+                    Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
                     cx,

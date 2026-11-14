@@ -4413,9 +4413,14 @@ impl OrbitApp {
                 .into_any_element();
         }
         // Mid-run with nothing typed, stop is the only action and takes the
-        // primary seat rather than sitting beside a dead send.
+        // primary seat rather than sitting beside a dead send. With something
+        // typed, both lanes are on screen (#131): the quiet alternate first,
+        // then the default lane in the primary seat, so a one-off steer (or a
+        // one-off queue) never needs the Enter preference flipped.
         if has_payload {
-            row = row.child(self.send_button(true, true, theme, window, cx));
+            row = row
+                .child(self.alternate_send_button(theme, cx))
+                .child(self.send_button(true, true, theme, window, cx));
         }
         row.child(self.stop_button(theme, cx)).into_any_element()
     }
@@ -4596,6 +4601,52 @@ impl OrbitApp {
                             .opacity(morphed),
                     )
             },
+        )
+    }
+
+    /// The lane the Enter preference does *not* pick, as a quiet round button
+    /// beside the primary send: steer when Enter queues, queue when Enter
+    /// steers. Same action as the alternate chord, which its tooltip names.
+    fn alternate_send_button(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
+        let mode = theme.ui.composer_send_mode.opposite();
+        let glyph = match mode {
+            SendMode::FollowUp => "icons/arrow-up.svg",
+            SendMode::Steer => "icons/arrow-up-right.svg",
+        };
+        let tooltip = tr!(
+            "composer.shortcut_hint",
+            keys = mode.shortcut_label(theme.ui.composer_send_mode),
+            action = mode.label()
+        );
+        let button = icon_button_frame(
+            div()
+                .id("send-alternate-btn")
+                .debug_selector(|| "send-alternate-btn".to_string()),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .rounded_full()
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.surface_elevated)
+        .pressed_state(&theme, PressedRamp::Wash)
+        .cursor_pointer()
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(Self::on_send_alternate_click),
+        )
+        .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
+        .child(icon(
+            glyph,
+            ButtonSize::Medium.icon_size().px(&theme),
+            theme.text_secondary,
+        ));
+        crate::motion::hover(
+            button,
+            "send-alternate-btn",
+            &theme,
+            crate::motion::Hover::fill(theme.surface_elevated, theme.surface_hover)
+                .with_ink(theme.text_secondary, theme.text_primary),
         )
     }
 

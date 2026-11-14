@@ -229,3 +229,52 @@ fn clicking_outside_closes_the_menu_immediately(cx: &mut gpui::TestAppContext) {
         });
     });
 }
+
+/// Both lanes are on screen while a run is in flight and something is typed
+/// (#131); idle, there is one send and no alternate.
+#[gpui::test]
+fn the_alternate_send_shows_only_mid_run_with_a_payload(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let draw = |cx: &mut gpui::VisualTestContext, app: &Entity<OrbitApp>| {
+        let app = app.clone();
+        let _ = cx.draw(
+            gpui::point(gpui::px(0.), gpui::px(0.)),
+            gpui::size(gpui::px(1200.), gpui::px(820.)),
+            move |_, _| app,
+        );
+    };
+
+    let idle = cx.add_empty_window();
+    let app = idle.update(|_, cx| cx.new(OrbitApp::new));
+    idle.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.input.update(cx, |input, cx| input.set_text("hi", cx))
+        })
+    });
+    draw(idle, &app);
+    assert!(idle.debug_bounds("send-btn").is_some());
+    assert!(
+        idle.debug_bounds("send-alternate-btn").is_none(),
+        "idle has one lane"
+    );
+
+    // A fresh window: `debug_bounds` remembers anything a window ever painted.
+    let running = cx.add_empty_window();
+    let app = running.update(|_, cx| cx.new(OrbitApp::new));
+    running.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.busy = true;
+            app.input
+                .update(cx, |input, cx| input.set_text("nudge", cx));
+        })
+    });
+    draw(running, &app);
+    let alternate = running
+        .debug_bounds("send-alternate-btn")
+        .expect("mid-run with a payload shows the other lane");
+    let primary = running.debug_bounds("send-btn").expect("primary send");
+    assert!(
+        alternate.right() <= primary.left(),
+        "the alternate leads the primary"
+    );
+}

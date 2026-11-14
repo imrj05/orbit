@@ -17,7 +17,12 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 
-use crate::{app::OrbitApp, platform, theme};
+use crate::{
+    app::OrbitApp,
+    platform, theme,
+    tray::{self, CloseAction, TrayEvent},
+    window_state,
+};
 
 /// The shell model, parked while no window is open.
 ///
@@ -77,25 +82,15 @@ fn shell(cx: &mut App) -> Entity<OrbitApp> {
 pub fn open(cx: &mut App) {
     let app = shell(cx);
 
-    // Open maximized: full width of the screen, filling the visible
-    // frame. The computed bounds are the
-    // restore size macOS returns to when the window is un-zoomed,
-    // sized relative to the display so it always fits even on
-    // small/scaled screens.
-    let (w, h) = match cx.primary_display().map(|d| d.bounds().size) {
-        Some(s) => (
-            (f32::from(s.width) * 0.85).min(1440.),
-            (f32::from(s.height) * 0.9).min(920.),
-        ),
-        None => (1240., 840.),
-    };
-    let restore_bounds = Bounds::centered(None, size(px(w), px(h)), cx);
+    // Keep the window usable when shrunk: sidebar (min 200px) + a
+    // readable transcript + the composer.
+    let min_size = size(px(960.), px(640.));
+    let (window_bounds, display_id, opened_as) = initial_bounds(min_size, cx);
     let Ok(_window) = cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Maximized(restore_bounds)),
-            // Keep the window usable when shrunk: sidebar (min
-            // 200px) + a readable transcript + the composer.
-            window_min_size: Some(size(px(960.), px(640.))),
+            window_bounds: Some(window_bounds),
+            display_id,
+            window_min_size: Some(min_size),
             titlebar: Some(platform::titlebar_options()),
             app_id: Some("dev.orbit.pi".into()),
             focus: true,
@@ -103,12 +98,15 @@ pub fn open(cx: &mut App) {
         },
         |window, cx| {
             theme::watch_system_appearance(window, cx);
+            // What the close button does is the user's choice (#131).
+            window.on_window_should_close(cx, should_close);
 
             // Focus the composer so typing works immediately; track
             // window focus so background notifications know whether
             // the user is already looking at the transcript.
             app.update(cx, |app, cx| {
                 app.watch_window_activation(window, cx);
+                app.watch_window_bounds(opened_as, window, cx);
                 let handle = app.input.read(cx).focus_handle(cx);
                 window.focus(&handle);
             });
@@ -130,11 +128,156 @@ pub fn open(cx: &mut App) {
         return;
     };
 
+    sync_tray(cx);
+
     // Both entries bring the app forward: a Dock click on a windowless app,
     // or a launch that opened the first window. Neither `focus: true` above
     // nor macOS's reopen notification activates `NSApp` on its own, so the
     // window would otherwise stay behind whatever is frontmost.
     cx.activate(true);
+}
+
+/// Where the main window opens: the frame it last had (#131), clamped onto
+/// a display that is still attached, or — on first launch, or when that
+/// display is gone — maximized over a centred restore frame sized to the
+/// primary display so it fits even on small or scaled screens.
+///
+/// Also returns the state the window opened as, which seeds the bounds
+/// watcher: macOS reports a zoomed window's zoomed frame, so the restore
+/// frame must be known before the first zoom.
+fn initial_bounds(
+    min_size: gpui::Size<gpui::Pixels>,
+    cx: &mut App,
+) -> (WindowBounds, Option<gpui::DisplayId>, window_state::Saved) {
+    let displays = cx.displays();
+    let restored = window_state::Saved::load().and_then(|saved| {
+        let infos: Vec<_> = displays
+            .iter()
+            .map(|d| window_state::DisplayInfo {
+                uuid: d.uuid().ok().map(|u| u.to_string()),
+                bounds: d.bounds(),
+            })
+            .collect();
+        let restore = window_state::restore(&saved, &infos, min_size)?;
+        Some((restore, infos))
+    });
+    if let Some((restore, infos)) = restored {
+        let display = &displays[restore.display];
+        return (
+            restore.window_bounds(),
+            Some(display.id()),
+            window_state::Saved {
+                bounds: restore.bounds,
+                maximized: restore.maximized,
+                display: infos[restore.display].uuid.clone(),
+            },
+        );
+    }
+
+    let (w, h) = match cx.primary_display().map(|d| d.bounds().size) {
+        Some(s) => (
+            (f32::from(s.width) * 0.85).min(1440.),
+            (f32::from(s.height) * 0.9).min(920.),
+        ),
+        None => (1240., 840.),
+    };
+    let restore_bounds = Bounds::centered(None, size(px(w), px(h)), cx);
+    (
+        WindowBounds::Maximized(restore_bounds),
+        None,
+        window_state::Saved {
+            bounds: restore_bounds,
+            maximized: true,
+            display: None,
+        },
+    )
+}
+
+/// Quit the way ⌘Q / Ctrl+Q does: through the shell, so a quit waits for a
+/// fork in flight instead of leaving a branch this run never adopted.
+pub fn request_quit(cx: &mut App) {
+    let parked = cx
+        .try_global::<Shell>()
+        .and_then(|shell| shell.0.borrow().clone());
+    match parked {
+        Some(app) => app.update(cx, |app, cx| {
+            app.request_quit(crate::app::QuitRequest::User, cx)
+        }),
+        None => cx.quit(),
+    }
+}
+
+/// The window's close button, per Settings → General → Closing the window.
+fn should_close(window: &mut gpui::Window, cx: &mut App) -> bool {
+    let policy = theme::get(cx).ui.close_behavior;
+    match tray::close_action(policy, tray::icon_up()) {
+        CloseAction::CloseWindow => true,
+        CloseAction::HideWindow => {
+            tray::hide_window(window);
+            false
+        }
+        CloseAction::Quit => {
+            // Deferred so the quit does not run inside the platform's close
+            // callback; a deferred quit (fork in flight) leaves the window up.
+            cx.defer(request_quit);
+            false
+        }
+    }
+}
+
+/// The tray icon's labels in the current language.
+fn tray_labels() -> tray::TrayLabels {
+    tray::TrayLabels {
+        tooltip: tr!("tray.tooltip"),
+        show: tr!("tray.show_orbit"),
+        new_task: tr!("menu.new_task"),
+        quit: tr!("tray.quit_orbit"),
+    }
+}
+
+/// Put the tray icon up while the close policy hides to it, and down
+/// otherwise. Called on open and whenever the UI preferences change.
+pub fn sync_tray(cx: &App) {
+    let wanted = theme::get(cx).ui.close_behavior == tray::CloseBehavior::HideToTray;
+    tray::set_icon(wanted.then(tray_labels).as_ref());
+}
+
+/// Act on the tray icon's clicks, with a full [`App`] in hand.
+fn handle_tray_events(cx: &mut App) {
+    for event in tray::drain() {
+        match event {
+            TrayEvent::Show => {
+                reveal(cx);
+            }
+            TrayEvent::NewTask => {
+                if let Some(window) = reveal(cx) {
+                    window
+                        .update(cx, |_, window, cx| {
+                            window.dispatch_action(Box::new(crate::NewSession), cx)
+                        })
+                        .ok();
+                }
+            }
+            TrayEvent::Quit => request_quit(cx),
+        }
+    }
+}
+
+/// Bring the main window back: show the hidden one (Windows), or open a new
+/// one onto the parked shell when it was closed (macOS).
+fn reveal(cx: &mut App) -> Option<gpui::AnyWindowHandle> {
+    if let Some(window) = cx.windows().into_iter().next() {
+        window
+            .update(cx, |_, window, _| {
+                tray::show_window(window);
+                window.activate_window();
+            })
+            .ok();
+        cx.activate(true);
+        return Some(window);
+    }
+    open(cx);
+    cx.windows().into_iter().next()
 }
 
 /// Drain pi events into the UI for the life of the app.
@@ -156,6 +299,9 @@ fn spawn_heartbeat(cx: &mut App, app: &Entity<OrbitApp>) {
             let Ok(active) = heartbeat.update(cx, |app: &mut OrbitApp, cx| app.tick(cx)) else {
                 return;
             };
+            // Outside the shell's update: showing a window may open one,
+            // which renders (and so updates) the shell itself.
+            cx.update(handle_tray_events).ok();
             delay = if active {
                 Duration::from_millis(16)
             } else {

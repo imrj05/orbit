@@ -25,14 +25,21 @@ use crate::theme::tokens::{panel, DynamicSpacing, IconSize, TextSize};
 use crate::theme::Theme;
 
 /// A body row's height. Every table height is a whole number of these plus the
-/// header, so a table never ends by cutting a row in half.
-pub(super) const ROW_H: f32 = 40.;
-/// The header row's height.
-pub(super) const HEADER_H: f32 = 40.;
+/// header, so a table never ends by cutting a row in half. Tall enough for a
+/// two-line name cell (a title over its context) without crowding.
+pub(super) const ROW_H: f32 = 48.;
+/// The header row's height: a slimmer band than the rows it labels.
+pub(super) const HEADER_H: f32 = 36.;
 
 /// Horizontal cell padding (each side). Matches the search field's 12px inset
 /// so the first column lines up with the toolbar above the table card.
 pub(super) const CELL_PADDING: f32 = 16.;
+
+/// Width every column budget leaves unspent. The page estimates the card's
+/// inner width from its paddings, which grow with the density setting; the
+/// fill column takes this slack back, so an estimate that is a few pixels high
+/// can never make the table scroll sideways.
+pub(super) const FILL_SLACK: f32 = 24.;
 
 /// Width the resize divider's hit area gets.
 const HANDLE_W: f32 = 5.;
@@ -79,6 +86,10 @@ pub struct Column {
     pub sortable: bool,
     pub resizable: bool,
     pub sort: SortState,
+    /// The column that takes whatever width the card really has left. Its
+    /// `width` is a floor, not a size, so the table fills the card exactly and
+    /// never overflows by the few pixels a padding or density estimate is off.
+    pub fill: bool,
 }
 
 impl Column {
@@ -91,7 +102,19 @@ impl Column {
             sortable: false,
             resizable: false,
             sort: SortState::Default,
+            fill: false,
         }
+    }
+
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
+    }
+
+    /// [`Self::fill`] when `fills` holds.
+    pub fn when_fill(mut self, fills: bool) -> Self {
+        self.fill = fills;
+        self
     }
 
     pub fn width(mut self, width: f32) -> Self {
@@ -196,12 +219,15 @@ pub fn data_table(
         content_h
     };
 
+    // The header is a quiet tinted band — a well inside the card — so the
+    // labels read as the table's frame rather than as a first row.
     let mut header = div()
         .flex_none()
         .h(px(HEADER_H))
         .min_w(px(total_w))
         .flex()
         .items_center()
+        .bg(theme.surface_secondary)
         .border_b_1()
         .border_color(theme.border);
     for (ix, column) in columns.iter().enumerate() {
@@ -280,8 +306,8 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
     // is what marks the active key.
     let mut content = div()
         .h_full()
-        .w(px(column.width))
-        .flex_none()
+        .when(column.fill, |cell| cell.flex_1().min_w(px(column.width)))
+        .when(!column.fill, |cell| cell.w(px(column.width)).flex_none())
         .relative()
         .flex()
         .items_center()
@@ -300,9 +326,9 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
             div()
                 .min_w_0()
                 .truncate()
-                .text_size(TextSize::Default.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_primary)
+                .text_color(theme.text_muted)
                 .child(column.label.clone()),
         );
 
@@ -387,8 +413,8 @@ fn sort_caret(sort: SortState, theme: Theme) -> AnyElement {
 pub(super) fn cell_shell(column: &Column) -> gpui::Div {
     div()
         .h_full()
-        .w(px(column.width))
-        .flex_none()
+        .when(column.fill, |cell| cell.flex_1().min_w(px(column.width)))
+        .when(!column.fill, |cell| cell.w(px(column.width)).flex_none())
         .flex()
         .items_center()
         .px(px(CELL_PADDING))
@@ -426,6 +452,95 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
                 .text_size(TextSize::Default.px(&theme))
                 .text_color(color)
                 .child(text),
+        )
+        .into_any_element()
+}
+
+/// A name cell in two lines, the way a directory lists a person: the title
+/// in primary ink over its context in muted ink, with an optional leading
+/// glyph. Both lines are clipped to the column on their own budgets.
+pub(super) fn two_line_cell(
+    column: &Column,
+    glyph: Option<AnyElement>,
+    title: String,
+    sub: Option<String>,
+    theme: Theme,
+) -> AnyElement {
+    let glyph_w = if glyph.is_some() { 28. } else { 0. };
+    let title = clip_to(
+        &title,
+        column.width - glyph_w,
+        CELL_PADDING * 2.,
+        theme.ui_px(13.).into(),
+        0.52,
+    );
+    let sub = sub.map(|sub| {
+        clip_to(
+            &sub,
+            column.width - glyph_w,
+            CELL_PADDING * 2.,
+            theme.ui_px(11.).into(),
+            0.52,
+        )
+    });
+    cell_shell(column)
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .children(glyph)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(
+                    div().w_full().flex().child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(TextSize::Default.px(&theme))
+                            .text_color(theme.text_primary)
+                            .child(title),
+                    ),
+                )
+                .children(sub.map(|sub| {
+                    div().w_full().flex().child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(sub),
+                    )
+                })),
+        )
+        .into_any_element()
+}
+
+/// A status badge: a hairline frame, a small dot in the status role and the
+/// label in readable ink. The dot reinforces a label that already reads, so
+/// status is never carried by colour alone, and no tint is painted with an
+/// ad-hoc opacity.
+pub(super) fn status_badge(label: String, status: Hsla, theme: Theme) -> AnyElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .h(theme.ui_px(22.))
+        .rounded(crate::theme::tokens::Radius::Small.px(&theme))
+        .border_1()
+        .border_color(theme.border)
+        .child(div().flex_none().size(px(6.)).rounded_full().bg(status))
+        .child(
+            div()
+                .whitespace_nowrap()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_secondary)
+                .child(label),
         )
         .into_any_element()
 }

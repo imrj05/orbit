@@ -17,7 +17,7 @@ stands, not against the design documents.
 
 ## 1. Method
 
-* Read `DESIGN.md`, `PRODUCT.md`, `INTENT.md` (D11, D13, D15), `AGENT.md`, and
+* Read `DESIGN.md`, `PRODUCT.md`, `INTENT.md` (D11, D13, D15), `AGENTS.md`, and
   `zed-design-tokens.md`.
 * Read the whole theme layer: `theme.rs` (2,585 lines), `theme/tokens.rs`
   (1,546), `theme/appearance.rs` (793).
