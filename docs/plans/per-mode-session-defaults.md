@@ -157,7 +157,7 @@ sub-groups — Plan, Build, Ask — each with two rows:
 ### 5.3 i18n
 
 Add keys under `settings.` in the translation catalog(s) used by `tr!`
-(see `AGENT.md › Localization` / `i18n.rs`), for all supported locales:
+(see `AGENTS.md › Localization` / `i18n.rs`), for all supported locales:
 
 ```
 settings.session_defaults

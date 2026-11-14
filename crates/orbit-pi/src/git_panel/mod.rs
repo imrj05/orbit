@@ -1894,7 +1894,7 @@ impl GitPanel {
                 cx.listener(|this, _: &ClickEvent, window, cx| {
                     // mouse-down-out closes the picker; the chip's mouse-up would
                     // otherwise toggle it straight back open on the same gesture
-                    // (see AGENT.md popovers).
+                    // (see AGENTS.md popovers).
                     const GESTURE: Duration = Duration::from_millis(200);
                     if let Some(dismissed) = this.menu_dismissed_at.take() {
                         if dismissed.elapsed() < GESTURE {
@@ -3721,7 +3721,7 @@ impl GitPanel {
 
     fn toggle_branch_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // mouse-down-out closes the menu; the chip's mouse-up would otherwise
-        // toggle it open again on the same click (see AGENT.md popovers).
+        // toggle it open again on the same click (see AGENTS.md popovers).
         const GESTURE: Duration = Duration::from_millis(200);
         if let Some(dismissed) = self.menu_dismissed_at.take() {
             if dismissed.elapsed() < GESTURE {

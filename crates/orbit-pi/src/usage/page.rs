@@ -18,13 +18,26 @@ use serde_json::Value;
 use crate::composer::ComposerInput;
 
 use super::aggregate::{
-    Breakdown, BucketRow, ChartMetric, GroupRow, LatencyMetric, SessionRow, ToolRow, Totals,
-    UsageSnapshot,
+    highlight_series, previous_series, Breakdown, BucketRow, ChartMetric, GroupRow, Highlight,
+    LatencyMetric, SessionRow, TimeSeries, ToolRow, Totals, UsageSnapshot,
 };
 use super::collect::{now_ms, UsageScanner};
 use super::model::*;
 use super::sparkline;
 use super::table::{FailureRow, FailureSort, TableKind};
+
+/// Session columns hidden until the user shows them: their values sit under
+/// the session title instead.
+const DEFAULT_HIDDEN_SESSION_COLUMNS: [SessionSort; 2] =
+    [SessionSort::Workspace, SessionSort::Provider];
+/// Bumped when the session column defaults change, so a saved file picks up
+/// the new defaults exactly once.
+const SESSION_COLUMNS_VERSION: u64 = 1;
+
+/// Shortest time the Refresh button's glyph turns after a click. An
+/// incremental scan often lands within one heartbeat; without a floor the
+/// feedback would be a flash too short to read as "it worked".
+const MIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(600);
 
 /// Page sizes offered by the sessions table footer (§26).
 pub const PAGE_SIZES: [usize; 4] = [10, 25, 50, 100];
@@ -493,6 +506,10 @@ pub enum MenuKind {
     FailurePageSize,
     /// The header's export popover.
     Export,
+    /// The trend's "highlight one against the total" picker.
+    TrendHighlight,
+    /// The toolbar's "+ Filter" menu: outcome and cache.
+    MoreFilters,
 }
 
 /// Export flavors: the raw filtered records, or the aggregates on screen.
@@ -558,17 +575,38 @@ pub enum BreakdownSort {
     Output,
     Cache,
     Tokens,
+    Share,
+    Cost,
+    AvgResponse,
+    ErrorRate,
 }
 
 impl BreakdownSort {
     /// Every sortable column, in the order the table offers them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 10] = [
         Self::Name,
         Self::Requests,
         Self::Input,
         Self::Output,
         Self::Cache,
         Self::Tokens,
+        Self::Share,
+        Self::Cost,
+        Self::AvgResponse,
+        Self::ErrorRate,
+    ];
+
+    /// The measure columns after Name, in table order.
+    pub const MEASURES: [Self; 9] = [
+        Self::Requests,
+        Self::Input,
+        Self::Output,
+        Self::Cache,
+        Self::Tokens,
+        Self::Share,
+        Self::Cost,
+        Self::AvgResponse,
+        Self::ErrorRate,
     ];
 
     pub fn label(self) -> String {
@@ -579,6 +617,10 @@ impl BreakdownSort {
             Self::Output => tr!("usage.metric_output"),
             Self::Cache => tr!("usage.metric_cache"),
             Self::Tokens => tr!("usage.metric_tokens"),
+            Self::Share => tr!("usage.col_share"),
+            Self::Cost => tr!("usage.metric_cost"),
+            Self::AvgResponse => tr!("usage.metric_avg_response"),
+            Self::ErrorRate => tr!("usage.col_error_rate"),
         }
     }
 
@@ -590,6 +632,10 @@ impl BreakdownSort {
             Self::Output => "output",
             Self::Cache => "cache",
             Self::Tokens => "tokens",
+            Self::Share => "share",
+            Self::Cost => "cost",
+            Self::AvgResponse => "avg_response",
+            Self::ErrorRate => "error_rate",
         }
     }
 
@@ -599,14 +645,38 @@ impl BreakdownSort {
             .find(|column| column.as_str() == raw.trim())
     }
 
-    /// Numeric value for sorting; the name column sorts on its own text.
-    pub fn key(self, row: &super::aggregate::GroupRow) -> f64 {
+    /// Default width of the column, before any user resize.
+    pub fn width(self) -> f32 {
         match self {
-            Self::Requests => row.totals.requests as f64,
-            Self::Input => row.totals.tokens.input as f64,
-            Self::Output => row.totals.tokens.output as f64,
-            Self::Cache => row.totals.tokens.cache_read as f64,
-            Self::Tokens => row.totals.tokens.total as f64,
+            Self::Name => 160.,
+            Self::Requests | Self::AvgResponse => 92.,
+            Self::Tokens | Self::ErrorRate => 88.,
+            Self::Input | Self::Output | Self::Cache | Self::Cost => 80.,
+            Self::Share => 72.,
+        }
+    }
+
+    /// Numeric value for sorting; the name column sorts on its own text. A
+    /// measure the row has no data for (no price table, no measured request)
+    /// sorts below every real value, so "unknown" never ranks as "cheapest".
+    pub fn key(self, row: &super::aggregate::GroupRow) -> f64 {
+        let totals = &row.totals;
+        match self {
+            Self::Requests => totals.requests as f64,
+            Self::Input => totals.tokens.input as f64,
+            Self::Output => totals.tokens.output as f64,
+            Self::Cache => totals.tokens.cache_read as f64,
+            Self::Tokens => totals.tokens.total as f64,
+            Self::Share => row.share,
+            Self::Cost => {
+                if totals.priced_requests > 0 {
+                    totals.cost_usd
+                } else {
+                    -1.0
+                }
+            }
+            Self::AvgResponse => totals.avg_duration_ms().unwrap_or(-1.0),
+            Self::ErrorRate => totals.error_rate().unwrap_or(-1.0),
             Self::Name => 0.0,
         }
     }
@@ -793,8 +863,21 @@ pub struct UsagePage {
     /// view to morph them into the current ones.
     kpi_previous: Option<Vec<Vec<f64>>>,
     kpi_serial: u64,
+    /// The slice the trend draws against the total, and its series on the
+    /// snapshot's buckets. Kept for the session, not persisted: it is a
+    /// question asked of today's data.
+    trend_highlight: Option<Highlight>,
+    trend_highlight_series: Option<Rc<TimeSeries>>,
+    /// Whether the trend also draws the previous window, and that line.
+    compare_previous: bool,
+    previous_series: Option<Rc<TimeSeries>>,
     loading: bool,
     refreshing: bool,
+    /// The refresh the user asked for, if one is showing feedback: set by the
+    /// Refresh button and held until both the scan has landed and the
+    /// minimum feedback time has passed. Background rescans never set it, so
+    /// a streaming agent cannot make the toolbar flicker.
+    user_refresh: Option<Instant>,
     last_request: Option<Instant>,
     last_updated_ms: Option<i64>,
     error: Option<String>,
@@ -817,13 +900,6 @@ pub struct UsagePage {
     _failure_search_sub: Subscription,
     /// Width of the main area, refreshed by the shell each render.
     main_width: f32,
-    /// Leading inset for the page header, refreshed by the shell each render.
-    /// Wider when the sessions sidebar is collapsed: the page then owns the
-    /// window's left edge, so the header's Back affordance has to clear the OS
-    /// window buttons and the titlebar's left controls overlaid at the same
-    /// height.
-    header_leading: f32,
-
     on_open_session: Option<OpenSession>,
     on_close: Option<Close>,
 }
@@ -955,8 +1031,13 @@ impl UsagePage {
             kpi_hover: None,
             kpi_previous: None,
             kpi_serial: 0,
+            trend_highlight: None,
+            trend_highlight_series: None,
+            compare_previous: false,
+            previous_series: None,
             loading: true,
             refreshing: false,
+            user_refresh: None,
             last_request: None,
             last_updated_ms: None,
             error: None,
@@ -970,7 +1051,6 @@ impl UsagePage {
             _bucket_search_sub: bucket_search_sub,
             _failure_search_sub: failure_search_sub,
             main_width: 1000.,
-            header_leading: 12.,
             on_open_session: None,
             on_close: None,
         }
@@ -1005,6 +1085,10 @@ impl UsagePage {
 
     /// The user asked for fresh numbers.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        // A second click while one is showing changes nothing.
+        if self.user_refresh.is_none() {
+            self.user_refresh = Some(Instant::now());
+        }
         self.maybe_scan(true, cx);
     }
 
@@ -1040,6 +1124,15 @@ impl UsagePage {
         }
         if self.dirty {
             self.recompute();
+            changed = true;
+        }
+        // The user's refresh stops spinning once its scan has landed and it
+        // has turned long enough to be seen.
+        if self
+            .user_refresh
+            .is_some_and(|at| !self.refreshing && at.elapsed() >= MIN_REFRESH_FEEDBACK)
+        {
+            self.user_refresh = None;
             changed = true;
         }
         if let Some((_, at)) = &self.status {
@@ -1114,7 +1207,89 @@ impl UsagePage {
                 self.kpi_serial = self.kpi_serial.wrapping_add(1);
             }
         }
+        // A filter can leave the highlighted slice with nothing in range; it
+        // then drops back to the plain total rather than plotting a flat zero.
+        if self
+            .trend_highlight
+            .is_some_and(|highlight| !highlight.present_in(&snapshot))
+        {
+            self.trend_highlight = None;
+        }
+        self.trend_highlight_series = self.trend_highlight.map(|highlight| {
+            Rc::new(highlight_series(
+                &index,
+                &self.filter,
+                highlight,
+                &snapshot.series,
+            ))
+        });
         self.snapshot = Some(Rc::new(snapshot));
+        self.refresh_previous_series();
+    }
+
+    /// Rebuild the comparison line for the current snapshot and highlight.
+    fn refresh_previous_series(&mut self) {
+        self.previous_series = match (self.compare_previous, &self.index, &self.snapshot) {
+            (true, Some(index), Some(snapshot)) => {
+                previous_series(index, &self.filter, self.trend_highlight, &snapshot.series)
+                    .map(Rc::new)
+            }
+            _ => None,
+        };
+    }
+
+    /// Whether the previous-period comparison is switched on.
+    pub fn compare_previous(&self) -> bool {
+        self.compare_previous
+    }
+
+    /// The previous window's line, when the comparison is on and the range
+    /// has a previous window.
+    pub fn previous_series(&self) -> Option<&TimeSeries> {
+        self.previous_series.as_deref()
+    }
+
+    pub fn set_compare_previous(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.compare_previous == on {
+            return;
+        }
+        self.compare_previous = on;
+        self.refresh_previous_series();
+        cx.notify();
+    }
+
+    /// The slice the trend singles out, if any.
+    pub fn trend_highlight(&self) -> Option<Highlight> {
+        self.trend_highlight
+    }
+
+    /// The highlighted slice's series, on the snapshot's buckets.
+    pub fn trend_highlight_series(&self) -> Option<&TimeSeries> {
+        self.trend_highlight_series.as_deref()
+    }
+
+    /// Point the trend at one slice (or back at the plain total). Only the
+    /// slice's series is computed; the snapshot is untouched.
+    pub fn set_trend_highlight(&mut self, highlight: Option<Highlight>, cx: &mut Context<Self>) {
+        self.menu = None;
+        if self.trend_highlight == highlight {
+            cx.notify();
+            return;
+        }
+        self.trend_highlight = highlight;
+        self.trend_highlight_series = match (highlight, self.index.as_ref(), self.snapshot.as_ref())
+        {
+            (Some(highlight), Some(index), Some(snapshot)) => Some(Rc::new(highlight_series(
+                index,
+                &self.filter,
+                highlight,
+                &snapshot.series,
+            ))),
+            _ => None,
+        };
+        // The comparison line follows the slice, so it stays like for like.
+        self.refresh_previous_series();
+        cx.notify();
     }
 
     // ── reads used by the view ─────────────────────────────────────────────
@@ -1135,12 +1310,6 @@ impl UsagePage {
             self.main_width = width;
             cx.notify();
         }
-    }
-
-    /// The header's leading inset. The shell leaves it at the normal page
-    /// padding unless a page override widens it.
-    pub fn header_leading(&self) -> f32 {
-        self.header_leading
     }
 
     /// The width of the main area the shell gave us. The page lays itself out
@@ -1285,8 +1454,11 @@ impl UsagePage {
         self.loading && self.snapshot.is_none()
     }
 
+    /// Whether the Refresh button should show it is working: only for a
+    /// refresh the user asked for. Background rescans stay silent; their
+    /// result shows up as the freshness label.
     pub fn is_refreshing(&self) -> bool {
-        self.refreshing
+        self.user_refresh.is_some()
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -1663,7 +1835,9 @@ impl UsagePage {
             | MenuKind::BucketColumns
             | MenuKind::BucketPageSize
             | MenuKind::FailureColumns
-            | MenuKind::FailurePageSize => return,
+            | MenuKind::FailurePageSize
+            | MenuKind::TrendHighlight
+            | MenuKind::MoreFilters => return,
         };
         if let Some(ix) = list.iter().position(|value| *value == id) {
             list.remove(ix);
@@ -1688,7 +1862,9 @@ impl UsagePage {
             | MenuKind::BucketColumns
             | MenuKind::BucketPageSize
             | MenuKind::FailureColumns
-            | MenuKind::FailurePageSize => return,
+            | MenuKind::FailurePageSize
+            | MenuKind::TrendHighlight
+            | MenuKind::MoreFilters => return,
         }
         self.set_filter(filter, cx);
     }
@@ -1708,7 +1884,9 @@ impl UsagePage {
             | MenuKind::BucketColumns
             | MenuKind::BucketPageSize
             | MenuKind::FailureColumns
-            | MenuKind::FailurePageSize => return,
+            | MenuKind::FailurePageSize
+            | MenuKind::TrendHighlight
+            | MenuKind::MoreFilters => return,
         }
         self.set_filter(filter, cx);
     }
@@ -1725,21 +1903,54 @@ impl UsagePage {
         self.set_filter(filter, cx);
     }
 
+    /// "View failures": narrow to failed requests, replacing any other
+    /// outcome choice, or (with `false`) drop just the failed outcome.
     pub fn set_errors_only(&mut self, only: bool, cx: &mut Context<Self>) {
         let mut filter = self.filter.clone();
-        filter.errors_only = only;
         if only {
-            filter.cached_only = false;
+            filter.outcomes = vec![Outcome::Error];
+        } else {
+            filter.outcomes.retain(|outcome| *outcome != Outcome::Error);
         }
         self.set_filter(filter, cx);
     }
 
-    pub fn set_cached_only(&mut self, only: bool, cx: &mut Context<Self>) {
+    /// Add or remove one outcome from the outcome filter.
+    pub fn toggle_outcome(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
         let mut filter = self.filter.clone();
-        filter.cached_only = only;
-        if only {
-            filter.errors_only = false;
+        match filter.outcomes.iter().position(|chosen| *chosen == outcome) {
+            Some(ix) => {
+                filter.outcomes.remove(ix);
+            }
+            None => filter.outcomes.push(outcome),
         }
+        // Every outcome chosen is no narrowing at all.
+        if filter.outcomes.len() == Outcome::ALL.len() {
+            filter.outcomes.clear();
+        }
+        self.set_filter(filter, cx);
+    }
+
+    pub fn set_cache_filter(&mut self, cache: CacheFilter, cx: &mut Context<Self>) {
+        let mut filter = self.filter.clone();
+        filter.cache = cache;
+        self.set_filter(filter, cx);
+    }
+
+    /// Clear the outcome and cache filters together (the "+ Filter" menu's
+    /// Clear action).
+    pub fn clear_request_filters(&mut self, cx: &mut Context<Self>) {
+        let mut filter = self.filter.clone();
+        filter.outcomes.clear();
+        filter.cache = CacheFilter::Any;
+        self.set_filter(filter, cx);
+    }
+
+    /// Clear the merged Model chip: every provider and model selection.
+    pub fn clear_model_scope(&mut self, cx: &mut Context<Self>) {
+        let mut filter = self.filter.clone();
+        filter.providers.clear();
+        filter.models.clear();
         self.set_filter(filter, cx);
     }
 
@@ -2140,6 +2351,9 @@ impl UsagePage {
                 ("cache", tr!("usage.metric_cache")),
                 ("tokens", tr!("usage.metric_tokens")),
                 ("share", tr!("usage.col_share")),
+                ("cost", tr!("usage.metric_cost")),
+                ("avg_response", tr!("usage.metric_avg_response")),
+                ("error_rate", tr!("usage.col_error_rate")),
             ],
         }
     }
@@ -2307,7 +2521,7 @@ impl Default for Prefs {
             session_sort_desc: false,
             page_size: DEFAULT_PAGE_SIZE,
             latency_metric: String::new(),
-            hidden_columns: Vec::new(),
+            hidden_columns: DEFAULT_HIDDEN_SESSION_COLUMNS.to_vec(),
             breakdown_tab: String::new(),
             breakdown_sort: String::new(),
             breakdown_sort_desc: true,
@@ -2343,7 +2557,7 @@ impl Prefs {
             .map(|size| size as usize)
             .filter(|size| PAGE_SIZES.contains(size))
             .unwrap_or(DEFAULT_PAGE_SIZE);
-        let hidden_columns = value
+        let mut hidden_columns: Vec<SessionSort> = value
             .get("hidden_columns")
             .and_then(Value::as_array)
             .map(|values| {
@@ -2354,6 +2568,20 @@ impl Prefs {
                     .collect()
             })
             .unwrap_or_default();
+        // The session title now carries its workspace and provider on a
+        // second line. Hide those two columns once for a file written before
+        // that; after this, the user's own choice in Columns stands.
+        let columns_version = value
+            .get("session_columns_version")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if columns_version < SESSION_COLUMNS_VERSION {
+            for column in DEFAULT_HIDDEN_SESSION_COLUMNS {
+                if !hidden_columns.contains(&column) {
+                    hidden_columns.push(column);
+                }
+            }
+        }
         Self {
             preset: text("preset").unwrap_or_default(),
             custom_start: value.get("custom_start").and_then(Value::as_i64),
@@ -2393,6 +2621,7 @@ impl Prefs {
             "session_sort_desc": self.session_sort_desc,
             "page_size": self.page_size,
             "latency_metric": self.latency_metric,
+            "session_columns_version": SESSION_COLUMNS_VERSION,
             "hidden_columns": self
                 .hidden_columns
                 .iter()

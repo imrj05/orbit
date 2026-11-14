@@ -138,7 +138,7 @@ entire integration surface, and it is documented, not internal.
 
 ### D-A — The feature is an extension plus a card; the RPC wire does not change
 
-`crates/orbit-rpc` stays a transport (`AGENT.md`: "transport, not a place for UI, HTTP, or runtime
+`crates/orbit-rpc` stays a transport (`AGENTS.md`: "transport, not a place for UI, HTTP, or runtime
 helpers"). The tool call arrives as an ordinary `tool_execution_*` event, its `details` carry the
 run state, and Orbit renders it. Nothing in the protocol has to learn what a subagent is.
 
@@ -206,7 +206,7 @@ can instruct a model to run anything. pi's own example defaults to user scope fo
 Phase 5 may add project scope behind Orbit's project trust, off by default.
 
 Frontmatter is read by a ~20-line reader for exactly these five keys, not by a YAML parser
-(`AGENT.md`: `contrib/` is zero-dependency). A malformed file is skipped with a diagnostic; it
+(`AGENTS.md`: `contrib/` is zero-dependency). A malformed file is skipped with a diagnostic; it
 never takes down discovery of the others.
 
 ### D-E — Children inherit the parent's guardrails; they never prompt
@@ -1191,7 +1191,7 @@ children per parent session, timeout, project-agents toggle (phase 5, off), and 
 | `crates/orbit-pi/src/lib.rs` | module declarations, re-exports |
 | `crates/orbit-pi/locales/en.yml` | `subagent.*`, `settings.subagents.*` keys (D9: only `en.yml` is hand-edited) |
 | `crates/orbit-pi/docs/subagents.md` | **new** — user one-pager: agents, modes, what children may do |
-| `AGENT.md` | file map rows for the new modules + `contrib/` dir |
+| `AGENTS.md` | file map rows for the new modules + `contrib/` dir |
 | `INTENT.md` | new **D18**, *Implementation status* |
 | `README.md`, `CHANGELOG.md`, `PRODUCT.md` | feature bullet, `[Unreleased]` entry, capability list |
 
@@ -1211,7 +1211,7 @@ previous gate passes; do not carry a phase's UI work into another phase's tests.
 - **Zero-dependency `contrib/`.** No npm install, no bundler; `node --test` only.
 - **i18n is part of the change**, not a follow-up: `en.yml`, the glossary, `gen_locales.py`,
   `check_i18n.py`, and the `i18n` test run once at the end of the phase that adds strings.
-- **Keep the feedback loop short** (`AGENT.md`): `node --test` for the extension, `cargo check -p
+- **Keep the feedback loop short** (`AGENTS.md`): `node --test` for the extension, `cargo check -p
   orbit-pi` plus the named filter for Rust, `bacon run` only when the behavior is visual.
 
 ### 12.1 Phase 0 — spike: prove the seam (½ day)
@@ -1426,7 +1426,7 @@ card is what makes the feature trustworthy.
 
 ## 14. Verification
 
-### 14.1 Commands per change (from `AGENT.md` §Verification)
+### 14.1 Commands per change (from `AGENTS.md` §Verification)
 
 | Change | Command |
 |---|---|
@@ -1535,7 +1535,7 @@ locally only).
 
 ## 16. Docs to update when this ships
 
-Per `AGENT.md` §7, a feature is not done until the docs describe it.
+Per `AGENTS.md` §7, a feature is not done until the docs describe it.
 
 - `INTENT.md` — new **D18 — Subagents: a bundled delegation tool over child `pi` processes**, plus
   *Implementation status*.
@@ -1546,7 +1546,7 @@ Per `AGENT.md` §7, a feature is not done until the docs describe it.
   delete/reset an agent in Settings, that writing a builtin override also overrides `pi-subagents`'
   same-named builtin, that an impossible run is refused before it spends, and how to read the
   delegation card (phases, blocked banner, refusal line, where a child's real steps live).
-- `AGENT.md` — file map rows (`subagent.rs`, `subagent_file.rs`, `subagents.rs`,
+- `AGENTS.md` — file map rows (`subagent.rs`, `subagent_file.rs`, `subagents.rs`,
   `app/subagents_ui.rs`, `contrib/orbit-subagents-extension/`).
 - `README.md` — a Features bullet: delegate to a child agent, and manage agents (capabilities, mode,
   model, prompt) from Settings.
@@ -1568,5 +1568,5 @@ Per `AGENT.md` §7, a feature is not done until the docs describe it.
 - An agent can be authored, edited, renamed, disabled, deleted and reset inside Settings, and the
   next delegation uses it with no restart and no second source of truth.
 - `en.yml` is the only hand-edited locale and `check_i18n.py` is green.
-- INTENT D18, `AGENT.md`'s file map, `README`, `CHANGELOG`, `PRODUCT.md` and the user-facing
+- INTENT D18, `AGENTS.md`'s file map, `README`, `CHANGELOG`, `PRODUCT.md` and the user-facing
   `docs/subagents.md` describe the shipped behavior.

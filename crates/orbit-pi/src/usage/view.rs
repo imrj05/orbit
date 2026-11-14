@@ -14,15 +14,15 @@
 //! one raised card per section, one accent on the active series,
 //! hairlines inside the cards, tabular mono figures.
 //!
-//! **STORY.** One continuous read, top to bottom: the activity calendar sets
-//! the rhythm, the operator reads the four headline figures — pointing at a
+//! **STORY.** One continuous read, top to bottom: the operator reads the four
+//! headline figures (Cost, Tokens, Requests, Cache hit rate) — pointing at a
 //! card's line reads any day in the range across the whole row — reads the
-//! trend, then audits where the usage went (Breakdown) and the records behind
-//! it (Records). Every figure is pi's own session measurement; nothing is
-//! invented.
+//! trend, audits where the usage went (Breakdown) and the records behind it
+//! (Records), and ends on the year calendar for the long view. Every figure is
+//! pi's own session measurement; nothing is invented.
 //!
-//! **FIRST VIEWPORT.** 44px header + filter bar, then the Daily activity
-//! calendar, the Summary board, and the trend. There are no page-level tabs —
+//! **FIRST VIEWPORT.** One toolbar (filters leading; freshness, Export and
+//! Refresh trailing), then the Summary board and the trend. There are no page-level tabs —
 //! the sections share one scroll, and each section's own selector (chart
 //! metric, breakdown dimension, records table) lives inside its card.
 //!
@@ -30,7 +30,7 @@
 //! header, content padded inside. Nested cards are forbidden: tables keep
 //! only a hairline frame.
 //!
-//! Sections: Daily activity · Summary · Usage over time · Breakdown · Records.
+//! Sections: Summary · Usage over time · Breakdown · Records · Daily activity.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use std::sync::Arc;
 use gpui::{
     anchored, deferred, div, prelude::*, px, relative, Animation, AnimationExt, AnyElement, App,
     Context, Corner, ElementId, Entity, Font, FontFeatures, FontWeight, Hsla, IntoElement,
-    MouseButton, Render, SharedString, Stateful, Window,
+    MouseButton, Pixels, Render, SharedString, Stateful, Window,
 };
 
 use super::aggregate::{
@@ -49,15 +49,17 @@ use super::chart;
 use super::filters::{self, FilterOption};
 use super::format;
 use super::heatmap;
-use super::model::{next_bucket, Granularity, RangePreset, TimeFocus, UsageFilter, UsageIndex};
+use super::model::{
+    next_bucket, CacheFilter, Granularity, RangePreset, TimeFocus, UsageFilter, UsageIndex,
+};
 use super::page::{
     BreakdownQueryResult, BreakdownSort, BreakdownTab, BucketQueryResult, BucketSort, DetailTab,
     FailureQueryResult, MenuKind, SessionQueryResult, SessionSort, ToolQueryResult, UsagePage,
 };
 use super::sparkline;
 use super::table::{
-    cell_shell, data_table, empty_cell, text_cell, Column, FailureSort, SortState, TableHandlers,
-    TableKind, HEADER_H, ROW_H,
+    cell_shell, data_table, empty_cell, status_badge, text_cell, two_line_cell, Column,
+    FailureSort, SortState, TableHandlers, TableKind, FILL_SLACK, HEADER_H, ROW_H,
 };
 use super::tooltip::Tooltip;
 use crate::app::{
@@ -112,7 +114,6 @@ impl Render for UsagePage {
             .text_color(theme.text_primary)
             .font_family(theme::ui_font_family())
             .text_size(TextSize::Default.px(&theme))
-            .child(self.header(theme, cx))
             .child(self.filter_bar(theme, cx))
             .child(
                 div()
@@ -202,11 +203,11 @@ impl UsagePage {
             .into_any_element()
     }
 
-    /// 44px page header: freshness and the page's own actions. The Back
-    /// affordance and title now live in the shared top bar (see
-    /// [`UsagePage::top_bar_leading`]). Compact by design — the data starts on
-    /// the next row.
-    fn header(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// The page's own actions at the trailing end of the filter toolbar:
+    /// freshness, Export and Refresh. The Back affordance and title live in the
+    /// shared top bar (see [`UsagePage::top_bar_leading`]), so the page spends
+    /// one row of chrome before its data, not two.
+    fn toolbar_actions(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let refresh_label = tr!("usage.refreshing");
         let refresh_idle_label = tr!("common.refresh");
         let status = if self.is_refreshing() {
@@ -220,32 +221,27 @@ impl UsagePage {
         let has_data = self.snapshot().is_some_and(|snapshot| !snapshot.is_empty());
 
         div()
-            .h(px(44.))
             .flex_none()
-            // The page now sits in a card below the top bar, which owns the
-            // caption buttons; the header only needs the normal page inset.
-            .pl(px(self.header_leading()))
-            .pr(DynamicSpacing::Base12.px(&theme))
+            // Pushed to the trailing edge, and still there when a narrow
+            // window wraps the toolbar onto a second line.
+            .ml_auto()
             .flex()
             .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .border_b_1()
-            .border_color(theme.border)
+            .gap(DynamicSpacing::Base04.px(&theme))
             .children(status.map(|status| {
                 div()
+                    .pr(DynamicSpacing::Base04.px(&theme))
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_muted)
                     .child(status)
             }))
-            .child(div().flex_1())
             .child(self.export_control(theme, has_data, cx))
+            // The label never changes: only the glyph turns, so the button
+            // keeps its width and the toolbar never shifts. The freshness
+            // label beside it says "Refreshing…" in words.
             .child(filters::text_button(
                 "usage-refresh",
-                if self.is_refreshing() {
-                    &refresh_label
-                } else {
-                    &refresh_idle_label
-                },
+                &refresh_idle_label,
                 Some("icons/refresh.svg"),
                 self.is_refreshing(),
                 true,
@@ -292,20 +288,18 @@ impl UsagePage {
 
     // ── filters ────────────────────────────────────────────────────────────
 
-    /// The filter bar: one row of chips under the header. Every chip writes to
-    /// the same filter the whole page reads (§10), so no panel can drift.
+    /// The page toolbar: filter chips leading, the page's actions trailing.
+    /// Every chip writes to the same filter the whole page reads (§10), so no
+    /// panel can drift.
     fn filter_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let filter = self.filter();
         let range = filter.range.clone();
         let index = self.index();
 
+        // The chips are their own row with their own spacing, so the gap
+        // between them never depends on how the toolbar around them wraps.
         let mut bar = div()
-            .w_full()
             .flex_none()
-            .px(DynamicSpacing::Base20.px(&theme))
-            .py(DynamicSpacing::Base08.px(&theme))
-            .border_b_1()
-            .border_color(theme.border)
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme));
@@ -335,7 +329,6 @@ impl UsagePage {
 
         if let Some(index) = index {
             let ranked_workspaces = filters::workspace_options(index);
-            let ranked_providers = filters::provider_options(index);
             let ranked_models = filters::model_options(index);
             let all_workspaces: Vec<FilterOption> = index
                 .workspaces
@@ -377,31 +370,129 @@ impl UsagePage {
                     theme,
                     cx,
                 ))
-                .child(self.multi_chip(
-                    MenuKind::Provider,
-                    "usage-provider",
-                    &tr!("usage.all_providers"),
-                    &ranked_providers,
-                    &all_providers,
-                    &filter.providers,
-                    theme,
-                    cx,
-                ))
-                .child(self.multi_chip(
-                    MenuKind::Model,
-                    "usage-model",
-                    &tr!("usage.all_models"),
-                    &ranked_models,
-                    &all_models,
-                    &filter.models,
-                    theme,
-                    cx,
-                ));
+                // One chip for both: its menu groups the models under their
+                // providers, and a provider row selects all of its models.
+                .child(self.model_chip(&ranked_models, &all_models, &all_providers, theme, cx));
         }
+        bar = bar.child(self.more_filters_chip(theme, cx));
 
         // Active narrowings are shown once, as removable chips, under the
         // filter row (§45); the filter row itself stays a set of controls.
-        bar.into_any_element()
+        div()
+            .w_full()
+            .flex_none()
+            .px(DynamicSpacing::Base20.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x(DynamicSpacing::Base12.px(&theme))
+            .gap_y(DynamicSpacing::Base06.px(&theme))
+            .child(bar)
+            .child(self.toolbar_actions(theme, cx))
+            .into_any_element()
+    }
+
+    /// The merged Provider & Model chip. Its label names what is chosen across
+    /// both — a provider, a model, or a count — and its menu is the model
+    /// menu grouped by provider.
+    fn model_chip(
+        &self,
+        ranked: &[FilterOption],
+        all: &[FilterOption],
+        providers: &[FilterOption],
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let filter = self.filter();
+        let kind = MenuKind::Model;
+        let open = self.menu() == Some(kind);
+        let chosen: Vec<String> = filter
+            .providers
+            .iter()
+            .filter_map(|id| providers.iter().find(|option| option.id == *id))
+            .chain(
+                filter
+                    .models
+                    .iter()
+                    .filter_map(|id| all.iter().find(|option| option.id == *id)),
+            )
+            .map(|option| option.label.clone())
+            .collect();
+        let label = match chosen.as_slice() {
+            [] => tr!("usage.all_models"),
+            [one] => one.clone(),
+            many => tr!("usage.n_selected", count = many.len()),
+        };
+        let entity = cx.entity();
+        let chip = filters::chip(
+            "usage-model",
+            label,
+            Some("icons/filter.svg"),
+            !chosen.is_empty(),
+            false,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| page.toggle_menu(kind, window, cx));
+            },
+        );
+        if !open {
+            return filters::chip_with_menu(
+                "usage-model",
+                chip,
+                false,
+                Corner::TopLeft,
+                theme,
+                || div().into_any_element(),
+            );
+        }
+        let panel = filters::multi_menu(self, kind, ranked, all, &filter.models, cx, theme);
+        filters::chip_with_menu(
+            "usage-model",
+            chip,
+            true,
+            Corner::TopLeft,
+            theme,
+            move || panel,
+        )
+    }
+
+    /// The "+ Filter" chip: outcome and cache, the request dimensions without a
+    /// chip of their own. It shows how many of them are narrowing.
+    fn more_filters_chip(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let filter = self.filter();
+        let active = filter.outcomes.len() + usize::from(filter.cache != CacheFilter::Any);
+        let label = if active == 0 {
+            tr!("usage.more_filters")
+        } else {
+            tr!("usage.more_filters_count", count = active)
+        };
+        let open = self.menu() == Some(MenuKind::MoreFilters);
+        let entity = cx.entity();
+        let chip = filters::chip(
+            "usage-more-filters",
+            label,
+            Some("icons/plus.svg"),
+            active > 0,
+            false,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| {
+                    page.toggle_menu(MenuKind::MoreFilters, window, cx)
+                });
+            },
+        );
+        let panel = open.then(|| filters::more_filters_menu(self, cx, theme));
+        filters::chip_with_menu(
+            "usage-more-filters-anchor",
+            chip,
+            open,
+            Corner::TopLeft,
+            theme,
+            move || panel.unwrap_or_else(|| div().into_any_element()),
+        )
     }
 
     /// One multi-select chip with its popover. `ranked` is what the menu shows
@@ -531,7 +622,7 @@ impl UsagePage {
                 },
             ));
         }
-        if filter.errors_only {
+        if filter.errors_only() {
             let entity = cx.entity();
             chips.push(filters::toggle_chip(
                 "usage-chip-errors".to_string(),
@@ -541,15 +632,27 @@ impl UsagePage {
                     entity.update(cx, |page, cx| page.set_errors_only(false, cx));
                 },
             ));
+        } else {
+            for outcome in filter.outcomes.iter().copied() {
+                let entity = cx.entity();
+                chips.push(filters::toggle_chip(
+                    format!("usage-chip-outcome-{}", outcome.as_str()),
+                    tr!("usage.chip_outcome", name = outcome.label()),
+                    theme,
+                    move |_, _, cx| {
+                        entity.update(cx, |page, cx| page.toggle_outcome(outcome, cx));
+                    },
+                ));
+            }
         }
-        if filter.cached_only {
+        if filter.cache != CacheFilter::Any {
             let entity = cx.entity();
             chips.push(filters::toggle_chip(
-                "usage-chip-cached".to_string(),
-                tr!("usage.chip_cached_only"),
+                "usage-chip-cache".to_string(),
+                tr!("usage.chip_cache", name = filter.cache.label()),
                 theme,
                 move |_, _, cx| {
-                    entity.update(cx, |page, cx| page.set_cached_only(false, cx));
+                    entity.update(cx, |page, cx| page.set_cache_filter(CacheFilter::Any, cx));
                 },
             ));
         }
@@ -669,23 +772,24 @@ impl UsagePage {
             return self.empty_store_state(theme, index.unreadable_files);
         }
 
-        // One continuous read: the calendar, the board, the trend, then the
-        // audit — the section selectors inside each card do the narrowing the
-        // old page tabs used to.
+        // One continuous read: the board, the trend, the audit, then the long
+        // view — the section selectors inside each card do the narrowing the
+        // old page tabs used to. The year calendar closes the page: it reads a
+        // fixed twelve months, so it would contradict the range chip if it led.
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base20.px(&theme))
-            .child(self.daily_section(snapshot, theme, cx))
             .child(self.summary_card(snapshot, theme, kpi_cols, cx))
             .child(self.activity_section(snapshot, theme, cx))
             .child(self.breakdown_section(snapshot, theme, cx))
             .child(self.details_section(snapshot, theme, window, cx))
+            .child(self.daily_section(snapshot, theme, cx))
             .into_any_element()
     }
 
-    /// The contribution-graph calendar as its own card, leading the page: the
+    /// The contribution-graph calendar as its own card, closing the page: the
     /// trailing year of days shaded by the active metric. Clicking a day
     /// scopes every section to it; clicking it again restores the range.
     fn daily_section(
@@ -1137,6 +1241,10 @@ impl UsagePage {
                 let change = cell.change.map(|pct| {
                     let color = if pct.abs() < 0.05 {
                         theme.text_muted
+                    } else if cell.metric == sparkline::KpiMetric::Cost {
+                        // Spending more is not "good": the sign carries the
+                        // direction, the ink stays neutral.
+                        theme.text_secondary
                     } else if pct > 0.0 {
                         theme.success
                     } else {
@@ -1200,14 +1308,14 @@ impl UsagePage {
                                     .text_color(theme.text_muted)
                                     .child(cell.label.clone()),
                             )
-                            .child(
+                            .children(cell.scope.clone().map(|scope| {
                                 div()
                                     .flex_none()
                                     .font(num_font())
                                     .text_size(TextSize::Small.px(&theme))
                                     .text_color(theme.text_muted)
-                                    .child(cell.scope.clone()),
-                            ),
+                                    .child(scope)
+                            })),
                     )
                     // The figure the board is named for, and the change it
                     // carries. The sign and the colour agree, so direction is
@@ -1244,14 +1352,11 @@ impl UsagePage {
                             .when(active, |tick| tick.bg(theme.accent)),
                     )
                     .child(div().mt(px(2.)).child(spark))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(cell.sub.clone()),
-                    );
+                    .child(ellipsis_line(
+                        cell.sub.clone(),
+                        TextSize::XSmall.px(&theme),
+                        theme.text_muted,
+                    ));
                 if let Some(metric) = cell.click {
                     element = element.on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         // Point the main chart at the metric the card names (§79).
@@ -1272,11 +1377,9 @@ impl UsagePage {
         let body = div().w_full().flex().flex_col().child(grid).child(
             div()
                 .w_full()
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base08.px(&theme))
                 .border_t_1()
                 .border_color(theme.border)
-                .child(self.summary_strip(snapshot, theme, cx)),
+                .child(self.summary_strip(snapshot, theme, cols < 4, cx)),
         );
 
         card(
@@ -1304,7 +1407,6 @@ impl UsagePage {
         let points = &snapshot.series.points;
         let hovered = self.kpi_hover().filter(|ix| *ix < points.len());
         let point = hovered.and_then(|ix| points.get(ix));
-        let range_scope = snapshot.filter.range.label();
 
         sparkline::KpiMetric::ALL
             .into_iter()
@@ -1313,7 +1415,7 @@ impl UsagePage {
                 let available = match metric {
                     sparkline::KpiMetric::Requests | sparkline::KpiMetric::Tokens => true,
                     sparkline::KpiMetric::CacheRate => snapshot.cache.hit_rate.is_some(),
-                    sparkline::KpiMetric::Latency => totals.avg_duration_ms().is_some(),
+                    sparkline::KpiMetric::Cost => totals.priced_requests > 0,
                 };
                 let (value, tone) = match metric {
                     sparkline::KpiMetric::Requests => (
@@ -1338,15 +1440,14 @@ impl UsagePage {
                             (None, None) => (tr!("usage.unavailable"), CellTone::Muted),
                         }
                     }
-                    sparkline::KpiMetric::Latency => {
-                        let average = point.map_or_else(
-                            || totals.avg_duration_ms(),
-                            |point| point.totals.avg_duration_ms(),
-                        );
-                        match (average, point) {
-                            (Some(ms), _) => (format::duration_ms(ms), CellTone::Normal),
-                            (None, Some(_)) => ("—".to_string(), CellTone::Muted),
-                            (None, None) => (tr!("usage.unavailable"), CellTone::Muted),
+                    sparkline::KpiMetric::Cost => {
+                        let scoped = point.map_or(totals, |point| &point.totals);
+                        // A bucket with no priced request has an unknown cost,
+                        // not a free one.
+                        match (scoped.priced_requests > 0, point) {
+                            (true, _) => (format::cost(scoped.cost_usd), CellTone::Normal),
+                            (false, Some(_)) => ("—".to_string(), CellTone::Muted),
+                            (false, None) => (tr!("usage.unavailable"), CellTone::Muted),
                         }
                     }
                 };
@@ -1395,25 +1496,22 @@ impl UsagePage {
                             )
                         }
                     }
-                    sparkline::KpiMetric::Latency => {
-                        let latency = point.map_or(&snapshot.latency, |point| &point.latency);
-                        if latency.samples == 0 {
-                            tr!("usage.sub_no_request_gaps")
-                        } else if latency.has_percentiles() {
-                            tr!(
-                                "usage.sub_p95_measured",
-                                p95 = format::duration_ms(latency.p95_ms as f64),
-                                count = format::count(latency.samples)
-                            )
-                        } else {
-                            tr!("usage.sub_measured", count = format::count(latency.samples))
+                    sparkline::KpiMetric::Cost => {
+                        let scoped = point.map_or(totals, |point| &point.totals);
+                        match scoped.cost_per_request() {
+                            Some(per) => {
+                                tr!("usage.sub_avg_per_request", value = format::cost(per))
+                            }
+                            None => tr!("usage.reason_needs_price_table"),
                         }
                     }
                 };
                 KpiCell {
                     metric,
                     label: metric_label(metric),
-                    scope: point.map_or_else(|| range_scope.clone(), |point| point.label.clone()),
+                    // The range is already on the filter chip; a card names
+                    // its scope only when the pointer moves it to a bucket.
+                    scope: point.map(|point| point.label.clone()),
                     value,
                     change,
                     sub,
@@ -1424,150 +1522,206 @@ impl UsagePage {
             .collect()
     }
 
-    /// Secondary readout under the board: the metrics that inform the headline
-    /// numbers but should not compete with them (§88/§101). Every figure stays
-    /// on the strip — nothing is behind a disclosure.
+    /// Secondary readout under the board: three panels, Tokens, Activity and
+    /// Reliability, cut by the board's own hairlines (§88/§101). Each panel
+    /// opens with the one figure that gives the rest context — where the tokens
+    /// went, how many sessions, how often a request succeeded — then a small
+    /// grid of value-over-label tiles. Every figure stays visible; nothing is
+    /// behind a disclosure. A narrow page stacks the panels.
     fn summary_strip(
         &self,
         snapshot: &UsageSnapshot,
         theme: Theme,
+        stacked: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let totals = &snapshot.summary.totals;
-        let headline: Vec<(String, String)> = vec![
-            (
-                tr!("usage.stat_input_tokens"),
-                format::compact(totals.tokens.input),
-            ),
-            (
-                tr!("usage.stat_output_tokens"),
-                format::compact(totals.tokens.output),
-            ),
-            (
-                tr!("usage.stat_cost"),
-                match (totals.cost_coverage(), totals.cost_per_request()) {
-                    (0.0, _) => tr!("usage.unavailable"),
-                    (_, Some(per)) => tr!(
-                        "usage.stat_cost_per_req",
-                        cost = format::cost(totals.cost_usd),
-                        per = format::cost(per)
-                    ),
-                    (_, None) => format::cost(totals.cost_usd),
-                },
-            ),
-            (
-                tr!("usage.stat_failed"),
-                if totals.errors > 0 {
-                    format::exact(totals.errors)
-                } else {
-                    tr!("usage.none")
-                },
-            ),
-            (
-                tr!("usage.stat_sessions"),
-                format::count(snapshot.summary.sessions),
-            ),
-            (
-                tr!("usage.stat_turns"),
-                format::count(snapshot.summary.turns),
-            ),
-            (
-                tr!("usage.stat_tool_calls"),
-                format::count(snapshot.summary.tool_runs),
-            ),
-        ];
-        let mut extra: Vec<(String, String)> = vec![(
-            tr!("usage.stat_bash_commands"),
-            format::count(snapshot.summary.bash_runs),
-        )];
-        if snapshot.summary.tool_errors > 0 {
-            extra.push((
-                tr!("usage.stat_tool_failures"),
-                format::count(snapshot.summary.tool_errors),
-            ));
-        }
-        if totals.duration_samples > 0 {
-            extra.push((
-                tr!("usage.stat_generation_time"),
-                format::span_ms(totals.duration_ms as i64),
-            ));
-        }
+        let summary = &snapshot.summary;
+        let reduced_motion = theme::reduce_motion(cx);
+
+        // ── Tokens: the split, then the prompt and price figures.
+        let cache = totals.tokens.cache_read + totals.tokens.cache_write;
+        // Shares of the three parts' own sum, so they always add to 100% even
+        // when a provider's reported total differs from the parts.
+        let parts = (totals.tokens.input + totals.tokens.output + cache).max(1) as f64;
+        let shares = div()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .children(
+                [
+                    ("input", tr!("usage.metric_input"), totals.tokens.input),
+                    ("output", tr!("usage.metric_output"), totals.tokens.output),
+                    ("cache", tr!("usage.metric_cache"), cache),
+                ]
+                .into_iter()
+                .map(|(key, label, value)| {
+                    share_row(
+                        key,
+                        label,
+                        value,
+                        value as f64 / parts,
+                        theme,
+                        reduced_motion,
+                    )
+                }),
+            );
+        let mut token_tiles: Vec<(String, String)> = Vec::new();
         if let Some(avg) = totals.avg_prompt() {
-            extra.push((tr!("usage.stat_avg_prompt"), format::compact(avg as u64)));
-        }
-        if let Some(ratio) = totals.output_input_ratio() {
-            // Three decimals: output is routinely a fraction of a percent of
-            // the prompt, and "0.00×" would read as zero.
-            let text = if ratio > 0.0 && ratio < 0.001 {
-                "<0.001×".to_string()
-            } else {
-                format!("{ratio:.3}×")
-            };
-            extra.push((tr!("usage.stat_output_input"), text));
-        }
-        if let Some(per_mtok) = totals.cost_per_mtok() {
-            extra.push((tr!("usage.stat_cost_per_mtok"), format::cost(per_mtok)));
+            token_tiles.push((tr!("usage.stat_avg_prompt"), format::compact(avg as u64)));
         }
         if totals.peak_prompt > 0 {
-            extra.push((
+            token_tiles.push((
                 tr!("usage.stat_peak_prompt"),
                 format::compact(totals.peak_prompt),
             ));
         }
         if totals.reasoning_reported > 0 {
-            extra.push((
+            token_tiles.push((
                 tr!("usage.stat_reasoning"),
-                tr!(
-                    "usage.stat_reasoning_of_output",
-                    value = format::compact(totals.reasoning)
-                ),
+                format::compact(totals.reasoning),
             ));
         }
-
-        let mut values: Vec<AnyElement> = headline
-            .into_iter()
-            .chain(extra)
-            .map(|(label, value)| summary_stat(label, value, theme))
-            .collect();
-
-        // Keep the failed-request drill-down available even though Errors is no
-        // longer a headline cell.
-        if totals.errors > 0 {
-            let fail_entity = cx.entity();
-            values.push(
-                press(
-                    button_frame(
-                        div().id("usage-summary-failures"),
-                        &theme,
-                        ButtonSize::Compact,
-                    )
-                    .text_color(theme.error)
-                    .cursor_pointer()
-                    .hover_ink(&theme),
-                )
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    fail_entity.update(cx, |page, cx| page.set_errors_only(true, cx));
-                })
-                .child(tr!("view.view_failures"))
-                .into_any_element(),
-            );
+        if let Some(per_mtok) = totals.cost_per_mtok() {
+            token_tiles.push((tr!("usage.stat_cost_per_mtok"), format::cost(per_mtok)));
         }
+        let tokens = strip_panel(
+            "icons/usage-total.svg",
+            tr!("usage.metric_tokens"),
+            shares.into_any_element(),
+            token_tiles,
+            None,
+            theme,
+        );
 
-        div()
-            .w_full()
-            .flex()
-            .items_start()
-            .gap(DynamicSpacing::Base12.px(&theme))
-            .child(
+        // ── Activity: sessions, and how much work each one held.
+        let per_session = if summary.sessions > 0 {
+            summary.turns as f64 / summary.sessions as f64
+        } else {
+            0.0
+        };
+        let mut activity_tiles = vec![
+            (tr!("usage.stat_turns"), format::count(summary.turns)),
+            (
+                tr!("usage.stat_tool_calls"),
+                format::count(summary.tool_runs),
+            ),
+            (
+                tr!("usage.stat_bash_commands"),
+                format::count(summary.bash_runs),
+            ),
+        ];
+        if totals.duration_samples > 0 {
+            activity_tiles.push((
+                tr!("usage.stat_generation_time"),
+                format::span_ms(totals.duration_ms as i64),
+            ));
+        }
+        let activity = strip_panel(
+            "icons/clock.svg",
+            tr!("usage.group_activity"),
+            strip_hero(
+                format::count(summary.sessions),
+                tr!("usage.hero_sessions", value = format!("{per_session:.1}")),
+                theme,
+            ),
+            activity_tiles,
+            None,
+            theme,
+        );
+
+        // ── Reliability: the success rate, then speed and tool health.
+        let hero = if totals.requests == 0 {
+            strip_hero("—".to_string(), tr!("usage.sub_no_requests"), theme)
+        } else {
+            let success = (totals.requests - totals.errors) as f64 / totals.requests as f64 * 100.0;
+            let caption = if totals.errors == 0 {
+                tr!("usage.hero_success_clean")
+            } else {
+                tr!(
+                    "usage.hero_success",
+                    failed = format::count(totals.errors),
+                    total = format::count(totals.requests)
+                )
+            };
+            strip_hero(format::percent(success), caption, theme)
+        };
+        let mut reliability_tiles: Vec<(String, String)> = Vec::new();
+        if let Some(avg) = totals.avg_duration_ms() {
+            reliability_tiles.push((tr!("usage.metric_avg_response"), format::duration_ms(avg)));
+        }
+        if snapshot.latency.has_percentiles() {
+            reliability_tiles.push((
+                tr!("usage.stat_p95_response"),
+                format::duration_ms(snapshot.latency.p95_ms as f64),
+            ));
+        }
+        reliability_tiles.push((
+            tr!("usage.stat_tool_failures"),
+            if summary.tool_errors > 0 {
+                format::count(summary.tool_errors)
+            } else {
+                tr!("usage.none")
+            },
+        ));
+        reliability_tiles.push((
+            tr!("usage.stat_aborted"),
+            if totals.aborted > 0 {
+                format::count(totals.aborted)
+            } else {
+                tr!("usage.none")
+            },
+        ));
+        // The failed-request drill-down sits under the rate it explains.
+        let failures_link = (totals.errors > 0).then(|| {
+            let fail_entity = cx.entity();
+            let link = press(
+                button_frame(
+                    div().id("usage-summary-failures"),
+                    &theme,
+                    ButtonSize::Compact,
+                )
+                .text_color(theme.error)
+                .cursor_pointer()
+                .hover_ink(&theme),
+            )
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                fail_entity.update(cx, |page, cx| page.set_errors_only(true, cx));
+            })
+            .child(tr!("view.view_failures"));
+            // Wrapped so the panel's stretch does not widen the button.
+            div().flex().child(link).into_any_element()
+        });
+        let reliability = strip_panel(
+            "icons/circle-check.svg",
+            tr!("usage.group_reliability"),
+            hero,
+            reliability_tiles,
+            failures_link,
+            theme,
+        );
+
+        let panels = [tokens, activity, reliability];
+        let mut strip = div().w_full().flex();
+        strip = if stacked {
+            strip.flex_col()
+        } else {
+            strip.flex_row()
+        };
+        let last = panels.len() - 1;
+        strip
+            .children(panels.into_iter().enumerate().map(|(ix, panel)| {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .flex()
-                    .flex_wrap()
-                    .gap_x(DynamicSpacing::Base20.px(&theme))
-                    .gap_y(DynamicSpacing::Base06.px(&theme))
-                    .children(values),
-            )
+                    .when(ix < last && !stacked, |cell| {
+                        cell.border_r_1().border_color(theme.border)
+                    })
+                    .when(ix > 0 && stacked, |cell| {
+                        cell.border_t_1().border_color(theme.border)
+                    })
+                    .child(panel)
+            }))
             .into_any_element()
     }
 
@@ -1635,12 +1789,25 @@ impl UsagePage {
         // selectors under a heading reads as controls, and no eight-way
         // switcher can overflow a 42px header on a narrow column.
         let selectors = div()
+            .w_full()
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .flex_wrap()
             .child(tabs)
-            .children(latency_selector);
+            .children(latency_selector)
+            .child(
+                // Trailing group: the two ways to read the line against
+                // something — one slice against the total, or the window
+                // before.
+                div()
+                    .ml_auto()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .children(self.compare_control(snapshot, theme, cx))
+                    .children(self.highlight_control(snapshot, theme, cx)),
+            );
 
         let hover = self.hover_bucket();
         let entity = cx.entity();
@@ -1690,9 +1857,20 @@ impl UsagePage {
             .flex_col()
             .gap(DynamicSpacing::Base12.px(&theme))
             .child(selectors)
+            .children(self.chart_legend(snapshot, theme))
             .child(chart::timeline(
                 "usage-timeline",
                 &snapshot.series,
+                self.trend_highlight()
+                    .zip(self.trend_highlight_series())
+                    .zip(self.index())
+                    .and_then(|((highlight, series), index)| {
+                        Some(chart::ChartHighlight {
+                            series,
+                            label: highlight.label(index)?,
+                        })
+                    }),
+                self.previous_series(),
                 metric,
                 latency_metric,
                 hover,
@@ -1716,6 +1894,176 @@ impl UsagePage {
         }
 
         content.into_any_element()
+    }
+
+    /// The trend's "highlight one against the total" chip and its picker.
+    /// Absent when no dimension has two slices to tell apart.
+    fn highlight_control(
+        &self,
+        snapshot: &UsageSnapshot,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let comparable = [&snapshot.models, &snapshot.providers, &snapshot.workspaces]
+            .iter()
+            .any(|breakdown| breakdown.rows.len() > 1);
+        if !comparable {
+            return None;
+        }
+        let current = self
+            .trend_highlight()
+            .zip(self.index())
+            .and_then(|(highlight, index)| highlight.label(index));
+        let open = self.menu() == Some(MenuKind::TrendHighlight);
+        let entity = cx.entity();
+        let chip = filters::chip(
+            "usage-highlight-chip",
+            current.clone().unwrap_or_else(|| tr!("usage.highlight")),
+            Some("icons/chart-analysis.svg"),
+            current.is_some(),
+            true,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| {
+                    page.toggle_menu(MenuKind::TrendHighlight, window, cx)
+                });
+            },
+        );
+        let panel = open.then(|| filters::highlight_menu(self, snapshot, cx, theme));
+        // Trailing edge of the selector row, opening back over the chart.
+        Some(filters::chip_with_menu(
+            "usage-highlight-anchor",
+            chip,
+            open,
+            Corner::TopRight,
+            theme,
+            move || panel.unwrap_or_else(|| div().into_any_element()),
+        ))
+    }
+
+    /// The "Compare" toggle: draws the window before the range as a dashed
+    /// line. Absent where there is no window before ("All time") or while one
+    /// bucket is selected.
+    fn compare_control(
+        &self,
+        snapshot: &UsageSnapshot,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let filter = &snapshot.filter;
+        if filter.range.previous().is_none() || filter.focus.is_some() {
+            return None;
+        }
+        let on = self.compare_previous();
+        let entity = cx.entity();
+        Some(filters::toggle_button(
+            "usage-compare-toggle",
+            tr!("usage.compare"),
+            on,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.set_compare_previous(!on, cx));
+            },
+        ))
+    }
+
+    /// The chart's key, drawn only when the line is being read against
+    /// something: a highlighted slice (accent, with its share of the range)
+    /// over the total (quiet ink), and/or the previous window (dashed).
+    fn chart_legend(&self, snapshot: &UsageSnapshot, theme: Theme) -> Option<AnyElement> {
+        let highlighted = self.trend_highlight().and_then(|highlight| {
+            let label = highlight.label(self.index()?)?;
+            let series = self.trend_highlight_series()?;
+            Some((label, series))
+        });
+        let comparing = self.previous_series().is_some();
+        if highlighted.is_none() && !comparing {
+            return None;
+        }
+        let metric = self.metric();
+        let swatch = |color: Hsla, dashed: bool| {
+            let mut mark = div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .w(px(12.));
+            mark = if dashed {
+                mark.child(div().w(px(5.)).h(px(2.)).bg(color))
+                    .child(div().w(px(5.)).h(px(2.)).bg(color))
+            } else {
+                mark.child(
+                    div()
+                        .w_full()
+                        .h(px(3.))
+                        .rounded(Radius::Full.px(&theme))
+                        .bg(color),
+                )
+            };
+            mark
+        };
+        let item = |mark: gpui::Div, text: String, ink: Hsla| {
+            div()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(mark)
+                .child(div().text_color(ink).child(text))
+                .into_any_element()
+        };
+        let mut items: Vec<AnyElement> = Vec::new();
+        match highlighted {
+            Some((label, series)) => {
+                let mut slice = super::aggregate::Totals::default();
+                for point in &series.points {
+                    slice.add(&point.totals);
+                }
+                // An average has no share of the total; every summed measure does.
+                let share = (metric != ChartMetric::Latency)
+                    .then(|| {
+                        let total = metric.total(&snapshot.summary.totals);
+                        (total > 0.0).then(|| metric.total(&slice) / total)
+                    })
+                    .flatten();
+                let text = match share {
+                    Some(share) => tr!(
+                        "usage.highlight_share",
+                        name = label,
+                        share = format::share(share)
+                    ),
+                    None => label,
+                };
+                items.push(item(swatch(theme.accent, false), text, theme.text_primary));
+                items.push(item(
+                    swatch(theme.text_muted, false),
+                    tr!("usage.total"),
+                    theme.text_muted,
+                ));
+            }
+            None => items.push(item(
+                swatch(theme.accent, false),
+                tr!("usage.this_period"),
+                theme.text_primary,
+            )),
+        }
+        if comparing {
+            items.push(item(
+                swatch(theme.text_muted, true),
+                tr!("usage.previous_period"),
+                theme.text_muted,
+            ));
+        }
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x(DynamicSpacing::Base16.px(&theme))
+                .gap_y(DynamicSpacing::Base04.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .children(items)
+                .into_any_element(),
+        )
     }
 
     fn bucket_columns_control(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1816,33 +2164,19 @@ impl UsagePage {
             theme,
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
-        let prev = filters::outline_button(
-            "usage-bucket-page-prev",
-            &tr!("usage.previous"),
-            current > 1,
+        let entity = cx.entity();
+        let on_page: PageFn = Rc::new(move |target, _, cx| {
+            entity.update(cx, |page, cx| page.set_bucket_page(target, cx));
+        });
+        table_pager(
+            "usage-bucket-page",
+            summary,
+            size_control,
+            current,
+            pages,
+            on_page,
             theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| {
-                        page.set_bucket_page(current.saturating_sub(1), cx)
-                    });
-                }
-            },
-        );
-        let next = filters::outline_button(
-            "usage-bucket-page-next",
-            &tr!("usage.next"),
-            current < pages,
-            theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| page.set_bucket_page(current + 1, cx));
-                }
-            },
-        );
-        table_pager(summary, size_control, prev, next, current, pages, theme)
+        )
     }
 
     fn failure_columns_control(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1934,33 +2268,19 @@ impl UsagePage {
             theme,
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
-        let prev = filters::outline_button(
-            "usage-failure-page-prev",
-            &tr!("usage.previous"),
-            current > 1,
+        let entity = cx.entity();
+        let on_page: PageFn = Rc::new(move |target, _, cx| {
+            entity.update(cx, |page, cx| page.set_failure_page(target, cx));
+        });
+        table_pager(
+            "usage-failure-page",
+            summary,
+            size_control,
+            current,
+            pages,
+            on_page,
             theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| {
-                        page.set_failure_page(current.saturating_sub(1), cx)
-                    });
-                }
-            },
-        );
-        let next = filters::outline_button(
-            "usage-failure-page-next",
-            &tr!("usage.next"),
-            current < pages,
-            theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| page.set_failure_page(current + 1, cx));
-                }
-            },
-        );
-        table_pager(summary, size_control, prev, next, current, pages, theme)
+        )
     }
 
     /// Response-time readout (§36): average, then percentiles once there are
@@ -2268,34 +2588,19 @@ impl UsagePage {
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
 
-        let prev = filters::outline_button(
-            "usage-breakdown-page-prev",
-            &tr!("usage.previous"),
-            current > 1,
+        let entity = cx.entity();
+        let on_page: PageFn = Rc::new(move |target, _, cx| {
+            entity.update(cx, |page, cx| page.set_breakdown_page(target, cx));
+        });
+        table_pager(
+            "usage-breakdown-page",
+            summary,
+            size_control,
+            current,
+            pages,
+            on_page,
             theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| {
-                        page.set_breakdown_page(current.saturating_sub(1), cx)
-                    });
-                }
-            },
-        );
-        let next = filters::outline_button(
-            "usage-breakdown-page-next",
-            &tr!("usage.next"),
-            current < pages,
-            theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| page.set_breakdown_page(current + 1, cx));
-                }
-            },
-        );
-
-        table_pager(summary, size_control, prev, next, current, pages, theme)
+        )
     }
 
     /// One page of a token dimension as a standard data table — the same
@@ -2327,7 +2632,9 @@ impl UsagePage {
                 .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .when(!last, |row| row.border_b_1().border_color(theme.border))
+                .when(!last, |row| {
+                    row.border_b_1().border_color(theme.border_subtle)
+                })
                 .cursor_pointer()
                 .hover_state(&theme);
             for column in &columns {
@@ -2370,6 +2677,36 @@ impl UsagePage {
                         };
                         text_cell(column, format::share(share), theme.text_muted, theme)
                     }
+                    // A model with no price table has an unknown cost, never $0.
+                    "cost" => {
+                        if row.totals.priced_requests > 0 {
+                            text_cell(
+                                column,
+                                format::cost(row.totals.cost_usd),
+                                theme.text_secondary,
+                                theme,
+                            )
+                        } else {
+                            text_cell(column, "—".to_string(), theme.text_muted, theme)
+                        }
+                    }
+                    "avg_response" => text_cell(
+                        column,
+                        row.totals
+                            .avg_duration_ms()
+                            .map_or_else(|| "—".to_string(), format::duration_ms),
+                        theme.text_muted,
+                        theme,
+                    ),
+                    // The column header names the measure; the error ink only
+                    // reinforces a non-zero rate, it never carries it alone.
+                    "error_rate" => match row.totals.error_rate() {
+                        Some(rate) if row.totals.errors > 0 => {
+                            text_cell(column, format::percent(rate), theme.error, theme)
+                        }
+                        Some(_) => text_cell(column, "0%".to_string(), theme.text_muted, theme),
+                        None => text_cell(column, "—".to_string(), theme.text_muted, theme),
+                    },
                     _ => text_cell(
                         column,
                         format::compact(row.totals.tokens.total),
@@ -2617,7 +2954,9 @@ impl UsagePage {
                 .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .when(!last, |row| row.border_b_1().border_color(theme.border))
+                .when(!last, |row| {
+                    row.border_b_1().border_color(theme.border_subtle)
+                })
                 .hover_state(&theme);
             for column in &columns {
                 let cell = match column.id {
@@ -2721,11 +3060,36 @@ impl UsagePage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tab = self.detail_tab();
+        // Each tab says how many rows it holds, so the choice is informed
+        // before it is made.
+        let counts = [
+            snapshot.sessions.len(),
+            snapshot.buckets.rows.len(),
+            snapshot.errors.rows.len(),
+        ];
         let tabs = segmented(
             "usage-detail-tab",
             &DetailTab::ALL,
             tab,
-            |choice| choice.label(),
+            |choice| {
+                let count = match choice {
+                    DetailTab::Sessions => counts[0],
+                    DetailTab::Daily => counts[1],
+                    DetailTab::Failures => counts[2],
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .child(choice.label())
+                    .child(
+                        div()
+                            .font(num_font())
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(format::count(count as u64)),
+                    )
+            },
             |choice| choice.as_str(),
             |_| true,
             true,
@@ -2737,7 +3101,26 @@ impl UsagePage {
                 }
             },
         );
-        let tabs_row = div().pb(DynamicSpacing::Base12.px(&theme)).child(tabs);
+        // Tabs lead and the table's own controls trail, on one row — the
+        // reference layout for a filterable list.
+        let tabs_row = |search: AnyElement, columns: AnyElement| {
+            div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(tabs)
+                .child(
+                    div()
+                        .ml_auto()
+                        .flex()
+                        .items_center()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .child(div().w(px(240.)).flex().child(search))
+                        .child(columns),
+                )
+        };
 
         let (meta, content) = match tab {
             DetailTab::Sessions => {
@@ -2753,10 +3136,9 @@ impl UsagePage {
                     )
                 };
                 let table = self.sessions_content(&result, theme, cx);
-                let toolbar = table_toolbar(
+                let controls = tabs_row(
                     self.session_search_box(theme),
                     self.columns_control(theme, cx),
-                    theme,
                 );
                 (
                     meta,
@@ -2765,8 +3147,7 @@ impl UsagePage {
                         .flex()
                         .flex_col()
                         .gap(DynamicSpacing::Base12.px(&theme))
-                        .child(tabs_row)
-                        .child(toolbar)
+                        .child(controls)
                         .child(table)
                         .into_any_element(),
                 )
@@ -2790,10 +3171,9 @@ impl UsagePage {
                     )
                 };
                 let table = self.buckets_content(&result, granularity, theme, cx);
-                let toolbar = table_toolbar(
+                let controls = tabs_row(
                     search_box(self.bucket_search(), theme),
                     self.bucket_columns_control(theme, cx),
-                    theme,
                 );
                 (
                     meta,
@@ -2802,8 +3182,7 @@ impl UsagePage {
                         .flex()
                         .flex_col()
                         .gap(DynamicSpacing::Base12.px(&theme))
-                        .child(tabs_row)
-                        .child(toolbar)
+                        .child(controls)
                         .child(table)
                         .into_any_element(),
                 )
@@ -2830,10 +3209,9 @@ impl UsagePage {
                     )
                 };
                 let table = self.failures_content(&result, theme, cx);
-                let toolbar = table_toolbar(
+                let controls = tabs_row(
                     search_box(self.failure_search(), theme),
                     self.failure_columns_control(theme, cx),
-                    theme,
                 );
                 (
                     meta,
@@ -2842,8 +3220,7 @@ impl UsagePage {
                         .flex()
                         .flex_col()
                         .gap(DynamicSpacing::Base12.px(&theme))
-                        .child(tabs_row)
-                        .child(toolbar)
+                        .child(controls)
                         .child(table)
                         .into_any_element(),
                 )
@@ -3050,6 +3427,7 @@ impl UsagePage {
             }
         }
         let title_default = (budget - running - OPEN_W - GAPS).clamp(TITLE_MIN, 460.);
+        // `CHROME` already leaves this table its slack; the title fills it.
 
         let mut columns = Vec::with_capacity(keep.len() + 1);
         let mut keys = Vec::with_capacity(keep.len() + 1);
@@ -3072,6 +3450,7 @@ impl UsagePage {
             );
             let mut column = Column::new(key.as_str(), key.label())
                 .width(width)
+                .when_fill(key == SessionSort::Title)
                 .sortable()
                 .sort(sort_state(key == sort, desc));
             if numeric {
@@ -3091,55 +3470,33 @@ impl UsagePage {
     /// then fixed numeric columns, with Share as the trailing display column.
     fn breakdown_columns(&self) -> (Vec<Column>, Vec<Option<BreakdownSort>>) {
         let hidden = self.breakdown_hidden_columns();
-        let is_hidden = |id: &'static str| hidden.contains(&id);
-        let measures: [(BreakdownSort, f32); 5] = [
-            (BreakdownSort::Requests, 92.),
-            (BreakdownSort::Input, 80.),
-            (BreakdownSort::Output, 80.),
-            (BreakdownSort::Cache, 80.),
-            (BreakdownSort::Tokens, 88.),
-        ];
-        let mut fixed = 0.;
-        for (key, default) in measures {
-            if !is_hidden(key.as_str()) {
-                fixed += default;
-            }
-        }
-        if !is_hidden("share") {
-            fixed += 72.;
-        }
+        let visible: Vec<BreakdownSort> = BreakdownSort::MEASURES
+            .into_iter()
+            .filter(|key| !hidden.contains(&key.as_str()))
+            .collect();
+        let fixed: f32 = visible.iter().map(|key| key.width()).sum();
         let budget = self.table_width();
-        let name_w = (budget - fixed).clamp(160., 460.);
+        let name_w = (budget - fixed - FILL_SLACK).clamp(BreakdownSort::Name.width(), 460.);
         let (sort, desc) = self.breakdown_sort_state();
-        let mut columns = Vec::with_capacity(7);
-        let mut keys = Vec::with_capacity(7);
+        let mut columns = Vec::with_capacity(visible.len() + 1);
+        let mut keys = Vec::with_capacity(visible.len() + 1);
         columns.push(
             Column::new(BreakdownSort::Name.as_str(), BreakdownSort::Name.label())
                 .width(self.col_width(TableKind::Breakdown, "name", name_w))
+                .fill()
                 .sortable()
                 .sort(sort_state(sort == BreakdownSort::Name, desc)),
         );
         keys.push(Some(BreakdownSort::Name));
-        for (key, default) in measures {
-            if is_hidden(key.as_str()) {
-                continue;
-            }
+        for key in visible {
             columns.push(
                 Column::new(key.as_str(), key.label())
-                    .width(self.col_width(TableKind::Breakdown, key.as_str(), default))
+                    .width(self.col_width(TableKind::Breakdown, key.as_str(), key.width()))
                     .numeric()
                     .sortable()
                     .sort(sort_state(key == sort, desc)),
             );
             keys.push(Some(key));
-        }
-        if !is_hidden("share") {
-            columns.push(
-                Column::new("share", "Share")
-                    .width(self.col_width(TableKind::Breakdown, "share", 72.))
-                    .numeric(),
-            );
-            keys.push(None);
         }
         (columns, keys)
     }
@@ -3162,8 +3519,10 @@ impl UsagePage {
             }
         }
         let budget = self.table_width();
-        let name_w = (budget - fixed).clamp(160., 460.);
-        let mut columns = vec![Column::new("tool", "Tool").width(name_w)];
+        let name_w = (budget - fixed - FILL_SLACK).clamp(160., 460.);
+        let mut columns = vec![Column::new("tool", tr!("usage.col_tool"))
+            .width(name_w)
+            .fill()];
         for (id, label, default) in measures {
             if !is_hidden(id) {
                 columns.push(Column::new(id, label).width(default).numeric());
@@ -3192,7 +3551,7 @@ impl UsagePage {
             .filter(|(key, _, _)| *key != BucketSort::Date)
             .map(|(key, default, _)| self.col_width(TableKind::Buckets, key.id(), *default))
             .sum();
-        let date_default = (self.table_width() - fixed).clamp(160., 480.);
+        let date_default = (self.table_width() - fixed - FILL_SLACK).clamp(160., 480.);
         let mut columns = Vec::with_capacity(keep.len());
         let mut keys = Vec::with_capacity(keep.len());
         for (key, default, numeric) in keep {
@@ -3204,6 +3563,7 @@ impl UsagePage {
             let width = self.col_width(TableKind::Buckets, key.id(), default);
             let mut column = Column::new(key.id(), key.label())
                 .width(width)
+                .when_fill(key == BucketSort::Date)
                 .sortable()
                 .sort(sort_state(key == sort, desc));
             if numeric {
@@ -3237,9 +3597,9 @@ impl UsagePage {
             .map(|(key, default, _)| self.col_width(TableKind::Failures, key.id(), *default))
             .sum();
         let flex_default = if message_visible {
-            (self.table_width() - fixed - 108.).clamp(180., 560.)
+            (self.table_width() - fixed - 108. - FILL_SLACK).clamp(180., 560.)
         } else {
-            (self.table_width() - fixed).clamp(160., 480.)
+            (self.table_width() - fixed - FILL_SLACK).clamp(160., 480.)
         };
         let mut columns = Vec::with_capacity(keep.len());
         let mut keys = Vec::with_capacity(keep.len());
@@ -3251,7 +3611,16 @@ impl UsagePage {
                 _ => default,
             };
             let width = self.col_width(TableKind::Failures, key.id(), default);
-            let mut column = Column::new(key.id(), key.label()).width(width).resizable();
+            // The message takes the remaining width; without one, the time does.
+            let fills = match key {
+                FailureSort::Message => true,
+                FailureSort::When => !message_visible,
+                _ => false,
+            };
+            let mut column = Column::new(key.id(), key.label())
+                .width(width)
+                .when_fill(fills)
+                .resizable();
             if key != FailureSort::Message {
                 column = column.sortable().sort(sort_state(key == sort, desc));
             }
@@ -3287,7 +3656,9 @@ impl UsagePage {
                 .min_w(px(columns.iter().map(|column| column.width).sum::<f32>()))
                 .flex()
                 .items_center()
-                .when(!last, |row| row.border_b_1().border_color(theme.border))
+                .when(!last, |row| {
+                    row.border_b_1().border_color(theme.border_subtle)
+                })
                 .hover_state(&theme)
                 .when(selected == Some(row.session), |line| {
                     line.bg(theme.surface_selected)
@@ -3311,6 +3682,15 @@ impl UsagePage {
                 });
             for (col_ix, column) in columns.iter().enumerate() {
                 let cell = match keys.get(col_ix).copied().flatten() {
+                    // The title carries its context on a second line, so the
+                    // workspace and provider need no columns of their own.
+                    Some(SessionSort::Title) => two_line_cell(
+                        column,
+                        None,
+                        row.title.clone(),
+                        Some(session_context(row)),
+                        theme,
+                    ),
                     Some(key) => session_cell(row, key, theme, column),
                     None => open_session_cell(row.session, entity.clone(), theme, column),
                 };
@@ -3344,7 +3724,9 @@ impl UsagePage {
                 .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .when(!last, |row| row.border_b_1().border_color(theme.border))
+                .when(!last, |row| {
+                    row.border_b_1().border_color(theme.border_subtle)
+                })
                 .hover_state(&theme);
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(BucketSort::Date);
@@ -3416,10 +3798,21 @@ impl UsagePage {
                 .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .when(!last, |row| row.border_b_1().border_color(theme.border))
+                .when(!last, |row| {
+                    row.border_b_1().border_color(theme.border_subtle)
+                })
                 .hover_state(&theme);
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(FailureSort::When);
+                if key == FailureSort::Kind {
+                    let (label, status) = super::table::failure_kind_register(row.kind, theme);
+                    line = line.child(
+                        cell_shell(column)
+                            .child(status_badge(label, status, theme))
+                            .into_any_element(),
+                    );
+                    continue;
+                }
                 let (label, color) = match key {
                     FailureSort::When => (super::table::failure_when(row.ts_ms), theme.text_muted),
                     FailureSort::Kind => {
@@ -3584,32 +3977,19 @@ impl UsagePage {
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
 
-        let prev = filters::outline_button(
-            "usage-page-prev",
-            &tr!("usage.previous"),
-            current > 1,
+        let entity = cx.entity();
+        let on_page: PageFn = Rc::new(move |target, _, cx| {
+            entity.update(cx, |page, cx| page.set_page(target, cx));
+        });
+        table_pager(
+            "usage-page",
+            summary,
+            size_control,
+            current,
+            pages,
+            on_page,
             theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| page.set_page(current.saturating_sub(1), cx));
-                }
-            },
-        );
-        let next = filters::outline_button(
-            "usage-page-next",
-            &tr!("usage.next"),
-            current < pages,
-            theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| page.set_page(current + 1, cx));
-                }
-            },
-        );
-
-        table_pager(summary, size_control, prev, next, current, pages, theme)
+        )
     }
 }
 
@@ -3701,6 +4081,15 @@ fn session_cell(row: &SessionRow, key: SessionSort, theme: Theme, column: &Colum
         SessionSort::Tools => (format::count(row.tool_runs), theme.text_muted),
     };
     text_cell(column, text, color, theme)
+}
+
+/// A session's context line: where it ran and on whose models.
+fn session_context(row: &SessionRow) -> String {
+    [row.workspace.as_str(), row.provider.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// The trailing affordance: open this session in the chat surface. Hidden
@@ -3984,11 +4373,11 @@ type SegmentPick<T> = Rc<dyn Fn(T, &mut Window, &mut App)>;
 /// inert — the chart's metric switcher dims a metric it cannot plot rather
 /// than dropping it and reflowing the group.
 #[allow(clippy::too_many_arguments)]
-fn segmented<T>(
+fn segmented<T, L>(
     prefix: &'static str,
     options: &[T],
     active: T,
-    label: impl Fn(T) -> String,
+    label: impl Fn(T) -> L,
     key: impl Fn(T) -> &'static str,
     enabled: impl Fn(T) -> bool,
     inset: bool,
@@ -3997,6 +4386,7 @@ fn segmented<T>(
 ) -> AnyElement
 where
     T: Copy + PartialEq + 'static,
+    L: IntoElement,
 {
     let on_pick: SegmentPick<T> = Rc::new(on_pick);
     let resting = if inset {
@@ -4080,48 +4470,173 @@ fn table_toolbar(search: AnyElement, columns: AnyElement, theme: Theme) -> AnyEl
         .into_any_element()
 }
 
-/// Footer under a table card: the count on the left, outlined Previous / Next
-/// on the right. Rows-per-page stays as a quiet chip beside the pager.
+/// The page a pager button moves to.
+type PageFn = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+/// The pages a pager lists: all of them when few, otherwise the first, the
+/// last and the current one with its neighbours, `None` marking each gap.
+pub(super) fn page_window(current: usize, pages: usize) -> Vec<Option<usize>> {
+    if pages <= 7 {
+        return (1..=pages).map(Some).collect();
+    }
+    let lo = current.saturating_sub(1).max(2);
+    let hi = (current + 1).min(pages - 1);
+    let mut out = vec![Some(1)];
+    if lo > 2 {
+        out.push(None);
+    }
+    out.extend((lo..=hi).map(Some));
+    if hi < pages - 1 {
+        out.push(None);
+    }
+    out.push(Some(pages));
+    out
+}
+
+/// Footer under a table card: the count on the left; rows-per-page and the
+/// numbered pages on the right, between previous and next arrows.
+#[allow(clippy::too_many_arguments)]
 fn table_pager(
+    id: &'static str,
     summary: String,
     size_control: AnyElement,
-    prev: AnyElement,
-    next: AnyElement,
     current: usize,
     pages: usize,
+    on_page: PageFn,
     theme: Theme,
 ) -> AnyElement {
+    let pages = pages.max(1);
+    let current = current.clamp(1, pages);
+    let square = ButtonSize::Medium.height(&theme);
+    let arrow = |key: &'static str, path: &'static str, target: usize, enabled: bool| {
+        let on_page = on_page.clone();
+        let frame = icon_button_frame(div(), &theme, ButtonSize::Medium)
+            .id(SharedString::from(format!("{id}-{key}")))
+            .border_1()
+            .border_color(theme.border)
+            .when(enabled, |button| {
+                button
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        on_page(target, window, cx)
+                    })
+            })
+            .child(icon(
+                path,
+                ButtonSize::Medium.icon_size().px(&theme),
+                if enabled {
+                    theme.text_secondary
+                } else {
+                    theme.text_disabled
+                },
+            ));
+        if enabled {
+            crate::motion::hover(
+                frame,
+                format!("{id}-{key}"),
+                &theme,
+                crate::motion::Hover::wash(&theme),
+            )
+        } else {
+            frame.into_any_element()
+        }
+    };
+    let numbers: Vec<AnyElement> = page_window(current, pages)
+        .into_iter()
+        .enumerate()
+        .map(|(ix, page)| match page {
+            None => div()
+                .w(square)
+                .flex()
+                .justify_center()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
+                .child("…")
+                .into_any_element(),
+            Some(page) if page == current => button_frame(div(), &theme, ButtonSize::Medium)
+                .id(SharedString::from(format!("{id}-page-{ix}")))
+                .min_w(square)
+                .justify_center()
+                .border_1()
+                .border_color(theme.border_strong)
+                .bg(theme.surface_active)
+                .font(num_font())
+                .font_weight(FontWeight::MEDIUM)
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_primary)
+                .child(page.to_string())
+                .into_any_element(),
+            Some(page) => {
+                let on_page = on_page.clone();
+                crate::motion::hover(
+                    button_frame(div(), &theme, ButtonSize::Medium)
+                        .id(SharedString::from(format!("{id}-page-{ix}")))
+                        .min_w(square)
+                        .justify_center()
+                        .cursor_pointer()
+                        .font(num_font())
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            on_page(page, window, cx)
+                        })
+                        .child(page.to_string()),
+                    format!("{id}-page-{ix}"),
+                    &theme,
+                    crate::motion::Hover::wash(&theme),
+                )
+            }
+        })
+        .collect();
+
     div()
         .w_full()
         .pt(DynamicSpacing::Base12.px(&theme))
         .flex()
+        .flex_wrap()
         .items_center()
-        .gap(DynamicSpacing::Base08.px(&theme))
+        .gap_x(DynamicSpacing::Base12.px(&theme))
+        .gap_y(DynamicSpacing::Base08.px(&theme))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(TextSize::Default.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_muted)
                 .child(summary),
         )
         .child(
             div()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_muted)
-                .child(tr!("view.rows")),
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!("view.rows")),
+                )
+                .child(size_control),
         )
-        .child(size_control)
         .child(
             div()
-                .px(DynamicSpacing::Base02.px(&theme))
-                .font(num_font())
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_muted)
-                .child(format!("{current}/{pages}")),
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .child(arrow(
+                    "prev",
+                    "icons/chevron-left.svg",
+                    current.saturating_sub(1).max(1),
+                    current > 1,
+                ))
+                .children(numbers)
+                .child(arrow(
+                    "next",
+                    "icons/chevron-right.svg",
+                    (current + 1).min(pages),
+                    current < pages,
+                )),
         )
-        .child(prev)
-        .child(next)
         .into_any_element()
 }
 
@@ -4196,7 +4711,7 @@ fn legend_row(
     reduced_motion: bool,
 ) -> Stateful<gpui::Div> {
     let (path, color) = row.glyph;
-    let bar = legend_bar(&id, row.fraction, theme, reduced_motion);
+    let bar = legend_bar(&id, row.fraction, theme.accent, theme, reduced_motion);
     let head = div()
         .w_full()
         .flex()
@@ -4266,7 +4781,13 @@ fn legend_row(
 
 /// A legend row's share track. The fill grows from nothing on mount (the page's
 /// one reveal, 450ms) and holds still on every later repaint.
-fn legend_bar(id: &SharedString, fraction: f64, theme: Theme, reduced_motion: bool) -> AnyElement {
+fn legend_bar(
+    id: &SharedString,
+    fraction: f64,
+    fill: Hsla,
+    theme: Theme,
+    reduced_motion: bool,
+) -> AnyElement {
     let fraction = if fraction.is_finite() {
         fraction.clamp(0.0, 1.0) as f32
     } else {
@@ -4276,7 +4797,7 @@ fn legend_bar(id: &SharedString, fraction: f64, theme: Theme, reduced_motion: bo
         .h_full()
         .w(relative(fraction))
         .rounded(Radius::Full.px(&theme))
-        .bg(theme.accent);
+        .bg(fill);
     let fill = if reduced_motion {
         fill.into_any_element()
     } else {
@@ -4306,28 +4827,13 @@ fn breakdown_name_cell(
     theme: Theme,
 ) -> AnyElement {
     let (path, color) = glyph;
-    cell_shell(column)
-        .gap(DynamicSpacing::Base08.px(&theme))
-        .child(icon_dyn(path, IconSize::Small.px(&theme), color))
-        .child(
-            div()
-                .flex_none()
-                .max_w(px(column.width - 48.))
-                .truncate()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_primary)
-                .child(row.label.clone()),
-        )
-        .children(row.sub.clone().map(|sub| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(TextSize::XSmall.px(&theme))
-                .text_color(theme.text_muted)
-                .child(sub)
-        }))
-        .into_any_element()
+    two_line_cell(
+        column,
+        Some(icon_dyn(path, IconSize::Medium.px(&theme), color).into_any_element()),
+        row.label.clone(),
+        row.sub.clone(),
+        theme,
+    )
 }
 
 /// The Summary card's meta line: the range's headline counts.
@@ -4402,19 +4908,197 @@ fn tools_meta(snapshot: &UsageSnapshot) -> String {
 }
 
 /// One label/value pair in the secondary readout under the board.
-fn summary_stat(label: String, value: String, theme: Theme) -> AnyElement {
+/// One Summary strip panel: an icon-led heading, the lead block that gives
+/// the panel its context, then its figures as value-over-label tiles.
+fn strip_panel(
+    icon_path: &'static str,
+    heading: String,
+    lead: AnyElement,
+    tiles: Vec<(String, String)>,
+    trailing: Option<AnyElement>,
+    theme: Theme,
+) -> AnyElement {
+    let mut grid = div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base12.px(&theme));
+    // Two tiles a row, built as rows rather than a wrapping flex, so the
+    // columns line up whatever the label lengths.
+    for pair in tiles.chunks(2) {
+        let mut row = div().w_full().flex().gap(DynamicSpacing::Base12.px(&theme));
+        for (label, value) in pair {
+            row = row.child(stat_tile(label.clone(), value.clone(), theme));
+        }
+        if pair.len() == 1 {
+            row = row.child(div().flex_1());
+        }
+        grid = grid.child(row);
+    }
+
+    div()
+        .w_full()
+        .p(DynamicSpacing::Base16.px(&theme))
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base16.px(&theme))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(icon(
+                    icon_path,
+                    IconSize::Small.px(&theme),
+                    theme.text_muted,
+                ))
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_secondary)
+                        .child(heading),
+                ),
+        )
+        .child(lead)
+        .child(
+            div()
+                .w_full()
+                .pt(DynamicSpacing::Base12.px(&theme))
+                .border_t_1()
+                .border_color(theme.border_subtle)
+                .child(grid),
+        )
+        .children(trailing)
+        .into_any_element()
+}
+
+/// A panel's lead figure: one number at a size between the board's and the
+/// tiles', with a caption that says what it means.
+fn strip_hero(value: String, caption: String, theme: Theme) -> AnyElement {
     div()
         .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base06.px(&theme))
-        .text_size(TextSize::Small.px(&theme))
-        .child(div().text_color(theme.text_muted).child(label))
+        .flex_col()
+        .gap(DynamicSpacing::Base02.px(&theme))
         .child(
             div()
                 .font(num_font())
-                .text_color(theme.text_secondary)
+                .text_size(theme.ui_px(20.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_primary)
                 .child(value),
         )
+        .child(ellipsis_line(
+            caption,
+            TextSize::Small.px(&theme),
+            theme.text_muted,
+        ))
+        .into_any_element()
+}
+
+/// A label over its figure, in the KPI board's order: muted name, then the
+/// number in tabular digits, so a panel reads as named values, not prose.
+fn stat_tile(label: String, value: String, theme: Theme) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base02.px(&theme))
+        .child(ellipsis_line(
+            label,
+            TextSize::Small.px(&theme),
+            theme.text_muted,
+        ))
+        .child(
+            div()
+                .font(num_font())
+                .text_size(TextSize::Default.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_primary)
+                .child(value),
+        )
+        .into_any_element()
+}
+
+/// One line of text that ends in an ellipsis when it runs out of room.
+///
+/// The truncating text is a `flex_1` child of a full-width row, never a bare
+/// child of a column: in a column GPUI measures it before the column has a
+/// width, so its min-content width is zero and it renders as a lone "…".
+fn ellipsis_line(text: impl Into<SharedString>, size: Pixels, color: Hsla) -> AnyElement {
+    div()
+        .w_full()
+        .flex()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(size)
+                .text_color(color)
+                .child(text.into()),
+        )
+        .into_any_element()
+}
+
+/// One part of the token split: name, amount and share, over the Breakdown
+/// legend's thin share bar.
+fn share_row(
+    key: &'static str,
+    label: String,
+    value: u64,
+    fraction: f64,
+    theme: Theme,
+    reduced_motion: bool,
+) -> AnyElement {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base04.px(&theme))
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_baseline()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.text_secondary)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font(num_font())
+                        .text_color(theme.text_primary)
+                        .child(format::compact(value)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(theme.ui_px(48.))
+                        .flex()
+                        .justify_end()
+                        .font(num_font())
+                        .text_color(theme.text_muted)
+                        .child(format::percent(fraction * 100.0)),
+                ),
+        )
+        // Quiet ink, not accent: the board's one accent belongs to the metric
+        // the trend is plotting (§19).
+        .child(legend_bar(
+            &SharedString::from(format!("usage-strip-share-{key}")),
+            fraction,
+            theme.text_muted,
+            theme,
+            reduced_motion,
+        ))
         .into_any_element()
 }
 
@@ -4443,8 +5127,8 @@ fn unavailable_reason(unavailable: &[&str]) -> String {
 struct KpiCell {
     metric: sparkline::KpiMetric,
     label: String,
-    /// The range, or the bucket the pointer is reading.
-    scope: String,
+    /// The bucket the pointer is reading; `None` at rest (the range).
+    scope: Option<String>,
     value: String,
     /// Percent change from the previous period (at rest) or point (hovered).
     change: Option<f64>,
@@ -4459,7 +5143,7 @@ fn metric_label(metric: sparkline::KpiMetric) -> String {
         sparkline::KpiMetric::Requests => tr!("usage.metric_requests"),
         sparkline::KpiMetric::Tokens => tr!("usage.metric_total_tokens"),
         sparkline::KpiMetric::CacheRate => tr!("usage.metric_cache_hit_rate"),
-        sparkline::KpiMetric::Latency => tr!("usage.metric_avg_response"),
+        sparkline::KpiMetric::Cost => tr!("usage.metric_cost"),
     }
 }
 

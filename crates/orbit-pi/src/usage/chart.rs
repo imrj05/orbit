@@ -7,7 +7,10 @@
 //! (§18/§56).
 //!
 //! Restraint is the point (§17): one accent, no rainbow.
-//! The chart is a measurement, not a poster.
+//! The chart is a measurement, not a poster. Comparing one model, provider or
+//! workspace against the rest keeps that rule: the total steps back to quiet
+//! ink and the highlighted slice takes the accent, so two layers never need a
+//! second hue.
 
 use std::{cell::Cell, rc::Rc};
 
@@ -85,25 +88,16 @@ fn axis_label(value: f64, metric: ChartMetric) -> String {
     }
 }
 
-/// The timeline chart for one metric.
-///
-/// `on_hover` reports the bucket under the pointer (or nothing when the
-/// pointer leaves the plot), so the page keeps the readout in its own state
-/// and the marker and card always agree.
-#[allow(clippy::too_many_arguments)]
-pub fn timeline(
-    id: &'static str,
-    series: &TimeSeries,
-    metric: ChartMetric,
-    latency_metric: LatencyMetric,
-    hover: Option<usize>,
-    selected: Option<usize>,
-    theme: Theme,
-    reduced_motion: bool,
-    on_hover: impl Fn(Option<usize>, &mut Window, &mut App) + 'static,
-    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let values: Vec<f64> = series
+/// One slice drawn against the total: its series on the same buckets, and
+/// the name the readout gives it.
+pub struct ChartHighlight<'a> {
+    pub series: &'a TimeSeries,
+    pub label: String,
+}
+
+/// A bucket's plotted values, with a missing or negative measure drawn at 0.
+fn plotted(series: &TimeSeries, metric: ChartMetric, latency_metric: LatencyMetric) -> Vec<f64> {
+    series
         .points
         .iter()
         .map(|point| {
@@ -114,13 +108,48 @@ pub fn timeline(
                 0.0
             }
         })
-        .collect();
+        .collect()
+}
+
+/// The timeline chart for one metric.
+///
+/// `on_hover` reports the bucket under the pointer (or nothing when the
+/// pointer leaves the plot), so the page keeps the readout in its own state
+/// and the marker and card always agree. With a `highlight`, the total is
+/// drawn in quiet ink and the slice in the accent on top of it.
+#[allow(clippy::too_many_arguments)]
+pub fn timeline(
+    id: &'static str,
+    series: &TimeSeries,
+    highlight: Option<ChartHighlight<'_>>,
+    previous: Option<&TimeSeries>,
+    metric: ChartMetric,
+    latency_metric: LatencyMetric,
+    hover: Option<usize>,
+    selected: Option<usize>,
+    theme: Theme,
+    reduced_motion: bool,
+    on_hover: impl Fn(Option<usize>, &mut Window, &mut App) + 'static,
+    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let values = plotted(series, metric, latency_metric);
+    // The slice must sit on the total's buckets; anything else is stale.
+    let highlight = highlight.filter(|slice| slice.series.points.len() == values.len());
+    let overlay: Option<Vec<f64>> = highlight
+        .as_ref()
+        .map(|slice| plotted(slice.series, metric, latency_metric));
+    // The previous window on the same bucket positions, as a dashed line.
+    let previous = previous.filter(|earlier| earlier.points.len() == values.len());
+    let earlier: Option<Vec<f64>> =
+        previous.map(|earlier| plotted(earlier, metric, latency_metric));
+    // The percentile envelope describes the total; with a slice on top it
+    // would read as the slice's, so it steps aside.
     let band: Vec<Option<(f64, f64)>> = series
         .points
         .iter()
         .map(|point| {
             let latency = &point.latency;
-            (metric == ChartMetric::Latency && latency.has_percentiles())
+            (overlay.is_none() && metric == ChartMetric::Latency && latency.has_percentiles())
                 .then_some((latency.p50_ms as f64, latency.p95_ms as f64))
         })
         .collect();
@@ -128,6 +157,8 @@ pub fn timeline(
         values
             .iter()
             .copied()
+            .chain(overlay.iter().flatten().copied())
+            .chain(earlier.iter().flatten().copied())
             .chain(band.iter().flatten().map(|(_, upper)| *upper))
             .fold(0.0, f64::max),
     );
@@ -208,7 +239,21 @@ pub fn timeline(
 
     // The readout sits inside the plot so it can never escape the page, and
     // flips side with the bucket so it never covers the marker.
-    let tooltip = hover.map(|ix| readout(series, metric, latency_metric, ix, theme, count));
+    let tooltip = hover.map(|ix| {
+        readout(
+            series,
+            highlight.as_ref(),
+            previous,
+            metric,
+            latency_metric,
+            ix,
+            theme,
+            count,
+        )
+    });
+    // The marker rides the line the eye is following: the slice when there is
+    // one, the total otherwise.
+    let marked = overlay.clone().unwrap_or_else(|| values.clone());
 
     let plot = div()
         .relative()
@@ -218,9 +263,12 @@ pub fn timeline(
         // The plot itself: grid, area and stroke, painted by the canvas.
         .child(div().absolute().inset_0().child(plot_canvas(
             values.clone(),
+            overlay,
+            earlier,
             band,
             max,
             accent,
+            theme.text_muted,
             theme.border,
             reduced_motion,
         )))
@@ -231,7 +279,7 @@ pub fn timeline(
         .children(selected.map(|ix| selection_band(ix, count, theme)))
         // The page owns the pointer: one invisible cell per bucket, plus a
         // guide line and a marker drawn over the plot.
-        .children(hover.map(|ix| marker(ix, count, values[ix], max, theme)))
+        .children(hover.map(|ix| marker(ix, count, marked[ix], max, theme)))
         .child(
             div()
                 .id(SharedString::new_static("usage-chart-overlay"))
@@ -265,15 +313,21 @@ pub fn timeline(
 }
 
 /// The plot's geometry, painted directly: a dashed grid, the baseline, the
-/// filled area under the series, then the series line on top.
+/// filled area under the series, then the series line on top. With an
+/// `overlay` the total is painted in `ink` and the overlay in the accent over
+/// it, on the same curve recipe.
 ///
 /// Points sit at their bucket's center, so the marker and the selection band —
 /// both positioned from the same fractions — land on the line (§73).
+#[allow(clippy::too_many_arguments)]
 fn plot_canvas(
     values: Vec<f64>,
+    overlay: Option<Vec<f64>>,
+    earlier: Option<Vec<f64>>,
     band: Vec<Option<(f64, f64)>>,
     max: f64,
     accent: Hsla,
+    ink: Hsla,
     grid: Hsla,
     reduced_motion: bool,
 ) -> AnyElement {
@@ -317,7 +371,7 @@ fn plot_canvas(
             // Both paths use the same shape, so the fill and stroke meet exactly.
             // Horizontal control tangents keep each segment within its endpoints,
             // including at peaks and valleys, without inventing extra extrema.
-            let trace = |path: &mut PathBuilder| {
+            let trace = |path: &mut PathBuilder, values: &[f64]| {
                 path.move_to(at(x_at(0), y_at(values[0])));
                 for i in 1..n {
                     let x0 = x_at(i - 1);
@@ -326,13 +380,39 @@ fn plot_canvas(
                     path.cubic_bezier_to(at(x1, y_at(values[i])), at(a.0, a.1), at(b.0, b.1));
                 }
             };
-            let mut area = PathBuilder::fill();
-            trace(&mut area);
-            area.line_to(at(x_at(n - 1), plot_h));
-            area.line_to(at(x_at(0), plot_h));
-            area.close();
-            let mut line = PathBuilder::stroke(px(1.5));
-            trace(&mut line);
+            let shapes = |values: &[f64]| {
+                let mut area = PathBuilder::fill();
+                trace(&mut area, values);
+                area.line_to(at(x_at(n - 1), plot_h));
+                area.line_to(at(x_at(0), plot_h));
+                area.close();
+                let mut line = PathBuilder::stroke(px(1.5));
+                trace(&mut line, values);
+                (area, line)
+            };
+            let (area, line) = shapes(&values);
+            // The previous window: a dashed stroke and no fill, so it reads as
+            // a reference line behind the data, told apart by shape not hue.
+            let earlier_line =
+                earlier
+                    .as_deref()
+                    .filter(|earlier| earlier.len() == n)
+                    .map(|earlier| {
+                        let mut path = PathBuilder::stroke(px(1.25)).dash_array(&[px(4.), px(3.)]);
+                        trace(&mut path, earlier);
+                        path
+                    });
+            let overlay_shapes = overlay
+                .as_deref()
+                .filter(|overlay| overlay.len() == n)
+                .map(shapes);
+            // The total takes the accent alone, or steps back to quiet ink
+            // when a slice is drawn over it.
+            let base = if overlay_shapes.is_some() {
+                ink
+            } else {
+                accent
+            };
             let mask = ContentMask {
                 bounds: Bounds::new(
                     bounds.origin,
@@ -340,13 +420,16 @@ fn plot_canvas(
                 ),
             };
             window.with_content_mask(Some(mask), |window| {
+                if let Some(Ok(path)) = earlier_line.map(|path| path.build()) {
+                    window.paint_path(path, ink);
+                }
                 if let Ok(path) = area.build() {
                     window.paint_path(
                         path,
                         linear_gradient(
                             180.,
-                            linear_color_stop(accent.opacity(0.22), 0.),
-                            linear_color_stop(accent.opacity(0.02), 1.),
+                            linear_color_stop(base.opacity(0.22), 0.),
+                            linear_color_stop(base.opacity(0.02), 1.),
                         ),
                     );
                 }
@@ -401,7 +484,22 @@ fn plot_canvas(
                     }
                 }
                 if let Ok(path) = line.build() {
-                    window.paint_path(path, accent);
+                    window.paint_path(path, base);
+                }
+                if let Some((area, line)) = overlay_shapes {
+                    if let Ok(path) = area.build() {
+                        window.paint_path(
+                            path,
+                            linear_gradient(
+                                180.,
+                                linear_color_stop(accent.opacity(0.28), 0.),
+                                linear_color_stop(accent.opacity(0.04), 1.),
+                            ),
+                        );
+                    }
+                    if let Ok(path) = line.build() {
+                        window.paint_path(path, accent);
+                    }
                 }
             });
         },
@@ -540,8 +638,11 @@ fn selection_band(ix: usize, count: usize, theme: Theme) -> AnyElement {
 
 /// The hover readout. Every row is a real measurement from the bucket; the
 /// metric's own register decides which rows are worth showing.
+#[allow(clippy::too_many_arguments)]
 fn readout(
     series: &TimeSeries,
+    highlight: Option<&ChartHighlight<'_>>,
+    previous: Option<&TimeSeries>,
     metric: ChartMetric,
     latency_metric: LatencyMetric,
     ix: usize,
@@ -551,6 +652,29 @@ fn readout(
     let Some(bucket) = series.points.get(ix) else {
         return div().into_any_element();
     };
+    // The slice's own figure leads, with its share of the bucket where the
+    // measure adds up (latency is an average, so it has no share).
+    let slice_rows: Vec<(String, String)> = highlight
+        .and_then(|slice| {
+            let point = slice.series.points.get(ix)?;
+            let value = point_value(metric, latency_metric, point);
+            let mut rows = vec![(clip_label(&slice.label), axis_label(value, metric))];
+            let total = point_value(metric, latency_metric, bucket);
+            if metric != ChartMetric::Latency && total > 0.0 && value.is_finite() {
+                rows.push((tr!("usage.share_of_total"), format::share(value / total)));
+            }
+            Some(rows)
+        })
+        .unwrap_or_default();
+    // The previous window's bucket at the same position, named by its date.
+    let earlier_row: Option<(String, String)> = previous
+        .and_then(|earlier| earlier.points.get(ix))
+        .map(|point| {
+            (
+                tr!("usage.previous_period_at", stamp = point.label.clone()),
+                axis_label(point_value(metric, latency_metric, point), metric),
+            )
+        });
     let totals = &bucket.totals;
     let mut rows: Vec<(String, String)> = Vec::new();
     match metric {
@@ -641,6 +765,18 @@ fn readout(
                 .text_color(theme.text_primary)
                 .child(bucket.stamp.clone()),
         );
+    if !slice_rows.is_empty() || earlier_row.is_some() {
+        for (label, value) in slice_rows.into_iter().chain(earlier_row) {
+            body = body.child(readout_row(&label, &value, theme));
+        }
+        // Everything under the rule describes the whole bucket.
+        body = body.child(div().h(px(1.)).w_full().bg(theme.border)).child(
+            div()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_muted)
+                .child(tr!("usage.total")),
+        );
+    }
     for (label, value) in rows {
         body = body.child(readout_row(&label, &value, theme));
     }
@@ -671,6 +807,19 @@ fn readout(
             .right(relative(1.0 - fraction))
             .into_any_element()
     }
+}
+
+/// Most characters of a slice name the readout shows; the card is a fixed
+/// width, and a long model id would push its figure off the edge.
+const READOUT_LABEL_MAX: usize = 22;
+
+fn clip_label(label: &str) -> String {
+    if label.chars().count() <= READOUT_LABEL_MAX {
+        return label.to_string();
+    }
+    let mut clipped: String = label.chars().take(READOUT_LABEL_MAX - 1).collect();
+    clipped.push('…');
+    clipped
 }
 
 /// Static labels for the latency readout, with the active register marked.

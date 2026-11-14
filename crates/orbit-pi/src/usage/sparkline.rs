@@ -31,7 +31,7 @@ use gpui::{
 
 use super::aggregate::{ChartMetric, SeriesPoint, TimeSeries};
 use super::chart::curve_controls;
-use crate::theme::tokens::chart;
+use crate::theme::tokens::{chart, TextSize};
 use crate::theme::Theme;
 
 /// Rendered height of one sparkline (the recipe's `height={40}`).
@@ -47,23 +47,24 @@ const RING: f32 = 1.5;
 /// the page caches the previous shapes in the same order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum KpiMetric {
-    Requests,
+    Cost,
     Tokens,
+    Requests,
     CacheRate,
-    Latency,
 }
 
 impl KpiMetric {
-    pub(super) const ALL: [Self; 4] =
-        [Self::Requests, Self::Tokens, Self::CacheRate, Self::Latency];
+    /// Cost leads: it is the question the page is opened to answer. Response
+    /// time lives in the Summary strip's reliability column.
+    pub(super) const ALL: [Self; 4] = [Self::Cost, Self::Tokens, Self::Requests, Self::CacheRate];
 
     /// Position in [`Self::ALL`], for indexing a cached shape list.
     pub(super) fn index(self) -> usize {
         match self {
-            Self::Requests => 0,
+            Self::Cost => 0,
             Self::Tokens => 1,
-            Self::CacheRate => 2,
-            Self::Latency => 3,
+            Self::Requests => 2,
+            Self::CacheRate => 3,
         }
     }
 
@@ -73,7 +74,7 @@ impl KpiMetric {
             Self::Requests => "usage-kpi-requests",
             Self::Tokens => "usage-kpi-tokens",
             Self::CacheRate => "usage-kpi-cache",
-            Self::Latency => "usage-kpi-latency",
+            Self::Cost => "usage-kpi-cost",
         }
     }
 
@@ -84,7 +85,8 @@ impl KpiMetric {
             Self::Requests => Some(point.totals.requests as f64),
             Self::Tokens => Some(point.totals.tokens.total as f64),
             Self::CacheRate => point.totals.cache_hit_rate(),
-            Self::Latency => point.totals.avg_duration_ms(),
+            // Unpriced buckets are unknown, not free.
+            Self::Cost => (point.totals.priced_requests > 0).then_some(point.totals.cost_usd),
         }
     }
 
@@ -94,7 +96,7 @@ impl KpiMetric {
             Self::Requests => ChartMetric::Requests,
             Self::Tokens => ChartMetric::Tokens,
             Self::CacheRate => ChartMetric::Cache,
-            Self::Latency => ChartMetric::Latency,
+            Self::Cost => ChartMetric::Cost,
         }
     }
 }
@@ -238,6 +240,7 @@ pub(super) fn sparkline(spec: Spark<'_>, on_hover: HoverFn) -> AnyElement {
         theme,
     } = spec;
 
+    let sparse = source.iter().filter(|value| value.is_finite()).count() < 2;
     let values = source.to_vec();
     let previous = source_previous.map(|values| values.to_vec());
     let count = values.len();
@@ -411,7 +414,20 @@ pub(super) fn sparkline(spec: Spark<'_>, on_hover: HoverFn) -> AnyElement {
     };
 
     let painted = canvas(|_, _, _| (), paint).absolute().inset_0();
-    let painted: AnyElement = if reduced_motion {
+    let painted: AnyElement = if sparse {
+        // One measured bucket is a dot, not a trend: say so instead of drawing
+        // a shape that reads as broken. The bucket cells stay, so pointing at
+        // the card still reads the board.
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .text_size(TextSize::XSmall.px(&theme))
+            .text_color(theme.text_muted)
+            .child(tr!("usage.not_enough_data"))
+            .into_any_element()
+    } else if reduced_motion {
         painted.into_any_element()
     } else {
         painted

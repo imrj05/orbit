@@ -2,7 +2,7 @@
 
 **Status:** Proposed, except **#80 and #78 — implemented** (see §2 and §4).
 **Scope:** Orbit desktop app (`crates/orbit-pi`, `crates/orbit-rpc`)
-**Related:** `AGENT.md` (RPC surface), `app/settings.rs` (Settings → Agent /
+**Related:** `AGENTS.md` (RPC surface), `app/settings.rs` (Settings → Agent /
 Appearance), `auto_title.rs` (the `~/.orbit-pi/*.json` store pattern),
 `app/sidebar.rs` (row menus, sidebar key context), `transcript_view.rs`
 (activity-group expansion)
@@ -204,7 +204,7 @@ Add a third, explicit fallback ahead of `group_live`:
 ### The hard constraint (read this before scoping)
 
 pi's RPC surface is `prompt`, `abort`, **`clear_queue` (all-or-nothing)**,
-`steer`, `follow_up`, `set_steering_mode`, `set_follow_up_mode`, … (`AGENT.md`
+`steer`, `follow_up`, `set_steering_mode`, `set_follow_up_mode`, … (`AGENTS.md`
 §"Typed in `CommandBody`"). There is **no per-entry edit, remove, or promote**
 command. `PendingQueue` (`orbit-rpc/src/types.rs:1329`) is a read-only mirror of
 `queue_update`, and Orbit's only mutator today is `clear_queue`
@@ -263,7 +263,7 @@ function in `helpers.rs` into a method on `OrbitApp` (or gains a
   clear-and-resend sequencing with rollback into the composer on failure.
 - `crates/orbit-pi/src/app.rs` — edit state fields.
 - `crates/orbit-pi/locales/en.yml` — "Edit", "Send now", failure text.
-- `AGENT.md` — record that queue mutation is emulated (clear + resend) until pi
+- `AGENTS.md` — record that queue mutation is emulated (clear + resend) until pi
   exposes per-entry commands.
 
 ### Tests
@@ -447,7 +447,7 @@ What exists today:
    bindings only if the reporter asks.
 4. **Register them in the command palette / shortcut help.** Any new
    `CommandId` must appear in `commands.rs`' registry or the Discoverability
-   rule in `AGENT.md` is broken (the registry test at `commands.rs:1261` enforces
+   rule in `AGENTS.md` is broken (the registry test at `commands.rs:1261` enforces
    unique, parseable chords).
 
 ### Files

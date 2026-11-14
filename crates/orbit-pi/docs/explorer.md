@@ -254,7 +254,7 @@ promises a restore the platform cannot deliver.
 | Command palette | `src/command_palette.rs` | `PaletteCommand::ToggleProjectPanel`, `OpenFileFinder`; snapshot flags |
 | Watching | `src/app/events.rs` | consume `workspace_watcher` dirty → mark explorer stale |
 | i18n | `locales/en.yml` + `scripts/gen_locales.py` | new `explorer.*` keys |
-| Docs | `AGENT.md`, `PRODUCT.md`, `CHANGELOG.md` | file map + capability + entry |
+| Docs | `AGENTS.md`, `PRODUCT.md`, `CHANGELOG.md` | file map + capability + entry |
 
 ## Performance rules
 

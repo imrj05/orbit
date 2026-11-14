@@ -101,7 +101,7 @@ Decisions locked: `gh` CLI only · read + full write issues/PRs · GitHub only �
   propagated to all nine generated locales (English fallback where a glossary
   entry does not exist yet), and the completeness test is green. Docs:
   `crates/orbit-pi/docs/git-page.md` documents the tabs, recovery model,
-  operation state machine, `gh` requirement, and limits, and the `AGENT.md` Git
+  operation state machine, `gh` requirement, and limits, and the `AGENTS.md` Git
   page row is rewritten to match. Deferred: real translations for the new
   strings (glossary-driven), virtualizing the issue/PR lists, a keyboard row
   cursor, `git blame`, open-at-revision, per-hunk staging, and assignee
@@ -169,7 +169,7 @@ unauthenticated (hard rule #5).
 | `src/platform.rs` | Already has `reveal_in_file_manager`; reuse. Add nothing unless a GitHub URL helper is needed. |
 | `src/app.rs`, `src/app/session.rs`, `src/app/view.rs` | Wire new callbacks (open file at revision, open in explorer, checkout PR branch, open URL), and command-palette entries. |
 | `locales/en.yml` + `scripts/i18n_glossary*.py` | Every new string. Regenerate all locales. |
-| `AGENT.md` + `docs/git-page.md` | Update the Git page row and document the surface. |
+| `AGENTS.md` + `docs/git-page.md` | Update the Git page row and document the surface. |
 
 ## Phases
 
@@ -349,7 +349,7 @@ Exit gate: existing tests green, `cargo clippy` clean, page looks identical.
 - Empty/loading/error states for every list and detail (honest, actionable).
 - Performance: virtualize issue/PR lists and commit file lists; cache `gh`
   lists with a short TTL + manual refresh; never block a frame.
-- Docs: update the `AGENT.md` Git page row and add `docs/git-page.md` covering
+- Docs: update the `AGENTS.md` Git page row and add `docs/git-page.md` covering
   tabs, `gh` requirement, recovery model, and the operation state machine.
 - Verification:
   - `cargo test -p orbit-pi` (unit + pure parsers + fake `gh`).

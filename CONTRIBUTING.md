@@ -8,7 +8,7 @@ what we expect from changes, and how to get them merged.
 - **Open an issue first** for anything larger than a bug fix or a small
   documentation change. Architectural work is recorded in `INTENT.md`, so a
   quick discussion saves rework.
-- Read [`AGENT.md`](AGENT.md) before touching the code. It is the project's
+- Read [`AGENTS.md`](AGENTS.md) before touching the code. It is the project's
   convention and protocol reference. When it conflicts with
   [`INTENT.md`](INTENT.md) on architecture, `INTENT.md` wins.
 - By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
@@ -17,7 +17,7 @@ what we expect from changes, and how to get them merged.
 
 - Report bugs with the [issue form](https://github.com/imrj05/orbit/issues/new/choose).
 - Propose features with the feature-request form.
-- Improve docs (`README.md`, `PRODUCT.md`, `AGENT.md`, `INTENT.md`).
+- Improve docs (`README.md`, `PRODUCT.md`, `AGENTS.md`, `INTENT.md`).
 - Submit pull requests for open roadmap items.
 
 ## Development setup
@@ -80,7 +80,7 @@ These are non-negotiable; a PR that breaks one will be asked to change.
    control that does not work.
 6. **No `unsafe` without a comment; no new dependency without a stated reason.**
 
-Full detail lives in `AGENT.md` → *Hard rules*.
+Full detail lives in `AGENTS.md` → *Hard rules*.
 
 ## Commit and branch conventions
 

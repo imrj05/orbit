@@ -22,7 +22,8 @@ use gpui::{
 
 use super::format;
 use super::model::{
-    local_day_start, local_month_start, next_bucket, Granularity, RangePreset, UsageIndex,
+    local_day_start, local_month_start, next_bucket, CacheFilter, Granularity, Outcome,
+    RangePreset, UsageIndex,
 };
 use super::page::{BucketSort, ExportFormat, MenuKind, SessionSort, UsagePage, PAGE_SIZES};
 use super::table::FailureSort;
@@ -161,6 +162,60 @@ pub fn chip(
             theme.text_muted
         },
     ))
+}
+
+/// An on/off control in a chip's geometry: the same hairline and active fill
+/// as [`chip`], a check when on, and no chevron — it opens nothing.
+pub fn toggle_button(
+    id: &'static str,
+    label: String,
+    on: bool,
+    theme: Theme,
+    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let rest = if on {
+        theme.surface_active
+    } else {
+        theme.background
+    };
+    let button = button_frame(
+        div().id(ElementId::Name(SharedString::from(id))),
+        &theme,
+        TRIGGER_SIZE,
+    )
+    .border_1()
+    .border_color(if on {
+        theme.border_strong
+    } else {
+        theme.border
+    })
+    .raised(rest, &theme)
+    .cursor_pointer()
+    .on_mouse_down(MouseButton::Left, on_click)
+    .children(on.then(|| {
+        icon(
+            "icons/check.svg",
+            ButtonSize::Medium.icon_size().px(&theme),
+            theme.text_primary,
+        )
+    }))
+    .child(
+        div()
+            .text_color(if on {
+                theme.text_primary
+            } else {
+                theme.text_secondary
+            })
+            .child(label),
+    );
+    // The wash fades in over the button's own fill (§ the interaction layer),
+    // rather than swapping on one frame.
+    crate::motion::hover(
+        button,
+        id,
+        &theme,
+        crate::motion::Hover::over(Some(rest), theme.hover_wash()),
+    )
 }
 
 /// The popover shell shared by every filter menu, on the branch selector's
@@ -323,6 +378,17 @@ fn menu_footer(theme: Theme, left: AnyElement, right: AnyElement) -> AnyElement 
         .into_any_element()
 }
 
+/// What a row of a multi-select menu stands for.
+#[derive(Clone, Copy)]
+enum Pick {
+    /// "All": clear the dimension.
+    All,
+    /// One value of the menu's own dimension.
+    Value(u16),
+    /// A provider group header in the Model menu.
+    Provider(u16),
+}
+
 /// The search-filtered view of a menu's options.
 fn visible_options<'a>(
     options: &'a [FilterOption],
@@ -362,44 +428,82 @@ pub fn multi_menu(
     let highlight = page.menu_highlight();
 
     let mut children: Vec<AnyElement> = vec![search_row(page.menu_query(), theme)];
-    let list: Vec<AnyElement> =
-        std::iter::once((None, tr!("usage.all"), None::<String>, selected.is_empty()))
-            .chain(rows.iter().map(|option| {
-                (
-                    Some(option.id),
-                    option.label.clone(),
-                    option.sub.clone(),
-                    selected.contains(&option.id),
-                )
-            }))
-            .enumerate()
-            .map(|(ix, (id, label, sub, is_selected))| {
-                let entity = cx.entity();
-                let target = id;
-                row(
-                    ElementId::NamedInteger("usage-menu-row".into(), ix as u64),
-                    &label,
-                    sub.as_deref(),
-                    is_selected,
-                    ix == highlight,
-                    theme,
-                    move |_, _, cx| {
-                        entity.update(cx, |page, cx| match target {
-                            Some(id) => page.toggle_filter_value(kind, id, cx),
-                            None => page.clear_dimension(kind, cx),
-                        });
-                    },
-                    {
-                        let entity = cx.entity();
-                        move |entered, _, cx| {
-                            if *entered {
-                                entity.update(cx, |page, cx| page.set_menu_highlight(ix, cx));
-                            }
+    // The Model chip carries providers too: its models are grouped under a
+    // row per provider, and picking that row selects the whole provider.
+    let grouped = kind == MenuKind::Model;
+    let filter = page.filter();
+    let nothing_selected = selected.is_empty() && (!grouped || filter.providers.is_empty());
+    let mut entries: Vec<(Pick, String, Option<String>, bool)> =
+        vec![(Pick::All, tr!("usage.all"), None, nothing_selected)];
+    match page.index().filter(|_| grouped) {
+        Some(index) => {
+            let mut providers: Vec<u16> = Vec::new();
+            for option in &rows {
+                let provider = index.provider_id_of(option.id);
+                if !providers.contains(&provider) {
+                    providers.push(provider);
+                }
+            }
+            for provider in providers {
+                entries.push((
+                    Pick::Provider(provider),
+                    index.providers[provider as usize].label.clone(),
+                    Some(tr!("usage.all_provider_models")),
+                    filter.providers.contains(&provider),
+                ));
+                for option in rows
+                    .iter()
+                    .filter(|option| index.provider_id_of(option.id) == provider)
+                {
+                    entries.push((
+                        Pick::Value(option.id),
+                        option.label.clone(),
+                        None,
+                        selected.contains(&option.id),
+                    ));
+                }
+            }
+        }
+        None => entries.extend(rows.iter().map(|option| {
+            (
+                Pick::Value(option.id),
+                option.label.clone(),
+                option.sub.clone(),
+                selected.contains(&option.id),
+            )
+        })),
+    }
+    let list: Vec<AnyElement> = entries
+        .into_iter()
+        .enumerate()
+        .map(|(ix, (target, label, sub, is_selected))| {
+            let entity = cx.entity();
+            row(
+                ElementId::NamedInteger("usage-menu-row".into(), ix as u64),
+                &label,
+                sub.as_deref(),
+                is_selected,
+                ix == highlight,
+                theme,
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| match target {
+                        Pick::Value(id) => page.toggle_filter_value(kind, id, cx),
+                        Pick::Provider(id) => page.toggle_filter_value(MenuKind::Provider, id, cx),
+                        Pick::All if grouped => page.clear_model_scope(cx),
+                        Pick::All => page.clear_dimension(kind, cx),
+                    });
+                },
+                {
+                    let entity = cx.entity();
+                    move |entered, _, cx| {
+                        if *entered {
+                            entity.update(cx, |page, cx| page.set_menu_highlight(ix, cx));
                         }
-                    },
-                )
-            })
-            .collect();
+                    }
+                },
+            )
+        })
+        .collect();
     children.push(
         div()
             .id("usage-menu-list")
@@ -440,7 +544,13 @@ pub fn multi_menu(
         &tr!("usage.clear"),
         theme,
         move |_, _, cx| {
-            entity.update(cx, |page, cx| page.clear_dimension(kind, cx));
+            entity.update(cx, |page, cx| {
+                if grouped {
+                    page.clear_model_scope(cx);
+                } else {
+                    page.clear_dimension(kind, cx);
+                }
+            });
         },
     );
     children.push(menu_footer(theme, select_all, clear));
@@ -607,6 +717,171 @@ pub fn breakdown_columns_menu(
     children.push(menu_footer(theme, show_all, div().into_any_element()));
     let page = cx.entity();
     panel("usage-breakdown-columns-menu", None, theme, children, page)
+}
+
+/// The toolbar's "+ Filter" menu: the request dimensions that have no chip of
+/// their own. Outcome is a multi-select (every outcome checked is the same as
+/// none); Cache is one of three.
+pub fn more_filters_menu(
+    page: &UsagePage,
+    cx: &mut gpui::Context<UsagePage>,
+    theme: Theme,
+) -> AnyElement {
+    let filter = page.filter();
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.filter_outcome"), theme)];
+    for outcome in Outcome::ALL {
+        let entity = cx.entity();
+        children.push(row(
+            ElementId::Name(SharedString::from(format!(
+                "usage-filter-outcome-{}",
+                outcome.as_str()
+            ))),
+            &outcome.label(),
+            None,
+            filter.outcomes.contains(&outcome),
+            false,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.toggle_outcome(outcome, cx));
+            },
+            |_, _, _| {},
+        ));
+    }
+    children.push(menu_title(&tr!("usage.filter_cache"), theme));
+    for cache in CacheFilter::ALL {
+        let entity = cx.entity();
+        children.push(row(
+            ElementId::Name(SharedString::from(format!(
+                "usage-filter-cache-{}",
+                cache.as_str()
+            ))),
+            &cache.label(),
+            None,
+            filter.cache == cache,
+            false,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.set_cache_filter(cache, cx));
+            },
+            |_, _, _| {},
+        ));
+    }
+    let entity = cx.entity();
+    let clear = footer_row(
+        "usage-more-filters-clear",
+        &tr!("usage.clear"),
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.clear_request_filters(cx));
+        },
+    );
+    children.push(menu_footer(theme, div().into_any_element(), clear));
+    let page = cx.entity();
+    panel("usage-more-filters-menu", Some(240.), theme, children, page)
+}
+
+/// Most rows each section of the highlight picker lists: the busiest slices,
+/// the ones worth comparing against the total.
+const HIGHLIGHT_ROWS: usize = 6;
+/// Tallest the highlight list grows before it scrolls.
+const HIGHLIGHT_LIST_MAX_H: f32 = 360.;
+
+/// The trend's highlight picker: "None", then the busiest models, providers
+/// and workspaces of the current snapshot, each with its share of the total.
+/// One choice at a time — a comparison against the total, not a filter.
+pub fn highlight_menu(
+    page: &UsagePage,
+    snapshot: &super::aggregate::UsageSnapshot,
+    cx: &mut gpui::Context<UsagePage>,
+    theme: Theme,
+) -> AnyElement {
+    use super::aggregate::Highlight;
+
+    let current = page.trend_highlight();
+    let entity = cx.entity();
+    let mut entries: Vec<AnyElement> = vec![row(
+        ElementId::Name("usage-highlight-none".into()),
+        &tr!("usage.highlight_none"),
+        None,
+        current.is_none(),
+        false,
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.set_trend_highlight(None, cx));
+        },
+        |_, _, _| {},
+    )];
+    // (heading, rows, the slice a row stands for, element-id key)
+    type Section<'a> = (
+        String,
+        &'a super::aggregate::Breakdown,
+        fn(u16) -> Highlight,
+        &'static str,
+    );
+    let sections: [Section<'_>; 3] = [
+        (
+            tr!("usage.tab_models"),
+            &snapshot.models,
+            Highlight::Model,
+            "model",
+        ),
+        (
+            tr!("usage.tab_providers"),
+            &snapshot.providers,
+            Highlight::Provider,
+            "provider",
+        ),
+        (
+            tr!("usage.tab_workspaces"),
+            &snapshot.workspaces,
+            Highlight::Workspace,
+            "workspace",
+        ),
+    ];
+    for (title, breakdown, make, key) in sections {
+        // A single row is the total itself; there is nothing to compare.
+        if breakdown.rows.len() < 2 {
+            continue;
+        }
+        entries.push(menu_title(&title, theme));
+        for group in breakdown.rows.iter().take(HIGHLIGHT_ROWS) {
+            let choice = make(group.id);
+            let entity = cx.entity();
+            entries.push(row(
+                ElementId::Name(SharedString::from(format!(
+                    "usage-highlight-{key}-{}",
+                    group.id
+                ))),
+                &group.label,
+                Some(&tr!(
+                    "usage.share_of_tokens",
+                    share = format::share(group.share)
+                )),
+                current == Some(choice),
+                false,
+                theme,
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| page.set_trend_highlight(Some(choice), cx));
+                },
+                |_, _, _| {},
+            ));
+        }
+    }
+    // Three sections can outgrow a short window: the list scrolls under a
+    // fixed title instead of running off the screen.
+    let children = vec![
+        menu_title(&tr!("usage.highlight"), theme),
+        div()
+            .id("usage-highlight-list")
+            .max_h(px(HIGHLIGHT_LIST_MAX_H))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .children(entries)
+            .into_any_element(),
+    ];
+    let page = cx.entity();
+    panel("usage-highlight-menu", Some(260.), theme, children, page)
 }
 
 /// The breakdown table's rows-per-page picker.
@@ -1123,39 +1398,6 @@ pub fn text_button(
     .into_any_element()
 }
 
-/// Outlined pager control: Previous / Next sit under the table card.
-pub fn outline_button(
-    id: &'static str,
-    label: &str,
-    enabled: bool,
-    theme: Theme,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    button_frame(
-        div().id(ElementId::Name(SharedString::from(id))),
-        &theme,
-        TRIGGER_SIZE,
-    )
-    .group(BUTTON_GROUP)
-    .border_1()
-    .border_color(theme.border)
-    .text_color(if enabled {
-        theme.text_primary
-    } else {
-        theme.text_disabled
-    })
-    .when(!enabled, |button| button.bg(theme.overlay))
-    .when(enabled, |button| {
-        press(button)
-            .raised(theme.background, &theme)
-            .cursor_pointer()
-            .hover_bordered(&theme)
-            .on_mouse_down(MouseButton::Left, on_click)
-    })
-    .child(label.to_string())
-    .into_any_element()
-}
-
 /// Options for the workspace dimension, ranked by request count. The second
 /// line is the folder's parent (`~/Personal`) — the informative half of the
 /// path, as in the breakdown table.
@@ -1173,29 +1415,6 @@ pub fn workspace_options(index: &UsageIndex) -> Vec<FilterOption> {
                     id: ix as u16,
                     label: entry.label.clone(),
                     sub: Some(super::aggregate::parent_hint(&entry.path)),
-                },
-            )
-        })
-        .collect();
-    options.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
-    options.into_iter().map(|(_, option)| option).collect()
-}
-
-/// Options for the provider dimension, ranked by request count.
-pub fn provider_options(index: &UsageIndex) -> Vec<FilterOption> {
-    let mut counts = vec![0u64; index.providers.len()];
-    for record in &index.requests {
-        counts[index.model(record.model).provider as usize] += 1;
-    }
-    let mut options: Vec<(u64, FilterOption)> = (0..index.providers.len())
-        .map(|ix| {
-            let entry = &index.providers[ix];
-            (
-                counts[ix],
-                FilterOption {
-                    id: ix as u16,
-                    label: entry.label.clone(),
-                    sub: Some(format::count(counts[ix])),
                 },
             )
         })

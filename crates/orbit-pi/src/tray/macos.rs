@@ -6,11 +6,13 @@ use std::cell::RefCell;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
+use objc2::AnyThread;
 use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSApplication, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSVariableStatusItemLength,
 };
-use objc2_foundation::{NSCopying, NSSize, NSString};
+use objc2_foundation::{NSCopying, NSData, NSSize, NSString};
 
 use super::{push, TrayEvent, TrayLabels};
 
@@ -105,13 +107,9 @@ pub(super) fn set_icon(labels: Option<&TrayLabels>) -> bool {
 fn create(labels: &TrayLabels, mtm: MainThreadMarker) -> Icon {
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     if let Some(button) = item.button(mtm) {
-        // The app icon, copied so resizing it cannot touch the Dock's.
-        if let Some(image) = NSApplication::sharedApplication(mtm).applicationIconImage() {
-            let image = image.copy();
-            image.setSize(NSSize::new(18., 18.));
-            button.setImage(Some(&image));
-        } else {
-            button.setTitle(&NSString::from_str("Orbit"));
+        match template_image().or_else(|| app_icon(mtm)) {
+            Some(image) => button.setImage(Some(&image)),
+            None => button.setTitle(&NSString::from_str("Orbit")),
         }
     }
     set_tooltip(&item, &labels.tooltip, mtm);
@@ -122,6 +120,33 @@ fn create(labels: &TrayLabels, mtm: MainThreadMarker) -> Icon {
         _target: target,
         labels: labels.clone(),
     }
+}
+
+/// The menu-bar mark: the app icon's rounded square with "OP" cut out, as an
+/// alpha-only template. macOS paints a template in the menu bar's own ink —
+/// white on a dark bar, dark on a light one, dimmed while the app is inactive
+/// — the way every system icon there is drawn, so it never reads as a black
+/// blob on a dark bar.
+const TEMPLATE_PNG: &[u8] = include_bytes!("../../assets/tray-template.png");
+
+/// Menu-bar icons are 18pt; the PNG carries 4× the pixels for Retina.
+const ICON_PT: f64 = 18.;
+
+fn template_image() -> Option<Retained<NSImage>> {
+    let data = NSData::with_bytes(TEMPLATE_PNG);
+    let image = NSImage::initWithData(NSImage::alloc(), &data)?;
+    image.setSize(NSSize::new(ICON_PT, ICON_PT));
+    image.setTemplate(true);
+    Some(image)
+}
+
+/// Fallback when the template cannot be decoded: the full-colour app icon,
+/// copied so resizing it cannot touch the Dock's.
+fn app_icon(mtm: MainThreadMarker) -> Option<Retained<NSImage>> {
+    let image = NSApplication::sharedApplication(mtm).applicationIconImage()?;
+    let image = image.copy();
+    image.setSize(NSSize::new(ICON_PT, ICON_PT));
+    Some(image)
 }
 
 fn set_tooltip(item: &NSStatusItem, tooltip: &str, mtm: MainThreadMarker) {
