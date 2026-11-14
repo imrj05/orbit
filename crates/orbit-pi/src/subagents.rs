@@ -287,6 +287,9 @@ fn load_session_status_from(file: &Path, session_id: &str) -> Option<Status> {
     parse_status(&value)
 }
 
+/// Reads a report without checking which session wrote it; only tests need
+/// that, since the app always asks for its own session's verdict.
+#[cfg(test)]
 pub(crate) fn load_status_from(file: &Path) -> Option<Status> {
     let text = fs::read_to_string(file).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
