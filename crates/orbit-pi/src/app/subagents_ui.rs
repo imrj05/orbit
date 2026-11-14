@@ -761,7 +761,7 @@ impl OrbitApp {
         }
 
         let switch_this = this.clone();
-        let enabled_switch = switch("subagent-enabled", enabled, &theme, move |_, _, cx| {
+        let enabled_switch = switch("subagent-enabled", enabled, &theme, move |_, cx| {
             switch_this.update(cx, |app, cx| {
                 app.apply_subagent_action(SubagentAction::ToggleEnabled, cx)
             });
@@ -1653,19 +1653,11 @@ impl OrbitApp {
                 theme,
                 tr!("subagents_ui.limit_enabled"),
                 Some(tr!("subagents_ui.limit_enabled_hint")),
-                switch(
-                    "subagents-master-enabled",
-                    enabled,
-                    theme,
-                    move |_, _, cx| {
-                        enabled_this.update(cx, |app, cx| {
-                            app.apply_subagent_action(
-                                SubagentAction::SetSubagentsEnabled(!enabled),
-                                cx,
-                            )
-                        });
-                    },
-                ),
+                switch("subagents-master-enabled", enabled, theme, move |_, cx| {
+                    enabled_this.update(cx, |app, cx| {
+                        app.apply_subagent_action(SubagentAction::SetSubagentsEnabled(!enabled), cx)
+                    });
+                }),
             ),
             self.subagent_control_row(
                 theme,

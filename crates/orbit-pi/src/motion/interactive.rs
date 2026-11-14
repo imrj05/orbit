@@ -126,6 +126,15 @@ impl Hover {
         }
     }
 
+    /// The same treatment with the ink lifting as well, for a control whose
+    /// label inherits its colour from the control (a quiet text button).
+    pub(crate) fn with_ink(self, rest: Hsla, hover: Hsla) -> Self {
+        Self {
+            ink: Some((rest, hover)),
+            ..self
+        }
+    }
+
     /// The colours at a point on the fade, 0 = rest, 1 = hovered.
     fn at(&self, value: f32) -> (Option<Hsla>, Option<Hsla>) {
         let fill = match (self.rest_fill, self.hover_fill) {

@@ -85,6 +85,7 @@ mod model_selector_match;
 mod motion;
 mod notifications;
 mod onboarding;
+mod palette_recents;
 mod pi_install;
 mod pi_update;
 mod pins;
@@ -235,6 +236,17 @@ actions!(
 // New-task folder chip: native button activation while its focus handle owns
 // the keyboard. Scoped so Enter cannot fall through to the composer's Submit.
 actions!(new_task_keys, [OpenWorkspacePicker]);
+actions!(switch_keys, [SwitchToggle]);
+actions!(
+    git_list_keys,
+    [
+        GitListPrev,
+        GitListNext,
+        GitListHome,
+        GitListEnd,
+        GitListConfirm
+    ]
+);
 // Terminal-panel actions (bound to the `Terminal` context on the grid).
 // `TerminalTab` exists so Tab reaches the shell's completion instead of the
 // global focus-traversal binding. The rest are the panel's tab commands: they
@@ -620,6 +632,26 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", SidebarEnd, Some("Sidebar")),
         KeyBinding::new("enter", SidebarConfirm, Some("Sidebar")),
         KeyBinding::new("escape", SidebarClose, Some("Sidebar")),
+        // `j`/`k` move the row cursor too, but only while no text field is
+        // focused: the sidebar's search input sits inside this context, and a
+        // plain letter binding would otherwise swallow what the user types.
+        KeyBinding::new("j", SidebarNext, Some("Sidebar && !Composer")),
+        KeyBinding::new("k", SidebarPrev, Some("Sidebar && !Composer")),
+        // The Git page's History, Issues and Pull requests lists: a keyboard
+        // cursor that moves without opening anything (each open runs `git` or
+        // `gh`), and Enter to open the row under it. The context rides the
+        // list's scroller, which holds no text field.
+        KeyBinding::new("up", GitListPrev, Some("GitList")),
+        KeyBinding::new("down", GitListNext, Some("GitList")),
+        KeyBinding::new("k", GitListPrev, Some("GitList && !Composer")),
+        KeyBinding::new("j", GitListNext, Some("GitList && !Composer")),
+        KeyBinding::new("home", GitListHome, Some("GitList")),
+        KeyBinding::new("end", GitListEnd, Some("GitList")),
+        KeyBinding::new("enter", GitListConfirm, Some("GitList")),
+        // A focused switch flips with Space or Enter, the way a native toggle
+        // does. Its context rides the switch's own focus handle.
+        KeyBinding::new("space", SwitchToggle, Some("Switch")),
+        KeyBinding::new("enter", SwitchToggle, Some("Switch")),
     ]);
 }
 

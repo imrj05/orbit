@@ -458,7 +458,14 @@ impl Render for RewindPicker {
             .items_center()
             .justify_center()
             .on_mouse_down_out(cx.listener(Self::on_outside_down))
-            .child(card)
+            // The dialog entrance: the card fades in on the Layout role.
+            .child(crate::motion::enter(
+                card,
+                "rewind-card-in",
+                &theme,
+                crate::theme::tokens::Motion::Layout,
+                None,
+            ))
     }
 }
 

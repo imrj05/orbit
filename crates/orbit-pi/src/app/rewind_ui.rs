@@ -246,7 +246,9 @@ impl OrbitApp {
         }) as Box<dyn Fn(bool, &mut Window, &mut App)>;
 
         let picker = cx.new(|cx| RewindPicker::new(on_pick, on_dismiss, cx));
-        window.focus(&picker.read(cx).focus_handle(cx));
+        let picker_focus = picker.read(cx).focus_handle(cx);
+        self.rewind_return_focus.capture(&picker_focus, window, cx);
+        window.focus(&picker_focus);
         self.rewind_picker = Some(picker);
         cx.notify();
     }
@@ -276,7 +278,8 @@ impl OrbitApp {
             self.rewind_fetching = false;
             self.rewind_intent = ForkIntent::Edit;
             self.rewind_prompt_images.clear();
-            self.input.read(cx).focus(window);
+            let opener = self.rewind_return_focus.take();
+            self.return_focus(opener, window, cx);
             cx.notify();
         }
     }

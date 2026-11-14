@@ -45,16 +45,18 @@ cargo build --workspace      # must stay clean: zero warnings
 cargo test --workspace       # unit tests + live pi integration tests
 cargo clippy --workspace --all-targets
 
-# Three guards for the design system. They are checks, not lint: a violation is
-# a real defect (a component re-deciding a state colour, an animation typing its
-# own duration, a locale missing a key).
+# Guards for the design system. They are checks, not lint: a violation is a
+# real defect (a component re-deciding a state colour, an animation typing its
+# own duration, a new hover that snaps instead of fading, a locale missing a
+# key). After converting a hover, `check_hovers.py --update` lowers its budget.
 python3 scripts/check_states.py
 python3 scripts/check_motion.py
+python3 scripts/check_hovers.py
 python3 scripts/check_i18n.py
 ```
 
 `cargo build` with zero warnings is a stated project invariant. CI runs build
-and clippy on macOS, and the four design guards above in a `design guards` job
+and clippy on macOS, and the design guards above in a `design guards` job
 (`.github/workflows/ci.yml`); tests are run locally, not in CI.
 
 For UI changes, read `DESIGN.md` first — it is the design system, and the state,

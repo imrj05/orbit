@@ -495,22 +495,27 @@ The navigation rail's user-turn index is likewise cached in `Transcript` and
 rebuilt only when the message list changes, and debug builds log one local
 `[orbit:perf]` line per settle (window, cache, prompt, output, duration, rate).
 
-The sidebar keeps the title, prompt preview, age/status, branch/divergence,
-provider/model marks, and pin/archive indicators. Flat mode adds the workspace
-above the title; grouped mode names it once in the project header. Tinted project
+The sidebar keeps the title, prompt preview, status/age, branch/divergence,
+provider/model marks, and pin/archive indicators. Flat mode and search name each
+row's workspace; grouped mode names it once in the project header, and a row there
+shows the location line only when its folder is not the header's — a branch belongs
+to a folder, so repeating it down one group told the reader nothing. Tinted project
 marks and count badges establish hierarchy, semantic status washes distinguish
 outcomes, and primary-ink titles lead secondary previews and muted metadata.
-The selected row keeps its theme selection fill with a subtle accent outline;
-the keyboard cursor adds a full focus outline even when that row is selected.
+The selected row is marked by `surface_selected` alone — a neutral step of the
+palette's own ramp under every accent — with no outline, no "current" badge and no
+heavier title; the keyboard cursor adds a full focus outline even when that row
+is selected.
 Preview and branch tooltips expose truncated text without widening the
 sidebar, while the session title stays a single visible line (its row tooltip
 names the keyboard shortcut instead). Spacing and mark geometry follow the
 existing theme tokens, and the list remains virtualized with the same session
 data and action handlers.
 The sidebar view menu's **Show first message** toggle hides or restores the preview
-in both grouped and flat lists. It defaults to shown and persists as
+in both grouped and flat lists. It defaults to hidden — a grouped row is one 28px
+line until the preview or a differing location grows it — and persists as
 `show_first_message` in `workspaces.json`; missing or invalid values keep previews
-visible. Toggling remeasures rows while retaining the logical scroll anchor, and
+hidden. Toggling remeasures rows while retaining the logical scroll anchor, and
 never edits session content or hides other metadata. When enabled, the message line
 shows the whole prompt — pi titles a session from that message, so the two
 can start alike, but the title is capped at 80 characters while a row shows
