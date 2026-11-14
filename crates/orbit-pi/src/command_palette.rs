@@ -969,7 +969,16 @@ impl Render for CommandPalette {
             .items_start()
             .justify_center()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_scrim_down))
-            .child(card)
+            // The same entrance as a dialog: the card fades in on the Layout
+            // role. Its state lives with the mounted card, so typing into the
+            // filter (a re-render per keystroke) never replays it.
+            .child(crate::motion::enter(
+                card,
+                "command-palette-card-in",
+                &theme,
+                crate::theme::tokens::Motion::Layout,
+                None,
+            ))
     }
 }
 

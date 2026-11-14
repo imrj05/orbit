@@ -841,24 +841,30 @@ The sidebar is quiet infrastructure.
 - Sidebar sections use whitespace and labels rather than excessive containers.
 - Project marks sit on small theme-tinted tiles (the default inherits the accent;
   custom tints and logos remain intact), with a quiet tonal session counter.
-  Session titles use primary ink and medium weight, stepping to semibold for the
-  selected session; previews use secondary ink and metadata stays muted. Real
+  Session titles use primary ink and one medium weight on every row, so a title
+  never changes shape when the selection moves; previews use secondary ink and
+  metadata stays muted. Real
   execution states get semantic badge washes, never invented activity. Selection
-  combines the existing selected fill with a subtle accent outline; keyboard focus
+  is the `surface_selected` fill alone, at rest and under the pointer: no outline, no
+  "current" badge and no heavier title repeat it. Keyboard focus
   has its own full-strength outline, including on the selected row. Resting rows
   stay unboxed, and provider marks keep their individual hover targets.
 - A project group header carries a session count only when it is non-zero. A project
   with nothing in it already says so by having no rows under it.
 - A session row's title line is its anchor and is always there. The sidebar view
-  menu's **Show first message** toggle controls the preview below it (on by default,
+  menu's **Show first message** toggle controls the preview below it (off by default,
   remembered across restarts in both grouped and flat lists). When enabled, it carries
   the whole first message: pi titles a session from that message, so the two often start the
   same way, but the title is capped at 80 characters and the row shows far fewer — the
-  message line is the only place the ask reads to its end. Line 3 is the metadata strip —
-  age, workspace (flat list only: under a project header the name is already one line up),
-  and branch with `↑n`/`↓n` against its upstream. Rows are three lines tall and drop to two
-  when previews are hidden or nothing has been sent yet. The branch truncates last, and a divergence count
-  appears only when it is non-zero.
+  message line is the only place the ask reads to its end. The last line is the location strip —
+  workspace and branch with `↑n`/`↓n` against its upstream. It appears only where it says
+  something the list does not already say: in a flat list or search (no header names the
+  workspace), and under a project header only for a session whose folder is not the
+  header's. A branch is read per workspace folder, so repeating it on every row of one
+  group told the reader the same thing down the list; the hover card still carries it.
+  A grouped row with previews hidden is therefore one 28px line — title, status and age —
+  and grows by one line for the preview and one for the location. The branch truncates
+  last, and a divergence count appears only when it is non-zero.
 - Every line of a session row is a truncating text run inside a flex row, with
   `flex_1 min_w_0 truncate` on the text itself. `truncate()` on a bare block collapses to
   its own ellipsis instead of filling the column.
@@ -1709,7 +1715,9 @@ Components must resolve semantic roles from the active `Theme`, not reuse the Az
 reference colors in this document. Appearance also provides a Default accent plus
 Blue, Coral, Orange, Lime, Shu, Kaki, Sakura, Matcha, Asagi, Ruri, Fuji, Kogane,
 Ume and Gin. Accent overrides change interaction roles independently of the selected
-palette; the named custom accents also derive selection and inline-code treatments.
+palette; the named custom accents also derive the text-selection and inline-code washes.
+They never recolour `surface_selected`: a selected row stays the palette's neutral step
+under any accent, so the open session or file is not an accent-tinted slab.
 Wallpaper and its optional extracted accent are separate appearance choices. Validate
 actual text, state and focus contrast against the resolved theme, including overrides;
 selection of a family does not guarantee every possible combination is verified.
@@ -1762,7 +1770,10 @@ these tests, which run over every shipped palette:
 `scripts/check_motion.py` enforces the two negative rules mechanically: no animation
 types its own duration, and no file outside `theme/tokens.rs` calls `.nominal()`.
 `scripts/check_states.py` enforces that a call site does not name a state colour, which
-is the same contract one layer down.
+is the same contract one layer down. `scripts/check_hovers.py` holds the one-frame
+`ControlExt` hover treatments to a per-file budget (`scripts/hover_budget.json`): a new
+hover fades through `motion::hover`, and converting an old one lowers the budget
+(`--update`).
 
 A change to this file that is not also a change to those tests is a wish, not a rule.
 The micro-interaction set is the one deliberate exception: it is the gate the

@@ -123,10 +123,10 @@ fn workspace_store_defaults_to_grouped_and_hiding_archived() {
 }
 
 #[test]
-fn sidebar_first_message_is_visible_by_default() {
-    assert!(WorkspaceStore::default().show_first_message);
+fn sidebar_first_message_is_hidden_by_default() {
+    assert!(!WorkspaceStore::default().show_first_message);
     let legacy = parse_workspace_store(&serde_json::json!({ "workspaces": [] }));
-    assert!(legacy.show_first_message);
+    assert!(!legacy.show_first_message);
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn sidebar_first_message_ignores_malformed_preferences() {
         let store = parse_workspace_store(&serde_json::json!({
             "show_first_message": invalid,
         }));
-        assert!(store.show_first_message);
+        assert!(!store.show_first_message);
     }
 }
 

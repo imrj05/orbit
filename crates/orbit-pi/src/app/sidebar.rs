@@ -1454,10 +1454,12 @@ pub(crate) fn render_side_row(
             // deleted — the process would recreate the file mid-run.
             let deletable = !active && !running && !live_paths.contains(&session.path);
             // Keep titles still; the status icon communicates background activity.
-            let title = session_title(*ix, session.title.clone().into(), theme, active, false);
+            let title = session_title(*ix, session.title.clone().into(), theme, false);
             // Indented under its workspace group so the list reads as a
-            // tree. The open session uses the same neutral surface as hover,
-            // even when the selected surface follows a custom accent.
+            // tree. The open session is marked by `surface_selected` alone:
+            // no border, badge or heavier title repeats what the fill says.
+            // That surface is the palette's neutral step under every accent
+            // (`appearance::with_accent` never recolours it).
             // Row actions live on the right-click menu, so the card carries no
             // hover-revealed control at all.
             // Outer item carries the inter-row spacing (padding) and the click
@@ -1522,25 +1524,24 @@ pub(crate) fn render_side_row(
                         app.input.read(cx).focus(window);
                     });
                 });
-            // Status sits beside the task; workspace and branch sit below it.
+            // Status sits beside the task. A one-line row is 28px tall, the
+            // sidebar row height every other navigation row uses.
             let row_name = format!("session-row-{}", session.id);
             let mut card = div()
                 .id(ElementId::Name(row_name.clone().into()))
+                .debug_selector(|| "session-row-card".into())
                 .group("srow")
                 .relative()
                 .w_full()
                 .px(DynamicSpacing::Base08.px(&theme))
-                .py(DynamicSpacing::Base08.px(&theme))
+                .py(DynamicSpacing::Base04.px(&theme))
+                .min_h(ButtonSize::Medium.height(&theme))
                 .rounded(list_item::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border.opacity(0.))
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
-                .when(active, |card| {
-                    card.border_color(theme.border)
-                        .text_color(theme.text_primary)
-                })
                 // Focus remains visible even on the selected session. Reserve
                 // the border in every state so hover/focus never shifts text.
                 .when(cursor, |card| card.border_color(theme.focus_ring));
@@ -1555,6 +1556,15 @@ pub(crate) fn render_side_row(
             let workspace_logo = logos.get(&session.cwd);
             let workspace_icon = workspace_icons.get(&session.cwd);
             let branch = branches.get(&session.cwd).cloned();
+            // Under a workspace header every session in that folder is on the
+            // header's branch, so the line would repeat itself down the list.
+            // It stays where it adds something: a flat list (no header names
+            // the workspace) and a session whose folder is not its header's.
+            let group_cwd = rows[..row_ix].iter().rev().find_map(|row| match row {
+                SideRow::Workspace { cwd, .. } => Some(cwd),
+                _ => None,
+            });
+            let show_location = show_workspace || group_cwd != Some(&session.cwd);
             let (ahead, behind) = branch
                 .as_ref()
                 .map(|branch| divergence_labels(branch.ahead_behind))
@@ -1655,22 +1665,6 @@ pub(crate) fn render_side_row(
                                         .debug_selector(move || format!("session-shortcut-{slot}"))
                                         .child(kbd_shortcut(&format!("secondary-{slot}"), &theme)),
                                 )
-                            })
-                            .when(active && show_workspace, |line| {
-                                line.child(
-                                    div()
-                                        .debug_selector(|| "session-current-badge".into())
-                                        .flex_none()
-                                        .px(DynamicSpacing::Base04.px(&theme))
-                                        .py(DynamicSpacing::Base01.px(&theme))
-                                        .rounded(Radius::Small.px(&theme))
-                                        .bg(theme.surface_active)
-                                        .text_size(TextSize::XSmall.px(&theme))
-                                        .line_height(BufferLineHeight::Standard.relative())
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(theme.accent_text)
-                                        .child(tr!("sidebar.current")),
-                                )
                             }),
                     )
                     // Line 2 — what was actually asked, one line. An empty
@@ -1693,84 +1687,88 @@ pub(crate) fn render_side_row(
                             ),
                         )
                     })
-                    // Flat lists name the workspace; grouped rows already have a header.
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap(DynamicSpacing::Base06.px(&theme))
-                            .when(show_workspace, |line| {
-                                line.child(
-                                    div()
-                                        .max_w(px(110.))
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_shrink()
-                                        .items_center()
-                                        .gap(DynamicSpacing::Base04.px(&theme))
-                                        .child(project_icon(
-                                            &mark,
-                                            workspace_logo,
-                                            workspace_icon,
-                                            IconSize::XSmall,
-                                            &theme,
-                                        ))
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .truncate()
-                                                .text_size(TextSize::XSmall.px(&theme))
-                                                .text_color(workspace_mark::label_ink(
-                                                    &theme,
-                                                    mark.tint.as_deref(),
-                                                ))
-                                                .tip(workspace_label.clone())
-                                                .child(workspace_label.clone()),
-                                        ),
-                                )
-                            })
-                            .when_some(branch.as_ref(), |line, branch| {
-                                line.child(icon(
-                                    "icons/branch.svg",
-                                    IconSize::XSmall.px(&theme),
-                                    theme.syn_function,
-                                ))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(TextSize::XSmall.px(&theme))
-                                        .text_color(meta_ink)
-                                        .tip(branch.name.clone())
-                                        .child(branch.name.clone()),
-                                )
-                                .when_some(ahead.clone(), |line, ahead| {
+                    // Flat lists name the workspace; grouped rows already have a
+                    // header, so they carry this line only when it differs.
+                    .when(show_location, |col| {
+                        col.child(
+                            div()
+                                .debug_selector(|| "session-location".into())
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(DynamicSpacing::Base06.px(&theme))
+                                .when(show_workspace, |line| {
                                     line.child(
                                         div()
-                                            .flex_none()
-                                            .text_size(TextSize::Small.px(&theme))
-                                            .text_color(theme.success)
-                                            .child(ahead),
+                                            .max_w(px(110.))
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_shrink()
+                                            .items_center()
+                                            .gap(DynamicSpacing::Base04.px(&theme))
+                                            .child(project_icon(
+                                                &mark,
+                                                workspace_logo,
+                                                workspace_icon,
+                                                IconSize::XSmall,
+                                                &theme,
+                                            ))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_size(TextSize::XSmall.px(&theme))
+                                                    .text_color(workspace_mark::label_ink(
+                                                        &theme,
+                                                        mark.tint.as_deref(),
+                                                    ))
+                                                    .tip(workspace_label.clone())
+                                                    .child(workspace_label.clone()),
+                                            ),
                                     )
                                 })
-                                .when_some(
-                                    behind.clone(),
-                                    |line, behind| {
+                                .when_some(branch.as_ref(), |line, branch| {
+                                    line.child(icon(
+                                        "icons/branch.svg",
+                                        IconSize::XSmall.px(&theme),
+                                        theme.syn_function,
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(TextSize::XSmall.px(&theme))
+                                            .text_color(meta_ink)
+                                            .tip(branch.name.clone())
+                                            .child(branch.name.clone()),
+                                    )
+                                    .when_some(ahead.clone(), |line, ahead| {
                                         line.child(
                                             div()
                                                 .flex_none()
                                                 .text_size(TextSize::Small.px(&theme))
-                                                .text_color(theme.warning)
-                                                .child(behind),
+                                                .text_color(theme.success)
+                                                .child(ahead),
                                         )
-                                    },
-                                )
-                            })
-                            .when(branch.is_none(), |line| line.child(div().flex_1())),
-                    ),
+                                    })
+                                    .when_some(
+                                        behind.clone(),
+                                        |line, behind| {
+                                            line.child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_size(TextSize::Small.px(&theme))
+                                                    .text_color(theme.warning)
+                                                    .child(behind),
+                                            )
+                                        },
+                                    )
+                                })
+                                .when(branch.is_none(), |line| line.child(div().flex_1())),
+                        )
+                    }),
             );
             // Row actions live on the right-click context menu — the same
             // gesture the rest of the app uses for row actions — so there is
@@ -1815,17 +1813,25 @@ pub(crate) fn render_side_row(
                     ),
                 );
             }
-            // The open row and the keyboard cursor already sit on the hover
-            // wash, so their rest fill is that wash; every other row fades it
-            // in under the pointer instead of swapping on one frame.
+            // The open row holds `surface_selected` at rest and under the
+            // pointer, so hovering it never reads as leaving the selection.
+            // The keyboard cursor sits on the hover wash; every other row
+            // fades that wash in instead of swapping on one frame.
+            let rest = if active {
+                Some(theme.surface_selected)
+            } else {
+                cursor.then_some(theme.surface_hover)
+            };
+            let hover_fill = if active {
+                theme.surface_selected
+            } else {
+                theme.surface_hover
+            };
             row = row.child(crate::motion::hover(
                 card,
                 row_name,
                 &theme,
-                Hover::over(
-                    (active || cursor).then_some(theme.surface_hover),
-                    theme.surface_hover,
-                ),
+                Hover::over(rest, hover_fill),
             ));
             row.into_any_element()
         }
@@ -1835,19 +1841,11 @@ pub(crate) fn render_side_row(
 /// A session row's title. Quiet rows render as one truncated line; a running
 /// row paints the shadcn `shimmer` — a highlight band sweeping across the
 /// glyphs — driven by `with_animation` (self-repainting, no app tick).
-fn session_title(
-    id: usize,
-    title: SharedString,
-    theme: Theme,
-    active: bool,
-    running: bool,
-) -> AnyElement {
+fn session_title(id: usize, title: SharedString, theme: Theme, running: bool) -> AnyElement {
     let color = theme.text_primary;
-    let weight = if active {
-        FontWeight::SEMIBOLD
-    } else {
-        FontWeight::MEDIUM
-    };
+    // One weight for every row: the open session is marked by its fill, so a
+    // title never changes width when the selection moves.
+    let weight = FontWeight::MEDIUM;
     let size = TextSize::Default.px(&theme);
     let line_height = BufferLineHeight::Standard.relative();
     if !running {
@@ -4282,12 +4280,34 @@ mod tests {
         status: Option<SessionStatus>,
         active: bool,
         show_updated: bool,
+        /// The workspace header above the row, for a grouped list. `None` is
+        /// a flat list, where each row names its own workspace.
+        header: Option<PathBuf>,
         theme: Theme,
     }
 
     impl gpui::Render for SessionRowProbe {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let rows = Rc::new(vec![SideRow::Session(0)]);
+            let rows = Rc::new(match &self.header {
+                Some(cwd) => vec![
+                    SideRow::Workspace {
+                        label: "project".into(),
+                        count: 1,
+                        collapsed: false,
+                        cwd: cwd.clone(),
+                    },
+                    SideRow::Session(0),
+                ],
+                None => vec![SideRow::Session(0)],
+            });
+            let row_ix = rows.len() - 1;
+            let branches = Rc::new(HashMap::from([(
+                self.session.cwd.clone(),
+                BranchLine {
+                    name: "main".into(),
+                    ahead_behind: None,
+                },
+            )]));
             let sessions = Rc::new(vec![self.session.clone()]);
             let statuses = Rc::new(
                 self.status
@@ -4299,13 +4319,13 @@ mod tests {
                 &rows,
                 &sessions,
                 self.active.then_some(self.session.path.as_path()),
-                0,
+                row_ix,
                 &self.app,
                 false,
                 &Rc::default(),
                 &Rc::default(),
                 &Rc::default(),
-                true,
+                self.header.is_none(),
                 false,
                 self.show_updated,
                 false,
@@ -4313,7 +4333,7 @@ mod tests {
                 &Rc::default(),
                 &Rc::default(),
                 &Rc::default(),
-                &Rc::default(),
+                &branches,
                 &Rc::default(),
                 &statuses,
                 None,
@@ -4364,6 +4384,7 @@ mod tests {
                     status,
                     active,
                     show_updated,
+                    header: None,
                     theme,
                 })
             });
@@ -4390,20 +4411,67 @@ mod tests {
                 (text.size.height - expected_text).abs() <= px(0.51),
                 "status text should use the metadata leading: {text:?}, expected {expected_text:?}"
             );
-            if active {
-                let current = bounds("session-current-badge");
-                assert!(
-                    (center(title) - center(current)).abs() <= px(0.51),
-                    "current not centered: title={title:?}, current={current:?}"
-                );
-                let expected =
-                    TextSize::XSmall.px(&theme) * 1.3 + DynamicSpacing::Base01.px(&theme) * 2.;
-                assert!((current.size.height - expected).abs() <= px(0.51),
-                    "current line height should use the metadata leading: {current:?}, expected {expected:?}");
-                assert!(badge.origin.x + badge.size.width <= current.origin.x);
-                assert!(current.origin.x + current.size.width <= px(width));
-            }
+            // The open row is marked by its fill alone: no "current" badge.
+            assert!(cx.debug_bounds("session-current-badge").is_none());
+            assert!(badge.origin.x + badge.size.width <= px(width));
             assert!(title.origin.x + title.size.width <= badge.origin.x);
+        }
+    }
+
+    /// Under a workspace header a session is one 28px line: the header already
+    /// names the folder and its branch. The location line returns only where
+    /// it says something new — a flat list, or a session in another folder.
+    #[gpui::test]
+    fn grouped_session_rows_drop_the_repeated_location_line(cx: &mut gpui::TestAppContext) {
+        use std::time::{Duration, SystemTime};
+
+        let theme = Theme::for_id(crate::theme::ThemeId::OrbitAzure);
+        cx.update(|cx| cx.set_global(theme));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        let session = SessionInfo {
+            path: "/tmp/project/row.jsonl".into(),
+            id: "grouped".into(),
+            cwd: "/tmp/project".into(),
+            title: "Fade hover on composer chips".into(),
+            first_message: String::new(),
+            modified: SystemTime::now() - Duration::from_secs(60),
+        };
+        for (header, location) in [
+            (Some(PathBuf::from("/tmp/project")), false),
+            (Some(PathBuf::from("/elsewhere/project")), true),
+            (None, true),
+        ] {
+            let probe = cx.update(|_, cx| {
+                cx.new(|_| SessionRowProbe {
+                    app: app.clone(),
+                    session: session.clone(),
+                    status: None,
+                    active: false,
+                    show_updated: true,
+                    header: header.clone(),
+                    theme,
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(248.), px(160.)),
+                |_, _| probe.clone(),
+            );
+            assert_eq!(
+                cx.debug_bounds("session-location").is_some(),
+                location,
+                "header={header:?}"
+            );
+            if !location {
+                let row = cx
+                    .debug_bounds("session-row-card")
+                    .expect("session row card");
+                assert!(
+                    (row.size.height - ButtonSize::Medium.height(&theme)).abs() <= px(0.51),
+                    "a one-line session row is a 28px navigation row: {row:?}"
+                );
+            }
         }
     }
 

@@ -155,6 +155,13 @@ impl AccentColor {
 /// requested colour; only the text role is lightened/darkened until it clears
 /// AA on the palette's canvas and card surfaces. Shared by the named accent
 /// choices and the wallpaper's extracted accent.
+///
+/// `surface_selected` is deliberately left alone. It is the selected-row
+/// surface — the open session, the open file, a chosen menu entry — and the
+/// palette defines it as a neutral step of its own ramp, never an accent tint:
+/// an accent wash there spends the one rationed hue on every selected row and
+/// puts muted ink on a fill no contrast test covers. The accent still reaches
+/// the text-selection wash and inline code, which are content, not chrome.
 pub(crate) fn with_accent(mut theme: Theme, base: gpui::Hsla) -> Theme {
     let mut ink = base;
     let surfaces = [
@@ -189,7 +196,6 @@ pub(crate) fn with_accent(mut theme: Theme, base: gpui::Hsla) -> Theme {
     theme.action_hover = hover;
     theme.action_pressed = pressed;
     theme.action_fg = foreground;
-    theme.surface_selected = base.opacity(0.14);
     theme.selection = base.opacity(0.14);
     theme.inline_code_bg = base.opacity(0.14);
     theme
@@ -426,6 +432,25 @@ pub fn watch_system_appearance(window: &Window, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_custom_accent_never_tints_the_selected_row_surface() {
+        for id in ThemeId::ALL {
+            let palette = Theme::for_id(id);
+            for base in [0xE8603C, 0x5B8DEF, 0x9DB86B, 0xC9C5BD] {
+                let themed = with_accent(palette, gpui::rgb(base).into());
+                assert_eq!(
+                    themed.surface_selected, palette.surface_selected,
+                    "{id:?}: selected rows keep the palette's neutral step"
+                );
+                assert_eq!(themed.accent, gpui::rgb(base).into());
+                assert_ne!(
+                    themed.selection, palette.selection,
+                    "{id:?}: the text-selection wash still follows the accent"
+                );
+            }
+        }
+    }
 
     #[test]
     fn new_preferences_follow_system() {
