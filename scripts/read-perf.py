@@ -19,7 +19,6 @@ the headless test window's `draw()` is a no-op, so frame cost only exists in the
 real app.
 """
 import json
-import os
 import sys
 from pathlib import Path
 

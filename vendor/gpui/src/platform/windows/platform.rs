@@ -606,29 +606,49 @@ impl Platform for WindowsPlatform {
             .collect_vec();
         self.foreground_executor().spawn(async move {
             let mut credentials: *mut CREDENTIALW = std::ptr::null_mut();
-            unsafe {
+            let read = unsafe {
                 CredReadW(
                     PCWSTR::from_raw(target_name.as_ptr()),
                     CRED_TYPE_GENERIC,
                     None,
                     &mut credentials,
-                )?
+                )
             };
-
-            if credentials.is_null() {
-                Ok(None)
-            } else {
-                let username: String = unsafe { (*credentials).UserName.to_string()? };
-                let credential_blob = unsafe {
-                    std::slice::from_raw_parts(
-                        (*credentials).CredentialBlob,
-                        (*credentials).CredentialBlobSize as usize,
-                    )
-                };
-                let password = credential_blob.to_vec();
-                unsafe { CredFree(credentials as *const _ as _) };
-                Ok(Some((username, password)))
+            match read {
+                // No saved credential is an answer, not a failure.
+                Err(error) if error.code() == ERROR_NOT_FOUND.to_hresult() => return Ok(None),
+                Err(error) => return Err(error.into()),
+                Ok(()) => {}
             }
+            if credentials.is_null() {
+                return Ok(None);
+            }
+
+            // Copy both fields out before freeing, and free on every path:
+            // a username that fails to decode must not leak the buffer, and
+            // nothing may touch `credentials` after `CredFree`.
+            let copied = unsafe {
+                let credential = &*credentials;
+                let password = if credential.CredentialBlob.is_null()
+                    || credential.CredentialBlobSize == 0
+                {
+                    Vec::new()
+                } else {
+                    std::slice::from_raw_parts(
+                        credential.CredentialBlob,
+                        credential.CredentialBlobSize as usize,
+                    )
+                    .to_vec()
+                };
+                let username = if credential.UserName.is_null() {
+                    Ok(String::new())
+                } else {
+                    credential.UserName.to_string()
+                };
+                username.map(|username| (username, password))
+            };
+            unsafe { CredFree(credentials as *const _ as _) };
+            Ok(Some(copied?))
         })
     }
 
