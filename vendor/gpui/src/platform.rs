@@ -1860,3 +1860,21 @@ impl From<String> for ClipboardString {
         }
     }
 }
+
+/// Orbit patch (see `README.orbit.md`): whether the Linux event loop keeps
+/// running once its last window has closed.
+static KEEP_ALIVE_WITHOUT_WINDOWS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Keep the app running with no windows open (Linux; a no-op elsewhere,
+/// where the platform already decides). An app that sets this needs another
+/// way back to a window — a tray icon — and should clear it when that goes.
+pub fn set_keep_alive_without_windows(keep: bool) {
+    KEEP_ALIVE_WITHOUT_WINDOWS.store(keep, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read by the Linux clients when their last window closes.
+#[cfg_attr(not(any(target_os = "linux", target_os = "freebsd")), allow(dead_code))]
+pub(crate) fn keep_alive_without_windows() -> bool {
+    KEEP_ALIVE_WITHOUT_WINDOWS.load(std::sync::atomic::Ordering::Relaxed)
+}

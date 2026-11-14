@@ -6,15 +6,17 @@
 //! - **Hide to tray** keeps Orbit — and any run in flight — alive with the
 //!   window gone, and the icon brings it back. On macOS that is today's
 //!   behaviour (the shell is parked and the Dock reopens it); the menu-bar
-//!   icon is the second way back. On Windows the window is hidden instead of
-//!   closed, because closing GPUI's last window there ends the event loop.
+//!   icon is the second way back. On Linux the window closes the same way,
+//!   with GPUI told to keep its event loop running (a vendored patch). On
+//!   Windows the window is hidden instead of closed, because closing GPUI's
+//!   last window there ends the event loop.
 //! - **Quit** quits, through `request_quit`, so a quit still waits for a
 //!   fork in flight exactly as ⌘Q / Ctrl+Q does.
 //!
-//! Linux has no tray yet: a StatusNotifierItem needs a D-Bus dependency, and
-//! a bare WM without a tray host would leave a hidden window with no way
-//! back, which is worse than quitting. There the policy is always Quit and
-//! the setting is not offered.
+//! Without an icon there is no way back to a hidden window, which is worse
+//! than quitting: a desktop with no StatusNotifierItem host (a bare window
+//! manager, GNOME without the AppIndicator extension) makes the icon fail to
+//! come up, and closing the window then quits.
 //!
 //! The platform icon only *reports* clicks: each backend pushes a
 //! [`TrayEvent`] onto a queue that the app heartbeat drains on the main
@@ -22,6 +24,8 @@
 
 use std::sync::Mutex;
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
@@ -66,7 +70,7 @@ impl CloseBehavior {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseAction {
     /// Let the window close; the app stays alive with the shell parked
-    /// (macOS).
+    /// (macOS, and Linux while the icon is up).
     CloseWindow,
     /// Keep the window but hide it; the tray icon shows it again (Windows).
     HideWindow,
@@ -82,14 +86,22 @@ pub fn close_action(policy: CloseBehavior, tray_up: bool) -> CloseAction {
         CloseBehavior::Quit => CloseAction::Quit,
         // The Dock reopens a Mac app with no windows, tray or not.
         CloseBehavior::HideToTray if cfg!(target_os = "macos") => CloseAction::CloseWindow,
-        CloseBehavior::HideToTray if tray_up => CloseAction::HideWindow,
-        CloseBehavior::HideToTray => CloseAction::Quit,
+        CloseBehavior::HideToTray if !tray_up => CloseAction::Quit,
+        // Closing GPUI's last window ends the Windows event loop; Linux has
+        // the keep-alive patch instead.
+        CloseBehavior::HideToTray if cfg!(windows) => CloseAction::HideWindow,
+        CloseBehavior::HideToTray => CloseAction::CloseWindow,
     }
 }
 
 /// Whether this platform has a tray icon at all.
 pub const fn supported() -> bool {
-    cfg!(any(target_os = "macos", windows))
+    cfg!(any(
+        target_os = "macos",
+        windows,
+        target_os = "linux",
+        target_os = "freebsd"
+    ))
 }
 
 /// A click on the icon or one of its menu items.
@@ -112,7 +124,6 @@ pub struct TrayLabels {
 static EVENTS: Mutex<Vec<TrayEvent>> = Mutex::new(Vec::new());
 
 /// Called by the platform backends from their click handlers.
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn push(event: TrayEvent) {
     if let Ok(mut events) = EVENTS.lock() {
         events.push(event);
@@ -135,7 +146,20 @@ pub fn set_icon(labels: Option<&TrayLabels>) -> bool {
     return macos::set_icon(labels);
     #[cfg(windows)]
     return windows::set_icon(labels);
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        let up = linux::set_icon(labels);
+        // A closed window may only leave the app running while the icon can
+        // bring it back.
+        gpui::set_keep_alive_without_windows(up);
+        up
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        windows,
+        target_os = "linux",
+        target_os = "freebsd"
+    )))]
     {
         let _ = labels;
         false
@@ -148,7 +172,14 @@ pub fn icon_up() -> bool {
     return macos::icon_up();
     #[cfg(windows)]
     return windows::icon_up();
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    return linux::icon_up();
+    #[cfg(not(any(
+        target_os = "macos",
+        windows,
+        target_os = "linux",
+        target_os = "freebsd"
+    )))]
     false
 }
 
@@ -207,6 +238,7 @@ mod tests {
 
     #[test]
     fn hide_without_an_icon_never_strands_the_window() {
+        // (macOS still closes: the Dock is always a way back.)
         let action = close_action(CloseBehavior::HideToTray, false);
         if cfg!(target_os = "macos") {
             assert_eq!(
@@ -221,10 +253,10 @@ mod tests {
 
     #[test]
     fn hide_with_an_icon_keeps_the_app() {
-        let expected = if cfg!(target_os = "macos") {
-            CloseAction::CloseWindow
-        } else {
+        let expected = if cfg!(windows) {
             CloseAction::HideWindow
+        } else {
+            CloseAction::CloseWindow
         };
         assert_eq!(close_action(CloseBehavior::HideToTray, true), expected);
     }

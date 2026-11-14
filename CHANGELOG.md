@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that is no longer attached falls back to the first-launch layout, so a window can never
   open off-screen (#131).
 - **Manage models… from the model picker.** The picker's footer links to Settings →
-  Models, filtered to the provider in view (the scoped provider, or the active model's).
+  Providers & models, searched to the provider in view (the scoped provider, or the active
+  model's).
   ⌘, (Ctrl+, on Windows and Linux) does the same while the picker has focus. The model
   picker's footer drops its arrow and Enter hints to make room; the thinking picker keeps
   them (#131).
@@ -31,9 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Closing the window: *Hide to tray* (Windows) or *Keep running* (macOS) keeps Orbit and
   any running task alive behind a notification-area / menu-bar icon with Show Orbit, New
   task and Quit; *Quit* quits through the same path as ⌘Q / Ctrl+Q, so it still waits for
-  a fork in flight. macOS keeps running by default, as it always has; Windows keeps
-  quitting by default until you opt in. Linux has no tray yet and keeps quitting (#131).
-- **Choose which models the picker shows.** Each card in Settings → Models has an eye to
+  a fork in flight. macOS keeps running by default, as it always has; Windows and Linux
+  keep quitting by default until you opt in. On Linux the icon is a StatusNotifierItem
+  (KDE, Xfce, most panels, GNOME with the AppIndicator extension); where no host is
+  running, closing the window still quits, so it can never vanish with no way back (#131).
+- **Providers and models on one page.** Settings → Providers & models replaces the
+  separate Models page: the active model leads, connected providers list their models
+  directly under their cards, and providers that are not set up yet follow in their own
+  section. One search narrows both, and the favorites filter and *Update model list* moved
+  onto its toolbar (#131).
+- **Choose which models the picker shows.** Each model card in Settings → Providers & models has an eye to
   hide or show it in the composer's model picker, and each provider has Hide all / Show
   all. Hiding never deletes: the provider's catalog is untouched, models it adds later
   still appear, and the session's own model stays pickable (#131).
@@ -42,11 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Studio and vLLM, plus Mistral and Anthropic) and adds every id not listed yet (#131).
 - **Archive a whole workspace.** The workspace header menu gains *Archive all sessions*;
   archived sessions stay on disk and come back from the sidebar's archived view (#131).
-- **Simplified Chinese covers the whole app.** The 933 strings that still fell back to
-  English — Git panel, MCP, subagents, settings, Explorer, wallpaper, updates, exports —
-  are translated. CI now fails when a locale gains an untranslated string outside
-  `scripts/i18n_untranslated_baseline.json`, so the remaining backlog in other languages
-  can only shrink (#131).
+- **Every language covers the whole app.** About 930 strings per locale still fell back
+  to English — Git panel, MCP, subagents, settings, Explorer, wallpaper, updates,
+  exports — in Simplified Chinese, Japanese, Korean, Spanish, French, German, Brazilian
+  Portuguese, Russian and Italian. They are translated now; what remains English is
+  deliberate (product names, Git terms some languages keep, example ids, and text the
+  model itself reads). CI now fails when a locale gains an untranslated string outside
+  `scripts/i18n_untranslated_baseline.json` (#131).
 
 ### Fixed
 

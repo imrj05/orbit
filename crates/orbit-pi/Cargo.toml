@@ -199,6 +199,14 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# The Linux tray icon (`tray::linux`): a StatusNotifierItem with a DBusMenu,
+# the protocol KDE, GNOME (AppIndicator extension), Xfce and most panels host.
+# Runs on the `async-io` executor zbus already uses here (zbus 5 comes in
+# through ashpd), so it adds no async runtime; `blocking` runs the service on
+# its own thread.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+ksni = { version = "0.3.7", default-features = false, features = ["async-io", "blocking"] }
+
 [build-dependencies]
 # Embeds the Windows icon, version metadata, and per-monitor-DPI manifest into
 # `orbit-pi.exe` (see `build.rs`). Already in the dependency graph through

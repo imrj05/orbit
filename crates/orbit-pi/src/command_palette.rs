@@ -608,14 +608,8 @@ impl CommandPalette {
             (
                 SettingsSection::Providers,
                 "icons/cloud.svg",
-                tr!("settings.providers"),
-                "settings preferences providers models api",
-            ),
-            (
-                SettingsSection::Models,
-                "icons/tag-01.svg",
-                tr!("settings.models"),
-                "settings preferences models catalog favorites providers",
+                tr!("settings.providers_and_models"),
+                "settings preferences providers models catalog favorites hide show api",
             ),
             (
                 SettingsSection::Skills,

@@ -1242,18 +1242,10 @@ pub struct OrbitApp {
     provider_filter: Entity<ComposerInput>,
     /// Re-render the grid as the filter is typed.
     _provider_filter_sub: Subscription,
-    /// Search filter for the Models page.
-    models_filter: Entity<ComposerInput>,
-    /// Re-render the model list as the filter is typed.
-    _models_filter_sub: Subscription,
-    /// Models page: show favorited models only (the second filter next to
-    /// the search field).
+    /// Providers & models page: show favorited models only (the second
+    /// filter next to the search field).
     models_favorites_only: bool,
-    /// Models page: provider scope. `None` shows every provider; `Some(id)`
-    /// narrows the grid to one, mirroring the composer picker's provider
-    /// chips.
-    models_provider_filter: Option<String>,
-    /// True while the Models page's "Update model list" action runs pi's
+    /// True while the Providers & models page's "Update model list" runs pi's
     /// catalog refresh and reloads the agent.
     models_refreshing: bool,
     /// Skills discovered for the current workspace (project + user scope).
@@ -1836,21 +1828,12 @@ impl OrbitApp {
         let provider_filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("provider-filter")
-                .with_placeholder_key("app.search_providers")
+                .with_placeholder_key("app.search_providers_and_models")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
                 .with_wrap(false)
         });
         let provider_filter_sub = cx.observe(&provider_filter, |_, _, cx| cx.notify());
-        let models_filter = cx.new(|cx| {
-            ComposerInput::new(cx)
-                .with_element_id("models-filter")
-                .with_placeholder_key("app.search_models")
-                .with_key_context("Composer Picker")
-                .with_max_lines(1)
-                .with_wrap(false)
-        });
-        let models_filter_sub = cx.observe(&models_filter, |_, _, cx| cx.notify());
 
         // Settings → Plugins: the install-source field. `Composer Picker`
         // keeps editing keys live; Enter is unhandled, so the Install button
@@ -2607,10 +2590,7 @@ impl OrbitApp {
             providers_refreshing: false,
             provider_filter: provider_filter.clone(),
             _provider_filter_sub: provider_filter_sub,
-            models_filter: models_filter.clone(),
-            _models_filter_sub: models_filter_sub,
             models_favorites_only: false,
-            models_provider_filter: None,
             models_refreshing: false,
             skills: Vec::new(),
             subagents: Vec::new(),
@@ -3791,7 +3771,6 @@ pub(crate) enum SettingsSection {
     Worktrees,
     GitAccounts,
     Providers,
-    Models,
     Skills,
     Subagents,
     Permissions,
@@ -4178,10 +4157,9 @@ enum SettingsSelect {
     /// The model an agent is pinned to (Settings → Subagents). The options are
     /// this machine's models; the leading row inherits the session's.
     SubagentModel,
-    /// The session's active model (Settings → Models).
+    /// The session's active model (Settings → Providers & models).
     ActiveModel,
     /// The Models page's provider scope filter.
-    ModelProvider,
     /// The session-retention action and threshold (Settings → Privacy).
     RetentionMode,
     RetentionDays,

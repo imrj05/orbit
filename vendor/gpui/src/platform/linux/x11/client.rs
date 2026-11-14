@@ -247,7 +247,7 @@ impl X11ClientStatePtr {
         }
         state.cursor_styles.remove(&x_window);
 
-        if state.windows.is_empty() {
+        if state.windows.is_empty() && !crate::platform::keep_alive_without_windows() {
             state.common.signal.stop();
         }
     }

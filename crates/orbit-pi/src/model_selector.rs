@@ -28,7 +28,7 @@
 //!   read as the same state
 //! - a quiet footer shows the result count; the model picker's footer also
 //!   carries **Manage models…** (⌘, / Ctrl+, while the picker has focus),
-//!   which closes the picker and opens Settings → Models filtered to the
+//!   which closes the picker and opens Settings → Providers & models searched to the
 //!   provider in view (#131). The thinking picker keeps its keyboard hints
 //! - keyboard navigation: `up`/`down`/`enter`/`escape` are bound to the
 //!   `Picker` key context on the filter input
@@ -111,7 +111,7 @@ type SelectModel = Box<dyn Fn(&str, &str, &mut Window, &mut App)>;
 type SelectLevel = Box<dyn Fn(&str, &mut Window, &mut App)>;
 /// Dismiss callback; `bool` is true when an outside mouse-down closed it.
 type SelectorDismiss = Box<dyn Fn(bool, &mut Window, &mut App)>;
-/// "Manage models…": close the picker and open Settings → Models, filtered
+/// "Manage models…": close the picker and open Settings → Providers & models, filtered
 /// to the provider (when there is one) the picker was showing.
 type ManageModels = Box<dyn Fn(Option<&str>, &mut Window, &mut App)>;
 
@@ -926,7 +926,7 @@ impl ModelSelector {
         self.manage_models(window, cx);
     }
 
-    /// Hand off to Settings → Models. A provider scope names the provider
+    /// Hand off to Settings → Providers & models. A provider scope names the provider
     /// the user is looking at; otherwise the active model's provider is the
     /// one in question.
     fn manage_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {

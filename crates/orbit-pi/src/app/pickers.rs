@@ -1008,7 +1008,7 @@ impl OrbitApp {
     }
 
     /// The model picker's catalog: everything pi offers minus the models
-    /// turned off in Settings → Models (#131), keeping the active one.
+    /// turned off in Settings → Providers & models (#131), keeping the active one.
     pub(super) fn picker_models(&self) -> Vec<ModelEntry> {
         crate::hidden_models::all().picker_models(
             &self.available_models,
