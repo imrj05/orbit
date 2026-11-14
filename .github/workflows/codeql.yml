@@ -104,6 +104,14 @@ jobs:
         # Security *and* quality queries: the default suite reports only
         # security findings, which is why the code-quality view stays empty.
         queries: security-extended,security-and-quality
+        # `build-mode: none` cannot resolve glob-imported constants (the
+        # `windows`/AppKit `WM_*`, `VK_*`, `NSF*FunctionKey` match arms), so
+        # `rust/unused-variable` reads every such arm as a fresh binding. rustc
+        # already denies real unused variables through clippy `-D warnings`.
+        config: |
+          query-filters:
+            - exclude:
+                id: rust/unused-variable
 
     # If the analyze step fails for one of the languages you are analyzing with
     # "We were unable to automatically build your code", modify the matrix above
