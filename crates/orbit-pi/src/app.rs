@@ -1975,11 +1975,15 @@ impl OrbitApp {
         });
 
         // Composer edits notify only the input entity. Re-rank the
-        // slash/mention menu here, then repaint the app only when the chrome
-        // that reads the draft actually changed: notifying on every keystroke
-        // rebuilt the whole window — sidebar, header, git panel, every visible
-        // transcript row — to move one button between two states, which is what
-        // typing mid-message felt like.
+        // slash/mention menu here, and notify the app only when the chrome that
+        // reads the draft actually changed.
+        //
+        // This does not keep a keystroke from rebuilding the window. GPUI marks
+        // a notified view's ancestors dirty too, and the composer is drawn
+        // inside this view, which is the window's root: every edit re-runs
+        // `OrbitApp::render` and lays out the whole tree regardless. What makes
+        // a keystroke cheaper is a sibling that is a `.cached()` view (reused
+        // while clean) or a cheaper app render — not this check.
         //
         // The key is advisory in one direction: a path that repaints the app for
         // its own reason (a paste, a queue change) leaves it stale, which costs

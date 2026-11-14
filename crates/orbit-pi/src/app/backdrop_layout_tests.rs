@@ -144,6 +144,55 @@ fn the_backdrop_clock_runs_only_on_the_new_task_page(cx: &mut gpui::TestAppConte
     });
 }
 
+/// The heartbeat beats faster than the field moves. It used to repaint the
+/// whole window on every beat; it must repaint only when the phase reaches a
+/// new field frame.
+#[gpui::test]
+fn the_heartbeat_repaints_only_when_the_field_reaches_a_new_frame(cx: &mut gpui::TestAppContext) {
+    let app = cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    let repaints = std::rc::Rc::new(std::cell::Cell::new(0));
+    let _observer = cx.update(|cx| {
+        let repaints = repaints.clone();
+        cx.observe(&app, move |_, _| repaints.set(repaints.get() + 1))
+    });
+    let frame = 1. / crate::backdrop::frame(1.) as f32;
+    let tick_at = |cx: &mut gpui::TestAppContext, phase: f32| {
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                app.backdrop_live = true;
+                // Pin the clock so the phase is exactly `phase` on this beat.
+                app.backdrop_clock =
+                    Some(std::time::Instant::now() - std::time::Duration::from_secs_f32(phase));
+                app.tick(cx);
+            })
+        });
+        cx.run_until_parked();
+    };
+
+    // Let the first beats' unrelated start-up work (session listing and the
+    // like) land before counting: only the field's repaints are in question.
+    tick_at(cx, frame * 3.1);
+    tick_at(cx, frame * 3.1);
+    tick_at(cx, frame * 3.1);
+    let before = repaints.get();
+    tick_at(cx, frame * 3.5);
+    tick_at(cx, frame * 3.9);
+    assert_eq!(
+        repaints.get(),
+        before,
+        "beats inside one field frame change nothing on screen"
+    );
+    tick_at(cx, frame * 4.1);
+    assert_eq!(
+        repaints.get(),
+        before + 1,
+        "the beat that reaches a new frame repaints once"
+    );
+}
+
 /// The chat page deliberately has no backdrop.
 #[gpui::test]
 fn new_task_backdrop_is_absent_on_a_session(cx: &mut gpui::TestAppContext) {

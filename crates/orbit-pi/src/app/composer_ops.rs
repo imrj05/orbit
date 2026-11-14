@@ -293,10 +293,11 @@ impl OrbitApp {
     /// slash/`@` menu.
     ///
     /// Everything else an edit changes — the text itself, the caret, the box's
-    /// grown height, the selection — is drawn by `ComposerInput`'s own render,
-    /// which GPUI repaints without the app. So this key is what decides whether
-    /// a keystroke has to rebuild the window (see `OrbitApp::_input_sub`); a
-    /// field added here must be a fact the app-level render actually reads.
+    /// grown height, the selection — is drawn by `ComposerInput`'s own render.
+    /// This key only decides whether an edit notifies the app as well (see
+    /// `OrbitApp::_input_sub`); the app re-renders on every edit anyway, as the
+    /// composer's ancestor. A field added here must be a fact the app-level
+    /// render actually reads.
     pub(super) fn composer_chrome(&self, cx: &Context<Self>) -> ComposerChrome {
         let input = self.input.read(cx);
         let draft = input.text();
