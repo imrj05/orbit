@@ -10,7 +10,7 @@
   "app/settings.rs": 21,
   "app/sidebar.rs": 2,
   "app/skills_ui.rs": 3,
-  "app/subagents_ui.rs": 12,
+  "app/subagents_ui.rs": 11,
   "app/toast_ui.rs": 5,
   "app/updater_ui.rs": 5,
   "app/view.rs": 27,

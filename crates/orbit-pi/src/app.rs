@@ -1299,10 +1299,18 @@ pub struct OrbitApp {
     subagent_editor: Option<subagents_ui::SubagentEditor>,
     /// Orbit-only agent settings (`~/.orbit-pi/subagents.json`).
     subagent_config: crate::subagents::Config,
+    /// What the current live session last reported about the `subagent` name;
+    /// `None` until that session reports.
+    subagent_status: Option<crate::subagents::Status>,
+    /// Polls status while the Subagents page is open; cancelled with the app.
+    subagent_status_task: Option<gpui::Task<()>>,
     /// A user agent deleted this session; Undo restores its exact bytes.
     subagent_undo: Option<subagents_ui::SubagentUndo>,
     /// The Delete button has been pressed once.
     subagent_delete_confirm: bool,
+    /// A Select / New / Duplicate held back because it would throw away
+    /// unsaved edits; the header asks before running it.
+    subagent_discard_pending: Option<subagents_ui::SubagentAction>,
     /// Why the last save/delete failed, shown under the form.
     subagent_error: Option<String>,
     /// Re-render the agent list as the filter is typed.
@@ -1969,11 +1977,15 @@ impl OrbitApp {
         });
 
         // Composer edits notify only the input entity. Re-rank the
-        // slash/mention menu here, then repaint the app only when the chrome
-        // that reads the draft actually changed: notifying on every keystroke
-        // rebuilt the whole window — sidebar, header, git panel, every visible
-        // transcript row — to move one button between two states, which is what
-        // typing mid-message felt like.
+        // slash/mention menu here, and notify the app only when the chrome that
+        // reads the draft actually changed.
+        //
+        // This does not keep a keystroke from rebuilding the window. GPUI marks
+        // a notified view's ancestors dirty too, and the composer is drawn
+        // inside this view, which is the window's root: every edit re-runs
+        // `OrbitApp::render` and lays out the whole tree regardless. What makes
+        // a keystroke cheaper is a sibling that is a `.cached()` view (reused
+        // while clean) or a cheaper app render — not this check.
         //
         // The key is advisory in one direction: a path that repaints the app for
         // its own reason (a paste, a queue change) leaves it stale, which costs
@@ -2592,8 +2604,11 @@ impl OrbitApp {
             selected_subagent: None,
             subagent_editor: None,
             subagent_config: crate::subagents::Config::default(),
+            subagent_status: None,
+            subagent_status_task: None,
             subagent_undo: None,
             subagent_delete_confirm: false,
+            subagent_discard_pending: None,
             subagent_error: None,
             plugins: Vec::new(),
             plugins_error: None,

@@ -20,6 +20,7 @@ import {
   buildEnv,
   capBytes,
   childDetails,
+  isDenial,
   emptyUsage,
   finalizeChild,
   formatUsage,
@@ -160,11 +161,17 @@ test("events fold into phase, current action, counts and usage", () => {
   assert.equal(state.phase, "tool");
   assert.equal(state.tools, 1);
   assert.equal(state.current, "grep auth in src/");
-  assert.deepEqual(state.steps.at(-1), { kind: "tool", name: "grep", preview: "auth in src/" });
+  assert.deepEqual(state.steps.at(-1), {
+    kind: "tool",
+    name: "grep",
+    preview: "auth in src/",
+    status: "running",
+  });
 
   applyEvent(state, { type: "tool_execution_end", toolName: "grep" }, 1300);
   assert.equal(state.phase, "thinking");
   assert.equal(state.current, null);
+  assert.equal(state.steps.at(-1).status, "ok");
 
   applyEvent(
     state,
@@ -334,4 +341,61 @@ test("capBytes reports what it dropped", () => {
   const { text, truncated } = capBytes("hello world", 5);
   assert.ok(Buffer.byteLength(text) <= 5);
   assert.ok(truncated > 0);
+});
+
+test("a failed tool is a failed step, not a blocked call", () => {
+  const state = child();
+  applyEvent(state, { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "cargo test" } });
+  applyEvent(state, {
+    type: "tool_execution_end",
+    toolCallId: "c1",
+    toolName: "bash",
+    isError: true,
+    result: { content: [{ type: "text", text: "test failed: 2 of 9" }] },
+  });
+  assert.equal(state.steps.at(-1).status, "error");
+  assert.deepEqual(state.blocked, []);
+});
+
+test("only the guard's Blocked sentence makes a blocked call, with its own reason", () => {
+  const state = child();
+  applyEvent(state, { type: "tool_execution_start", toolCallId: "c1", toolName: "edit", args: { path: "src/auth.rs" } });
+  applyEvent(state, { type: "tool_execution_start", toolCallId: "c2", toolName: "read", args: { path: "src/lib.rs" } });
+  applyEvent(state, {
+    type: "tool_execution_end",
+    toolCallId: "c1",
+    toolName: "edit",
+    isError: true,
+    result: { content: [{ type: "text", text: "Blocked: scout is read-only and cannot use edit\nmore" }] },
+  });
+  assert.equal(state.steps[0].status, "blocked");
+  assert.equal(state.steps[1].status, "running");
+  assert.deepEqual(state.blocked, [
+    { tool: "edit", target: "src/auth.rs", reason: "Blocked: scout is read-only and cannot use edit" },
+  ]);
+});
+
+test("the call id correlates a step but never crosses the pipe", () => {
+  const state = child();
+  applyEvent(state, { type: "tool_execution_start", toolCallId: "c1", toolName: "read", args: { path: "a" } });
+  applyEvent(state, { type: "tool_execution_end", toolCallId: "c1", toolName: "read" });
+  const details = childDetails(state);
+  assert.deepEqual(details.steps, [{ kind: "tool", name: "read", preview: "a", status: "ok" }]);
+  assert.equal(details.timedOut, false);
+});
+
+test("every guard's refusal reads as a denial, and a tool's own error does not", () => {
+  for (const text of [
+    "Blocked: scout is read-only and cannot use edit",
+    "Blocked by an Orbit permission rule: bash rm -rf /",
+    "Denied in Orbit",
+    "Plan mode: edit is disabled. Switch to Build to make changes.",
+    "Ask mode: command blocked (not on the read-only allowlist). Switch to Build to run it.",
+    "Tool execution was blocked",
+  ]) {
+    assert.equal(isDenial(text), true, text);
+  }
+  for (const text of ["", "exit code 1", "No matches found", "File not found: Blocked.rs"]) {
+    assert.equal(isDenial(text), false, text);
+  }
 });

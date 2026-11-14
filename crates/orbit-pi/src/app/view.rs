@@ -2851,7 +2851,7 @@ impl OrbitApp {
                 .left_0()
                 .right_0()
                 .bottom_0()
-                .child(crate::backdrop::layer(theme, phase))
+                .child(crate::backdrop::layer(theme, phase, !reduce_motion))
                 .into_any_element(),
         )
     }
@@ -2921,7 +2921,7 @@ impl OrbitApp {
     /// The dot field at rest, for surfaces that show it as a thumbnail
     /// (Settings → Appearance's wallpaper preview) rather than the live page.
     pub(super) fn dot_backdrop(theme: Theme) -> impl IntoElement + use<> {
-        crate::backdrop::layer(theme, 0.)
+        crate::backdrop::layer(theme, 0., false)
     }
 
     /// Keep the composer's hairline steady on focus; file drags use the accent.

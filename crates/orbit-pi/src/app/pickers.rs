@@ -575,8 +575,9 @@ impl OrbitApp {
                 self.run_command(id, window, cx)
             }
             PaletteCommand::OpenSettings(section) => {
-                self.settings_open = true;
+                // Switch before opening so a retained section is refreshed on re-entry.
                 self.set_settings_section(section, cx);
+                self.settings_open = true;
                 self.sync_terminal_active(cx);
             }
             PaletteCommand::Mcp { name, action } => match action {
@@ -717,8 +718,9 @@ impl OrbitApp {
             }
             CommandId::ManageSubagents => {
                 self.command_palette = None;
-                self.settings_open = true;
+                // Preserve an open draft, but refresh when reopening the page.
                 self.set_settings_section(SettingsSection::Subagents, cx);
+                self.settings_open = true;
                 self.sync_terminal_active(cx);
             }
             CommandId::OpenMcpSettings => {

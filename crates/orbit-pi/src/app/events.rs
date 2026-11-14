@@ -539,8 +539,14 @@ impl OrbitApp {
         self.is_active()
     }
 
-    /// Step the new-task backdrop's field. Returns whether anything changed and
-    /// the window should repaint.
+    /// Step the new-task backdrop's field. Returns whether the field moved on to
+    /// a new frame and the window should repaint.
+    ///
+    /// The field is rastered at [`crate::backdrop::frame`]'s cadence, well
+    /// below the heartbeat's. Repainting on every beat rebuilt the whole window
+    /// two times in three for a frame that had not changed, on the one page a
+    /// fresh install opens on, which is wasted work on every machine and
+    /// competes with typing on a slow one.
     ///
     /// The phase is wall-clock seconds, not a tick counter: the heartbeat's
     /// cadence changes with the run state, and the field must not speed up
@@ -562,8 +568,9 @@ impl OrbitApp {
         let Some(clock) = self.backdrop_clock else {
             return false;
         };
+        let shown = crate::backdrop::frame(self.backdrop_phase);
         self.backdrop_phase = clock.elapsed().as_secs_f32();
-        true
+        crate::backdrop::frame(self.backdrop_phase) != shown
     }
 
     /// True while a run is in flight. The heartbeat polls fast (instead of the

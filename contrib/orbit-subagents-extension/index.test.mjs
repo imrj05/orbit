@@ -16,7 +16,14 @@ import os from "node:os";
 import path from "node:path";
 import test, { beforeEach } from "node:test";
 
-import activate, { PARAMETERS, PROMPT_SNIPPET, executeTool, parseRequest, runPool } from "./index.js";
+import activate, {
+  PARAMETERS,
+  PROMPT_SNIPPET,
+  executeTool,
+  parseRequest,
+  runPool,
+  trailingProgress,
+} from "./index.js";
 
 let home;
 
@@ -30,18 +37,37 @@ function writeOrbitFile(name, value) {
   fs.writeFileSync(path.join(home, ".orbit-pi", name), JSON.stringify(value));
 }
 
-/** A fake pi session: records registrations and returns the last definition. */
+/**
+ * A fake pi session: records registrations and the handlers it is given, so a
+ * test can drive `session_start` the way pi does.
+ */
 function fakePi(overrides = {}) {
   const tools = [];
-  return {
+  const handlers = new Map();
+  const pi = {
     tools,
+    handlers,
     getAllTools: overrides.getAllTools ?? (() => []),
     registerTool(definition) {
       tools.push(definition);
     },
-    on() {},
+    on(event, handler) {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
     ...overrides,
   };
+  /** Fire an event the way pi's runner does: every handler, in order. */
+  pi.fire = (event, ctx) => {
+    for (const handler of handlers.get(event) ?? []) handler({ type: event }, ctx);
+  };
+  return pi;
+}
+
+/** Activate and run the first session, which is where registration happens. */
+function startSession(pi, spawn = fakeSpawn(), eventCtx = { ui: { notify() {} } }) {
+  const result = activate(pi, deps(spawn));
+  pi.fire?.("session_start", eventCtx);
+  return result;
 }
 
 /**
@@ -73,7 +99,7 @@ function deps(spawn, extra = {}) {
     spawn,
     home,
     tempDir: home,
-    env: { PATH: process.env.PATH ?? "" },
+    env: { PATH: process.env.PATH ?? "", ORBIT_SUBAGENT_STATUS_TOKEN: "test" },
     now: () => 1000,
     piBinary: "pi",
     ...extra,
@@ -120,17 +146,167 @@ async function callTool(pi, spawn, params, { signal, onUpdate, sessionId = "sess
   });
 }
 
-test("activation stands down when another subagent tool exists", () => {
-  const pi = fakePi({ getAllTools: () => [{ name: "subagent", description: "pi-subagents" }] });
+test("activation registers nothing until the session starts", () => {
+  const pi = fakePi();
   const result = activate(pi, deps(fakeSpawn()));
-  assert.equal(result.active, false);
+  assert.equal(result.active, true);
+  assert.equal(result.deferred, true);
+  // Registering at load is what made pi exit on a tool conflict (issue #122).
   assert.equal(pi.tools.length, 0);
+  pi.fire("session_start", { ui: { notify() {} } });
+  assert.equal(pi.tools.length, 1);
+});
+
+test("activation stands down when another subagent tool exists", () => {
+  const notices = [];
+  const pi = fakePi({
+    getAllTools: () => [
+      { name: "subagent", sourceInfo: { path: "/home/me/.pi/agent/extensions/pi-subagents/index.js" } },
+    ],
+  });
+  const result = activate(pi, deps(fakeSpawn()));
+  pi.fire("session_start", { ui: { notify: (message) => notices.push(message) } });
+  assert.equal(result.active, true);
+  assert.equal(pi.tools.length, 0);
+  assert.match(notices.join("\n"), /another extension .* provides a `subagent` tool/);
+  // The toast names the file, so the user can find the extension to switch off.
+  assert.match(notices.join("\n"), /pi-subagents\/index\.js/);
+});
+
+test("a throwing tool list at load no longer disables the guard", () => {
+  // The regression behind issue #122: during load `getAllTools()` throws
+  // ("Extension runtime not initialized"). Reading that as an empty list
+  // registered us second, and pi exited on the conflict. The same call answers
+  // once the session is bound, so the decision must wait for it.
+  let bound = false;
+  const pi = fakePi({
+    getAllTools: () => {
+      if (!bound) throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
+      return [];
+    },
+  });
+  activate(pi, deps(fakeSpawn()));
+  assert.equal(pi.tools.length, 0, "an unreadable list is not an empty one");
+  bound = true;
+  pi.fire("session_start", { ui: { notify() {} } });
+  assert.equal(pi.tools.length, 1);
+});
+
+test("a later session decides again, so one unreadable list is not permanent", () => {
+  // The owner can appear or disappear between sessions, and a decision cached
+  // for the life of the process would leave the tool off long after the cause
+  // was gone — while the page still showed a stand-down banner.
+  const notices = [];
+  let readable = false;
+  const pi = fakePi({
+    getAllTools: () => {
+      if (!readable) throw new Error("Extension runtime not initialized.");
+      return [];
+    },
+  });
+  activate(pi, deps(fakeSpawn()));
+  const ctx = { ui: { notify: (message) => notices.push(message) } };
+  pi.fire("session_start", ctx);
+  assert.equal(pi.tools.length, 0);
+  assert.match(notices[0], /tool list could not be read/);
+  assert.doesNotMatch(notices[0], /another extension/, "an unreadable list is not a foreign owner");
+
+  readable = true;
+  pi.fire("session_start", ctx);
+  assert.equal(pi.tools.length, 1, "the next session registers");
+  pi.fire("before_agent_start", ctx);
+  const status = JSON.parse(
+    fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status-test.json"), "utf8"),
+  );
+  assert.equal(status.active, true, "and the stand-down banner is cleared");
+});
+
+test("a later registration is detected before the first agent turn", () => {
+  let winner = [];
+  const pi = fakePi({ getAllTools: () => winner });
+  activate(pi, deps(fakeSpawn()));
+  const eventCtx = { ...ctx("session-a"), ui: { notify() {} } };
+  pi.fire("session_start", eventCtx);
+  winner = [{ name: "subagent", sourceInfo: { path: "/foreign/index.js" } }];
+  pi.fire("before_agent_start", eventCtx);
+  const status = JSON.parse(fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status-test.json"), "utf8"));
+  assert.equal(status.active, false);
+  assert.equal(status.owner, "/foreign/index.js");
+  assert.equal(status.sessionId, "session-a");
+});
+
+test("an owner that reports no file is named in words, not invented", () => {
+  // `sourceInfo.path` is how we tell our own registration from a foreign one;
+  // when it is absent the tool is still not ours, but there is no file to show.
+  const pi = fakePi({ getAllTools: () => [{ name: "subagent" }] });
+  activate(pi, deps(fakeSpawn()));
+  pi.fire("session_start", { ui: { notify() {} } });
+  assert.equal(pi.tools.length, 0);
+  const status = JSON.parse(
+    fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status-test.json"), "utf8"),
+  );
+  assert.equal(status.active, false);
+  assert.equal(status.owner, null, "no path was reported, so none is claimed");
+  assert.match(status.reason, /did not report its file/);
+});
+
+test("a registration that another extension shadows is reported, not pretended", () => {
+  // First-wins: pi keeps whichever extension registered the name first, so a
+  // tool of ours with the same name can be inert even with no error at all.
+  let registered = false;
+  const notices = [];
+  const pi = fakePi({
+    getAllTools: () =>
+      registered ? [{ name: "subagent", sourceInfo: { path: "/somewhere/else/index.js" } }] : [],
+  });
+  pi.registerTool = (definition) => {
+    registered = true;
+    pi.tools.push(definition);
+  };
+  activate(pi, deps(fakeSpawn()));
+  pi.fire("session_start", { ui: { notify: (message) => notices.push(message) } });
+  assert.equal(pi.tools.length, 1);
+  assert.match(notices.join("\n"), /inactive/);
+});
+
+test("the decision reaches the file Settings → Subagents reads", () => {
+  const statusFile = path.join(home, ".orbit-pi", "subagents-status-test.json");
+
+  // Free name: reported as active, so an old stand-down cannot outlive the
+  // cause of it.
+  const free = fakePi();
+  startSession(free);
+  assert.equal(fs.existsSync(statusFile), false, "startup has not finished all handlers");
+  free.fire("before_agent_start", ctx());
+  let status = JSON.parse(fs.readFileSync(statusFile, "utf8"));
+  assert.equal(status.active, true);
+  assert.equal(status.tool, "subagent");
+
+  // A foreign owner: reported inactive, naming the file that owns the name.
+  const owner = "/home/me/.pi/agent/extensions/pi-subagents/index.js";
+  const taken = fakePi({ getAllTools: () => [{ name: "subagent", sourceInfo: { path: owner } }] });
+  startSession(taken);
+  status = JSON.parse(fs.readFileSync(statusFile, "utf8"));
+  assert.equal(status.active, false);
+  assert.equal(status.owner, owner);
+  assert.match(status.reason, /another extension/);
+});
+
+test("a status file that cannot be written never fails the session", () => {
+  const readOnly = path.join(home, "read-only");
+  fs.mkdirSync(readOnly, { recursive: true });
+  fs.chmodSync(readOnly, 0o500);
+  const pi = fakePi();
+  const result = activate(pi, deps(fakeSpawn(), { home: readOnly }));
+  pi.fire("session_start", { ui: { notify() {} } });
+  assert.equal(result.active, true);
+  assert.equal(pi.tools.length, 1, "registration does not depend on the write");
+  fs.chmodSync(readOnly, 0o700);
 });
 
 test("activation registers one tool with the fixed schema", () => {
   const pi = fakePi();
-  const result = activate(pi, deps(fakeSpawn()));
-  assert.equal(result.active, true);
+  startSession(pi);
   assert.equal(pi.tools.length, 1);
   const [definition] = pi.tools;
   assert.equal(definition.name, "subagent");
@@ -153,7 +329,7 @@ test("activation registers one tool with the fixed schema", () => {
 test("a disabled agent drops its prompt guideline", () => {
   writeOrbitFile("subagents.json", { disabled: ["reviewer"] });
   const pi = fakePi();
-  activate(pi, deps(fakeSpawn()));
+  startSession(pi);
   const [definition] = pi.tools;
   assert.ok(definition.promptGuidelines.every((line) => !line.includes('"reviewer"')));
   assert.ok(definition.promptGuidelines.some((line) => line.includes('"scout"')));
@@ -161,12 +337,12 @@ test("a disabled agent drops its prompt guideline", () => {
 
 test("activation re-registers only when the catalog changes", () => {
   const pi = fakePi();
-  activate(pi, deps(fakeSpawn()));
+  startSession(pi);
   assert.equal(pi.tools.length, 1);
-  // A second activation in the same process is a new extension instance; the
-  // prompt surface is identical, so a single registration is the expected cost.
-  activate(pi, deps(fakeSpawn()));
-  assert.equal(pi.tools.length, 2);
+  // A second session with the same catalog is a no-op: the prompt surface is
+  // identical, so a single registration is the expected cost (D-S).
+  pi.fire("session_start", { ui: { notify() {} } });
+  assert.equal(pi.tools.length, 1);
 });
 
 test("one request shape exactly", () => {
@@ -523,4 +699,34 @@ test("a rule never widens Plan mode", async () => {
   const result = await callTool(fakePi(), spawn, { agent: "worker", task: "fix it" });
   assert.equal(spawn.calls.length, 0);
   assert.match(result.content[0].text, /Plan/);
+});
+
+test("a skipped progress update is sent when the window closes, and never after stop", () => {
+  const sent = [];
+  const timers = [];
+  const progress = trailingProgress((force) => sent.push(force), {
+    setTimer: (fn) => {
+      timers.push(fn);
+      return timers.length;
+    },
+    clearTimer: (id) => {
+      timers[id - 1] = null;
+    },
+  });
+  progress.push(false);
+  progress.push(false);
+  assert.deepEqual(sent, [false, false]);
+  assert.equal(timers.filter(Boolean).length, 1, "one trailing timer per window");
+  timers[0]();
+  assert.deepEqual(sent, [false, false, true]);
+
+  progress.push(false);
+  progress.push(true);
+  assert.equal(timers[1], null, "a forced send cancels the trailing one");
+
+  progress.push(false);
+  progress.stop();
+  assert.equal(timers[2], null);
+  progress.push(true);
+  assert.deepEqual(sent, [false, false, true, false, true, false]);
 });

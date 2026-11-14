@@ -41,6 +41,9 @@ impl OrbitApp {
 
     /// Open the Worktrees page and load the repository's worktrees.
     pub(super) fn open_worktrees(&mut self, cx: &mut Context<Self>) {
+        if self.guard_subagent_navigation(subagents_ui::SubagentAction::OpenWorktrees, cx) {
+            return;
+        }
         self.worktrees_open = true;
         // One main-area feature at a time (Git / Usage / Files / Review).
         if self.git_open {

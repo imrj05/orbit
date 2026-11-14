@@ -81,6 +81,16 @@ type Key = (u32, u32, i64, [u8; 4], [u8; 4]);
 #[derive(Default)]
 struct Cache {
     image: Option<(Key, Arc<RenderImage>)>,
+    /// The field's next frame, rastered while the current one is on screen.
+    /// The frame that reaches it paints it at once instead of painting the
+    /// old field, asking for a raster and repainting the whole window again
+    /// when it lands — two window paints per field frame, one of them for
+    /// pixels that had not changed.
+    next: Option<(Key, Arc<RenderImage>)>,
+    /// The key the latest frame asked for. A raster ahead that lands after the
+    /// page has already moved past the frame it was made for repaints, so the
+    /// field catches up instead of waiting for the next beat.
+    wanted: Option<Key>,
     /// The size the previous frame laid out. A raster is only requested once
     /// the size holds still, so an animated column (the sessions sidebar
     /// sliding) does not queue one full field per frame.
@@ -114,6 +124,27 @@ fn frame_plan(key: Key, cached: Option<Key>, laid_out: (u32, u32), pending: bool
     }
 }
 
+/// The field frame a phase lands on. The heartbeat asks for a repaint only
+/// when this changes, and the raster cache is keyed on it, so both move at the
+/// field's own cadence rather than at the caller's.
+pub fn frame(phase: f32) -> i64 {
+    (phase.max(0.) * FPS).floor() as i64
+}
+
+/// The frame to raster ahead of time, if any: the one after the frame on
+/// screen, once that frame is current and nothing else is in flight. A still
+/// field (Reduce Motion) never advances, so it asks for nothing.
+fn ahead(
+    key: Key,
+    cached: Option<Key>,
+    next: Option<Key>,
+    pending: bool,
+    live: bool,
+) -> Option<Key> {
+    let following = (key.0, key.1, key.2 + 1, key.3, key.4);
+    (live && !pending && cached == Some(key) && next != Some(following)).then_some(following)
+}
+
 fn color(value: gpui::Hsla) -> [u8; 4] {
     let c: Rgba = value.into();
     [
@@ -124,7 +155,9 @@ fn color(value: gpui::Hsla) -> [u8; 4] {
     ]
 }
 
-pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
+/// The field as a full-bleed layer. `live` says whether the field is moving,
+/// so the next frame is worth rastering before it is due.
+pub fn layer(theme: Theme, phase: f32, live: bool) -> impl IntoElement + use<> {
     // The plane is the palette's own canvas: the backdrop never paints a wash
     // over it. The accent is only the dots' ink.
     let background = color(theme.background);
@@ -140,12 +173,15 @@ pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
                 move |bounds, window, cx| {
                     let width = (f32::from(bounds.size.width).ceil() as u32).clamp(1, MAX_SIDE);
                     let height = (f32::from(bounds.size.height).ceil() as u32).clamp(1, MAX_SIDE);
-                    let tick = (phase.max(0.) * FPS).floor() as i64;
+                    let tick = frame(phase);
                     let key = (width, height, tick, background, ink);
                     // State belongs to this element in this window, not to the UI thread.
                     let cache = window.use_keyed_state("dither-cache", cx, |window, cx| {
                         cx.on_release_in(window, |cache: &mut Cache, window, _| {
-                            if let Some((_, image)) = cache.image.take() {
+                            for (_, image) in [cache.image.take(), cache.next.take()]
+                                .into_iter()
+                                .flatten()
+                            {
                                 let _ = window.drop_image(image);
                             }
                         })
@@ -153,6 +189,13 @@ pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
                         Cache::default()
                     });
                     cache.update(cx, |cache, cx| {
+                        // The frame rastered ahead is due: it becomes the field.
+                        if cache.next.as_ref().is_some_and(|(next, _)| *next == key) {
+                            let promoted = cache.next.take();
+                            if let Some((_, old)) = std::mem::replace(&mut cache.image, promoted) {
+                                let _ = window.drop_image(old);
+                            }
+                        }
                         let plan = frame_plan(
                             key,
                             cache.image.as_ref().map(|(old, _)| *old),
@@ -160,7 +203,10 @@ pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
                             cache.pending,
                         );
                         cache.size = (width, height);
+                        cache.wanted = Some(key);
                         if plan.request {
+                            // The field on screen is wrong for these bounds or
+                            // colours: raster it now and repaint when it lands.
                             cache.pending = true;
                             let task = cx.background_spawn(async move {
                                 raster(width, height, tick as f32 / FPS, background, ink)
@@ -175,6 +221,40 @@ pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
                                     }
                                     cache.pending = false;
                                     cx.notify();
+                                });
+                            })
+                            .detach();
+                        } else if let Some(following) = ahead(
+                            key,
+                            cache.image.as_ref().map(|(old, _)| *old),
+                            cache.next.as_ref().map(|(next, _)| *next),
+                            cache.pending,
+                            live,
+                        ) {
+                            // Raster the next frame while this one shows. It
+                            // lands silently: nothing on screen changes until
+                            // the heartbeat reaches its frame and repaints.
+                            cache.pending = true;
+                            let task = cx.background_spawn(async move {
+                                raster(width, height, following.2 as f32 / FPS, background, ink)
+                            });
+                            cx.spawn_in(window, async move |weak, cx| {
+                                let pixels = task.await;
+                                let _ = weak.update_in(cx, |cache, window, cx| {
+                                    let image =
+                                        Arc::new(RenderImage::new(vec![Frame::new(pixels)]));
+                                    if let Some((_, old)) = cache.next.replace((following, image)) {
+                                        let _ = window.drop_image(old);
+                                    }
+                                    cache.pending = false;
+                                    // The page moved on while this was in
+                                    // flight — to this frame, or to bounds or
+                                    // colours that need a raster of their own,
+                                    // which waited on this one. Either way the
+                                    // next paint has work to do.
+                                    if cache.wanted != Some(key) {
+                                        cx.notify();
+                                    }
                                 });
                             })
                             .detach();
@@ -552,6 +632,61 @@ mod tests {
     }
 
     #[test]
+    fn the_frame_steps_at_the_field_cadence() {
+        assert_eq!(frame(0.), 0);
+        assert_eq!(
+            frame(1. / FPS - 0.001),
+            0,
+            "a beat inside a frame stays on it"
+        );
+        assert_eq!(frame(1. / FPS + 0.001), 1);
+        assert_eq!(frame(-3.), 0, "a phase never runs backwards past the start");
+    }
+
+    /// The next frame is rastered while the current one shows, so the beat
+    /// that reaches it paints once instead of painting the old field and then
+    /// again when the raster lands.
+    #[test]
+    fn the_next_frame_is_rastered_once_the_current_one_shows() {
+        let now = key(1410, 878, 3);
+        assert_eq!(
+            ahead(now, Some(now), None, false, true),
+            Some(key(1410, 878, 4))
+        );
+        assert_eq!(
+            ahead(now, Some(now), Some(key(1410, 878, 4)), false, true),
+            None,
+            "a frame already rastered ahead is not made twice"
+        );
+        assert_eq!(
+            ahead(now, Some(now), Some(key(1133, 878, 4)), false, true),
+            Some(key(1410, 878, 4)),
+            "one made for other bounds is replaced"
+        );
+    }
+
+    #[test]
+    fn nothing_is_rastered_ahead_of_a_field_that_is_not_current_or_not_moving() {
+        let now = key(1410, 878, 3);
+        assert_eq!(
+            ahead(now, Some(key(1133, 878, 3)), None, false, true),
+            None,
+            "bounds still settling: the current frame comes first"
+        );
+        assert_eq!(ahead(now, None, None, false, true), None);
+        assert_eq!(
+            ahead(now, Some(now), None, true, true),
+            None,
+            "one raster in flight at a time"
+        );
+        assert_eq!(
+            ahead(now, Some(now), None, false, false),
+            None,
+            "a still field (Reduce Motion, a thumbnail) never advances"
+        );
+    }
+
+    #[test]
     fn bayer_has_all_thresholds() {
         let mut thresholds = BAYER.into_iter().flatten().collect::<Vec<_>>();
         thresholds.sort();
@@ -633,9 +768,11 @@ mod tests {
                         _: &mut Window,
                         _: &mut gpui::Context<Self>,
                     ) -> impl IntoElement {
-                        div()
-                            .size_full()
-                            .child(layer(Theme::for_id(crate::theme::ThemeId::Orbit), 0.))
+                        div().size_full().child(layer(
+                            Theme::for_id(crate::theme::ThemeId::Orbit),
+                            0.,
+                            false,
+                        ))
                     }
                 }
                 Layer

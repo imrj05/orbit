@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Orbit no longer fails to start when `pi-subagents` is installed.** pi 1.5 treats two
+  extensions registering one tool name as a fatal load error, so the bundled `subagent`
+  extension collided with `pi-subagents` and every session exited before it began. The
+  tool is now registered when the session starts rather than while the extension loads,
+  which is also the first moment `getAllTools()` can answer: the ownership check that was
+  meant to stand down had been reading a throwing stub as "no tools yet". Orbit now stands
+  down when another extension owns the name, and Settings → Subagents shows a banner naming the
+  owner instead of a catalog that has no effect on the session (#122).
+
 ### Changed
 
 - **Composer "+" menu picks several images or files at once.** "Attach images…"

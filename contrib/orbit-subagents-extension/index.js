@@ -21,6 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn as nodeSpawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { buildDescription, buildPromptGuidelines, discoverAgents, loadBuiltins, userAgentDir } from "./agents.js";
 import {
@@ -105,6 +106,19 @@ export const PARAMETERS = {
 const sessionCounts = new Map();
 
 /**
+ * This file, so an ownership check can tell our own registration from a
+ * foreign one. Orbit materializes the extension at a stable path and passes
+ * that path with `--extension`, so the resolved path is the identity.
+ */
+const SELF_PATH = (() => {
+  try {
+    return fileURLToPath(import.meta.url);
+  } catch {
+    return null;
+  }
+})();
+
+/**
  * Activate the extension. `overrides` exists for tests: `spawn`, `home`,
  * `env`, `now`, `tempDir`, `piBinary`.
  */
@@ -118,23 +132,16 @@ export default function activate(pi, overrides = {}) {
     piBinary: overrides.piBinary ?? "pi",
   };
 
-  // D-C: stand down if anything else already owns the name.
-  const existing = safeGetAllTools(pi);
-  if (existing.some((tool) => tool?.name === TOOL_NAME)) {
-    pi?.on?.("session_start", (_event, ctx) => {
-      ctx?.ui?.notify?.(
-        "Orbit subagents is inactive: another extension (for example pi-subagents) already provides a `subagent` tool.",
-        "warning",
-      );
-    });
-    return { active: false, reason: "tool name already registered" };
-  }
-
   if (typeof pi?.registerTool !== "function") {
     return { active: false, reason: "no tool registration API" };
   }
 
   let registered = null;
+  /**
+   * Whether the `subagent` name is ours to register (D-C). Decided once the
+   * runtime is bound, so `null` until the first session starts.
+   */
+  let ownership = null;
 
   /** Build the prompt surface from the enabled agents and register on change. */
   function refreshDescription() {
@@ -162,28 +169,170 @@ export default function activate(pi, overrides = {}) {
     return enabled;
   }
 
-  refreshDescription();
-
-  // A new session may have different agent files; re-register if the catalog
-  // changed. This is the only place the request prefix changes (D-S).
-  pi.on?.("session_start", () => {
-    refreshDescription();
+  // D-C is decided here rather than at load, and the tool is registered here
+  // too: during load `pi.getAllTools()` is an unbound stub that throws, and
+  // reading that throw as "no tools yet" made us register second, so pi exited
+  // on `Tool "subagent" conflicts with …` before it served the session (issue
+  // #122). At `session_start` the list is bound and every entry carries
+  // `sourceInfo.path`, so a foreign owner is distinguishable from our own
+  // earlier registration in this process.
+  // A new session may also have different agent files, so this is where the
+  // catalog is read and re-registered when it changed — the one place the
+  // request prefix changes (D-S).
+  pi.on?.("session_start", (_event, ctx) => {
+    // Decided afresh at every `session_start` rather than cached: the answer
+    // changes when the user installs or removes the extension that owns the
+    // name, and a cached verdict would turn one unreadable tool list into a
+    // stand-down that outlives its cause. Our own earlier registration in this
+    // process is filtered out by `isSelf`, so a repeat session still decides in
+    // our favour.
+    ownership = decideOwnership(pi);
+    if (ownership.active) {
+      refreshDescription();
+      // pi keeps the *first* registration for a name (`getAllRegisteredTools`
+      // is first-wins), so an inert registration has to be reported, not
+      // pretended.
+      const winner = findTool(pi, TOOL_NAME);
+      if (winner && !isSelf(winner?.sourceInfo?.path)) {
+        ownership = {
+          active: false,
+          reason: "shadowed by an earlier registration",
+          owner: winner?.sourceInfo?.path ?? null,
+        };
+      }
+    }
+    // Later session_start handlers may still register this name. Do not
+    // publish a provisional active verdict as if startup had completed.
+    if (ownership.active) clearStatus(deps);
+    else {
+      recordStatus(deps, ownership, ctx);
+      announceInactive(ctx, ownership);
+    }
   });
 
-  return { active: true };
+  // Unlike a timer scheduled from session_start, this hook runs after every
+  // session_start handler has completed, including handlers that await I/O.
+  pi.on?.("before_agent_start", (_event, ctx) => {
+    const winner = findTool(pi, TOOL_NAME);
+    if (winner && !isSelf(winner.sourceInfo?.path)) {
+      const wasActive = ownership?.active;
+      ownership = { active: false, reason: "shadowed by another registration", owner: winner.sourceInfo?.path ?? null };
+      if (wasActive) announceInactive(ctx, ownership);
+    }
+    if (ownership) recordStatus(deps, ownership, ctx);
+  });
+
+  // `deferred`: nothing is registered yet; `session_start` decides (D-C).
+  return { active: true, deferred: true };
+}
+
+/**
+ * Read pi's tool list, `null` when the call throws.
+ *
+ * The distinction matters: an unreadable list is not an empty one, and a
+ * decision taken on a guess is what produced the conflict this guards against.
+ */
+function readToolList(pi) {
+  try {
+    const all = pi?.getAllTools?.();
+    return Array.isArray(all) ? all : null;
+  } catch {
+    return null;
+  }
+}
+
+function findTool(pi, name) {
+  return readToolList(pi)?.find((tool) => tool?.name === name) ?? null;
+}
+
+function isSelf(sourcePath) {
+  if (!sourcePath || !SELF_PATH) return false;
+  try {
+    return path.resolve(sourcePath) === path.resolve(SELF_PATH);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * D-C: is the `subagent` name ours to register in this process?
+ *
+ * Every `reason` here is a sentence the user may read: the page shows it
+ * verbatim when no owner file is known, and the toast composes it when none is.
+ */
+function decideOwnership(pi) {
+  const all = readToolList(pi);
+  if (all === null) {
+    return { active: false, reason: "pi's tool list could not be read", owner: null };
+  }
+  const claimed = all.find((tool) => tool?.name === TOOL_NAME && !isSelf(tool?.sourceInfo?.path));
+  if (claimed) {
+    const owner = claimed?.sourceInfo?.path ?? null;
+    return {
+      active: false,
+      // An extension that registers without a source file still owns the name;
+      // naming a path we were never given would be a guess.
+      reason: owner ? "owned by another extension" : "claimed by an extension that did not report its file",
+      owner,
+    };
+  }
+  return { active: true, reason: "available", owner: SELF_PATH };
+}
+
+/** Stand down out loud, through the one channel a session has. */
+function announceInactive(ctx, ownership) {
+  // Say what actually happened: blaming another extension for an unreadable
+  // tool list sends the user looking for a package that is not installed.
+  const message = ownership?.owner
+    ? `Orbit subagents is inactive: another extension (for example pi-subagents) already provides a \`subagent\` tool (${ownership.owner}).`
+    : `Orbit subagents is inactive: ${ownership?.reason ?? "the \`subagent\` tool name is not available"}.`;
+  ctx?.ui?.notify?.(message, "warning");
+}
+
+function statusPath(deps) {
+  const token = deps.env.ORBIT_SUBAGENT_STATUS_TOKEN;
+  if (!token || !/^[a-zA-Z0-9-]+$/.test(token)) return null;
+  return path.join(deps.home ?? os.homedir(), ".orbit-pi", `subagents-status-${token}.json`);
+}
+
+/**
+ * Leave the decision where Settings → Subagents can read it (D-C). A toast is
+ * the only channel a session has, and it is gone in seconds; the page has to be
+ * able to say this in plain words.
+ *
+ * Best effort by design: a read-only home must not take the session down with
+ * it, and a stale file is worse than a new one but better than a crash.
+ */
+function clearStatus(deps) {
+  const file = statusPath(deps);
+  if (file) {
+    try { fs.unlinkSync(file); } catch { /* no previous report */ }
+  }
+}
+
+function recordStatus(deps, ownership, ctx) {
+  const file = statusPath(deps);
+  if (!file) return;
+  const payload = {
+    sessionId: ctx?.sessionManager?.getSessionId?.() ?? null,
+    active: ownership.active === true,
+    tool: TOOL_NAME,
+    reason: ownership.reason ?? "",
+    owner: ownership.owner ?? null,
+    updatedAt: deps.now(),
+  };
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`);
+    fs.renameSync(temporary, file);
+  } catch {
+    // The session matters more than the page's copy of this fact.
+  }
 }
 
 function configPath(deps) {
   return path.join(deps.home ?? os.homedir(), ".orbit-pi", "subagents.json");
-}
-
-function safeGetAllTools(pi) {
-  try {
-    const all = pi?.getAllTools?.();
-    return Array.isArray(all) ? all : [];
-  } catch {
-    return [];
-  }
 }
 
 function safeBuiltins() {
@@ -350,6 +499,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
   };
 
   const children = [];
+  const progress = trailingProgress((force) => emitProgress(onUpdate, request.mode, children, force));
   const runOne = async (agent, task) => {
     const state = newChildState({
       id: `c${children.length + 1}`,
@@ -369,7 +519,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
       sessionId,
       parentModel: modelId(ctx?.model),
       parentThinking: typeof ctx?.thinkingLevel === "string" ? ctx.thinkingLevel : null,
-      onProgress: (force) => emitProgress(onUpdate, request.mode, children, force),
+      onProgress: progress.push,
     });
   };
 
@@ -388,6 +538,8 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
   } else {
     await runOne(resolved[0].agent, resolved[0].task);
   }
+  // The result below is the last word; nothing may update the card after it.
+  progress.stop();
 
   const details = runDetails(request.mode, children);
   return {
@@ -485,6 +637,47 @@ export async function runPool(items, limit, run) {
   return results;
 }
 
+/**
+ * The trailing edge of the coalesced progress. `emitProgress` drops an update
+ * that lands inside its 400 ms window; without a trailing send, a child that
+ * starts a tool 100 ms after the last update and then runs it silently for a
+ * minute would sit on the card as "thinking" — and, once the card reports
+ * silence, as "no activity" — the whole time. One timer per run sends the
+ * latest state when the window closes. `stop` cancels it once the result is
+ * final.
+ */
+export function trailingProgress(
+  send,
+  { delay = 400, setTimer = setTimeout, clearTimer = clearTimeout } = {},
+) {
+  let timer = null;
+  let stopped = false;
+  return {
+    push(force = false) {
+      if (stopped) return;
+      if (force) {
+        if (timer !== null) clearTimer(timer);
+        timer = null;
+        send(true);
+        return;
+      }
+      send(false);
+      if (timer === null) {
+        timer = setTimer(() => {
+          timer = null;
+          if (!stopped) send(true);
+        }, delay);
+        timer?.unref?.();
+      }
+    },
+    stop() {
+      stopped = true;
+      if (timer !== null) clearTimer(timer);
+      timer = null;
+    },
+  };
+}
+
 /** Send a coalesced progress update; a transition always sends. */
 export function emitProgress(onUpdate, mode, children, force = false, now = Date.now()) {
   if (typeof onUpdate !== "function") return now;
@@ -557,7 +750,7 @@ export async function runChild(state, {
     toolsPresent: agent?.toolsPresent === true,
     ceiling: state.capability,
   });
-  const env = { ...deps.env, ...buildEnv({
+  const env = { ...deps.env, ORBIT_SUBAGENT_STATUS_TOKEN: "", ...buildEnv({
     parentSessionId: sessionId,
     agentName: state.agent,
     ceiling: state.capability,
