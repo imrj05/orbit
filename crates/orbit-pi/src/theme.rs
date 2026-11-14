@@ -543,6 +543,8 @@ pub struct UiPrefs {
     pub motion: MotionPreference,
     /// Enter's delivery mode while the agent is working (Orbit-only).
     pub composer_send_mode: crate::composer_send::SendMode,
+    /// What the window's close button does (#131).
+    pub close_behavior: crate::tray::CloseBehavior,
 }
 
 /// The interface text size authored against, px. Chrome sizes scale relative
@@ -566,6 +568,7 @@ impl Default for UiPrefs {
             corner_rounding: 0,
             motion: MotionPreference::System,
             composer_send_mode: crate::composer_send::SendMode::default(),
+            close_behavior: crate::tray::CloseBehavior::platform_default(),
         }
     }
 }
@@ -668,6 +671,13 @@ impl UiPrefs {
         {
             prefs.composer_send_mode = mode;
         }
+        if let Some(behavior) = value
+            .get("close_behavior")
+            .and_then(Value::as_str)
+            .and_then(crate::tray::CloseBehavior::parse)
+        {
+            prefs.close_behavior = behavior;
+        }
         prefs
     }
 
@@ -692,6 +702,7 @@ impl UiPrefs {
             // build reads this bool and ORs the OS read exactly as it used to.
             "reduce_motion": self.motion == MotionPreference::Reduced,
             "composer_send_mode": self.composer_send_mode.as_str(),
+            "close_behavior": self.close_behavior.as_str(),
         })
     }
 }
@@ -1903,6 +1914,9 @@ pub fn set_ui_prefs(cx: &mut App, ui: UiPrefs) {
     crate::set_app_menus(cx);
     ui.persist();
     rebuild_theme_with_ui(cx, ui);
+    // The tray menu is native too: a language or close-policy change
+    // reaches it here.
+    crate::main_window::sync_tray(cx);
 }
 
 #[cfg(test)]
@@ -2824,6 +2838,32 @@ mod tests {
         ] {
             assert_eq!(UiPrefs::from_value(&value).corner_rounding, 0);
         }
+    }
+
+    #[test]
+    fn close_behavior_round_trips_and_defaults_per_platform() {
+        assert_eq!(
+            UiPrefs::default().close_behavior,
+            crate::tray::CloseBehavior::platform_default()
+        );
+        for behavior in [
+            crate::tray::CloseBehavior::HideToTray,
+            crate::tray::CloseBehavior::Quit,
+        ] {
+            let prefs = UiPrefs {
+                close_behavior: behavior,
+                ..UiPrefs::default()
+            };
+            assert_eq!(
+                UiPrefs::from_value(&prefs.to_value()).close_behavior,
+                behavior
+            );
+        }
+        assert_eq!(
+            UiPrefs::from_value(&serde_json::json!({"close_behavior": "minimize"})).close_behavior,
+            crate::tray::CloseBehavior::platform_default(),
+            "an unknown value keeps the platform default"
+        );
     }
 
     #[test]

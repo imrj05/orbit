@@ -55,3 +55,23 @@ fn an_unknown_or_missing_provider_shows_every_provider(cx: &mut gpui::TestAppCon
         });
     });
 }
+
+/// A model turned off in Settings → Models leaves the picker's catalog, but
+/// the session's own model stays, so the picker can always show it (#131).
+#[gpui::test]
+fn hidden_models_leave_the_picker_except_the_active_one(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            app.model_provider = "anthropic".into();
+            app.model_id = "anthropic-model".into();
+            crate::hidden_models::set("opencode-go", "opencode-go-model", true);
+            crate::hidden_models::set("anthropic", "anthropic-model", true);
+            let ids: Vec<String> = app.picker_models().into_iter().map(|m| m.id).collect();
+            assert_eq!(ids, ["anthropic-model"]);
+            crate::hidden_models::set("opencode-go", "opencode-go-model", false);
+            crate::hidden_models::set("anthropic", "anthropic-model", false);
+            assert_eq!(app.picker_models().len(), 2, "turned back on");
+        });
+    });
+}

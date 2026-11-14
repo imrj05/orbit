@@ -3934,6 +3934,10 @@ struct ProviderEditor {
     /// A key is already stored in models.json (placeholder + hint).
     had_api_key: bool,
     error: Option<String>,
+    /// A **Fetch models** request is in flight (#131).
+    fetching: bool,
+    /// The in-flight fetch; dropping the editor cancels its result.
+    _fetch: Option<gpui::Task<()>>,
 }
 
 /// The API-key editor's open state (one field, provider-scoped).

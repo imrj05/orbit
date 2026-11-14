@@ -70,6 +70,7 @@ mod git;
 mod git_accounts;
 mod git_ops;
 mod git_panel;
+mod hidden_models;
 mod highlight;
 mod http;
 mod i18n;
@@ -119,6 +120,7 @@ mod theme;
 mod toast;
 mod transcript;
 mod transcript_view;
+mod tray;
 mod turn_review;
 mod updater;
 mod usage;
@@ -783,18 +785,6 @@ fn main() {
         // `Quit` is an app-level action, but a fork in flight belongs to the
         // app entity: route the request through it so the quit can wait for
         // pi's reply instead of leaving a branch this run never adopted.
-        cx.on_action(|_: &Quit, cx| {
-            let parked = cx
-                .try_global::<main_window::Shell>()
-                .and_then(|shell| shell.0.borrow().clone());
-            match parked {
-                Some(app) => {
-                    app.update(cx, |app, cx| {
-                        app.request_quit(crate::app::QuitRequest::User, cx)
-                    });
-                }
-                None => cx.quit(),
-            }
-        });
+        cx.on_action(|_: &Quit, cx| main_window::request_quit(cx));
     });
 }

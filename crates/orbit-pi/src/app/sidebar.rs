@@ -2281,6 +2281,14 @@ pub(crate) fn workspace_menu_popup(
                 |app, cx| app.on_workspace_open_picker(cx),
             ))
             .child(workspace_menu_item(
+                "wm-archive",
+                "icons/archive.svg",
+                tr!("sidebar.archive_workspace_sessions"),
+                theme,
+                this.clone(),
+                |app, cx| app.on_workspace_archive_sessions(cx),
+            ))
+            .child(workspace_menu_item(
                 "wm-remove",
                 "icons/minus.svg",
                 tr!("sidebar.remove_from_sidebar"),
@@ -3824,6 +3832,34 @@ impl OrbitApp {
         if let Some(menu) = self.workspace_menu.as_mut() {
             menu.picker = true;
         }
+        cx.notify();
+    }
+
+    /// Archive every session in the workspace the open header menu belongs
+    /// to (#131). Archiving is Orbit-owned and reversible — pi's files are
+    /// untouched, and the sidebar's archived view brings each one back — so
+    /// it needs no confirmation; the toast says how many moved.
+    pub(super) fn on_workspace_archive_sessions(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.workspace_menu.take() else {
+            return;
+        };
+        let paths: Vec<PathBuf> = self
+            .sidebar_sessions()
+            .into_iter()
+            .filter(|session| sessions::workspace_label(&session.cwd) == menu.label)
+            .map(|session| session.path)
+            .collect();
+        let archived = crate::archive::add_all(&paths);
+        if archived == 0 {
+            self.toast_info(tr!("sidebar.archive_workspace_nothing"));
+        } else {
+            self.toast_success(tr!(
+                "sidebar.archive_workspace_done",
+                count = archived,
+                workspace = menu.label
+            ));
+        }
+        self.clamp_sidebar_cursor(cx);
         cx.notify();
     }
 

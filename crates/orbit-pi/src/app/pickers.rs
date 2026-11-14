@@ -387,7 +387,7 @@ impl OrbitApp {
         let selector = cx.new(|cx| {
             ModelSelector::new(
                 kind,
-                self.available_models.clone(),
+                self.picker_models(),
                 self.available_thinking_levels.clone(),
                 self.model_label.clone(),
                 self.model_id.clone(),
@@ -1007,11 +1007,21 @@ impl OrbitApp {
         })
     }
 
+    /// The model picker's catalog: everything pi offers minus the models
+    /// turned off in Settings → Models (#131), keeping the active one.
+    pub(super) fn picker_models(&self) -> Vec<ModelEntry> {
+        crate::hidden_models::all().picker_models(
+            &self.available_models,
+            &self.model_provider,
+            &self.model_id,
+        )
+    }
+
     /// Push the latest catalog/current-selection snapshot into the open
     /// popup (no-op while it is closed).
     pub(super) fn sync_model_selector(&mut self, cx: &mut Context<Self>) {
         if let Some((_, selector)) = &self.model_selector {
-            let models = self.available_models.clone();
+            let models = self.picker_models();
             let levels = self.available_thinking_levels.clone();
             let model = self.model_label.clone();
             let model_id = self.model_id.clone();

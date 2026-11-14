@@ -17,7 +17,12 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 
-use crate::{app::OrbitApp, platform, theme, window_state};
+use crate::{
+    app::OrbitApp,
+    platform, theme,
+    tray::{self, CloseAction, TrayEvent},
+    window_state,
+};
 
 /// The shell model, parked while no window is open.
 ///
@@ -93,6 +98,8 @@ pub fn open(cx: &mut App) {
         },
         |window, cx| {
             theme::watch_system_appearance(window, cx);
+            // What the close button does is the user's choice (#131).
+            window.on_window_should_close(cx, should_close);
 
             // Focus the composer so typing works immediately; track
             // window focus so background notifications know whether
@@ -120,6 +127,8 @@ pub fn open(cx: &mut App) {
         eprintln!("Orbit: could not open the main window");
         return;
     };
+
+    sync_tray(cx);
 
     // Both entries bring the app forward: a Dock click on a windowless app,
     // or a launch that opened the first window. Neither `focus: true` above
@@ -184,6 +193,93 @@ fn initial_bounds(
     )
 }
 
+/// Quit the way ⌘Q / Ctrl+Q does: through the shell, so a quit waits for a
+/// fork in flight instead of leaving a branch this run never adopted.
+pub fn request_quit(cx: &mut App) {
+    let parked = cx
+        .try_global::<Shell>()
+        .and_then(|shell| shell.0.borrow().clone());
+    match parked {
+        Some(app) => app.update(cx, |app, cx| {
+            app.request_quit(crate::app::QuitRequest::User, cx)
+        }),
+        None => cx.quit(),
+    }
+}
+
+/// The window's close button, per Settings → General → Closing the window.
+fn should_close(window: &mut gpui::Window, cx: &mut App) -> bool {
+    let policy = theme::get(cx).ui.close_behavior;
+    match tray::close_action(policy, tray::icon_up()) {
+        CloseAction::CloseWindow => true,
+        CloseAction::HideWindow => {
+            tray::hide_window(window);
+            false
+        }
+        CloseAction::Quit => {
+            // Deferred so the quit does not run inside the platform's close
+            // callback; a deferred quit (fork in flight) leaves the window up.
+            cx.defer(request_quit);
+            false
+        }
+    }
+}
+
+/// The tray icon's labels in the current language.
+fn tray_labels() -> tray::TrayLabels {
+    tray::TrayLabels {
+        tooltip: tr!("tray.tooltip"),
+        show: tr!("tray.show_orbit"),
+        new_task: tr!("menu.new_task"),
+        quit: tr!("tray.quit_orbit"),
+    }
+}
+
+/// Put the tray icon up while the close policy hides to it, and down
+/// otherwise. Called on open and whenever the UI preferences change.
+pub fn sync_tray(cx: &App) {
+    let wanted = theme::get(cx).ui.close_behavior == tray::CloseBehavior::HideToTray;
+    tray::set_icon(wanted.then(tray_labels).as_ref());
+}
+
+/// Act on the tray icon's clicks, with a full [`App`] in hand.
+fn handle_tray_events(cx: &mut App) {
+    for event in tray::drain() {
+        match event {
+            TrayEvent::Show => {
+                reveal(cx);
+            }
+            TrayEvent::NewTask => {
+                if let Some(window) = reveal(cx) {
+                    window
+                        .update(cx, |_, window, cx| {
+                            window.dispatch_action(Box::new(crate::NewSession), cx)
+                        })
+                        .ok();
+                }
+            }
+            TrayEvent::Quit => request_quit(cx),
+        }
+    }
+}
+
+/// Bring the main window back: show the hidden one (Windows), or open a new
+/// one onto the parked shell when it was closed (macOS).
+fn reveal(cx: &mut App) -> Option<gpui::AnyWindowHandle> {
+    if let Some(window) = cx.windows().into_iter().next() {
+        window
+            .update(cx, |_, window, _| {
+                tray::show_window(window);
+                window.activate_window();
+            })
+            .ok();
+        cx.activate(true);
+        return Some(window);
+    }
+    open(cx);
+    cx.windows().into_iter().next()
+}
+
 /// Drain pi events into the UI for the life of the app.
 ///
 /// Spawned on the [`App`], not on a window: a parked shell keeps its pi
@@ -203,6 +299,9 @@ fn spawn_heartbeat(cx: &mut App, app: &Entity<OrbitApp>) {
             let Ok(active) = heartbeat.update(cx, |app: &mut OrbitApp, cx| app.tick(cx)) else {
                 return;
             };
+            // Outside the shell's update: showing a window may open one,
+            // which renders (and so updates) the shell itself.
+            cx.update(handle_tray_events).ok();
             delay = if active {
                 Duration::from_millis(16)
             } else {

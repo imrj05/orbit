@@ -123,3 +123,30 @@ fn a_rejected_prompt_clears_the_run_state(cx: &mut gpui::TestAppContext) {
         });
     });
 }
+
+/// The composer's second send button (#131) sends in the lane Enter does not
+/// pick: with the default "queue a follow-up", it steers the live turn.
+#[gpui::test]
+fn the_alternate_send_takes_the_other_lane(cx: &mut gpui::TestAppContext) {
+    let (app, _fake) = app_with_silent_pi(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            assert_eq!(
+                theme::get(cx).ui.composer_send_mode,
+                crate::composer_send::SendMode::FollowUp,
+                "precondition: Enter queues"
+            );
+            app.busy = true;
+            app.input.update(cx, |input, cx| {
+                input.set_text("look at the tests first", cx)
+            });
+            app.send_composer_alternate(cx);
+            assert_eq!(app.queue.steering, ["look at the tests first"]);
+            assert!(app.queue.follow_up.is_empty(), "not queued behind the run");
+            assert!(
+                app.input.read(cx).text().is_empty(),
+                "the composer is cleared"
+            );
+        });
+    });
+}

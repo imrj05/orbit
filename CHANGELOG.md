@@ -23,9 +23,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Steering delivery mode in Settings → Agent.** Steering messages get the same
   `One at a time` / `All` choice that follow-ups already had, read back from pi's session
   state (#131).
+- **Both send lanes in the composer.** While a run is in flight and something is typed, a
+  quiet second button beside Send delivers it in the other lane — steer when Enter queues,
+  queue when Enter steers — so a one-off choice no longer means flipping the preference
+  (#131).
+- **Tray and menu-bar icon, and a choice for the close button.** Settings → General →
+  Closing the window: *Hide to tray* (Windows) or *Keep running* (macOS) keeps Orbit and
+  any running task alive behind a notification-area / menu-bar icon with Show Orbit, New
+  task and Quit; *Quit* quits through the same path as ⌘Q / Ctrl+Q, so it still waits for
+  a fork in flight. macOS keeps running by default, as it always has; Windows keeps
+  quitting by default until you opt in. Linux has no tray yet and keeps quitting (#131).
+- **Choose which models the picker shows.** Each card in Settings → Models has an eye to
+  hide or show it in the composer's model picker, and each provider has Hide all / Show
+  all. Hiding never deletes: the provider's catalog is untouched, models it adds later
+  still appear, and the session's own model stays pickable (#131).
+- **Fetch models for a custom provider.** The provider editor's **Fetch models** asks the
+  base URL's `/models` endpoint (OpenAI-compatible servers such as OpenRouter, Ollama, LM
+  Studio and vLLM, plus Mistral and Anthropic) and adds every id not listed yet (#131).
+- **Archive a whole workspace.** The workspace header menu gains *Archive all sessions*;
+  archived sessions stay on disk and come back from the sidebar's archived view (#131).
+- **Simplified Chinese covers the whole app.** The 933 strings that still fell back to
+  English — Git panel, MCP, subagents, settings, Explorer, wallpaper, updates, exports —
+  are translated. CI now fails when a locale gains an untranslated string outside
+  `scripts/i18n_untranslated_baseline.json`, so the remaining backlog in other languages
+  can only shrink (#131).
 
 ### Fixed
 
+- **Line breaks in translated worktree messages.** `gen_locales.py` doubled the backslash
+  in `\n`, so eight worktree errors showed a literal `\n\n` in every non-English locale.
+  Regenerating the locales also no longer reverts translations that were edited straight
+  into a locale file; those now live in `scripts/i18n_glossary_preserved.py`.
 - **Orbit no longer fails to start when `pi-subagents` is installed.** pi 1.5 treats two
   extensions registering one tool name as a fatal load error, so the bundled `subagent`
   extension collided with `pi-subagents` and every session exited before it began. The

@@ -13,6 +13,7 @@ import glob
 import io
 import importlib
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -46,7 +47,12 @@ def parse(path):
 
 
 def quote(value):
-    return '"%s"' % value.replace("\\", "\\\\").replace('"', '\\"')
+    # `parse` keeps `\n` / `\t` as their two-character escapes, so they are
+    # written back as escapes: doubling their backslash turned a line break
+    # into a literal `\n` in every generated locale. Any other backslash is a
+    # literal one and is escaped.
+    escaped = re.sub(r"\\(?![nt])", r"\\\\", value)
+    return '"%s"' % escaped.replace('"', '\\"')
 
 
 def main():

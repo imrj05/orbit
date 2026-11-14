@@ -876,6 +876,31 @@ impl OrbitApp {
         }
     }
 
+    /// The composer's alternate-lane button: the same send as
+    /// [`Self::on_send_click`], in the lane the Enter preference does not pick.
+    pub(super) fn on_send_alternate_click(
+        &mut self,
+        _: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.send_composer_alternate(cx);
+    }
+
+    /// Send the composer's text in the lane the Enter preference does not
+    /// pick (#131).
+    pub(super) fn send_composer_alternate(&mut self, cx: &mut Context<Self>) {
+        if self.input.read(cx).is_composing() {
+            return;
+        }
+        if self.commit_autocomplete_if_open(CompletionIntent::Send, cx) {
+            return;
+        }
+        let text = self.input.read(cx).text();
+        let mode = theme::get(cx).ui.composer_send_mode.opposite();
+        self.submit_as(text, mode, cx);
+    }
+
     pub(super) fn on_send_click(
         &mut self,
         _: &MouseUpEvent,

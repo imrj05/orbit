@@ -43,6 +43,9 @@ impl ArchivedSessions {
     }
 
     fn persist(&self) {
+        if cfg!(test) {
+            return;
+        }
         let path = persist_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -113,7 +116,15 @@ static STORE: RwLock<Option<ArchivedSessions>> = RwLock::new(None);
 
 fn with_store<R>(f: impl FnOnce(&mut ArchivedSessions) -> R) -> R {
     let mut guard = STORE.write().unwrap();
-    f(guard.get_or_insert_with(ArchivedSessions::load))
+    // Tests run against the real home directory: they start from an empty
+    // set and never read or write the user's archive.
+    f(guard.get_or_insert_with(|| {
+        if cfg!(test) {
+            ArchivedSessions::default()
+        } else {
+            ArchivedSessions::load()
+        }
+    }))
 }
 
 /// A snapshot of the current archive set for rendering.
@@ -134,6 +145,18 @@ pub fn add(path: &Path) {
             store.persist();
         }
     });
+}
+
+/// Archive several sessions with one write; returns how many were newly
+/// archived (already-archived paths are left as they are).
+pub fn add_all(paths: &[PathBuf]) -> usize {
+    with_store(|store| {
+        let added = paths.iter().filter(|path| store.add(path)).count();
+        if added > 0 {
+            store.persist();
+        }
+        added
+    })
 }
 
 /// Flip a session's archived state and persist the change.

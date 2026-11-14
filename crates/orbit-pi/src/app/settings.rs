@@ -1184,24 +1184,35 @@ impl OrbitApp {
                 // The last group is the escape hatch: a clean relaunch kills
                 // every live run, so it sits below the preferences rather than
                 // beside the everyday controls.
-                rows.push(self.settings_section(
-                    theme,
-                    &tr!("settings.application"),
-                    vec![self.setting_row(
+                let mut application = Vec::new();
+                if crate::tray::supported() {
+                    application.push(self.setting_row(
                         theme,
-                        &tr!("settings.reload_app"),
-                        Some(&tr!("settings.reload_app_description")),
+                        &tr!("settings.closing_the_window"),
+                        Some(&if cfg!(target_os = "macos") {
+                            tr!("settings.closing_the_window_hint_macos")
+                        } else {
+                            tr!("settings.closing_the_window_hint")
+                        }),
                         None,
-                        Some(self.runtime_button(
-                            "reload-app",
-                            &tr!("settings.reload_app_action"),
-                            false,
-                            theme,
-                            this.clone(),
-                            OrbitApp::reload_app,
-                        )),
-                    )],
+                        Some(self.close_behavior_toggle(theme, this.clone())),
+                    ));
+                }
+                application.push(self.setting_row(
+                    theme,
+                    &tr!("settings.reload_app"),
+                    Some(&tr!("settings.reload_app_description")),
+                    None,
+                    Some(self.runtime_button(
+                        "reload-app",
+                        &tr!("settings.reload_app_action"),
+                        false,
+                        theme,
+                        this.clone(),
+                        OrbitApp::reload_app,
+                    )),
                 ));
+                rows.push(self.settings_section(theme, &tr!("settings.application"), application));
                 rows
             }
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
@@ -1706,6 +1717,7 @@ impl OrbitApp {
         }
         let needle = self.models_filter.read(cx).text().trim().to_lowercase();
         let favorites = crate::favorites::all();
+        let hidden = crate::hidden_models::all();
         let favorites_only = self.models_favorites_only;
         let provider_filter = self.models_provider_filter.as_deref();
 
@@ -1740,8 +1752,30 @@ impl OrbitApp {
             }
             let cards: Vec<AnyElement> = models
                 .iter()
-                .map(|model| self.model_card(model, &favorites, theme, this.clone()))
+                .map(|model| self.model_card(model, &favorites, &hidden, theme, this.clone()))
                 .collect();
+            // The group's whole catalog, not just the filtered cards: "Hide
+            // all" acts on what the provider offers, and the count reads it.
+            let group: Vec<(String, String)> = self
+                .available_models
+                .iter()
+                .filter(|model| model.provider == provider)
+                .map(|model| (model.provider.clone(), model.id.clone()))
+                .collect();
+            let hidden_in_group = group
+                .iter()
+                .filter(|(p, id)| hidden.contains(p, id))
+                .count();
+            let group_count = if hidden_in_group == 0 {
+                tr!("settings.n_models", count = models.len())
+            } else {
+                tr!(
+                    "settings.n_models_shown",
+                    shown = group.len() - hidden_in_group,
+                    total = group.len()
+                )
+            };
+            let all_hidden = hidden_in_group == group.len();
             sections.push(
                 div()
                     .id(ElementId::NamedInteger(
@@ -1784,8 +1818,15 @@ impl OrbitApp {
                                     .flex_none()
                                     .text_size(TextSize::Small.px(&theme))
                                     .text_color(theme.text_muted)
-                                    .child(tr!("settings.n_models", count = models.len())),
-                            ),
+                                    .child(group_count),
+                            )
+                            .child(provider_visibility_button(
+                                &provider,
+                                group,
+                                all_hidden,
+                                theme,
+                                this.clone(),
+                            )),
                     )
                     .child(
                         div()
@@ -1822,12 +1863,15 @@ impl OrbitApp {
         &self,
         model: &ModelEntry,
         favorites: &crate::favorites::Favorites,
+        hidden: &crate::hidden_models::HiddenModels,
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
         let (provider, id) = (model.provider.clone(), model.id.clone());
         let active = self.model_id == model.id && self.model_provider == model.provider;
         let is_favorite = favorites.contains(&model.provider, &model.id);
+        let is_hidden = hidden.contains(&model.provider, &model.id);
+
         // Ink on the active fill comes from `selection_fg`, stepped down for the
         // secondary lines — `text_muted` is authored for the canvas, not a
         // selected card.
@@ -1836,6 +1880,8 @@ impl OrbitApp {
         } else {
             theme.text_muted
         };
+        let visibility =
+            model_visibility_button(&provider, &id, is_hidden, meta_ink, theme, this.clone());
 
         let star = icon_button_frame(
             div().id(ElementId::Name(
@@ -1981,9 +2027,14 @@ impl OrbitApp {
                             .truncate()
                             .text_size(TextSize::Default.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
+                            .text_color(if is_hidden {
+                                theme.text_muted
+                            } else {
+                                theme.text_primary
+                            })
                             .child(model.name.clone()),
                     )
+                    .child(visibility)
                     .child(star),
             )
             .child(
@@ -4334,6 +4385,57 @@ impl OrbitApp {
         )
     }
 
+    /// **Fetch models**, under the editor's model field: a bordered secondary
+    /// button that reads **Fetching…** and stops taking clicks while the
+    /// request is out.
+    fn provider_fetch_button(
+        &self,
+        fetching: bool,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        let button = button_frame(
+            div().id("provider-fetch-models"),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.surface_elevated)
+        .text_color(if fetching {
+            theme.text_muted
+        } else {
+            theme.text_secondary
+        })
+        .when(!fetching, |button| {
+            button
+                .cursor_pointer()
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.provider_fetch_models(cx));
+                })
+        })
+        .tip(tr!("settings.fetch_models_hint"))
+        .child(icon(
+            "icons/refresh.svg",
+            ButtonSize::Medium.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .child(if fetching {
+            tr!("settings.fetching_models")
+        } else {
+            tr!("settings.fetch_models")
+        });
+        div()
+            .flex()
+            .child(crate::motion::hover(
+                button,
+                "provider-fetch-models",
+                &theme,
+                Hover::fill(theme.surface_elevated, theme.surface_hover),
+            ))
+            .into_any_element()
+    }
+
     /// The provider editor modal (add / configure), or `None` when closed.
     pub(super) fn provider_editor_layer(
         &self,
@@ -4508,7 +4610,11 @@ impl OrbitApp {
                     &models_custom_hint
                 }),
                 editor.models.clone(),
-            ));
+            ))
+            .when(
+                providers::models_endpoint("https://x", &editor.api).is_some(),
+                |body| body.child(self.provider_fetch_button(editor.fetching, theme, this.clone())),
+            );
 
         let mut card = modal_card(&theme)
             .w_full()
@@ -5899,6 +6005,76 @@ impl OrbitApp {
                 )
             }))
             .into_any_element()
+    }
+
+    /// Settings → General → Closing the window (#131): keep running with the
+    /// tray / menu-bar icon, or quit.
+    fn close_behavior_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        use crate::tray::CloseBehavior;
+        let options = [
+            (
+                CloseBehavior::HideToTray,
+                if cfg!(target_os = "macos") {
+                    tr!("settings.keep_running_in_menu_bar")
+                } else {
+                    tr!("settings.hide_to_tray")
+                },
+            ),
+            (CloseBehavior::Quit, tr!("settings.quit_on_close")),
+        ];
+        let count = options.len();
+        let current = theme.ui.close_behavior;
+        div()
+            .flex()
+            .items_center()
+            .children(
+                options
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (behavior, label))| {
+                        let this = this.clone();
+                        let active = behavior == current;
+                        let (fill, ink) = if active {
+                            (theme.surface_selected, theme.text_primary)
+                        } else {
+                            (theme.surface_elevated, theme.text_secondary)
+                        };
+                        let segment = segmented_segment(
+                            div().id(("close-behavior", index)),
+                            &theme,
+                            ButtonSize::Medium,
+                            SegmentPosition::at(index, count),
+                        )
+                        .font_weight(FontWeight::MEDIUM)
+                        .cursor_pointer()
+                        .border_color(theme.border)
+                        .raised_flat(fill)
+                        .text_color(ink)
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            this.update(cx, |app, cx| app.set_close_behavior(behavior, cx));
+                        })
+                        .child(label);
+                        if active {
+                            segment.into_any_element()
+                        } else {
+                            crate::motion::hover(
+                                segment,
+                                format!("close-behavior-{index}"),
+                                &theme,
+                                Hover::fill(theme.surface_elevated, theme.surface_hover),
+                            )
+                        }
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn set_close_behavior(&mut self, behavior: crate::tray::CloseBehavior, cx: &mut Context<Self>) {
+        let mut ui = theme::get(cx).ui;
+        ui.close_behavior = behavior;
+        // `set_ui_prefs` persists the choice and puts the icon up or down.
+        theme::set_ui_prefs(cx, ui);
+        cx.notify();
     }
 
     fn set_composer_send_mode(&mut self, mode: SendMode, cx: &mut Context<Self>) {
@@ -9135,7 +9311,62 @@ impl OrbitApp {
             api,
             had_api_key,
             error: None,
+            fetching: false,
+            _fetch: None,
         });
+        cx.notify();
+    }
+
+    /// **Fetch models** in the provider editor (#131): ask the endpoint the
+    /// user typed for its model list and add every id not yet in the field.
+    /// The user prunes the list there, or turns models off later in
+    /// Settings → Models, which never deletes them.
+    pub(super) fn provider_fetch_models(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.provider_editor.as_mut() else {
+            return;
+        };
+        if editor.fetching {
+            return;
+        }
+        let base_url = editor.base_url.read(cx).text();
+        let Some(url) = providers::models_endpoint(&base_url, &editor.api) else {
+            editor.error = Some(tr!("settings.fetch_models_unsupported"));
+            cx.notify();
+            return;
+        };
+        let api = editor.api.clone();
+        let key = editor.api_key.read(cx).text();
+        editor.fetching = true;
+        editor.error = None;
+        let fetch = cx.background_spawn(async move {
+            providers::fetch_model_ids(&url, &api, Some(key.as_str()))
+        });
+        editor._fetch = Some(cx.spawn(async move |this, cx| {
+            let result = fetch.await;
+            this.update(cx, |app, cx| {
+                let Some(editor) = app.provider_editor.as_mut() else {
+                    return;
+                };
+                editor.fetching = false;
+                match result {
+                    Ok(ids) if ids.is_empty() => {
+                        editor.error = Some(tr!("settings.fetch_models_empty"));
+                    }
+                    Ok(ids) => {
+                        let merged =
+                            providers::merge_model_ids(&editor.models.read(cx).text(), &ids);
+                        editor
+                            .models
+                            .update(cx, |input, cx| input.set_text(merged, cx));
+                    }
+                    Err(error) => {
+                        editor.error = Some(tr!("settings.fetch_models_failed", error = error));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
         cx.notify();
     }
 
@@ -9793,4 +10024,77 @@ mod settings_search_tests {
     fn no_match_is_empty() {
         assert!(settings_search_hits("zzzzzz").is_empty());
     }
+}
+
+/// The eye on a Models card (#131): show or hide the model in the composer's
+/// picker. Hiding deselects rather than deletes — the provider's catalog is
+/// untouched, and the card stays here, dimmed, to turn back on.
+fn model_visibility_button(
+    provider: &str,
+    id: &str,
+    hidden: bool,
+    ink: Hsla,
+    theme: Theme,
+    this: Entity<OrbitApp>,
+) -> AnyElement {
+    let name = format!("model-visibility-{provider}-{id}");
+    let (provider, id) = (provider.to_string(), id.to_string());
+    let button = icon_button_frame(
+        div().id(ElementId::Name(name.clone().into())),
+        &theme,
+        ButtonSize::Default,
+    )
+    .tip(if hidden {
+        tr!("settings.show_in_model_picker")
+    } else {
+        tr!("settings.hide_from_model_picker")
+    })
+    .cursor_pointer()
+    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        // Keep the click from bubbling to the card's "set active model".
+        cx.stop_propagation();
+        crate::hidden_models::set(&provider, &id, !hidden);
+        this.update(cx, |_, cx| cx.notify());
+    })
+    .child(icon(
+        if hidden {
+            "icons/eye-off.svg"
+        } else {
+            "icons/eye.svg"
+        },
+        ButtonSize::Default.icon_size().px(&theme),
+        ink,
+    ));
+    crate::motion::hover(button, name, &theme, Hover::wash(&theme))
+}
+
+/// "Hide all" / "Show all" on a provider's header in Settings → Models: the
+/// bulk form of the per-card eye, for providers with long catalogs.
+fn provider_visibility_button(
+    provider: &str,
+    models: Vec<(String, String)>,
+    all_hidden: bool,
+    theme: Theme,
+    this: Entity<OrbitApp>,
+) -> AnyElement {
+    let name = format!("provider-visibility-{provider}");
+    let button = button_frame(
+        div().id(ElementId::Name(name.clone().into())),
+        &theme,
+        ButtonSize::Compact,
+    )
+    .text_size(TextSize::XSmall.px(&theme))
+    .cursor_pointer()
+    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        for (provider, id) in &models {
+            crate::hidden_models::set(provider, id, !all_hidden);
+        }
+        this.update(cx, |_, cx| cx.notify());
+    })
+    .child(if all_hidden {
+        tr!("settings.show_all_models")
+    } else {
+        tr!("settings.hide_all_models")
+    });
+    crate::motion::hover(button, name, &theme, Hover::row(&theme))
 }
