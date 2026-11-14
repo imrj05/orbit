@@ -1306,6 +1306,9 @@ pub struct OrbitApp {
     subagent_undo: Option<subagents_ui::SubagentUndo>,
     /// The Delete button has been pressed once.
     subagent_delete_confirm: bool,
+    /// A Select / New / Duplicate held back because it would throw away
+    /// unsaved edits; the header asks before running it.
+    subagent_discard_pending: Option<subagents_ui::SubagentAction>,
     /// Why the last save/delete failed, shown under the form.
     subagent_error: Option<String>,
     /// Re-render the agent list as the filter is typed.
@@ -2598,6 +2601,7 @@ impl OrbitApp {
             subagent_status: None,
             subagent_undo: None,
             subagent_delete_confirm: false,
+            subagent_discard_pending: None,
             subagent_error: None,
             plugins: Vec::new(),
             plugins_error: None,

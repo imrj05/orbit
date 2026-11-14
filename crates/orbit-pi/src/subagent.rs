@@ -101,13 +101,49 @@ impl Phase {
     }
 }
 
+/// How one of a child's tool calls ended, as the extension recorded it from
+/// pi's `tool_execution_end`. `Unknown` is an older payload that never said.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum StepStatus {
+    #[default]
+    Unknown,
+    Running,
+    Ok,
+    /// The tool ran and reported an error (a red test, a grep with no match).
+    Error,
+    /// A guard refused the call before it ran.
+    Blocked,
+}
+
+impl StepStatus {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw {
+            Some("running") => Self::Running,
+            Some("ok") => Self::Ok,
+            Some("error") => Self::Error,
+            Some("blocked") => Self::Blocked,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// One tool call a child made, as much as the card shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SubagentStep {
     pub kind: String,
     pub name: String,
     pub preview: String,
+    pub status: StepStatus,
 }
+
+/// How long a live child may go without a single event before the card says
+/// so instead of repeating its last phase (§9.4, D-V).
+pub(crate) const SILENCE_AFTER_MS: i64 = 15_000;
+
+/// The reason older extensions stamped on *every* failed tool call. Those
+/// entries were the work's own failures, not a guard's refusal, so they are
+/// not blocked calls and the card does not report them as one.
+const LEGACY_FAILED_REASON: &str = "Tool failed";
 
 /// One denied call, with the reason the guard gave.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -133,6 +169,8 @@ pub(crate) struct SubagentChild {
     pub capability: Option<String>,
     pub workflow_mode: Option<String>,
     pub model: Option<String>,
+    /// The thinking level the child ran at, as pi reported it.
+    pub thinking: Option<String>,
     pub task: String,
     pub steps: Vec<SubagentStep>,
     pub steps_total: u64,
@@ -144,6 +182,10 @@ pub(crate) struct SubagentChild {
     pub usage: MessageUsage,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
+    /// When the extension last saw any event from the child.
+    pub last_event_at: Option<i64>,
+    /// The child was stopped by its time budget, not by the user.
+    pub timed_out: bool,
 }
 
 impl SubagentChild {
@@ -187,6 +229,10 @@ impl SubagentChild {
                     .iter()
                     .filter_map(|call| {
                         let tool = call.get("tool").and_then(Value::as_str)?;
+                        let reason = call.get("reason").and_then(Value::as_str);
+                        if reason == Some(LEGACY_FAILED_REASON) {
+                            return None;
+                        }
                         Some(BlockedCall {
                             tool: tool.to_string(),
                             target: call
@@ -225,6 +271,7 @@ impl SubagentChild {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string(),
+                        status: StepStatus::parse(step.get("status").and_then(Value::as_str)),
                     })
                     .collect()
             })
@@ -252,6 +299,12 @@ impl SubagentChild {
             model: value
                 .get("model")
                 .and_then(Value::as_str)
+                .filter(|model| !model.trim().is_empty())
+                .map(str::to_string),
+            thinking: value
+                .get("thinking")
+                .and_then(Value::as_str)
+                .filter(|level| !level.trim().is_empty())
                 .map(str::to_string),
             task: value
                 .get("task")
@@ -279,6 +332,11 @@ impl SubagentChild {
             usage: MessageUsage::from_value(value.get("usage")).unwrap_or_else(zero_usage),
             started_at: value.get("startedAt").and_then(Value::as_i64),
             ended_at,
+            last_event_at: value.get("lastEventAt").and_then(Value::as_i64),
+            timed_out: value
+                .get("timedOut")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         }
     }
 
@@ -291,21 +349,28 @@ impl SubagentChild {
         }
     }
 
-    /// `read only` / `edits files` / `runs commands` / `all tools` — the tier
-    /// the child actually ran under, when the payload named it.
-    pub(crate) fn capability_label(&self) -> Option<&'static str> {
-        match self.capability.as_deref()? {
-            "read" => Some("read only"),
-            "edit" => Some("edits files"),
-            "exec" => Some("runs commands"),
-            "all" => Some("all tools"),
-            _ => None,
-        }
-    }
-
     /// Whether this child is still working.
     pub(crate) fn is_live(&self) -> bool {
         self.status.is_live()
+    }
+
+    /// The model's display name: the provider namespace dropped, so a row
+    /// narrow enough to truncate keeps the part that tells models apart
+    /// (`anthropic/claude-haiku-4-5` → `claude-haiku-4-5`).
+    pub(crate) fn model_label(&self) -> Option<String> {
+        self.model.as_deref().map(crate::usage::model::model_label)
+    }
+
+    /// How long a live child has produced no event, once that passes
+    /// [`SILENCE_AFTER_MS`]. Only while it is starting or thinking: a running
+    /// tool is quiet by nature (a long `cargo build`), and the row already
+    /// names that tool. `None` when the payload carried no timestamp.
+    pub(crate) fn silent_for_ms(&self, now_ms: i64) -> Option<i64> {
+        if !self.is_live() || !matches!(self.phase, Phase::Thinking | Phase::Spawning) {
+            return None;
+        }
+        let quiet = now_ms - self.last_event_at?;
+        (quiet >= SILENCE_AFTER_MS).then_some(quiet)
     }
 }
 
@@ -354,6 +419,26 @@ impl SubagentRun {
 
     pub(crate) fn total_tools(&self) -> u64 {
         self.children.iter().map(|child| child.tools).sum()
+    }
+
+    /// The run's wall clock: from its first child's start to its last child's
+    /// end, or to `now` while any child runs. `None` when no child was ever
+    /// stamped, so the footer never invents a clock.
+    pub(crate) fn elapsed(&self, now_ms: i64) -> Option<String> {
+        let started = self
+            .children
+            .iter()
+            .filter_map(|child| child.started_at)
+            .min()?;
+        let ended = if self.is_live() {
+            None
+        } else {
+            self.children
+                .iter()
+                .filter_map(|child| child.ended_at)
+                .max()
+        };
+        format_elapsed(Some(started), ended, now_ms)
     }
 
     pub(crate) fn running(&self) -> usize {
@@ -501,7 +586,8 @@ mod tests {
         assert_eq!(child.status, Status::Running);
         assert_eq!(child.phase, Phase::Tool);
         assert_eq!(child.current.as_deref(), Some("grep /auth/ in src/"));
-        assert_eq!(child.capability_label(), Some("read only"));
+        assert_eq!(child.capability.as_deref(), Some("read"));
+        assert_eq!(child.model_label().as_deref(), Some("claude-haiku-4-5"));
         assert_eq!(child.tool_counts[0], ("grep".to_string(), 7));
         assert_eq!(child.usage.input, 3100);
         assert_eq!(child.usage.cost, Some(0.0123));
@@ -727,5 +813,119 @@ mod tests {
             children: vec![child(json!({"agent": "a"}))],
         };
         assert!(empty.usage().is_none());
+    }
+
+    #[test]
+    fn step_outcomes_parse_and_an_older_step_is_unknown() {
+        let child = child(json!({
+            "agent": "worker",
+            "steps": [
+                {"name": "read", "preview": "a", "status": "ok"},
+                {"name": "bash", "preview": "cargo test", "status": "error"},
+                {"name": "edit", "preview": "b", "status": "blocked"},
+                {"name": "grep", "preview": "c", "status": "running"},
+                {"name": "ls", "preview": "d"}
+            ]
+        }));
+        let statuses: Vec<StepStatus> = child.steps.iter().map(|step| step.status).collect();
+        assert_eq!(
+            statuses,
+            vec![
+                StepStatus::Ok,
+                StepStatus::Error,
+                StepStatus::Blocked,
+                StepStatus::Running,
+                StepStatus::Unknown
+            ]
+        );
+    }
+
+    #[test]
+    fn an_older_payloads_failed_tool_is_not_a_blocked_call() {
+        let child = child(json!({
+            "agent": "worker",
+            "blocked": [
+                {"tool": "bash", "target": "cargo test", "reason": "Tool failed"},
+                {"tool": "edit", "target": "src/a.rs", "reason": "Plan mode: edit is disabled."}
+            ]
+        }));
+        assert_eq!(child.blocked.len(), 1);
+        assert_eq!(child.blocked[0].tool, "edit");
+    }
+
+    #[test]
+    fn silence_is_reported_only_for_a_quiet_thinking_child() {
+        let thinking = child(json!({
+            "agent": "scout", "status": "running", "phase": "thinking", "lastEventAt": 1_000
+        }));
+        assert_eq!(thinking.silent_for_ms(1_000 + SILENCE_AFTER_MS - 1), None);
+        assert_eq!(
+            thinking.silent_for_ms(1_000 + SILENCE_AFTER_MS),
+            Some(SILENCE_AFTER_MS)
+        );
+
+        // A running tool is quiet by nature; the row names the tool instead.
+        let tool = child(json!({
+            "agent": "scout", "status": "running", "phase": "tool", "lastEventAt": 1_000
+        }));
+        assert_eq!(tool.silent_for_ms(60_000), None);
+
+        // A settled child is not silent, and no timestamp invents nothing.
+        let done = child(json!({
+            "agent": "scout", "status": "done", "endedAt": 2, "lastEventAt": 1
+        }));
+        assert_eq!(done.silent_for_ms(60_000), None);
+        let unstamped = child(json!({"agent": "scout", "status": "running"}));
+        assert_eq!(unstamped.silent_for_ms(60_000), None);
+    }
+
+    #[test]
+    fn timeout_thinking_and_model_are_read_as_given() {
+        let child = child(json!({
+            "agent": "scout",
+            "status": "failed",
+            "phase": "killed",
+            "timedOut": true,
+            "thinking": "medium",
+            "model": "claude-haiku-4-5"
+        }));
+        assert!(child.timed_out);
+        assert_eq!(child.thinking.as_deref(), Some("medium"));
+        // A bare id has no namespace to drop.
+        assert_eq!(child.model_label().as_deref(), Some("claude-haiku-4-5"));
+        assert!(!super::SubagentChild::from_value(&json!({})).timed_out);
+    }
+
+    #[test]
+    fn the_run_clock_spans_its_children_and_runs_while_one_does() {
+        let settled = SubagentRun {
+            mode: Mode::Parallel,
+            children: vec![
+                child(
+                    json!({"agent": "a", "status": "done", "startedAt": 1_000, "endedAt": 20_000}),
+                ),
+                child(
+                    json!({"agent": "b", "status": "done", "startedAt": 2_000, "endedAt": 61_000}),
+                ),
+            ],
+        };
+        assert_eq!(settled.elapsed(999_000).as_deref(), Some("1:00"));
+
+        let live = SubagentRun {
+            mode: Mode::Parallel,
+            children: vec![
+                child(
+                    json!({"agent": "a", "status": "done", "startedAt": 1_000, "endedAt": 20_000}),
+                ),
+                child(json!({"agent": "b", "status": "running", "startedAt": 2_000})),
+            ],
+        };
+        assert_eq!(live.elapsed(31_000).as_deref(), Some("0:30"));
+
+        let unstamped = SubagentRun {
+            mode: Mode::Single,
+            children: vec![child(json!({"agent": "a", "status": "running"}))],
+        };
+        assert_eq!(unstamped.elapsed(5_000), None);
     }
 }

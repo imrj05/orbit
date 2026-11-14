@@ -919,6 +919,20 @@ Per child: status glyph · agent · capability chip · **current activity** · t
 per-tool tally on hover: `read ×4 · grep ×7 · bash ×1`) · elapsed · mode chip when not inherited ·
 model · usage. The running child's glyph pulses with the composer's existing wave.
 
+**Shipped:** the row is status glyph · agent · current activity · tool count · elapsed (tabular
+figures). The capability, model, thinking level and per-tool tally live at the top of the child's
+log rather than in the row, because a parallel run reads best as a column of activities. The
+tool count and elapsed are fixed-minimum, right-aligned cells that are always drawn, so a parallel
+run's rows line up as columns. The leading mark speaks the parent's activity language: a working
+child turns the shared spinner (static under Reduce Motion), a queued child shows a muted task
+glyph, and a settled child shows check / stop / ✕. Each row ends in the same disclosure chevron as
+every other expandable activity row. A single-child footer leaves out the count, tools and clock
+the row already shows; with no usage to report it is not drawn at all, and whatever ends the card
+carries the rounded bottom. The card frame keeps the quiet hairline on failure, like every
+activity card; the child's glyph and the error line say it failed. In chain mode each row carries its step number in muted tabular figures, so the footer's
+`step 2 of 3` points at a row; a parallel run has no order and is not numbered. A child that has
+sent no event for 15 s while starting or thinking reads `no activity for 21s`.
+
 Under the rows:
 
 - **Run footer** — `3 agents · 44 tools · 1:52 · ↑12.1k ↓2.6k <$0.05`; in chain mode also `step 2 of 3`.
@@ -948,6 +962,15 @@ open at a time (predictable row heights).
 
 The final **report** renders below the log as Markdown, display-capped with the existing
 `DETAIL_TEXT_CAP`, a copy action, and a `truncated N KiB` strip when the parent received a capped copy.
+
+**Shipped:** the log opens with the task (≤280 chars), then capability · model · thinking, then the
+tool tally. Steps use the parent's activity glyph and verb, with the `+N earlier steps` line *above*
+them, since the earlier steps came first. The verb column is 68px, and widens to 112px for the whole log when any verb is
+longer than eight characters (`List resources`), so no verb is cut and the arguments still align. A step that a guard refused gets a `warning` alert mark,
+and a failed step gets an `error` ✕; a successful step gets no mark. The report has a copy button
+that copies the whole report, and a note when the parent received only the first 4 KiB
+(`BOUNDS.contentReport`). Only a guard's own refusal sentence makes a call *blocked*; a tool that ran
+and failed is a failed step (`isDenial` in `run.js`).
 
 ### 9.4 States, and what each one says
 
@@ -1009,6 +1032,12 @@ total: they are not the parent's work, and counting them would inflate the turn.
 (the existing tool-detail binding), and a `jump to the running delegation` palette action scrolls to
 the card and focuses it. Focus never moves on its own when a child updates — a streaming card that
 steals focus mid-typing is worse than no card.
+
+**Shipped:** each child row is a tab stop (`SubagentRow` key context). `⏎` or `Space` toggles that
+child's log; `Esc` closes it when it is the open one and otherwise falls through to the global abort.
+A focused row paints the 1px `focus_ring` as an overlay, so focus costs no layout. A pointer click
+opens the log without taking focus, so the composer keeps the caret. `⌘O` and the palette action
+are not built: the transcript has no tool-detail binding yet for them to reuse.
 
 ### 9.9 When the user is not looking
 

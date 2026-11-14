@@ -471,6 +471,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
   };
 
   const children = [];
+  const progress = trailingProgress((force) => emitProgress(onUpdate, request.mode, children, force));
   const runOne = async (agent, task) => {
     const state = newChildState({
       id: `c${children.length + 1}`,
@@ -490,7 +491,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
       sessionId,
       parentModel: modelId(ctx?.model),
       parentThinking: typeof ctx?.thinkingLevel === "string" ? ctx.thinkingLevel : null,
-      onProgress: (force) => emitProgress(onUpdate, request.mode, children, force),
+      onProgress: progress.push,
     });
   };
 
@@ -509,6 +510,8 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
   } else {
     await runOne(resolved[0].agent, resolved[0].task);
   }
+  // The result below is the last word; nothing may update the card after it.
+  progress.stop();
 
   const details = runDetails(request.mode, children);
   return {
@@ -604,6 +607,47 @@ export async function runPool(items, limit, run) {
   });
   await Promise.all(workers);
   return results;
+}
+
+/**
+ * The trailing edge of the coalesced progress. `emitProgress` drops an update
+ * that lands inside its 400 ms window; without a trailing send, a child that
+ * starts a tool 100 ms after the last update and then runs it silently for a
+ * minute would sit on the card as "thinking" — and, once the card reports
+ * silence, as "no activity" — the whole time. One timer per run sends the
+ * latest state when the window closes. `stop` cancels it once the result is
+ * final.
+ */
+export function trailingProgress(
+  send,
+  { delay = 400, setTimer = setTimeout, clearTimer = clearTimeout } = {},
+) {
+  let timer = null;
+  let stopped = false;
+  return {
+    push(force = false) {
+      if (stopped) return;
+      if (force) {
+        if (timer !== null) clearTimer(timer);
+        timer = null;
+        send(true);
+        return;
+      }
+      send(false);
+      if (timer === null) {
+        timer = setTimer(() => {
+          timer = null;
+          if (!stopped) send(true);
+        }, delay);
+        timer?.unref?.();
+      }
+    },
+    stop() {
+      stopped = true;
+      if (timer !== null) clearTimer(timer);
+      timer = null;
+    },
+  };
 }
 
 /** Send a coalesced progress update; a transition always sends. */

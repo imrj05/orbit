@@ -45,6 +45,10 @@ pub(super) enum SubagentAction {
     ConfirmDelete,
     CancelDelete,
     UndoDelete,
+    /// Run the held-back Select / New / Duplicate and drop the edits.
+    ConfirmDiscard,
+    /// Keep the edits; forget the held-back action.
+    CancelDiscard,
     /// The banner's remedy: the other extension owns the name because it was
     /// installed from Settings → Plugins.
     OpenPlugins,
@@ -93,9 +97,17 @@ impl SubagentEditor {
     /// Whether the form differs from the file it was loaded from. A new
     /// draft is not "changed" — it has never been saved at all.
     fn is_dirty(&self, cx: &Context<OrbitApp>) -> bool {
-        if self.is_new {
-            return false;
-        }
+        !self.is_new && self.differs_from_baseline(cx)
+    }
+
+    /// Whether leaving the form would lose typing: a saved agent with
+    /// changes, or a draft that was edited after it was opened. An untouched
+    /// draft has nothing to lose.
+    fn has_unsaved_edits(&self, cx: &Context<OrbitApp>) -> bool {
+        self.differs_from_baseline(cx)
+    }
+
+    fn differs_from_baseline(&self, cx: &Context<OrbitApp>) -> bool {
         let same = |field: &Entity<ComposerInput>, value: &str| field.read(cx).text() == value;
         !(same(&self.name, &self.baseline.name)
             && same(&self.description, &self.baseline.description)
@@ -186,6 +198,8 @@ impl OrbitApp {
             // is the tooltip, and the file is reachable from Plugins either way.
             column = column.child(
                 div()
+                    // A tooltip needs an id to keep its hover state.
+                    .id("subagents-inactive-detail")
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_muted)
                     .truncate()
@@ -198,7 +212,8 @@ impl OrbitApp {
             div()
                 .id("subagents-inactive")
                 .debug_selector(|| "subagents-inactive".to_string())
-                .w_full()
+                // No `w_full`: the column stretches it, and full width plus
+                // the side margins would push its right edge off the page.
                 .mx(DynamicSpacing::Base16.px(&theme))
                 .mt(DynamicSpacing::Base12.px(&theme))
                 .bg(theme.surface_secondary)
@@ -453,12 +468,14 @@ impl OrbitApp {
         let enabled = config.agent_enabled(&name);
         let mode = config.agent_mode(&name);
         let ceiling = agent.ceiling();
-        let malformed = agent.parse_error.is_some()
-            || !self.subagents_skipped.is_empty()
-                && self
-                    .subagents_skipped
-                    .iter()
-                    .any(|(path, _)| Some(path) == agent.path.as_ref());
+        // What is wrong with the file, in the reader's own words: the mark
+        // alone would say only "something".
+        let problem = agent.parse_error.clone().or_else(|| {
+            self.subagents_skipped
+                .iter()
+                .find(|(path, _)| Some(path) == agent.path.as_ref())
+                .map(|(_, reason)| reason.clone())
+        });
         let meta_color = if selected {
             theme.selection_fg
         } else {
@@ -552,12 +569,18 @@ impl OrbitApp {
                             }),
                     ),
             )
-            .when(malformed, |row| {
-                row.child(icon(
-                    "icons/alert-circle.svg",
-                    IconSize::XSmall.px(&theme),
-                    theme.warning,
-                ))
+            .when_some(problem, |row, problem| {
+                row.child(
+                    div()
+                        .id(ElementId::Name(format!("subagent-row-warn-{name}").into()))
+                        .flex_none()
+                        .tip(problem)
+                        .child(icon(
+                            "icons/alert-circle.svg",
+                            IconSize::XSmall.px(&theme),
+                            theme.warning,
+                        )),
+                )
             })
             .when(!enabled, |row| {
                 row.child(
@@ -868,6 +891,58 @@ impl OrbitApp {
         } else {
             div().into_any_element()
         };
+
+        // Leaving with edits asks first, in place of the actions it would
+        // otherwise run beside, so the question sits where the eye already
+        // is and the edits stay on screen while the user decides.
+        if self.subagent_discard_pending.is_some() {
+            // The name it was opened under: the one in the list.
+            let name = editor.baseline.name.trim().to_string();
+            let hint = if name.is_empty() {
+                tr!("subagents_ui.discard_confirm_draft")
+            } else {
+                tr!("subagents_ui.discard_confirm_hint", name = name)
+            };
+            let confirm = div()
+                .debug_selector(|| "subagents-discard-confirm".to_string())
+                .px(DynamicSpacing::Base20.px(&theme))
+                .pb(DynamicSpacing::Base12.px(&theme))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(theme.ui_px(160.))
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_primary)
+                        .whitespace_normal()
+                        .child(hint),
+                )
+                .child(self.subagent_danger_button(
+                    "subagents-discard",
+                    tr!("subagents_ui.discard"),
+                    theme,
+                    this.clone(),
+                    SubagentAction::ConfirmDiscard,
+                ))
+                .child(self.subagent_secondary_button(
+                    "subagents-keep-editing",
+                    tr!("subagents_ui.keep_editing"),
+                    theme,
+                    this.clone(),
+                    SubagentAction::CancelDiscard,
+                ));
+            return div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .child(identity)
+                .child(confirm)
+                .child(div().h(BORDER_WIDTH).bg(theme.border))
+                .into_any_element();
+        }
 
         let actions = div()
             .px(DynamicSpacing::Base20.px(&theme))
@@ -1517,10 +1592,14 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base04.px(theme))
             .child(
                 div()
+                    .id("subagent-file-path")
                     .text_size(TextSize::XSmall.px(theme))
                     .font_family(theme::code_font_family())
                     .text_color(theme.text_muted)
                     .truncate()
+                    // Truncated like every path in the workbench; the whole
+                    // value is the tooltip.
+                    .tip(path.display().to_string())
                     .child(SharedString::from(path.display().to_string())),
             )
             .child(
@@ -1610,7 +1689,7 @@ impl OrbitApp {
                             this.clone(),
                             SubagentAction::Reveal,
                         ))
-                        .child(self.subagent_link(
+                        .child(self.subagent_secondary_button(
                             "subagents-open",
                             tr!("subagents_ui.open_in_editor"),
                             *theme,
@@ -1779,8 +1858,9 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// A title/description row with its control on the right, matching the
-    /// settings pages' row anatomy.
+    /// A title/description row with its control on the right: the settings
+    /// pages' own row, so the limits read at the same size, height and
+    /// control width as every other settings row.
     fn subagent_control_row(
         &self,
         theme: &Theme,
@@ -1788,37 +1868,7 @@ impl OrbitApp {
         desc: Option<String>,
         control: AnyElement,
     ) -> AnyElement {
-        div()
-            .w_full()
-            .px(DynamicSpacing::Base16.px(theme))
-            .py(DynamicSpacing::Base12.px(theme))
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base16.px(theme))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(DynamicSpacing::Base03.px(theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(title),
-                    )
-                    .children(desc.map(|desc| {
-                        div()
-                            .text_size(TextSize::XSmall.px(theme))
-                            .text_color(theme.text_muted)
-                            .whitespace_normal()
-                            .child(desc)
-                    })),
-            )
-            .child(div().flex_none().child(control))
-            .into_any_element()
+        self.setting_row(*theme, &title, desc.as_deref(), None, Some(control))
     }
 
     fn subagent_tool_chip(
@@ -1856,7 +1906,9 @@ impl OrbitApp {
             theme.text_muted
         })
         .cursor_pointer()
-        .hover_state(&theme)
+        // A checked chip keeps its selected fill under the pointer, like the
+        // thinking chips: hover never reads as "unchecked".
+        .when(!on, |chip| chip.hover_state(&theme))
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             let tool = toggle.clone();
             this.update(cx, |app, cx| {
@@ -1899,7 +1951,7 @@ impl OrbitApp {
         .group(BUTTON_GROUP)
         .border_1()
         .border_color(if active {
-            theme.accent.opacity(0.5)
+            theme.border_strong
         } else {
             theme.border
         })
@@ -2100,31 +2152,6 @@ impl OrbitApp {
                 this.update(cx, |app, cx| app.apply_subagent_action(action, cx));
             })
             .into_any_element()
-    }
-
-    fn subagent_link(
-        &self,
-        id: &'static str,
-        label: String,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        action: SubagentAction,
-    ) -> AnyElement {
-        press(
-            div()
-                .id(ElementId::Name(id.into()))
-                .flex_none()
-                .cursor_pointer()
-                .text_size(TextSize::XSmall.px(&theme))
-                .text_color(theme.accent_text)
-                .hover_ink(&theme),
-        )
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            let action = action.clone();
-            this.update(cx, |app, cx| app.apply_subagent_action(action, cx));
-        })
-        .into_any_element()
     }
 
     // ── controller ──────────────────────────────────────────────────
@@ -2349,8 +2376,43 @@ impl OrbitApp {
 
     /// Single dispatch point for every Subagents-page control.
     pub(super) fn apply_subagent_action(&mut self, action: SubagentAction, cx: &mut Context<Self>) {
+        // Leaving the form rebuilds it from disk, so an action that leaves
+        // it waits for an answer while there are edits to lose.
+        let leaves_form = matches!(
+            action,
+            SubagentAction::Select(_) | SubagentAction::New | SubagentAction::Duplicate
+        );
+        if leaves_form
+            && self
+                .subagent_editor
+                .as_ref()
+                .is_some_and(|editor| editor.has_unsaved_edits(cx))
+        {
+            if let SubagentAction::Select(name) = &action {
+                if Some(name) == self.selected_subagent.as_ref() {
+                    // Re-selecting the open agent changes nothing.
+                    return;
+                }
+            }
+            self.subagent_delete_confirm = false;
+            self.subagent_discard_pending = Some(action);
+            cx.notify();
+            return;
+        }
+        self.run_subagent_action(action, cx);
+    }
+
+    fn run_subagent_action(&mut self, action: SubagentAction, cx: &mut Context<Self>) {
         self.subagent_error = None;
+        // Any other answer to the page drops a pending discard question.
+        let pending = self.subagent_discard_pending.take();
         match action {
+            SubagentAction::ConfirmDiscard => {
+                if let Some(pending) = pending {
+                    self.run_subagent_action(pending, cx);
+                }
+            }
+            SubagentAction::CancelDiscard => {}
             SubagentAction::Select(name) => {
                 self.selected_subagent = Some(name);
                 self.subagent_delete_confirm = false;
@@ -2920,6 +2982,47 @@ mod tests {
         assert_eq!(Tier::from_tools(&tools), None);
         // A known tool is the preset's business: Read takes bash away.
         assert!(!tools.iter().any(|tool| tool == "bash"));
+    }
+
+    /// Leaving a form with edits asks first: the edits survive the question,
+    /// Keep editing keeps them, and Discard runs the held-back selection.
+    #[gpui::test]
+    fn leaving_unsaved_edits_asks_before_discarding(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.subagents = crate::subagent_file::builtin_agents();
+                let names: Vec<String> =
+                    app.subagents.iter().map(|a| a.name().to_string()).collect();
+                assert!(names.len() >= 2, "two builtins to move between");
+                app.selected_subagent = Some(names[0].clone());
+                app.rebuild_subagent_editor(cx);
+                let prompt = app.subagent_editor.as_ref().unwrap().prompt.clone();
+                prompt.update(cx, |input, cx| input.set_text("edited", cx));
+
+                app.apply_subagent_action(SubagentAction::Select(names[1].clone()), cx);
+                assert!(app.subagent_discard_pending.is_some(), "asks first");
+                assert_eq!(app.selected_subagent.as_deref(), Some(names[0].as_str()));
+                assert!(app.subagent_editor.as_ref().unwrap().is_dirty(cx));
+
+                app.apply_subagent_action(SubagentAction::CancelDiscard, cx);
+                assert!(app.subagent_discard_pending.is_none());
+                assert!(app.subagent_editor.as_ref().unwrap().is_dirty(cx));
+
+                app.apply_subagent_action(SubagentAction::Select(names[1].clone()), cx);
+                app.apply_subagent_action(SubagentAction::ConfirmDiscard, cx);
+                assert!(app.subagent_discard_pending.is_none());
+                assert_eq!(app.selected_subagent.as_deref(), Some(names[1].as_str()));
+                assert!(!app.subagent_editor.as_ref().unwrap().is_dirty(cx));
+
+                // A form with nothing to lose moves at once.
+                app.apply_subagent_action(SubagentAction::Select(names[0].clone()), cx);
+                assert!(app.subagent_discard_pending.is_none());
+                assert_eq!(app.selected_subagent.as_deref(), Some(names[0].as_str()));
+            });
+        });
     }
 
     /// The model control writes the file's `provider/id`, and its first row

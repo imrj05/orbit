@@ -302,7 +302,10 @@ export function applyEvent(state, event, now = Date.now()) {
     state.toolCounts[name] = (state.toolCounts[name] ?? 0) + 1;
     state.phase = "tool";
     state.current = describeTool(name, event.args);
-    state.steps.push({ kind: "tool", name, preview: previewArgs(event.args) });
+    const step = { kind: "tool", name, preview: previewArgs(event.args), status: "running" };
+    // The call id only correlates the end event; it never crosses the pipe.
+    if (typeof event.toolCallId === "string") step.callId = event.toolCallId;
+    state.steps.push(step);
     if (state.steps.length > BOUNDS.steps) state.steps = state.steps.slice(-BOUNDS.steps);
     return state;
   }
@@ -310,12 +313,24 @@ export function applyEvent(state, event, now = Date.now()) {
   if (type === "tool_execution_end") {
     state.phase = "thinking";
     state.current = null;
-    if (event.isError === true) {
-      const name = String(event.toolName ?? "tool");
+    const name = String(event.toolName ?? "tool");
+    const step = findOpenStep(state.steps, event.toolCallId, name);
+    if (event.isError !== true) {
+      if (step) step.status = "ok";
+      return state;
+    }
+    // A guard denial and a tool that ran and failed are different facts: the
+    // first is the mode's decision, the second is the work's outcome (a grep
+    // with no match, a red test). Only a guard's own sentence makes a call
+    // blocked; anything else is an ordinary failed step.
+    const text = resultText(event.result);
+    const denied = isDenial(text);
+    if (step) step.status = denied ? "blocked" : "error";
+    if (denied) {
       state.blocked.push({
         tool: name,
-        target: previewArgs(event.args) || null,
-        reason: "Tool failed",
+        target: step?.preview || previewArgs(event.args) || null,
+        reason: truncate(text.split("\n")[0], BOUNDS.preview),
       });
       if (state.blocked.length > BOUNDS.blocked) state.blocked = state.blocked.slice(-BOUNDS.blocked);
     }
@@ -331,6 +346,51 @@ export function applyEvent(state, event, now = Date.now()) {
   }
 
   return state;
+}
+
+/**
+ * The step a `tool_execution_end` closes: by call id when pi sent one, else
+ * the latest still-running step of the same tool. `null` once it has been
+ * trimmed out of the bounded log.
+ */
+function findOpenStep(steps, callId, name) {
+  if (typeof callId === "string") {
+    const byId = steps.find((step) => step.callId === callId);
+    if (byId) return byId;
+  }
+  for (let ix = steps.length - 1; ix >= 0; ix -= 1) {
+    if (steps[ix].status === "running" && steps[ix].name === name) return steps[ix];
+  }
+  return null;
+}
+
+/**
+ * Whether a failed tool result is a `tool_call` hook's refusal rather than the
+ * tool's own failure. pi carries no structured flag for this — a blocked call
+ * is an error result whose text is the hook's `reason` — so the sentences are
+ * matched by their known openings:
+ *
+ *   - orbit-guard-extension: `Blocked: …`, `Blocked by an Orbit permission
+ *     rule: …`, `Denied in Orbit`;
+ *   - orbit-workflow-extension: `Plan mode: …`, `Ask mode: …`;
+ *   - pi itself, for a hook that gave no reason: `Tool execution was blocked`.
+ */
+export function isDenial(text) {
+  return /^(Blocked\b|Denied in Orbit\b|(Plan|Ask) mode:|Tool execution was blocked\b)/.test(
+    String(text ?? ""),
+  );
+}
+
+/** The text blocks of a tool result, joined and trimmed. */
+function resultText(result) {
+  if (typeof result === "string") return result.trim();
+  const content = result?.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
 }
 
 /** Settle a child from its own evidence (§8), never from an assumption. */
@@ -391,7 +451,10 @@ export function childDetails(state) {
     tools: state.tools,
     toolCounts: Object.fromEntries(toolCounts),
     cwd: state.cwd,
-    steps: state.steps.map((step) => ({ ...step, preview: truncate(step.preview, BOUNDS.preview) })),
+    steps: state.steps.map(({ callId: _callId, ...step }) => ({
+      ...step,
+      preview: truncate(step.preview, BOUNDS.preview),
+    })),
     stepsTotal: state.stepsTotal,
     report,
     error: state.error,
@@ -402,6 +465,7 @@ export function childDetails(state) {
     usage: state.usage,
     startedAt: state.startedAt,
     endedAt: state.endedAt,
+    timedOut: state.timedOut === true,
   };
 }
 

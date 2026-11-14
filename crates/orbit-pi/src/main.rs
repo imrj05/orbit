@@ -237,6 +237,10 @@ actions!(
 // the keyboard. Scoped so Enter cannot fall through to the composer's Submit.
 actions!(new_task_keys, [OpenWorkspacePicker]);
 actions!(switch_keys, [SwitchToggle]);
+// A delegation card's child row, while its focus handle owns the keyboard:
+// Enter/Space open that child's log, Escape closes it (and otherwise falls
+// through to the global abort).
+actions!(subagent_keys, [SubagentRowToggle, SubagentRowClose]);
 actions!(
     git_list_keys,
     [
@@ -652,6 +656,11 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // does. Its context rides the switch's own focus handle.
         KeyBinding::new("space", SwitchToggle, Some("Switch")),
         KeyBinding::new("enter", SwitchToggle, Some("Switch")),
+        // A focused subagent row opens and closes its child's log. Escape
+        // only closes; on a closed row it propagates to the global abort.
+        KeyBinding::new("enter", SubagentRowToggle, Some("SubagentRow")),
+        KeyBinding::new("space", SubagentRowToggle, Some("SubagentRow")),
+        KeyBinding::new("escape", SubagentRowClose, Some("SubagentRow")),
     ]);
 }
 

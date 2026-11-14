@@ -16,7 +16,14 @@ import os from "node:os";
 import path from "node:path";
 import test, { beforeEach } from "node:test";
 
-import activate, { PARAMETERS, PROMPT_SNIPPET, executeTool, parseRequest, runPool } from "./index.js";
+import activate, {
+  PARAMETERS,
+  PROMPT_SNIPPET,
+  executeTool,
+  parseRequest,
+  runPool,
+  trailingProgress,
+} from "./index.js";
 
 let home;
 
@@ -675,4 +682,34 @@ test("a rule never widens Plan mode", async () => {
   const result = await callTool(fakePi(), spawn, { agent: "worker", task: "fix it" });
   assert.equal(spawn.calls.length, 0);
   assert.match(result.content[0].text, /Plan/);
+});
+
+test("a skipped progress update is sent when the window closes, and never after stop", () => {
+  const sent = [];
+  const timers = [];
+  const progress = trailingProgress((force) => sent.push(force), {
+    setTimer: (fn) => {
+      timers.push(fn);
+      return timers.length;
+    },
+    clearTimer: (id) => {
+      timers[id - 1] = null;
+    },
+  });
+  progress.push(false);
+  progress.push(false);
+  assert.deepEqual(sent, [false, false]);
+  assert.equal(timers.filter(Boolean).length, 1, "one trailing timer per window");
+  timers[0]();
+  assert.deepEqual(sent, [false, false, true]);
+
+  progress.push(false);
+  progress.push(true);
+  assert.equal(timers[1], null, "a forced send cancels the trailing one");
+
+  progress.push(false);
+  progress.stop();
+  assert.equal(timers[2], null);
+  progress.push(true);
+  assert.deepEqual(sent, [false, false, true, false, true, false]);
 });

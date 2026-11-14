@@ -159,6 +159,14 @@ const EDIT_DIFF_ROW_HEIGHT: f32 = 19.0;
 /// Copy feedback for an inline edit diff; section `3` never collides with
 /// Arguments (`0`) / Output (`1`) / code block (`2`).
 const EDIT_DIFF_COPY_SECTION: u8 = 3;
+/// Copy feedback for a subagent child's report: section `16 + child`, clear
+/// of every section above, so each child's report acknowledges on its own.
+const SUBAGENT_REPORT_COPY_SECTION: u8 = 16;
+/// What the parent model receives of a child's report, in bytes. Mirrors
+/// `BOUNDS.contentReport` in `contrib/orbit-subagents-extension/run.js`: the
+/// card holds the full report (≤64 KiB), the parent only this prefix, and the
+/// card says so when the two differ.
+const SUBAGENT_PARENT_REPORT_BYTES: usize = 4 * 1024;
 /// A diff taller than this collapses to a preview so one virtualized row
 /// stays bounded; expanding paints at most [`EDIT_DIFF_PAINT_LINES`].
 const EDIT_DIFF_COLLAPSE_LINES: usize = 40;
@@ -3615,6 +3623,80 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
     card.into_any_element()
 }
 
+/// What a subagent row runs when it is activated, by click or by key.
+type SubagentRowToggleFn = Rc<dyn Fn(&mut App)>;
+/// What Escape runs on a focused row; `false` when it had nothing to close.
+type SubagentRowCloseFn = Rc<dyn Fn(&mut App) -> bool>;
+
+/// A delegation card's child row as a keyboard stop (§9.8): Tab reaches it,
+/// Enter or Space opens that child's log, Escape closes it, and a focused row
+/// wears the 1px ring over its fill without moving a pixel of layout.
+///
+/// A pointer click opens the log but leaves keyboard focus where it was, so
+/// clicking a card mid-turn never pulls the caret out of the composer. The
+/// handle lives in keyed state, so focus survives the card's repaints while a
+/// child streams; nothing here ever moves focus on its own.
+#[derive(IntoElement)]
+struct SubagentRowKeys {
+    focus_id: SharedString,
+    row: gpui::Stateful<gpui::Div>,
+    /// The card's first row shares its rounded top edge.
+    first: bool,
+    /// The card's last row shares its rounded bottom edge when nothing
+    /// follows it.
+    last: bool,
+    theme: Theme,
+    toggle: SubagentRowToggleFn,
+    close: SubagentRowCloseFn,
+}
+
+impl RenderOnce for SubagentRowKeys {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let SubagentRowKeys {
+            focus_id,
+            row,
+            first,
+            last,
+            theme,
+            toggle,
+            close,
+        } = self;
+        let focus = window
+            .use_keyed_state(ElementId::Name(focus_id), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
+            })
+            .read(cx)
+            .clone();
+        let focused = focus.is_focused(window);
+        let radius = panel::RADIUS.px(&theme);
+        row.track_focus(&focus)
+            .key_context("SubagentRow")
+            // A click is pointer work: keep focus where the reader left it.
+            // Registered after `track_focus`, so it runs first in the bubble
+            // phase and the focus transfer sees the default prevented.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_action(move |_: &crate::SubagentRowToggle, _, cx| toggle(cx))
+            .on_action(move |_: &crate::SubagentRowClose, _, cx| {
+                if !close(cx) {
+                    cx.propagate();
+                }
+            })
+            .relative()
+            .when(focused, |row| {
+                row.child(
+                    div()
+                        .debug_selector(|| "subagent-row-focus-ring".to_string())
+                        .absolute()
+                        .inset_0()
+                        .when(first, |ring| ring.rounded_t(radius))
+                        .when(last, |ring| ring.rounded_b(radius))
+                        .border_1()
+                        .border_color(theme.focus_ring),
+                )
+            })
+    }
+}
+
 /// The collapsed header's middle slot for one child: what it is doing now, or
 /// the terminal state. Data (a tool preview) passes through untranslated; the
 /// status words are keys.
@@ -3624,6 +3706,7 @@ fn subagent_status_label(child: &crate::subagent::SubagentChild) -> String {
         Phase::Queued => tr!("transcript_view.subagent_waiting_slot"),
         Phase::Spawning => tr!("transcript_view.subagent_starting"),
         Phase::Refused => tr!("transcript_view.subagent_refused"),
+        Phase::Killed if child.timed_out => tr!("transcript_view.subagent_timed_out"),
         _ => match child.status {
             Status::Running => tr!("transcript_view.subagent_thinking"),
             Status::Done => tr!("transcript_view.subagent_done"),
@@ -3648,6 +3731,7 @@ fn render_subagent_card(
     tool_open: bool,
     expanded_tools: ExpandedTools,
     open_child_logs: OpenChildLogs,
+    copied_sections: CopiedSections,
     scroller: MessageScrollerState,
 ) -> AnyElement {
     use crate::subagent::Status;
@@ -3668,10 +3752,6 @@ fn render_subagent_card(
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0);
     let id = (key.0 as u64) << 16 | key.1 as u64;
-    let failed = run
-        .children
-        .iter()
-        .any(|child| matches!(child.status, Status::Failed));
 
     let mut card = div()
         .id(ElementId::NamedInteger("subagent-card".into(), id))
@@ -3680,15 +3760,24 @@ fn render_subagent_card(
         .min_w_0()
         .overflow_hidden()
         .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(
-            &theme,
-            if failed { theme.error } else { theme.border },
-            panel::RADIUS.px(&theme),
-        )
+        // The same quiet hairline as every activity card: a failure is said
+        // by the child's glyph and the error line under the rows, so the
+        // frame does not shout it a third time.
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
         .bg(frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
+    let children_len = run.children.len();
+    // With one child the row already carries its count and clock, so the
+    // footer keeps only what the row cannot say — the cost — and is left out
+    // when there is none. Whatever ends the card owns its rounded bottom:
+    // GPUI clips to a rectangle, so a fill on the last element would
+    // otherwise square off the card's corners.
+    let several = children_len > 1;
+    let has_footer = several || run.usage().is_some();
+    let strips = subagent_reason_lines(run);
+    let rows_end_card = !open && !has_footer && strips.is_empty();
     for (ix, child) in run.children.iter().enumerate() {
         let mut row = div()
             .id(ElementId::NamedInteger(
@@ -3697,6 +3786,9 @@ fn render_subagent_card(
             ))
             .debug_selector(move || format!("subagent-row-{}-{}-{}", key.0, key.1, ix))
             .when(ix == 0, |row| row.rounded_t(panel::RADIUS.px(&theme)))
+            .when(rows_end_card && ix + 1 == children_len, |row| {
+                row.rounded_b(panel::RADIUS.px(&theme))
+            })
             .h(DynamicSpacing::Base32.px(&theme))
             .px(DynamicSpacing::Base08.px(&theme))
             .flex()
@@ -3708,48 +3800,115 @@ fn render_subagent_card(
             // The open child's row is the index to the log below it, so it
             // carries the selected fill (DESIGN.md §The State Contract).
             .when(open_child == Some(ix), |row| row.bg(theme.surface_selected))
-            .hover_on_glass(&theme)
-            .on_click({
-                let expanded = expanded_tools.clone();
-                let open_children = open_child_logs.clone();
-                let scroller = scroller.clone();
-                move |_, _, cx| {
-                    // One click, two consequences: open that child's log, and open
-                    // the card that holds it. Clicking the open child closes both.
-                    let selected = open_children.borrow().get(&key).copied();
-                    let mut children = open_children.borrow_mut();
-                    let mut open = expanded.borrow_mut();
-                    if selected == Some(ix) {
-                        children.remove(&key);
-                        open.remove(&key);
-                    } else {
-                        children.insert(key, ix);
-                        open.insert(key);
-                    }
-                    drop(open);
-                    drop(children);
-                    scroller.remeasure_toggle(key.0);
-                    cx.refresh_windows();
+            .hover_on_glass(&theme);
+        // One activation, two consequences: open that child's log, and open
+        // the card that holds it. Activating the open child closes both. The
+        // pointer and the keyboard share this one path (§9.8).
+        let toggle: SubagentRowToggleFn = {
+            let expanded = expanded_tools.clone();
+            let open_children = open_child_logs.clone();
+            let scroller = scroller.clone();
+            Rc::new(move |cx: &mut App| {
+                let selected = open_children.borrow().get(&key).copied();
+                let mut children = open_children.borrow_mut();
+                let mut open = expanded.borrow_mut();
+                if selected == Some(ix) {
+                    children.remove(&key);
+                    open.remove(&key);
+                } else {
+                    children.insert(key, ix);
+                    open.insert(key);
                 }
-            });
+                drop(open);
+                drop(children);
+                scroller.remeasure_toggle(key.0);
+                cx.refresh_windows();
+            })
+        };
+        // Escape closes this child's log when it is the open one; otherwise it
+        // is not this row's key, and the reply is `false` so the global
+        // Escape (abort the run) still fires.
+        let close: SubagentRowCloseFn = {
+            let expanded = expanded_tools.clone();
+            let open_children = open_child_logs.clone();
+            let scroller = scroller.clone();
+            Rc::new(move |cx: &mut App| {
+                let selected = open_children.borrow().get(&key).copied();
+                let card_open = expanded.borrow().contains(&key);
+                let this_open =
+                    card_open && subagent_open_child(selected, children_len) == Some(ix);
+                if !this_open {
+                    return false;
+                }
+                open_children.borrow_mut().remove(&key);
+                expanded.borrow_mut().remove(&key);
+                scroller.remeasure_toggle(key.0);
+                cx.refresh_windows();
+                true
+            })
+        };
+        row = row.on_click({
+            let toggle = toggle.clone();
+            move |_, _, cx| toggle(cx)
+        });
 
-        let tone = if matches!(child.status, Status::Failed) {
-            theme.error
-        } else if child.is_live() && pulse {
-            theme.accent_text
-        } else if child.is_live() {
-            theme.text_secondary
-        } else {
-            theme.text_muted
+        // The leading mark is the child's state, in the parent's own activity
+        // language: a working child turns the shared spinner (static under
+        // Reduce Motion), a queued one waits in muted ink, and a settled one
+        // shows its outcome. Shape differs per state, so tone is never the
+        // only signal.
+        let queued = matches!(child.phase, crate::subagent::Phase::Queued);
+        let status_mark = match child.status {
+            Status::Running if pulse && !queued => crate::app::spinner(
+                ElementId::NamedInteger("subagent-spin".into(), id << 8 | ix as u64),
+                IconSize::Small.px(&theme),
+                theme.accent_text,
+                theme,
+            ),
+            Status::Running => glyph(
+                "icons/task.svg",
+                IconSize::Small.px(&theme),
+                if queued {
+                    theme.text_muted
+                } else {
+                    theme.text_secondary
+                },
+            )
+            .into_any_element(),
+            Status::Done => glyph(
+                "icons/check.svg",
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+            )
+            .into_any_element(),
+            Status::Failed => {
+                glyph("icons/stop.svg", IconSize::Small.px(&theme), theme.error).into_any_element()
+            }
+            Status::Aborted => glyph(
+                "icons/circle-x.svg",
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+            )
+            .into_any_element(),
         };
-        let icon = match child.status {
-            Status::Failed => "icons/stop.svg",
-            Status::Done => "icons/check.svg",
-            Status::Aborted => "icons/circle-x.svg",
-            Status::Running => "icons/task.svg",
-        };
+        // A chain runs in order, so its rows carry their step number: the
+        // footer's `step 2 of 3` then points at a row the eye can find.
+        let chain = matches!(run.mode, crate::subagent::Mode::Chain) && children_len > 1;
         row = row
-            .child(glyph(icon, IconSize::Small.px(&theme), tone))
+            .child(status_mark)
+            .when(chain, |row| {
+                row.child(
+                    div()
+                        .debug_selector(move || {
+                            format!("subagent-row-step-{}-{}-{ix}", key.0, key.1)
+                        })
+                        .flex_none()
+                        .font(crate::usage::view::num_font())
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(format!("{}", ix + 1))),
+                )
+            })
             .child(
                 div()
                     .flex_none()
@@ -3757,25 +3916,22 @@ fn render_subagent_card(
                     .text_color(theme.text_primary)
                     .child(SharedString::from(child.label().to_string())),
             );
-        if let Some(capability) = child.capability_label() {
-            row = row.child(
-                div()
-                    .flex_none()
-                    .px(DynamicSpacing::Base06.px(&theme))
-                    .py(px(1.))
-                    .rounded(Radius::Small.px(&theme))
-                    .bg(theme.overlay_strong)
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .line_height(theme.ui_px(14.))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(capability)),
-            );
-        }
-        let middle = child
-            .current
-            .clone()
-            .filter(|current| !current.trim().is_empty())
-            .unwrap_or_else(|| subagent_status_label(child));
+        // The row is the claim — who, doing what, for how long. What the child
+        // ran under (capability, model, thinking) is in its log, one click
+        // down, so a parallel run reads as a column of activities.
+        // Silence is reported as silence (D-V): a child that has sent nothing
+        // for a while says so rather than repeating "thinking".
+        let middle = match child.silent_for_ms(now_ms) {
+            Some(quiet) => tr!(
+                "transcript_view.subagent_silent",
+                elapsed = format_working_elapsed(Duration::from_millis(quiet.max(0) as u64))
+            ),
+            None => child
+                .current
+                .clone()
+                .filter(|current| !current.trim().is_empty())
+                .unwrap_or_else(|| subagent_status_label(child)),
+        };
         row = row.child(
             div()
                 .flex_1()
@@ -3784,91 +3940,72 @@ fn render_subagent_card(
                 .text_color(theme.text_secondary)
                 .child(SharedString::from(middle)),
         );
-        if child.tools > 0 {
-            row = row.child(
-                div()
-                    .flex_none()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(if child.tools == 1 {
-                        tr!("transcript_view.subagent_tools_one", count = 1)
-                    } else {
-                        tr!("transcript_view.subagent_tools_other", count = child.tools)
-                    }),
-            );
-        }
-        if let Some(elapsed) =
-            crate::subagent::format_elapsed(child.started_at, child.ended_at, now_ms)
-        {
-            row = row.child(
-                div()
-                    .flex_none()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(elapsed),
-            );
-        }
-        if let Some(model) = child.model.clone() {
-            row = row.child(
-                div()
-                    .flex_none()
-                    .max_w(px(160.))
-                    .truncate()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(model)),
-            );
-        }
-        card = card.child(row);
+        // The counts are columns, not trailing words: each cell is always
+        // drawn at a fixed minimum and right-aligned in tabular figures, so a
+        // parallel run's rows line up and a ticking clock never nudges its
+        // neighbours.
+        let metric = |min_w: f32, text: Option<String>| {
+            div()
+                .flex_none()
+                .min_w(theme.ui_px(min_w))
+                .flex()
+                .justify_end()
+                .font(crate::usage::view::num_font())
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
+                .when_some(text, |cell, text| cell.child(text))
+        };
+        let tools = (child.tools > 0).then(|| {
+            if child.tools == 1 {
+                tr!("transcript_view.subagent_tools_one", count = 1)
+            } else {
+                tr!("transcript_view.subagent_tools_other", count = child.tools)
+            }
+        });
+        row = row
+            .child(metric(56., tools))
+            .child(
+                metric(
+                    36.,
+                    crate::subagent::format_elapsed(child.started_at, child.ended_at, now_ms),
+                )
+                .debug_selector(move || format!("subagent-row-clock-{}-{}-{ix}", key.0, key.1)),
+            )
+            // The row opens a log, so it says so the way every other
+            // expandable activity row does.
+            .child(disclosure_chevron(
+                format!("subagent-row-caret-{}-{}-{ix}", key.0, key.1),
+                open && open_child == Some(ix),
+                IconSize::XSmall.px(&theme),
+                theme.text_muted,
+                &theme,
+            ));
+        card = card.child(SubagentRowKeys {
+            focus_id: SharedString::from(format!("subagent-row-focus-{}-{}-{ix}", key.0, key.1)),
+            row,
+            first: ix == 0,
+            last: rows_end_card && ix + 1 == children_len,
+            theme,
+            toggle,
+            close,
+        });
     }
 
-    // A run that never started says why, in the extension's own sentence.
-    if let Some(child) = run
-        .children
-        .iter()
-        .find(|child| matches!(child.phase, crate::subagent::Phase::Refused))
-    {
+    let strip_count = strips.len();
+    for (ix, (message, evidence, tone)) in strips.into_iter().enumerate() {
+        let round_bottom = !open && !has_footer && ix + 1 == strip_count;
         card = card.child(render_subagent_strip(
-            child.error.as_deref().unwrap_or(""),
-            None,
+            &message,
+            evidence.as_deref(),
+            tone,
+            round_bottom,
             theme,
         ));
-    } else if let Some(child) = run.children.iter().find(|child| !child.blocked.is_empty()) {
-        let call = &child.blocked[0];
-        let call = match &call.target {
-            Some(target) if !target.is_empty() => format!("{} {target}", call.tool),
-            _ => call.tool.clone(),
-        };
-        let mode = match child.workflow_mode.as_deref() {
-            Some("plan") => tr!("transcript_view.subagent_mode_plan"),
-            Some("ask") => tr!("transcript_view.subagent_mode_ask"),
-            _ => tr!("transcript_view.subagent_mode_build"),
-        };
-        card = card.child(render_subagent_strip(
-            &tr!(
-                "transcript_view.subagent_blocked_by",
-                mode = mode,
-                call = call
-            ),
-            None,
-            theme,
-        ));
-    } else if let Some(child) = run
-        .children
-        .iter()
-        .find(|child| matches!(child.status, Status::Failed))
-    {
-        if let Some(error) = child.error.as_deref() {
-            card = card.child(render_subagent_strip(
-                error,
-                child.stderr_tail.as_deref(),
-                theme,
-            ));
-        }
     }
 
     // Footer: the run's state and what it cost.
     let mut footer = div()
+        .debug_selector(|| "subagent-footer".to_string())
         .w_full()
         .border_t_1()
         .border_color(theme.border)
@@ -3881,34 +4018,55 @@ fn render_subagent_card(
         .text_size(TextSize::Small.px(&theme))
         .line_height(theme.ui_px(15.))
         .text_color(theme.text_muted);
-    let state = if run.is_live() {
-        tr!(
-            "transcript_view.subagent_running_of",
-            running = run.running(),
-            total = run.children.len()
-        )
-    } else {
-        let done = run
-            .children
-            .iter()
-            .filter(|child| matches!(child.status, Status::Done))
-            .count();
-        if done == 1 {
-            tr!("transcript_view.subagent_done_one", count = 1)
-        } else {
-            tr!("transcript_view.subagent_done_other", count = done)
-        }
-    };
-    footer = footer.child(state);
-    if run.total_tools() > 0 {
-        footer = footer.child(div().flex_none().child(if run.total_tools() == 1 {
-            tr!("transcript_view.subagent_tools_one", count = 1)
-        } else {
+    // A single child's row already says whether it runs or finished, so the
+    // footer only counts children when there is more than one to count.
+    if several {
+        let state = if run.is_live() {
             tr!(
-                "transcript_view.subagent_tools_other",
-                count = run.total_tools()
+                "transcript_view.subagent_running_of",
+                running = run.running(),
+                total = run.children.len()
             )
-        }));
+        } else {
+            let done = run
+                .children
+                .iter()
+                .filter(|child| matches!(child.status, Status::Done))
+                .count();
+            if done == 1 {
+                tr!("transcript_view.subagent_done_one", count = 1)
+            } else {
+                tr!("transcript_view.subagent_done_other", count = done)
+            }
+        };
+        footer = footer.child(
+            div()
+                .debug_selector(|| "subagent-footer-state".to_string())
+                .child(state),
+        );
+    }
+    if several && run.total_tools() > 0 {
+        footer = footer.child(
+            div()
+                .flex_none()
+                .font(crate::usage::view::num_font())
+                .child(if run.total_tools() == 1 {
+                    tr!("transcript_view.subagent_tools_one", count = 1)
+                } else {
+                    tr!(
+                        "transcript_view.subagent_tools_other",
+                        count = run.total_tools()
+                    )
+                }),
+        );
+    }
+    if let Some(elapsed) = run.elapsed(now_ms).filter(|_| several) {
+        footer = footer.child(
+            div()
+                .flex_none()
+                .font(crate::usage::view::num_font())
+                .child(elapsed),
+        );
     }
     if matches!(run.mode, crate::subagent::Mode::Chain) && !run.children.is_empty() {
         let step = run
@@ -3934,24 +4092,119 @@ fn render_subagent_card(
             label.push_str(" · ");
             label.push_str(&crate::context_meter::format_cost(cost));
         }
-        footer = footer.child(div().flex_none().child(SharedString::from(label)));
+        footer = footer.child(
+            div()
+                .flex_none()
+                .font(crate::usage::view::num_font())
+                .child(SharedString::from(label)),
+        );
     }
-    card = card.child(footer);
+    if has_footer {
+        card = card.child(footer);
+    }
 
     if open {
         if let Some(ix) = open_child {
-            card = card.child(render_subagent_detail(run, ix, theme));
+            card = card.child(render_subagent_detail(run, ix, key, copied_sections, theme));
         }
     }
 
     card.into_any_element()
 }
 
-/// A red-washed reason line: refused before spawn, blocked by the mode, or a
-/// failed child. One sentence — then, when the child wrote one, its own stderr
-/// tail in the mono face. The sentence is the claim; the tail is the evidence
-/// the extension already capped at 2 KiB, shown verbatim rather than restated.
-fn render_subagent_strip(message: &str, stderr: Option<&str>, theme: Theme) -> impl IntoElement {
+/// The step log's verb column width, before UI scaling: the compact 68px fits
+/// every short verb; a log holding a longer one (`Web search`, `List
+/// resources`) widens the whole column so no verb is truncated and the
+/// arguments still align.
+fn subagent_verb_column(labels: impl IntoIterator<Item = String>) -> f32 {
+    const SHORT_VERB_CHARS: usize = 8;
+    if labels
+        .into_iter()
+        .any(|label| label.chars().count() > SHORT_VERB_CHARS)
+    {
+        112.
+    } else {
+        68.
+    }
+}
+
+/// The reason lines under a card's rows, in reading order: a run that never
+/// started says why in the extension's own sentence; otherwise a failure is
+/// the outcome, so it leads, and a guard's refusal is often why, so it
+/// follows. Each is its own line with its own tone.
+fn subagent_reason_lines(
+    run: &crate::subagent::SubagentRun,
+) -> Vec<(String, Option<String>, StripTone)> {
+    use crate::subagent::{Phase, Status};
+    let mut strips = Vec::new();
+    if let Some(child) = run
+        .children
+        .iter()
+        .find(|child| matches!(child.phase, Phase::Refused))
+    {
+        strips.push((
+            child.error.clone().unwrap_or_default(),
+            None,
+            StripTone::Error,
+        ));
+        return strips;
+    }
+    if let Some(child) = run
+        .children
+        .iter()
+        .find(|child| matches!(child.status, Status::Failed))
+    {
+        if let Some(error) = child.error.clone() {
+            strips.push((error, child.stderr_tail.clone(), StripTone::Error));
+        }
+    }
+    if let Some((child, call)) = run
+        .children
+        .iter()
+        .find_map(|child| Some((child, child.blocked.last()?)))
+    {
+        // The guard's own sentence is the claim; which agent and which call
+        // it refused is the evidence beneath it.
+        let target = match &call.target {
+            Some(target) if !target.is_empty() => format!("{} {target}", call.tool),
+            _ => call.tool.clone(),
+        };
+        let mut evidence = format!("{} · {target}", child.label());
+        let more = child.blocked.len().saturating_sub(1);
+        if more > 0 {
+            evidence.push_str(" · ");
+            evidence.push_str(&tr!("transcript_view.subagent_more_blocked", count = more));
+        }
+        strips.push((call.reason.clone(), Some(evidence), StripTone::Warning));
+    }
+    strips
+}
+
+/// Which status a reason line reports; it decides the tone, not the shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StripTone {
+    /// The run, or a child, did not finish.
+    Error,
+    /// A guard refused a call; the run may still have finished.
+    Warning,
+}
+
+/// A washed reason line: refused before spawn or a failed child (`error`), or
+/// a call a guard refused (`warning`). One sentence — then, when there is one,
+/// the evidence in the mono face: the child's own stderr tail (the extension
+/// already capped it at 2 KiB) or the agent and call that were refused, shown
+/// verbatim rather than restated.
+fn render_subagent_strip(
+    message: &str,
+    evidence: Option<&str>,
+    kind: StripTone,
+    round_bottom: bool,
+    theme: Theme,
+) -> impl IntoElement {
+    let tone = match kind {
+        StripTone::Error => theme.error,
+        StripTone::Warning => theme.warning,
+    };
     let sentence = div()
         .w_full()
         .flex()
@@ -3960,7 +4213,7 @@ fn render_subagent_strip(message: &str, stderr: Option<&str>, theme: Theme) -> i
         .child(glyph(
             "icons/alert-circle.svg",
             IconSize::XSmall.px(&theme),
-            theme.error,
+            tone,
         ))
         .child(
             div()
@@ -3969,14 +4222,21 @@ fn render_subagent_strip(message: &str, stderr: Option<&str>, theme: Theme) -> i
                 .whitespace_normal()
                 .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(16.))
-                .text_color(theme.error)
+                .text_color(tone)
                 .child(SharedString::from(message.to_string())),
         );
     let mut strip = div()
+        .debug_selector(move || match kind {
+            StripTone::Error => "subagent-strip-error".to_string(),
+            StripTone::Warning => "subagent-strip-warning".to_string(),
+        })
         .w_full()
         .border_t_1()
         .border_color(theme.border)
-        .bg(theme.error.opacity(0.07))
+        .bg(tone.opacity(0.07))
+        .when(round_bottom, |strip| {
+            strip.rounded_b(panel::RADIUS.px(&theme))
+        })
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base04.px(&theme))
         .flex()
@@ -3984,7 +4244,7 @@ fn render_subagent_strip(message: &str, stderr: Option<&str>, theme: Theme) -> i
         .gap(DynamicSpacing::Base04.px(&theme))
         .flex_none()
         .child(sentence);
-    if let Some(stderr) = stderr.map(str::trim).filter(|tail| !tail.is_empty()) {
+    if let Some(stderr) = evidence.map(str::trim).filter(|tail| !tail.is_empty()) {
         strip = strip.child(
             div()
                 .w_full()
@@ -3999,6 +4259,32 @@ fn render_subagent_strip(message: &str, stderr: Option<&str>, theme: Theme) -> i
         );
     }
     strip
+}
+
+/// The capability tier a child ran under, in the words the Subagents page
+/// uses for it. `all` reads as `runs commands` there too: it is the ceiling
+/// above `edit`, the same sentence the delegation prompt gives the model.
+fn subagent_capability_label(child: &crate::subagent::SubagentChild) -> Option<String> {
+    match child.capability.as_deref()? {
+        "read" => Some(tr!("subagents_ui.capability_read")),
+        "edit" => Some(tr!("subagents_ui.capability_edit")),
+        "exec" | "all" => Some(tr!("subagents_ui.capability_exec")),
+        _ => None,
+    }
+}
+
+/// The mark at the end of a child's step line: a refused call in `warning`,
+/// a failed one in `error`; anything else has none.
+fn subagent_step_mark(
+    status: crate::subagent::StepStatus,
+    theme: Theme,
+) -> Option<(&'static str, Hsla)> {
+    use crate::subagent::StepStatus;
+    match status {
+        StepStatus::Blocked => Some(("icons/alert-circle.svg", theme.warning)),
+        StepStatus::Error => Some(("icons/circle-x.svg", theme.error)),
+        StepStatus::Ok | StepStatus::Running | StepStatus::Unknown => None,
+    }
 }
 
 /// Which child's log a card shows. An explicit selection wins; a run with a
@@ -4016,10 +4302,18 @@ fn subagent_open_child(selected: Option<usize>, children: usize) -> Option<usize
     }
 }
 
-/// The expanded body: the open child's real steps, then the report it returned.
+/// How much of a child's task its log repeats. The full task is in the tool's
+/// arguments; the log only has to remind the reader what was asked.
+const SUBAGENT_TASK_PREVIEW_CHARS: usize = 280;
+
+/// The expanded body for one child, top to bottom: what it was asked, what
+/// it ran under, what it did, and what it returned (§9.3). Every line is a fact
+/// from the payload; a fact the payload lacks is left out rather than guessed.
 fn render_subagent_detail(
     run: &crate::subagent::SubagentRun,
     child_ix: usize,
+    key: (usize, usize),
+    copied_sections: CopiedSections,
     theme: Theme,
 ) -> impl IntoElement {
     let mut body = div()
@@ -4029,73 +4323,264 @@ fn render_subagent_detail(
         .border_color(theme.border)
         .rounded_b(panel::RADIUS.px(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
-        .py(DynamicSpacing::Base06.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
         .flex()
         .flex_col()
-        .gap(DynamicSpacing::Base06.px(&theme));
-    for child in run.children.get(child_ix).into_iter() {
-        if !child.steps.is_empty() {
-            body = body.child(
-                div()
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(tr!("transcript_view.subagent_steps")),
-            );
-            for step in &child.steps {
-                body = body.child(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(16.))
-                        .child(
-                            div()
-                                .flex_none()
-                                .font_family(theme::code_font_family())
-                                .text_size(theme.code_px(12.))
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from(step.name.clone())),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .truncate()
-                                .text_color(theme.text_secondary)
-                                .child(SharedString::from(step.preview.clone())),
-                        ),
-                );
-            }
-            if child.steps_total > child.steps.len() as u64 {
-                body = body.child(
-                    div()
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.text_muted)
-                        .child(tr!(
-                            "transcript_view.subagent_earlier",
-                            count = child.steps_total - child.steps.len() as u64
-                        )),
-                );
-            }
+        .gap(DynamicSpacing::Base08.px(&theme));
+    let Some(child) = run.children.get(child_ix) else {
+        return body;
+    };
+    let section_label = |label: String| {
+        div()
+            .flex_none()
+            .text_size(TextSize::XSmall.px(&theme))
+            .line_height(theme.ui_px(14.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_muted)
+            .child(label)
+    };
+    let quiet_line = |text: String| {
+        div()
+            .w_full()
+            .min_w_0()
+            .truncate()
+            .text_size(TextSize::XSmall.px(&theme))
+            .line_height(theme.ui_px(15.))
+            .text_color(theme.text_muted)
+            .child(SharedString::from(text))
+    };
+
+    // What it was asked, and what it ran under.
+    let task = child.task.trim();
+    let mut about = div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base02.px(&theme));
+    if !task.is_empty() {
+        about = about.child(
+            div()
+                .debug_selector(|| "subagent-detail-task".to_string())
+                .w_full()
+                .min_w_0()
+                .whitespace_normal()
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(theme.ui_px(17.))
+                .text_color(theme.text_secondary)
+                .child(SharedString::from(cap_chars(
+                    task,
+                    SUBAGENT_TASK_PREVIEW_CHARS,
+                ))),
+        );
+    }
+    let ran_under: Vec<String> = [
+        subagent_capability_label(child),
+        child.model_label(),
+        child
+            .thinking
+            .as_deref()
+            .map(|level| tr!("transcript_view.subagent_thinking_level", level = level)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !ran_under.is_empty() {
+        about = about.child(quiet_line(ran_under.join(" · ")));
+    }
+    // Which tools, how often: the shape of the work at a glance, most used
+    // first (the extension already sorted and capped it).
+    if !child.tool_counts.is_empty() {
+        let tally = child
+            .tool_counts
+            .iter()
+            .map(|(tool, count)| format!("{tool} ×{count}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        about = about.child(
+            quiet_line(tally)
+                .font(crate::usage::view::num_font())
+                .debug_selector(|| "subagent-detail-tally".to_string()),
+        );
+    }
+    if !task.is_empty() || !ran_under.is_empty() || !child.tool_counts.is_empty() {
+        body = body.child(about);
+    }
+
+    // What it did: the parent's own activity language, so a child reads the
+    // way the parent reads — glyph, verb, argument, and a mark when a call
+    // did not go through.
+    if !child.steps.is_empty() {
+        let mut steps = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base04.px(&theme))
+            .child(section_label(tr!("transcript_view.subagent_steps")));
+        // The log keeps the latest steps, so the ones it dropped came first.
+        if child.steps_total > child.steps.len() as u64 {
+            steps = steps.child(quiet_line(tr!(
+                "transcript_view.subagent_earlier",
+                count = child.steps_total - child.steps.len() as u64
+            )));
         }
-        if let Some(report) = child.report.as_deref() {
-            body = body.child(div().w_full().min_w_0().child(render_markdown_document(
+        // One verb column per log, so the arguments line up; it widens for
+        // the whole log when a verb would not fit (`List resources`), rather
+        // than cutting that one verb short.
+        let verb_w = theme.ui_px(subagent_verb_column(
+            child
+                .steps
+                .iter()
+                .map(|step| activity_action_label(&step.name)),
+        ));
+        for step in &child.steps {
+            let mut line = div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(theme.ui_px(16.))
+                .child(glyph(
+                    activity_icon(&step.name),
+                    IconSize::XSmall.px(&theme),
+                    theme.text_muted,
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(verb_w)
+                        .truncate()
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(activity_action_label(&step.name))),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .font_family(theme::code_font_family())
+                        .text_size(theme.code_px(12.))
+                        .text_color(theme.text_secondary)
+                        .child(SharedString::from(step.preview.clone())),
+                );
+            // Only an outcome worth a look gets a mark; a call that went fine
+            // stays quiet, so the marks are what the eye finds. The shape
+            // differs as well as the tone, so colour is not the only signal.
+            if let Some((icon, tone)) = subagent_step_mark(step.status, theme) {
+                line = line.child(glyph(icon, IconSize::XSmall.px(&theme), tone));
+            }
+            steps = steps.child(line);
+        }
+        body = body.child(steps);
+    }
+
+    // What it returned.
+    if let Some(report) = child.report.as_deref() {
+        let section = SUBAGENT_REPORT_COPY_SECTION.saturating_add(child_ix.min(200) as u8);
+        let copy_key = (key.0, key.1, section);
+        let copied = copied_sections
+            .borrow()
+            .get(&copy_key)
+            .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+        let full = report.to_string();
+        let copy = icon_button_frame(
+            div().id(ElementId::NamedInteger(
+                "copy-subagent-report".into(),
+                ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
+            )),
+            &theme,
+            ButtonSize::Compact,
+        )
+        .debug_selector(|| "subagent-copy-report".to_string())
+        .tip(if copied {
+            tr!("common.copied")
+        } else {
+            tr!("transcript_view.subagent_copy_report")
+        })
+        .cursor_pointer()
+        .when(copied, |button| button.bg(theme.success.opacity(0.10)))
+        .child(glyph(
+            if copied {
+                "icons/check.svg"
+            } else {
+                "icons/copy.svg"
+            },
+            ButtonSize::Compact.icon_size().px(&theme),
+            if copied {
+                theme.success
+            } else {
+                theme.text_muted
+            },
+        ))
+        .on_click(move |_, _, cx| {
+            // The whole report the card holds, not the display-capped copy.
+            cx.write_to_clipboard(ClipboardItem::new_string(full.clone()));
+            copied_sections
+                .borrow_mut()
+                .insert(copy_key, Instant::now());
+            cx.stop_propagation();
+            cx.refresh_windows();
+        });
+        // The same hover and acknowledgement as a detail section's copy: the
+        // wash fades in under the pointer, and once copied the success tint
+        // holds through the hover instead of fighting it.
+        let copied_wash = theme.success.opacity(0.10);
+        let copy = crate::motion::hover(
+            press(copy),
+            format!("copy-subagent-report-{}-{}-{section}", key.0, key.1),
+            &theme,
+            if copied {
+                Hover::fill(copied_wash, copied_wash)
+            } else {
+                Hover::wash_in(theme.overlay_strong)
+            },
+        );
+        let mut section_el = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base04.px(&theme))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(section_label(tr!("transcript_view.subagent_report")))
+                    .child(copy),
+            )
+            .child(div().w_full().min_w_0().child(render_markdown_document(
                 &cap_chars(report, DETAIL_TEXT_CAP),
                 theme,
             )));
-        } else if !child.is_live() && !matches!(child.phase, crate::subagent::Phase::Refused) {
-            body = body.child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(tr!("transcript_view.subagent_no_closing_message")),
+        // The card keeps the whole report; the parent model got a prefix.
+        // Saying so is what keeps "the agent ignored half of it" explainable.
+        if report.len() > SUBAGENT_PARENT_REPORT_BYTES {
+            section_el = section_el.child(
+                quiet_line(tr!(
+                    "transcript_view.subagent_parent_got_prefix",
+                    size = format_kib(SUBAGENT_PARENT_REPORT_BYTES),
+                    total = format_kib(report.len())
+                ))
+                .debug_selector(|| "subagent-report-capped".to_string()),
             );
         }
+        body = body.child(section_el);
+    } else if !child.is_live() && !matches!(child.phase, crate::subagent::Phase::Refused) {
+        body = body.child(quiet_line(tr!(
+            "transcript_view.subagent_no_closing_message"
+        )));
     }
     body
+}
+
+/// `4 KiB`, rounded up so a report a byte over the cap never reads as equal.
+fn format_kib(bytes: usize) -> String {
+    format!("{} KiB", bytes.div_ceil(1024))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4133,6 +4618,7 @@ fn render_activity_card(
             tool_open,
             expanded_tools.clone(),
             open_child_logs.clone(),
+            copied_sections.clone(),
             scroller.clone(),
         );
     }
@@ -11290,9 +11776,343 @@ mod tests {
                 self.open.borrow().contains(&(0, 0)),
                 self.open.clone(),
                 self.open_children.clone(),
+                Rc::new(RefCell::new(HashMap::new())),
                 self.scroller.clone(),
             )
         }
+    }
+
+    /// Renders one card from a raw `details` payload, for the reason lines.
+    struct SubagentPayloadTestView {
+        details: serde_json::Value,
+    }
+
+    impl gpui::Render for SubagentPayloadTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let tool = ToolCall {
+                name: "subagent".into(),
+                summary: String::new(),
+                path: None,
+                added: 0,
+                removed: 0,
+                id: None,
+                args: None,
+                output: None,
+                failed: false,
+                facts: ToolFacts::default(),
+                details: Some(self.details.clone()),
+            };
+            let run = crate::subagent::SubagentRun::from_tool(&tool).expect("details parse");
+            render_subagent_card(
+                &run,
+                false,
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+                (0, 0),
+                false,
+                Rc::new(RefCell::new(HashSet::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+                MessageScrollerState::new(1),
+            )
+        }
+    }
+
+    /// Draws a closed card from `details` and reports which selectors painted.
+    fn subagent_paints<const N: usize>(
+        cx: &mut gpui::TestAppContext,
+        details: serde_json::Value,
+        selectors: [&'static str; N],
+    ) -> [bool; N] {
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let (view, cx) = cx.add_window_view(|_, _| SubagentPayloadTestView { details });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            |_, _| view.clone(),
+        );
+        selectors.map(|selector| cx.debug_bounds(selector).is_some())
+    }
+
+    fn subagent_strips(cx: &mut gpui::TestAppContext, details: serde_json::Value) -> (bool, bool) {
+        let [error, warning] = subagent_paints(
+            cx,
+            details,
+            ["subagent-strip-error", "subagent-strip-warning"],
+        );
+        (error, warning)
+    }
+
+    /// Opens the card on its only child, so the log is the body.
+    struct SubagentOpenTestView {
+        details: serde_json::Value,
+        copied: CopiedSections,
+    }
+
+    impl gpui::Render for SubagentOpenTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let tool = ToolCall {
+                name: "subagent".into(),
+                summary: String::new(),
+                path: None,
+                added: 0,
+                removed: 0,
+                id: None,
+                args: None,
+                output: None,
+                failed: false,
+                facts: ToolFacts::default(),
+                details: Some(self.details.clone()),
+            };
+            let run = crate::subagent::SubagentRun::from_tool(&tool).expect("details parse");
+            render_subagent_card(
+                &run,
+                false,
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+                (0, 0),
+                true,
+                Rc::new(RefCell::new(HashSet::from([(0, 0)]))),
+                Rc::new(RefCell::new(HashMap::new())),
+                self.copied.clone(),
+                MessageScrollerState::new(1),
+            )
+        }
+    }
+
+    fn settled_child(report: &str) -> serde_json::Value {
+        serde_json::json!({
+            "orbit": "subagent/1",
+            "mode": "single",
+            "children": [{
+                "agent": "scout",
+                "status": "done",
+                "phase": "settled",
+                "task": "Find where auth is wired",
+                "capability": "read",
+                "model": "anthropic/claude-haiku-4-5",
+                "thinking": "medium",
+                "tools": 3,
+                "toolCounts": {"grep": 2, "read": 1},
+                "steps": [
+                    {"name": "grep", "preview": "auth", "status": "ok"},
+                    {"name": "read", "preview": "src/auth.rs", "status": "ok"}
+                ],
+                "stepsTotal": 3,
+                "report": report,
+                "startedAt": 1_000,
+                "endedAt": 35_000
+            }]
+        })
+    }
+
+    /// §9.3: the open log says what the child was asked, what it ran under and
+    /// which tools it leaned on; a single child's footer does not restate the
+    /// row's "done"; and copy hands over the whole report, not the display cap.
+    #[gpui::test]
+    fn an_open_child_log_shows_its_brief_and_copies_the_full_report(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let report = "Auth lives in `src/auth.rs`.";
+        let copied: CopiedSections = Rc::new(RefCell::new(HashMap::new()));
+        let (view, cx) = cx.add_window_view(|_, _| SubagentOpenTestView {
+            details: settled_child(report),
+            copied: copied.clone(),
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(800.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        assert!(cx.debug_bounds("subagent-detail-task").is_some());
+        assert!(cx.debug_bounds("subagent-detail-tally").is_some());
+        assert!(
+            cx.debug_bounds("subagent-footer-state").is_none(),
+            "one child: the row already says it is done"
+        );
+        assert!(
+            cx.debug_bounds("subagent-report-capped").is_none(),
+            "a short report reached the parent whole"
+        );
+
+        let at = cx
+            .debug_bounds("subagent-copy-report")
+            .expect("copy report")
+            .center();
+        cx.simulate_click(at, gpui::Modifiers::none());
+        draw(cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some(report.to_string())
+        );
+        assert!(copied
+            .borrow()
+            .contains_key(&(0, 0, SUBAGENT_REPORT_COPY_SECTION)));
+    }
+
+    /// A report longer than the parent's prefix says how much the parent got.
+    #[gpui::test]
+    fn a_report_longer_than_the_parents_copy_says_so(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let report = "x".repeat(SUBAGENT_PARENT_REPORT_BYTES + 1);
+        let (view, cx) = cx.add_window_view(|_, _| SubagentOpenTestView {
+            details: settled_child(&report),
+            copied: Rc::new(RefCell::new(HashMap::new())),
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(800.)),
+            |_, _| view.clone(),
+        );
+        assert!(cx.debug_bounds("subagent-report-capped").is_some());
+        assert_eq!(format_kib(SUBAGENT_PARENT_REPORT_BYTES), "4 KiB");
+        assert_eq!(format_kib(SUBAGENT_PARENT_REPORT_BYTES + 1), "5 KiB");
+    }
+
+    /// One child's row already shows its count and clock: the footer is only
+    /// drawn for what the row cannot say, the cost.
+    #[gpui::test]
+    fn a_single_childs_footer_only_carries_the_cost(cx: &mut gpui::TestAppContext) {
+        let child = serde_json::json!({
+            "agent": "scout", "status": "done", "tools": 3,
+            "startedAt": 1_000, "endedAt": 9_000
+        });
+        let [footer] = subagent_paints(
+            cx,
+            serde_json::json!({"orbit": "subagent/1", "mode": "single", "children": [child]}),
+            ["subagent-footer"],
+        );
+        assert!(!footer, "no cost: the row is the whole card");
+    }
+
+    /// A parallel run reads as a table: the clock column lines up even when
+    /// one child has run tools and another has not.
+    #[gpui::test]
+    fn parallel_rows_align_their_metric_columns(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let details = serde_json::json!({"orbit": "subagent/1", "mode": "parallel", "children": [
+            {"agent": "scout", "status": "done", "tools": 12, "startedAt": 1_000, "endedAt": 95_000},
+            {"agent": "reviewer", "status": "done", "tools": 0, "startedAt": 1_000, "endedAt": 3_000}
+        ]});
+        let (view, cx) = cx.add_window_view(|_, _| SubagentPayloadTestView { details });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            |_, _| view.clone(),
+        );
+        let first = cx
+            .debug_bounds("subagent-row-clock-0-0-0")
+            .expect("clock 0");
+        let second = cx
+            .debug_bounds("subagent-row-clock-0-0-1")
+            .expect("clock 1");
+        assert_eq!(first.right(), second.right());
+        assert!(cx.debug_bounds("subagent-footer").is_some());
+    }
+
+    /// A chain numbers its rows; a parallel run, which has no order, does not.
+    #[gpui::test]
+    fn chain_rows_carry_their_step_number(cx: &mut gpui::TestAppContext) {
+        let children = serde_json::json!([
+            {"agent": "scout", "status": "done", "endedAt": 1},
+            {"agent": "worker", "status": "running"}
+        ]);
+        let [first, second] = subagent_paints(
+            cx,
+            serde_json::json!({"orbit": "subagent/1", "mode": "chain", "children": children}),
+            ["subagent-row-step-0-0-0", "subagent-row-step-0-0-1"],
+        );
+        assert!(first && second);
+    }
+
+    #[gpui::test]
+    fn parallel_rows_are_not_numbered(cx: &mut gpui::TestAppContext) {
+        let [step] = subagent_paints(
+            cx,
+            serde_json::json!({"orbit": "subagent/1", "mode": "parallel", "children": [
+                {"agent": "a", "status": "done", "endedAt": 1},
+                {"agent": "b", "status": "running"}
+            ]}),
+            ["subagent-row-step-0-0-0"],
+        );
+        assert!(!step);
+    }
+
+    #[test]
+    fn the_verb_column_widens_for_a_long_verb_only() {
+        assert_eq!(
+            subagent_verb_column(["Read".to_string(), "Search".to_string()]),
+            68.
+        );
+        assert_eq!(
+            subagent_verb_column(["Read".to_string(), "List resources".to_string()]),
+            112.
+        );
+    }
+
+    /// A parallel run's footer counts its children; there is more than one.
+    #[gpui::test]
+    fn a_parallel_footer_counts_its_children(cx: &mut gpui::TestAppContext) {
+        let [state] = subagent_paints(
+            cx,
+            serde_json::json!({"orbit": "subagent/1", "mode": "parallel", "children": [
+                {"agent": "a", "status": "done", "endedAt": 1},
+                {"agent": "b", "status": "running"}
+            ]}),
+            ["subagent-footer-state"],
+        );
+        assert!(state);
+    }
+
+    /// A tool that ran and failed is the work's outcome, not a guard's
+    /// decision: it never paints the "blocked" line. Older payloads stamped
+    /// every failed call `Tool failed`, and those stay quiet too.
+    #[gpui::test]
+    fn a_failed_tool_call_is_not_reported_as_blocked(cx: &mut gpui::TestAppContext) {
+        let (error, warning) = subagent_strips(
+            cx,
+            serde_json::json!({
+                "orbit": "subagent/1",
+                "mode": "single",
+                "children": [{
+                    "agent": "worker",
+                    "status": "done",
+                    "phase": "settled",
+                    "endedAt": 2,
+                    "steps": [{"name": "bash", "preview": "cargo test", "status": "error"}],
+                    "blocked": [{"tool": "bash", "target": "cargo test", "reason": "Tool failed"}]
+                }]
+            }),
+        );
+        assert!(!error, "a finished run has no failure line");
+        assert!(!warning, "a failed tool is not a blocked call");
+    }
+
+    /// A guard's refusal reads in `warning` with the guard's own sentence, and
+    /// a child that also failed keeps its `error` line above it.
+    #[gpui::test]
+    fn a_guard_refusal_and_a_failure_each_get_their_own_line(cx: &mut gpui::TestAppContext) {
+        let (error, warning) = subagent_strips(
+            cx,
+            serde_json::json!({
+                "orbit": "subagent/1",
+                "mode": "single",
+                "children": [{
+                    "agent": "worker",
+                    "status": "failed",
+                    "phase": "settled",
+                    "endedAt": 2,
+                    "error": "child exited 1",
+                    "blocked": [{
+                        "tool": "edit",
+                        "target": "src/auth.rs",
+                        "reason": "Plan mode: edit is disabled. Switch to Build to make changes."
+                    }]
+                }]
+            }),
+        );
+        assert!(error, "the failure is reported");
+        assert!(warning, "the refusal is reported beside it");
     }
 
     /// §9.3: one child's log at a time. A single-child run has nothing to
@@ -11356,6 +12176,78 @@ mod tests {
         click(cx, "subagent-row-0-0-0");
         assert_eq!(open_children.borrow().get(&(0, 0)), None);
         assert!(!open.borrow().contains(&(0, 0)));
+    }
+
+    /// §9.8: a child row is a keyboard stop. Tab reaches it and shows the ring;
+    /// Enter opens that child's log and Escape closes it. A pointer click opens
+    /// a log without taking focus, so the composer keeps the caret.
+    #[gpui::test]
+    fn a_child_row_opens_and_closes_from_the_keyboard(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            crate::bind_keys(cx);
+        });
+        let open = Rc::new(RefCell::new(HashSet::new()));
+        let open_children = Rc::new(RefCell::new(HashMap::new()));
+        let (view, cx) = cx.add_window_view(|_, _| SubagentCardTestView {
+            open: open.clone(),
+            open_children: open_children.clone(),
+            scroller: MessageScrollerState::new(1),
+            status: "done",
+            phase: "settled",
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(600.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+
+        // A click opens the log but leaves focus alone: no ring.
+        let second = cx
+            .debug_bounds("subagent-row-0-0-1")
+            .expect("second row")
+            .center();
+        cx.simulate_click(second, gpui::Modifiers::none());
+        draw(cx);
+        assert_eq!(open_children.borrow().get(&(0, 0)), Some(&1));
+        assert!(
+            cx.debug_bounds("subagent-row-focus-ring").is_none(),
+            "a click does not take focus"
+        );
+        cx.simulate_click(second, gpui::Modifiers::none());
+        draw(cx);
+        assert!(!open.borrow().contains(&(0, 0)));
+
+        // Tab reaches the first row and paints its ring over the row.
+        cx.update(|window, _| window.focus_next());
+        draw(cx);
+        let ring = cx
+            .debug_bounds("subagent-row-focus-ring")
+            .expect("a focused row wears the ring");
+        let first = cx.debug_bounds("subagent-row-0-0-0").expect("first row");
+        assert_eq!(ring, first, "the ring sits exactly on the row, no layout");
+
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(open_children.borrow().get(&(0, 0)), Some(&0));
+        assert!(open.borrow().contains(&(0, 0)));
+
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert_eq!(open_children.borrow().get(&(0, 0)), None);
+        assert!(!open.borrow().contains(&(0, 0)));
+
+        // Nothing left to close: Escape falls through rather than reopening.
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!open.borrow().contains(&(0, 0)));
+
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert_eq!(open_children.borrow().get(&(0, 0)), Some(&0));
     }
 
     /// The delegation card paints in every state and at both zoom levels: the
@@ -11442,6 +12334,7 @@ mod tests {
                     (0, 0),
                     false,
                     Rc::new(RefCell::new(HashSet::new())),
+                    Rc::new(RefCell::new(HashMap::new())),
                     Rc::new(RefCell::new(HashMap::new())),
                     MessageScrollerState::new(1),
                 )
