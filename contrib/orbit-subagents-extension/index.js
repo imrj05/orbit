@@ -180,7 +180,13 @@ export default function activate(pi, overrides = {}) {
   // catalog is read and re-registered when it changed — the one place the
   // request prefix changes (D-S).
   pi.on?.("session_start", (_event, ctx) => {
-    ownership ??= decideOwnership(pi);
+    // Decided afresh at every `session_start` rather than cached: the answer
+    // changes when the user installs or removes the extension that owns the
+    // name, and a cached verdict would turn one unreadable tool list into a
+    // stand-down that outlives its cause. Our own earlier registration in this
+    // process is filtered out by `isSelf`, so a repeat session still decides in
+    // our favour.
+    ownership = decideOwnership(pi);
     if (ownership.active) {
       refreshDescription();
       // pi keeps the *first* registration for a name (`getAllRegisteredTools`
@@ -188,11 +194,15 @@ export default function activate(pi, overrides = {}) {
       // pretended.
       const winner = findTool(pi, TOOL_NAME);
       if (winner && !isSelf(winner?.sourceInfo?.path)) {
-        ownership = { active: false, reason: "shadowed", owner: winner?.sourceInfo?.path ?? null };
+        ownership = {
+          active: false,
+          reason: "shadowed by an earlier registration",
+          owner: winner?.sourceInfo?.path ?? null,
+        };
       }
     }
     recordStatus(deps, ownership);
-    if (!ownership.active) announceInactive(ctx);
+    if (!ownership.active) announceInactive(ctx, ownership);
   });
 
   // `deferred`: nothing is registered yet; `session_start` decides (D-C).
@@ -227,29 +237,39 @@ function isSelf(sourcePath) {
   }
 }
 
-/** D-C: is the `subagent` name ours to register in this process? */
+/**
+ * D-C: is the `subagent` name ours to register in this process?
+ *
+ * Every `reason` here is a sentence the user may read: the page shows it
+ * verbatim when no owner file is known, and the toast composes it when none is.
+ */
 function decideOwnership(pi) {
   const all = readToolList(pi);
   if (all === null) {
-    return { active: false, reason: "tool list unavailable", owner: null };
+    return { active: false, reason: "pi's tool list could not be read", owner: null };
   }
   const claimed = all.find((tool) => tool?.name === TOOL_NAME && !isSelf(tool?.sourceInfo?.path));
   if (claimed) {
+    const owner = claimed?.sourceInfo?.path ?? null;
     return {
       active: false,
-      reason: "owned by another extension",
-      owner: claimed?.sourceInfo?.path ?? null,
+      // An extension that registers without a source file still owns the name;
+      // naming a path we were never given would be a guess.
+      reason: owner ? "owned by another extension" : "claimed by an extension that did not report its file",
+      owner,
     };
   }
   return { active: true, reason: "available", owner: SELF_PATH };
 }
 
 /** Stand down out loud, through the one channel a session has. */
-function announceInactive(ctx) {
-  ctx?.ui?.notify?.(
-    "Orbit subagents is inactive: another extension (for example pi-subagents) already provides a `subagent` tool.",
-    "warning",
-  );
+function announceInactive(ctx, ownership) {
+  // Say what actually happened: blaming another extension for an unreadable
+  // tool list sends the user looking for a package that is not installed.
+  const message = ownership?.owner
+    ? `Orbit subagents is inactive: another extension (for example pi-subagents) already provides a \`subagent\` tool (${ownership.owner}).`
+    : `Orbit subagents is inactive: ${ownership?.reason ?? "the \`subagent\` tool name is not available"}.`;
+  ctx?.ui?.notify?.(message, "warning");
 }
 
 function statusPath(deps) {

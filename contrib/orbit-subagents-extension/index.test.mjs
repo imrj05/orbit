@@ -162,6 +162,8 @@ test("activation stands down when another subagent tool exists", () => {
   assert.equal(result.active, true);
   assert.equal(pi.tools.length, 0);
   assert.match(notices.join("\n"), /another extension .* provides a `subagent` tool/);
+  // The toast names the file, so the user can find the extension to switch off.
+  assert.match(notices.join("\n"), /pi-subagents\/index\.js/);
 });
 
 test("a throwing tool list at load no longer disables the guard", () => {
@@ -181,6 +183,49 @@ test("a throwing tool list at load no longer disables the guard", () => {
   bound = true;
   pi.fire("session_start", { ui: { notify() {} } });
   assert.equal(pi.tools.length, 1);
+});
+
+test("a later session decides again, so one unreadable list is not permanent", () => {
+  // The owner can appear or disappear between sessions, and a decision cached
+  // for the life of the process would leave the tool off long after the cause
+  // was gone — while the page still showed a stand-down banner.
+  const notices = [];
+  let readable = false;
+  const pi = fakePi({
+    getAllTools: () => {
+      if (!readable) throw new Error("Extension runtime not initialized.");
+      return [];
+    },
+  });
+  activate(pi, deps(fakeSpawn()));
+  const ctx = { ui: { notify: (message) => notices.push(message) } };
+  pi.fire("session_start", ctx);
+  assert.equal(pi.tools.length, 0);
+  assert.match(notices[0], /tool list could not be read/);
+  assert.doesNotMatch(notices[0], /another extension/, "an unreadable list is not a foreign owner");
+
+  readable = true;
+  pi.fire("session_start", ctx);
+  assert.equal(pi.tools.length, 1, "the next session registers");
+  const status = JSON.parse(
+    fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status.json"), "utf8"),
+  );
+  assert.equal(status.active, true, "and the stand-down banner is cleared");
+});
+
+test("an owner that reports no file is named in words, not invented", () => {
+  // `sourceInfo.path` is how we tell our own registration from a foreign one;
+  // when it is absent the tool is still not ours, but there is no file to show.
+  const pi = fakePi({ getAllTools: () => [{ name: "subagent" }] });
+  activate(pi, deps(fakeSpawn()));
+  pi.fire("session_start", { ui: { notify() {} } });
+  assert.equal(pi.tools.length, 0);
+  const status = JSON.parse(
+    fs.readFileSync(path.join(home, ".orbit-pi", "subagents-status.json"), "utf8"),
+  );
+  assert.equal(status.active, false);
+  assert.equal(status.owner, null, "no path was reported, so none is claimed");
+  assert.match(status.reason, /did not report its file/);
 });
 
 test("a registration that another extension shadows is reported, not pretended", () => {

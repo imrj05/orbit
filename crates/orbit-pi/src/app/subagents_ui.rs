@@ -155,8 +155,10 @@ impl OrbitApp {
             Some(owner) if !owner.is_empty() => {
                 tr!("subagents_ui.inactive_owner", owner = owner.to_string())
             }
-            // No owner and no useful reason means the extension could not read
-            // pi's tool list at all; say nothing rather than guess.
+            // No owner: the extension's own sentence is the only clue there is
+            // (an unreadable tool list, a name shadowed without a source file),
+            // so it is shown verbatim. Empty means it said nothing, and the
+            // title and body stand alone below.
             _ => status.reason.clone(),
         };
 

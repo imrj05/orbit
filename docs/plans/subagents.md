@@ -29,10 +29,10 @@ order; each phase is releasable on its own, and stopping after any gate leaves t
 | Phase | Implementation | Automated tests | Manual gate |
 |---|---|---|---|
 | 0 — spike | Done (the seam was proven with a real `pi` rather than committed fixtures) | — | One real child run captured and inspected |
-| 1 — one child | Done, plus chain/parallel from Phase 3 | `node --test contrib/orbit-subagents-extension/*.test.mjs` (85, including the real-`pi` seam), guard (31), `bundled_extensions` (6) | One real delegation returned its report and cost; abort and refusal paths covered by tests |
-| 2 — the card | Done: `ToolCall.details`, `subagent.rs`, the three zoom levels | `subagent::` (13), transcript details (3), card render | Not inspected in the running app |
+| 1 — one child | Done, plus chain/parallel from Phase 3 | `node --test contrib/orbit-subagents-extension/*.test.mjs` (91, including the real-`pi` seam), guard (31), `bundled_extensions` (6) | One real delegation returned its report and cost; abort and refusal paths covered by tests |
+| 2 — the card | Done: `ToolCall.details`, `subagent.rs`, the three zoom levels | `subagent::` (11), transcript details (3), card render | Not inspected in the running app |
 | 3 — fan-out | Done (folded into Phase 1) | Chain `{previous}`, 5-task pool ≤ 4 concurrent, depth/cap refusals | Real 5-child pool not exercised |
-| 4 — the page | Done: `subagent_file.rs`, `subagents.rs`, Settings → Subagents | `subagent_file` (14), `subagents` (6), page render (2) | Not inspected in the running app |
+| 4 — the page | Done: `subagent_file.rs`, `subagents.rs`, Settings → Subagents | `subagent_file` (14), `subagents` (9), page render (4) | Not inspected in the running app |
 | 5 — safety pass | **Not started** | Mode matrix unit-tested in `mode.test.mjs` | Full Access × Plan × tier matrix not exercised in the GUI |
 | 6 — inspectable runs | **Not started** | — | — |
 
