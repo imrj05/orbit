@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored Stageshow kit (the product-demo runtime). It measures layout
+    // and drives animation from effects on purpose, which the React Compiler
+    // rules flag; it is kept as upstream ships it rather than forked to lint.
+    "src/components/stageshow/kit/**",
   ]),
 ]);
 

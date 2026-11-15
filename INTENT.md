@@ -394,6 +394,42 @@ rule is a guard, not a sandbox: command matching is a glob, not a shell parser,
 which is why an `allow` is refused for chained/redirected/substituted commands
 and why `deny` re-checks every segment.
 
+### D20 — Remote sessions: pi over ssh stdio, agent only
+
+**Choice:** a remote session is the same `PiClient` driving
+`ssh -T -o BatchMode=yes … HOST "sh -lc '<script>'"`, where the script installs
+the access guard under `~/.orbit-pi/remote-guard/`, pins the host's
+`~/.orbit-pi/access.json` to `supervised`, refuses to continue without the
+guard (exit 78) or without `pi` on the login PATH (exit 127), and `exec`s
+`pi --mode rpc --approve --extension <guard>`. Hosts live in
+`~/.orbit-pi/remote-hosts.json`, managed from Settings → Remote hosts (add/edit
+form with `~/.ssh/config` alias suggestions and a read-only Test connection
+probe) and written surgically — only the keys Orbit owns change. Only the agent is remote: every surface that
+reads the local disk (Files, Git, Review, Worktrees, Explorer, `@` mentions) is
+shown as unavailable while `OrbitApp::remote` is set.
+
+**Rationale:** pi's RPC is already JSONL over stdio, and ssh carries stdio
+unchanged, so nothing new crosses the wire and `orbit-rpc` keeps its
+serde/anyhow-only dependency set. The alternative t3code takes — run a full
+server on the host, forward a port, pair a bearer session — exists because its
+remote side is a web server; Orbit's is a CLI. Rendering the local disk beside a
+remote agent would describe the wrong machine, which D1's "trust pi's truth"
+forbids, so those surfaces say so instead.
+
+**Consequence:** one spawn seam (`OrbitApp::spawn_pi`) carries every restart
+(Start, reconnect, MCP apply, forced-stop respawn) so a remote session never
+comes back local; ⌘N, a folder pick and a listed session are local by
+construction. A remote session is not parked: its file lives on the host, so a
+parked process could never be resumed, and it is stopped with a toast instead.
+Not yet: Plan/Build/Ask, quota, auto-title and subagents on the host (only the
+guard is installed), sidebar listing and resume of remote sessions, MCP secrets
+forwarding, password logins on Windows, and trusting a new host key in-app.
+Passwords follow t3code: keys first in `BatchMode`; on `Permission denied`
+with a password method listed, a masked dialog asks, and the probe reruns with
+`SSH_ASKPASS` pointed at a secret-free helper that reads the password from one
+ssh process's environment. Memory only, keyed by ssh account, dropped when
+refused.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -417,6 +453,21 @@ legacy app today:
     as keyboard/mouse surfaces (⌘P palette, shortcuts), not only through menus.
 
 ### Implementation status (living)
+
+Remote sessions (D20) ship agent-only SSH sessions: Settings → Remote hosts
+(host list with Test / Edit / Remove, an add/edit form with `~/.ssh/config` alias
+suggestions, an optional user and port, and a read-only **Test connection**),
+per-host cards with an on/off switch and a ⋯ menu, a Machine selector on Providers & models (a host's providers read from its own `pi --list-models`; sign-in with pi's `/login` on the host), **Install pi** over ssh (pi's
+installer, plus checksum-verified Node.js 22 when missing; no sudo), explained
+failures (cloud root guard with **Use opc**, signals, pi missing), lookup through
+the user's own login shell and pi's install folders,
+host rows and **Add a remote host…** in the new-task folder picker, the host named on the folder chip and the
+status bar, the unavailable state on Files / Git / Worktrees, Explorer and Review
+closed with a toast, `@` mentions off, and the guard installed and the mode
+pinned to Supervised on every launch. Covered by `orbit-rpc`'s fake-ssh transport
+test, `remote_hosts`' store tests (surgical writes, unique names, alias
+discovery) and the app's `remote_ui_tests`; not yet exercised against a real VPS
+or in the GUI by hand.
 
 Settings → Git Accounts provides the local-only, read-only Git diagnostics described in D16; it does not check remote access or manage credentials.
 

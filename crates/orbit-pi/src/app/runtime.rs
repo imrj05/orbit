@@ -595,7 +595,7 @@ impl OrbitApp {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
+        match self.spawn_pi(&cwd, true) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(Some(&cwd));
@@ -697,10 +697,7 @@ impl OrbitApp {
             return false;
         };
         let workspace = self.workspace_dir();
-        match self
-            .extensions
-            .spawn(&workspace, false, &self.mcp.secret_env())
-        {
+        match self.spawn_pi(&workspace, false) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(Some(&workspace));

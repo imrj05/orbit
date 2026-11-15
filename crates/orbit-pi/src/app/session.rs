@@ -734,6 +734,16 @@ impl OrbitApp {
     /// leaving it active would let the incoming `adopt_client` overwrite — and
     /// kill — a live run on the next switch (issue #46).
     pub(super) fn park_active_session(&mut self) {
+        // A remote session is not in the sidebar (pi keeps its file on the
+        // host), so a parked remote process could never be resumed: stop it
+        // and say so rather than leave it running out of reach.
+        if let Some(host) = self.remote.take() {
+            if self.client.is_some() {
+                self.drop_client();
+                self.toast_info(tr!("remote.session_stopped", host = host.name));
+            }
+            return;
+        }
         let Some(client) = self.client.take() else {
             return;
         };
@@ -1387,6 +1397,9 @@ impl OrbitApp {
         // The New Task page has no file — its draft lives in its own slot.
         self.restore_composer_draft(None, cx);
 
+        // A new task from ⌘N is local: remote tasks start from a host row in
+        // the folder picker.
+        self.remote = None;
         match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
             Ok(client) => {
                 self.adopt_client(client);
@@ -1627,7 +1640,9 @@ impl OrbitApp {
             );
             self.preview_session_transcript(session.path.clone(), cx);
             // Spawn a dedicated pi process rooted at the session's
-            // workspace and point it at the session file.
+            // workspace and point it at the session file. Every listed
+            // session is a local file, so it runs locally.
+            self.remote = None;
             let secret_env = self.mcp.secret_env();
             let spawned = self
                 .extensions
@@ -1959,6 +1974,10 @@ impl OrbitApp {
 
     /// Open Review (⌘⇧R and the palette), replacing the Git page.
     pub(super) fn open_review(&mut self, cx: &mut Context<Self>) {
+        if self.block_local_surface_for_remote() {
+            cx.notify();
+            return;
+        }
         self.close_git_for_review(cx);
         self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
     }
@@ -3153,6 +3172,10 @@ impl OrbitApp {
     /// Split from the click handler so it can be called without synthesizing
     /// an event.
     pub(super) fn toggle_side_pane(&mut self, cx: &mut Context<Self>) {
+        if self.block_local_surface_for_remote() {
+            cx.notify();
+            return;
+        }
         let pane_open = self.sidepane.read(cx).is_open();
         if !pane_open {
             // Opening Review replaces the Git page, which shares the window.
@@ -3249,6 +3272,10 @@ impl OrbitApp {
     }
 
     pub(super) fn toggle_project_panel(&mut self, cx: &mut Context<Self>) {
+        if self.block_local_surface_for_remote() {
+            cx.notify();
+            return;
+        }
         let opening = !self.project_panel.read(cx).is_open();
         self.project_panel.update(cx, |panel, cx| panel.toggle(cx));
         if opening {
@@ -3593,6 +3620,7 @@ impl OrbitApp {
         if self.settings_open {
             match self.settings_section {
                 SettingsSection::Mcp => self.mcp_refresh(cx),
+                SettingsSection::RemoteHosts => self.remote_hosts_section_opened(cx),
                 SettingsSection::GitAccounts if !self.git_accounts_loading => {
                     self.refresh_git_accounts_for_workspace(cx)
                 }

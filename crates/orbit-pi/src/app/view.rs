@@ -418,8 +418,12 @@ impl Render for OrbitApp {
         // The right side pane is hidden while settings/onboarding own the
         // main area (same rule as the sessions sidebar).
         let pane_open = self.sidepane.read(cx).is_open();
-        let pane_visible =
-            pane_open && !self.settings_open && !self.usage_open && self.dependencies_ready();
+        // A remote session has no local worktree to review or browse.
+        let pane_visible = pane_open
+            && !self.settings_open
+            && !self.usage_open
+            && self.dependencies_ready()
+            && self.remote.is_none();
         // Feature pages (Files / Git / Usage / Worktrees) own the main column, so a
         // full-page Review pane yields to the one that just opened rather than
         // covering it. `OrbitApp::chat_column_covered` (events.rs) answers the
@@ -473,13 +477,23 @@ impl Render for OrbitApp {
         // already their default; nothing to sync per frame.
         self.git_panel
             .update(cx, |panel, cx| panel.set_review_width(git_review_width, cx));
+        // The folder picker was sized when it opened; a resize or a dock
+        // toggled while it is open must not leave it wider than the column it
+        // hangs under, or narrower than it needs to be.
+        if let Some(picker) = self.workspace_picker.clone() {
+            let width =
+                crate::workspace_picker::width_for_window(self.main_area_width(window, cx).into());
+            picker.update(cx, |picker, cx| picker.set_width(width, cx));
+        }
         // ── project panel (right dock) ── hidden while Settings owns the
         // window, like the sessions sidebar. Sync the workspace each render;
         // a change rebuilds the tree off-thread. The Explorer and the Review
         // pane are mutually exclusive right docks: while Review is open the
         // tree stays closed.
-        let explorer_visible =
-            self.project_panel.read(cx).is_open() && !self.settings_open && !pane_open;
+        let explorer_visible = self.project_panel.read(cx).is_open()
+            && !self.settings_open
+            && !pane_open
+            && self.remote.is_none();
         let explorer_width = if explorer_visible {
             self.project_panel.read(cx).width()
         } else {
@@ -635,6 +649,20 @@ impl Render for OrbitApp {
             self.ask_focus_pending = false;
             let focus = self.ask_focus.clone();
             window.focus(&focus);
+        }
+        // The SSH password dialog takes the keyboard when it opens, and a
+        // remote task started from a background check hands it to the
+        // composer once the session is up.
+        if self.remote_password_focus_pending {
+            self.remote_password_focus_pending = false;
+            if let Some(prompt) = &self.remote_password_prompt {
+                let focus = prompt.input.read(cx).focus_handle(cx);
+                window.focus(&focus);
+            }
+        }
+        if self.composer_focus_pending && self.remote_password_prompt.is_none() {
+            self.composer_focus_pending = false;
+            self.input.read(cx).focus(window);
         }
         // Settings → MCP hands the keyboard to the server list so ↑/↓ walk
         // the rows without a mouse.
@@ -1131,6 +1159,13 @@ impl Render for OrbitApp {
                     // The expanded Review pane owns the page; the chat is not
                     // just covered, it is skipped — same as a feature page.
                     div().into_any_element()
+                } else if let (Some(host), true) = (
+                    self.remote_host_name(),
+                    viewer_open || self.git_open || self.worktrees_open,
+                ) {
+                    // These pages read the local disk; on a remote session
+                    // they would describe the wrong machine.
+                    remote_unavailable(theme, host)
                 } else if viewer_open {
                     self.file_viewer.clone().into_any_element()
                 } else if self.git_open {
@@ -1602,6 +1637,9 @@ impl Render for OrbitApp {
             // ── worktrees dialog — create / rename / move / remove,
             // opened from the page and its row menus.
             .children(self.worktree_dialog_layer(theme, cx.entity(), cx))
+            // ── SSH password — asked when a remote host refuses every key;
+            // above Settings (the Remote hosts form) and the New Task page.
+            .children(self.remote_password_layer(theme, cx.entity(), cx))
             // ── update modal — the search, changelog, and install decision,
             // opened by the download control and Check for Updates. Below the
             // extension dialog (a run blocks on it) and the lightbox.
@@ -2940,11 +2978,17 @@ impl OrbitApp {
     pub(super) fn main_area_width(&self, window: &Window, cx: &App) -> Pixels {
         let viewport = window.viewport_size();
         let pane_open = self.sidepane.read(cx).is_open();
-        let pane_visible =
-            pane_open && !self.settings_open && !self.usage_open && self.dependencies_ready();
+        // A remote session has no local worktree to review or browse.
+        let pane_visible = pane_open
+            && !self.settings_open
+            && !self.usage_open
+            && self.dependencies_ready()
+            && self.remote.is_none();
         let sidebar_shown = sidebar_shows(self.sidebar_visible, self.settings_open, viewport.width);
-        let explorer_visible =
-            self.project_panel.read(cx).is_open() && !self.settings_open && !pane_open;
+        let explorer_visible = self.project_panel.read(cx).is_open()
+            && !self.settings_open
+            && !pane_open
+            && self.remote.is_none();
         let explorer_width = if explorer_visible {
             self.project_panel.read(cx).width()
         } else {
@@ -2982,27 +3026,35 @@ impl OrbitApp {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
-        let folder_name = sessions::workspace_label(&cwd);
-        let path_label = cwd.to_string_lossy().into_owned();
-        let row_h = ButtonSize::Medium.height(&theme);
+        // A remote task names its host, and the tooltip says exactly where
+        // the agent runs; the local folder is not where this task works.
+        let (folder_name, path_label) = match &self.remote {
+            Some(host) => (host.name.clone(), host.location()),
+            None => (
+                sessions::workspace_label(&cwd),
+                cwd.to_string_lossy().into_owned(),
+            ),
+        };
+        let remote = self.remote.is_some();
+        // The folder control is one of three peers in this header (folder,
+        // branch, working directory), so it is the same shared button: one
+        // height, padding, radius, type size and icon size for all three.
+        let size = ButtonSize::Default;
+        let row_h = size.height(&theme);
+        let glyph = size.icon_size().px(&theme);
         let gap = DynamicSpacing::Base08.px(&theme);
 
-        let row = div()
-            .id("pick-folder")
+        let row = button_frame(div().id("pick-folder"), &theme, size)
             .debug_selector(|| "new-task-folder".to_string())
-            .flex_none()
-            .max_w_full()
+            // It truncates inside its slot instead of pushing the branch and
+            // working-directory controls off the row on a narrow window.
             .min_w_0()
+            .max_w_full()
             .overflow_hidden()
-            .h(row_h)
-            .px(ButtonSize::Medium.padding_x(&theme))
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .rounded(input::RADIUS.px(&theme))
+            .text_color(theme.text_primary)
             .when(picker_open, |row| row.bg(theme.surface_active))
+            .when(!picker_open, |row| row.hover_quiet(&theme))
             .cursor_pointer()
-            .hover_quiet(&theme)
             .pressed_state(
                 &theme,
                 if picker_open {
@@ -3012,7 +3064,6 @@ impl OrbitApp {
                 },
             )
             .track_focus(&self.new_task_folder_focus)
-            .focus_state(&theme)
             .tip(path_label)
             .key_context("NewTaskFolder")
             .on_action(
@@ -3024,15 +3075,17 @@ impl OrbitApp {
                 MouseButton::Left,
                 cx.listener(|app, _, window, cx| app.toggle_workspace_picker(window, cx)),
             )
-            .child(self.workspace_mark(&theme))
+            .child(if remote {
+                icon("icons/server-stack.svg", glyph, theme.text_muted).into_any_element()
+            } else {
+                self.workspace_mark(&theme, glyph)
+            })
             .child(
                 div()
                     .debug_selector(|| "new-task-folder-name".to_string())
-                    .flex_1()
                     .min_w_0()
                     .truncate()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
                     .child(folder_name),
             )
             .child(Self::chip_caret(
@@ -3064,9 +3117,15 @@ impl OrbitApp {
                     .child(row)
                     .children(self.workspace_picker_popup(&theme)),
             )
-            .children(self.branch_chip(theme, true, cx))
+            // Branch and working-directory controls describe the local
+            // repository, so a remote task leaves them out.
+            .children(
+                (!remote)
+                    .then(|| self.branch_chip(theme, true, cx))
+                    .flatten(),
+            )
             .child(div().flex_1().min_w_0())
-            .children(self.work_in_chip(cx));
+            .children((!remote).then(|| self.work_in_chip(cx)).flatten());
 
         if !settling {
             return container.into_any_element();
@@ -3088,8 +3147,7 @@ impl OrbitApp {
     /// The folder row's leading mark: the project's own logo when one was
     /// found, the folder glyph otherwise. One size for both, so the name's
     /// leading edge never shifts between projects.
-    pub(super) fn workspace_mark(&self, theme: &Theme) -> AnyElement {
-        let size = IconSize::Small.px(theme);
+    pub(super) fn workspace_mark(&self, theme: &Theme, size: Pixels) -> AnyElement {
         match &self.workspace_logo {
             Some(logo) => img(ImageSource::Image(logo.clone()))
                 .size(size)
@@ -3153,10 +3211,7 @@ impl OrbitApp {
                         .clone()
                         .or_else(|| std::env::current_dir().ok())
                         .unwrap_or_else(|| PathBuf::from("."));
-                    match app
-                        .extensions
-                        .spawn(&workspace, true, &app.mcp.secret_env())
-                    {
+                    match app.spawn_pi(&workspace, true) {
                         Ok(client) => {
                             app.client = Some(client);
                             app.mcp_stamp = app.mcp.fingerprint_for(Some(&workspace));
@@ -3603,10 +3658,29 @@ impl OrbitApp {
         // setting. That ownership
         // lasts through the dock transition; this row takes over only after the
         // folder row has gone, so the two never appear together mid-settle.
-        let work_in = (!folder_row_owns_location)
-            .then(|| self.work_in_chip(cx))
-            .flatten();
-        let folder_chip = (work_in.is_none() && !folder_row_owns_location).then(|| {
+        // A remote session runs on its host: the local folder, Work-in and
+        // branch controls would name the wrong machine, so one static chip
+        // names the host instead (its tooltip carries `ssh:dir`).
+        let remote = self.remote.as_ref();
+        let local_location = !folder_row_owns_location && remote.is_none();
+        let remote_chip = remote.filter(|_| !folder_row_owns_location).map(|host| {
+            div()
+                .id("status-remote-host")
+                .debug_selector(|| "status-remote-host".to_string())
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .tip(host.location())
+                .child(icon(
+                    "icons/server-stack.svg",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    theme.text_muted,
+                ))
+                .child(tr!("remote.status_chip", host = host.name.clone()))
+                .into_any_element()
+        });
+        let work_in = local_location.then(|| self.work_in_chip(cx)).flatten();
+        let folder_chip = (work_in.is_none() && local_location).then(|| {
             button_frame(div().id("status-workspace"), &theme, ButtonSize::Default)
                 .debug_selector(|| "status-workspace".to_string())
                 .cursor_pointer()
@@ -3629,12 +3703,13 @@ impl OrbitApp {
             .gap_4()
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
+            .children(remote_chip)
             .children(folder_chip)
             .children(work_in)
             // The new-task header owns the branch until the dock completes;
             // the status row then takes it back alongside the Work-in chip.
             .children(
-                (!folder_row_owns_location)
+                local_location
                     .then(|| self.branch_chip(theme, false, cx))
                     .flatten(),
             )

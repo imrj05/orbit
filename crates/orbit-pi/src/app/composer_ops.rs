@@ -100,7 +100,9 @@ impl OrbitApp {
     /// memo is what keeps a redraw from re-ranking the whole workspace.
     pub(super) fn at_paths(&mut self, query: &str, cx: &mut Context<Self>) -> Vec<String> {
         // `@` stays gated on a workspace: without one there is nothing to rank.
-        if self.current_workspace.is_none() {
+        // A remote session's files are on the host, so local paths would
+        // point the agent at files that are not there.
+        if self.current_workspace.is_none() || self.remote.is_some() {
             return Vec::new();
         }
         self.ensure_mention_index(false, cx);

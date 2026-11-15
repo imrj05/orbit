@@ -130,6 +130,12 @@ pub struct PickerAction {
     pub icon: &'static str,
     pub label: String,
     pub hint: Option<String>,
+    /// Draw a hairline above this row: it opens a new group of verbs (the
+    /// remote hosts sit apart from the worktree and clone verbs).
+    pub group_start: bool,
+    /// Set the hint in the monospace family, as the folder rows set their
+    /// paths: a host's `ssh:dir` is a location, not prose.
+    pub mono: bool,
 }
 
 pub struct WorkspacePicker {
@@ -236,6 +242,16 @@ impl WorkspacePicker {
         (self.on_dismiss)(true, window, cx);
     }
 
+    /// Follow the chat column's width while open, so a window resize or a
+    /// dock opening keeps the popover attached to its chip instead of keeping
+    /// the width it opened with.
+    pub fn set_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if (self.width - width).abs() > 0.5 {
+            self.width = width;
+            cx.notify();
+        }
+    }
+
     // ── internals ────────────────────────────────────────────────────────
 
     /// Test seam: type into the filter the way a user would, so a layout test
@@ -278,32 +294,64 @@ impl WorkspacePicker {
         let pos = self.highlighted.min(count - 1) as isize;
         let next = (pos + dir).rem_euclid(count as isize) as usize;
         self.highlighted = next;
-        self.ensure_visible(rows.len() + self.actions.len(), theme::get(cx));
+        self.ensure_visible(rows.len(), theme::get(cx));
         cx.notify();
     }
 
-    fn ensure_visible(&mut self, list_rows: usize, theme: &Theme) {
-        let folder_rows = list_rows;
-        let row_h = row_h(theme);
-        // The browse row sits below the list: scroll to the very bottom.
-        let row_top = if self.highlighted >= folder_rows {
-            folder_rows as f32 * row_h + row_h
-        } else {
-            self.highlighted as f32 * row_h
-        };
-        let content_h = folder_rows as f32 * row_h;
-        let viewport_h = content_h.min(self.list_max_h);
-        // `ScrollHandle`'s offset is negative once scrolled down.
-        let current = -f32::from(self.scroll.offset().y);
-        let mut offset = current;
-        if row_top < current {
-            offset = row_top;
-        } else if row_top + row_h > current + viewport_h {
-            offset = row_top + row_h - viewport_h;
+    /// Scroll the least amount that shows the highlighted row, measured from
+    /// the list's last layout rather than from a row count: the list has
+    /// vertical padding and hairlines between groups, and a count-based model
+    /// that leaves them out caps the scroll short of the last row.
+    ///
+    /// Keyboard navigation calls this; render does not. Re-revealing the
+    /// highlighted row every frame fought the scroll wheel — each frame pulled
+    /// the list back to the highlight, so it snapped between the folders and
+    /// the verbs instead of scrolling. gpui clamps the offset to the content on
+    /// layout, so a resize needs nothing from here either.
+    fn ensure_visible(&mut self, folder_rows: usize, theme: &Theme) {
+        let viewport = self.scroll.bounds();
+        if viewport.size.height <= px(0.) {
+            return; // not laid out yet; the first frame shows the top
         }
-        let max_offset = (content_h - viewport_h).max(0.);
+        let Some((top, bottom)) = self.highlighted_span(folder_rows, px(row_h(theme))) else {
+            return;
+        };
+        let current = -self.scroll.offset().y;
+        let mut target = current;
+        if top < current {
+            target = top;
+        } else if bottom > current + viewport.size.height {
+            target = bottom - viewport.size.height;
+        }
+        let max = self.scroll.max_offset().height.max(px(0.));
         self.scroll
-            .set_offset(point(px(0.), px(-offset.clamp(0., max_offset))));
+            .set_offset(point(px(0.), -target.clamp(px(0.), max)));
+    }
+
+    /// The highlighted row's top and bottom in the list's content space (0 is
+    /// the top of the scrolled content). Rows live in two groups — the folders
+    /// (child 0) and the verbs (child 1) — and gpui records each group's laid
+    /// out bounds, so only the offset inside a group is computed: every row is
+    /// [`row_h`] tall and a verb that opens a group carries a 1px hairline.
+    /// `None` for the browse row, which is outside the scrolling list.
+    fn highlighted_span(&self, folder_rows: usize, row_h: Pixels) -> Option<(Pixels, Pixels)> {
+        let list_top = self.scroll.bounds().top();
+        let ix = self.highlighted;
+        if ix < folder_rows {
+            let group = self.scroll.bounds_for_item(0)?;
+            let top = group.top() - list_top + row_h * ix as f32;
+            return Some((top, top + row_h));
+        }
+        let k = ix - folder_rows;
+        if k >= self.actions.len() {
+            return None;
+        }
+        let hairline = |i: usize| i == 0 || self.actions[i].group_start;
+        let before = (0..k).filter(|&i| hairline(i)).count();
+        let group = self.scroll.bounds_for_item(1)?;
+        let top = group.top() - list_top + row_h * k as f32 + px(before as f32);
+        let bottom = top + row_h + if hairline(k) { px(1.) } else { px(0.) };
+        Some((top, bottom))
     }
 
     fn activate(
@@ -344,9 +392,6 @@ impl Render for WorkspacePicker {
         let this = cx.entity();
 
         let rows = self.filtered(&self.last_filter);
-        // A resize can shorten the viewport while the picker is open. Re-clamp
-        // the existing offset against the same cap the list is about to paint.
-        self.ensure_visible(rows.len() + self.actions.len(), &theme);
 
         // ── folder rows ──
         let mut list = div()
@@ -496,16 +541,21 @@ impl Render for WorkspacePicker {
             let this = this.clone();
             action_list = action_list.child(
                 div()
+                    .debug_selector(move || format!("workspace-action-{action_ix}"))
                     // A hairline above the verbs, drawn inside the first
                     // action's own box: the list's row count stays exactly what
                     // the reveal math assumes.
-                    .when(action_ix == 0, |row| {
+                    .when(action_ix == 0 || action.group_start, |row| {
                         row.border_t_1().border_color(theme.border)
                     })
                     .child(
                         picker_entry(
-                            div().id(ElementId::Name(
-                                format!("workspace-action-{}", action.id).into(),
+                            // Keyed by position: several rows can share an id
+                            // (one `remote-host` per host), and a shared element
+                            // id would share one hover/press state across them.
+                            div().id(ElementId::NamedInteger(
+                                "workspace-action".into(),
+                                action_ix as u64,
                             )),
                             &theme,
                         )
@@ -557,6 +607,9 @@ impl Render for WorkspacePicker {
                             });
                             if let Some(hint) = action.hint.clone() {
                                 row = row.detail(hint);
+                            }
+                            if action.mono {
+                                row = row.mono();
                             }
                             row.into_element(&theme)
                         }),

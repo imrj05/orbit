@@ -636,6 +636,12 @@ impl CommandPalette {
                 "settings preferences mcp model context protocol servers tools",
             ),
             (
+                SettingsSection::RemoteHosts,
+                "icons/server-stack.svg",
+                tr!("settings.remote_hosts"),
+                "settings preferences remote hosts ssh server vps machine environment",
+            ),
+            (
                 SettingsSection::About,
                 "icons/info.svg",
                 tr!("settings.about"),

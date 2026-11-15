@@ -810,6 +810,11 @@ pub struct OrbitApp {
     _worktree_branch_sub: Subscription,
     /// Whether the Worktrees page replaces the chat area.
     worktrees_open: bool,
+    /// Set while the active session's pi runs on a remote host over SSH
+    /// (agent only). Restarts respawn there; the explorer, Review, Git,
+    /// Files and Worktrees surfaces, which read the local disk, are shown as
+    /// unavailable instead of describing the wrong machine.
+    remote: Option<crate::remote_hosts::RemoteHost>,
     /// The dismissible "How worktrees work" card was closed (persisted beside
     /// the other one-time hints).
     worktree_howto_dismissed: bool,
@@ -1385,6 +1390,35 @@ pub struct OrbitApp {
     mcp_focus_pending: bool,
     /// Server name awaiting inline remove confirmation.
     mcp_remove_confirm: Option<String>,
+    /// Settings → Remote hosts: the hosts in `remote-hosts.json`, the
+    /// entries it skipped (with reasons), the open add/edit form, the row
+    /// awaiting a remove confirmation, and each host's last connection check.
+    remote_hosts: Vec<crate::remote_hosts::RemoteHost>,
+    remote_hosts_skipped: Vec<String>,
+    remote_host_editor: Option<remote_hosts_ui::RemoteHostEditor>,
+    remote_host_remove_confirm: Option<String>,
+    /// The host card whose ⋯ menu is open.
+    remote_host_menu: Option<String>,
+    /// Settings → Providers & models: the machine shown (`None` = this
+    /// Mac), its selector menu, each host's provider listing, and which host
+    /// providers are expanded (`host\0provider`).
+    providers_machine: Option<String>,
+    providers_machine_menu: bool,
+    remote_model_lists: std::collections::HashMap<String, remote_providers_ui::RemoteModels>,
+    remote_provider_expanded: std::collections::HashSet<String>,
+    /// The Add API key dialog for a host, while open.
+    remote_key_editor: Option<remote_providers_ui::RemoteKeyEditor>,
+    remote_host_checks: std::collections::HashMap<String, remote_hosts_ui::HostCheck>,
+    /// SSH passwords entered this run, keyed by ssh account
+    /// (`RemoteHost::account_key`). Memory only: never written, dropped the
+    /// moment the server refuses one, gone when Orbit quits.
+    remote_host_secrets: std::collections::HashMap<String, String>,
+    /// The open SSH password dialog, and its focus hand-off.
+    remote_password_prompt: Option<ssh_auth_ui::PasswordPrompt>,
+    remote_password_focus_pending: bool,
+    /// Focus the composer on the next frame (a remote task started from a
+    /// background connection check, which has no window to focus with).
+    composer_focus_pending: bool,
     /// Keyboard cursor in the MCP list (server name; `None` until the page
     /// takes focus).
     mcp_cursor: Option<String>,
@@ -2415,6 +2449,7 @@ impl OrbitApp {
             worktree_script_input: worktree_script_input.clone(),
             _worktree_script_sub: worktree_script_sub,
             worktrees_open: false,
+            remote: None,
             worktree_howto_dismissed: crate::transcript::hint_seen(
                 worktrees::WORKTREE_HOWTO_HINT_KEY,
             ),
@@ -2632,6 +2667,21 @@ impl OrbitApp {
             mcp_list_focus: cx.focus_handle(),
             mcp_focus_pending: false,
             mcp_remove_confirm: None,
+            remote_hosts: Vec::new(),
+            remote_hosts_skipped: Vec::new(),
+            remote_host_editor: None,
+            remote_host_remove_confirm: None,
+            remote_host_menu: None,
+            providers_machine: None,
+            providers_machine_menu: false,
+            remote_model_lists: std::collections::HashMap::new(),
+            remote_provider_expanded: std::collections::HashSet::new(),
+            remote_key_editor: None,
+            remote_host_checks: std::collections::HashMap::new(),
+            remote_host_secrets: std::collections::HashMap::new(),
+            remote_password_prompt: None,
+            remote_password_focus_pending: false,
+            composer_focus_pending: false,
             mcp_cursor: None,
             mcp_probe_at,
             mcp_apply_at: None,
@@ -3776,6 +3826,7 @@ pub(crate) enum SettingsSection {
     Permissions,
     Plugins,
     Mcp,
+    RemoteHosts,
     About,
     ReportBug,
 }
@@ -4185,6 +4236,11 @@ mod permissions_ui;
 mod pi_update_ui;
 mod pickers;
 mod plugin_update_ui;
+mod remote_hosts_ui;
+mod remote_providers_ui;
+mod remote_ui;
+mod ssh_auth_ui;
+use remote_ui::{remote_host_for_action, remote_unavailable, TaskPlace};
 mod retention_ui;
 mod rewind_ui;
 mod runtime;
@@ -4247,6 +4303,8 @@ mod process_exit_cleanup_tests;
 mod queue_edit_tests;
 #[cfg(test)]
 mod refresh_tests;
+#[cfg(test)]
+mod remote_ui_tests;
 #[cfg(test)]
 mod rewind_tests;
 #[cfg(test)]

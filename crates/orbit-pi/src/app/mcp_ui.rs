@@ -275,10 +275,7 @@ impl OrbitApp {
         }
         let workspace = self.workspace_dir();
         self.drop_client();
-        match self
-            .extensions
-            .spawn(&workspace, false, &self.mcp.secret_env())
-        {
+        match self.spawn_pi(&workspace, false) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(Some(&workspace));
@@ -3046,7 +3043,7 @@ fn mcp_switch(
 }
 
 /// An icon-only row action with a tooltip and press feedback.
-fn mcp_icon_action(
+pub(super) fn mcp_icon_action(
     id: String,
     glyph_path: &'static str,
     tip: String,
@@ -3081,7 +3078,7 @@ fn mcp_icon_action(
 
 /// A compact labelled button used by the notice cards and the remove
 /// confirmation.
-fn mcp_text_button(
+pub(super) fn mcp_text_button(
     id: String,
     label: String,
     theme: Theme,

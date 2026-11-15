@@ -82,18 +82,24 @@ impl OrbitApp {
                     icon: "icons/plus.svg",
                     label: tr!("working_folder.new"),
                     hint: Some(tr!("working_folder.new_hint")),
+                    group_start: false,
+                    mono: false,
                 },
                 PickerAction {
                     id: "existing-worktree",
                     icon: "icons/branch.svg",
                     label: tr!("working_folder.existing"),
                     hint: Some(tr!("working_folder.existing_hint")),
+                    group_start: false,
+                    mono: false,
                 },
                 PickerAction {
                     id: "remote-branch",
                     icon: "icons/cloud.svg",
                     label: tr!("working_folder.remote"),
                     hint: Some(tr!("working_folder.remote_hint")),
+                    group_start: false,
+                    mono: false,
                 },
             ]
         } else {
@@ -104,6 +110,40 @@ impl OrbitApp {
             icon: "icons/cloud.svg",
             label: tr!("working_folder.clone_title"),
             hint: Some(tr!("working_folder.clone_hint")),
+            group_start: false,
+            mono: false,
+        });
+        actions
+    }
+
+    /// One row per configured remote host, then the row that opens the host
+    /// config. Host rows carry the id `remote-host`; the picker dispatches
+    /// them by their order among the host rows (see `remote_host_for_action`).
+    pub(super) fn remote_actions(hosts: &[crate::remote_hosts::RemoteHost]) -> Vec<PickerAction> {
+        let mut actions: Vec<PickerAction> = hosts
+            .iter()
+            .enumerate()
+            .map(|(ix, host)| PickerAction {
+                id: "remote-host",
+                icon: "icons/server-stack.svg",
+                label: tr!("remote.host_row", host = host.name.clone()),
+                hint: Some(host.location()),
+                group_start: ix == 0,
+                mono: true,
+            })
+            .collect();
+        actions.push(PickerAction {
+            id: "remote-setup",
+            icon: "icons/settings.svg",
+            label: if hosts.is_empty() {
+                tr!("remote.add_host")
+            } else {
+                tr!("remote.edit_hosts")
+            },
+            hint: Some(tr!("remote.setup_hint")),
+            // With no host above it, the setup row opens the remote group.
+            group_start: hosts.is_empty(),
+            mono: false,
         });
         actions
     }
@@ -131,7 +171,22 @@ impl OrbitApp {
         self.dismiss_work_in_menu();
 
         let entries = self.recent_workspaces();
-        let actions = self.folder_actions();
+        let mut actions = self.folder_actions();
+        let (remote_hosts, skipped) = crate::remote_hosts::load();
+        // A host switched off in Settings → Remote hosts stays out of the
+        // picker; the setup row still opens the page where it can be turned on.
+        let remote_hosts: Vec<_> = remote_hosts
+            .into_iter()
+            .filter(|host| host.enabled)
+            .collect();
+        if let Some(reason) = skipped.first() {
+            self.toast_error(tr!(
+                "remote.config_skipped",
+                count = skipped.len(),
+                reason = reason.clone()
+            ));
+        }
+        actions.extend(Self::remote_actions(&remote_hosts));
         let current = self
             .current_workspace
             .clone()
@@ -175,6 +230,20 @@ impl OrbitApp {
             this.update(cx, |app, cx| {
                 app.workspace_picker = None;
                 match id {
+                    "remote-host" => {
+                        // Check the host (asking for a password if it wants
+                        // one) before a session starts there.
+                        if let Some(host) = remote_host_for_action(&action_ids, ix, &remote_hosts) {
+                            app.connect_remote_task(host, cx);
+                        }
+                        cx.notify();
+                    }
+                    "remote-setup" => {
+                        // With no host yet, go straight to the Add form;
+                        // otherwise land on the list to pick what to edit.
+                        let add = remote_hosts.is_empty();
+                        app.open_remote_hosts_settings(add, window, cx);
+                    }
                     "new-worktree" => app.open_new_worktree_from_work_in(window, cx),
                     "existing-worktree" => app.browse_for_existing_worktree(window, cx),
                     "clone-repository" => app.open_clone_dialog(window, cx),
@@ -243,6 +312,14 @@ impl OrbitApp {
     /// move, the spawn, and the reset, but no focus change. The caller
     /// notifies.
     pub(super) fn start_task_in_folder_quiet(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        self.start_task_at(TaskPlace::Folder(folder), cx);
+    }
+
+    /// Start a new task in `place`: park or drop the session being left,
+    /// reset the view, and spawn a fresh pi there. A local folder becomes the
+    /// current workspace; a remote host leaves the local workspace alone and
+    /// marks the session remote (see [`Self::spawn_pi`]).
+    pub(super) fn start_task_at(&mut self, place: TaskPlace, cx: &mut Context<Self>) {
         if self.rewind_transition_pending(cx) {
             return;
         }
@@ -265,9 +342,20 @@ impl OrbitApp {
         // The parked run's busy state lives with the parked session; this
         // view starts idle.
         self.busy = false;
-        // Picking a folder to work in adds it to Orbit's own sidebar list.
-        self.add_workspace(folder.clone(), cx);
-        self.set_current_workspace(folder.clone(), cx);
+        let (workspace, started) = match place {
+            TaskPlace::Folder(folder) => {
+                self.remote = None;
+                // Picking a folder to work in adds it to Orbit's own sidebar list.
+                self.add_workspace(folder.clone(), cx);
+                self.set_current_workspace(folder.clone(), cx);
+                (folder, tr!("pickers.new_task_started"))
+            }
+            TaskPlace::Remote(host) => {
+                let started = tr!("remote.task_started", host = host.name.clone());
+                self.remote = Some(host);
+                (self.workspace_dir(), started)
+            }
+        };
         self.current_session_path = None;
         self.added = 0;
         self.removed = 0;
@@ -275,7 +363,7 @@ impl OrbitApp {
         self.session_usage = None;
         self.reset_turns(cx);
         self.reset_queue();
-        match self.extensions.spawn(&folder, true, &self.mcp.secret_env()) {
+        match self.spawn_pi(&workspace, true) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(self.current_workspace.as_deref());
@@ -283,7 +371,7 @@ impl OrbitApp {
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.
                 self.probe_auth();
-                self.set_status(tr!("pickers.new_task_started"));
+                self.set_status(started);
             }
             Err(err) => {
                 let message = tr!("runtime.pi_spawn_failed", error = err);

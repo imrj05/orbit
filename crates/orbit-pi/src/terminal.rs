@@ -945,6 +945,17 @@ pub struct TerminalView {
 
 impl TerminalView {
     pub fn new(working_directory: PathBuf, cx: &mut Context<Self>) -> Self {
+        Self::with_command(working_directory, None, cx)
+    }
+
+    /// A tab whose shell runs `command` (`$SHELL -l -c <command>`) instead of
+    /// an interactive prompt — e.g. pi's sign-in on a remote host over
+    /// `ssh -t`. The tab shows the command's exit like any shell's.
+    pub fn with_command(
+        working_directory: PathBuf,
+        command: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let directory = working_directory.clone();
         // Captured on the UI thread: the emulator's first OSC color reply and
@@ -952,7 +963,19 @@ impl TerminalView {
         let initial_palette = Palette::from_theme(theme::get(cx));
         // Resolved once, here: the tab's mark and the shell the PTY actually
         // runs come from the same answer, so they cannot disagree.
-        let (shell, args) = default_shell();
+        let (shell, mut args) = default_shell();
+        if let Some(command) = command {
+            #[cfg(not(windows))]
+            {
+                args.push("-c".to_owned());
+                args.push(command);
+            }
+            #[cfg(windows)]
+            {
+                args.push("/K".to_owned());
+                args.push(command);
+            }
+        }
         let profile = ShellProfile::of(&shell);
 
         // Build the session off the UI thread, then poll it: alacritty's event
@@ -1736,6 +1759,25 @@ impl TerminalPanel {
         self.open = true;
         // The tab that was visible stops asking for frames; its shell keeps
         // running and keeps draining into its own grid.
+        self.sync_active(true, cx);
+        window.focus(&terminal.read(cx).handle());
+        self.tab_scroll.scroll_to_item(self.active);
+        cx.notify();
+    }
+
+    /// Open a tab running `command` (see [`TerminalView::with_command`]) and
+    /// make it the active one; the panel opens if it was closed.
+    pub fn new_command_tab(
+        &mut self,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let directory = self.spawn_directory();
+        let terminal = cx.new(|cx| TerminalView::with_command(directory, Some(command), cx));
+        self.tabs.push(terminal.clone());
+        self.active = self.tabs.len() - 1;
+        self.open = true;
         self.sync_active(true, cx);
         window.focus(&terminal.read(cx).handle());
         self.tab_scroll.scroll_to_item(self.active);
@@ -2611,6 +2653,28 @@ mod tests {
 
     /// The production path: `TerminalPanel::toggle` (what ⌘J calls) creates the
     /// view, focuses it, and the grid receives keystrokes through the panel's
+    /// A command tab (server sign-in) opens the panel, becomes the active tab
+    /// and runs its command, not a bare prompt.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_command_tab_opens_the_panel_and_runs_its_command(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+        let panel = cx.new(TerminalPanel::new);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_workspace(Some(std::env::temp_dir()), cx);
+                panel.new_command_tab("exit 0".into(), window, cx);
+            })
+        });
+        let (open, tabs) = cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            (panel.is_open(), panel.tab_count())
+        });
+        assert!(open, "the panel opens for the command");
+        assert_eq!(tabs, 1);
+    }
+
     /// nesting rather than as a bare root element.
     #[cfg(unix)]
     #[gpui::test]

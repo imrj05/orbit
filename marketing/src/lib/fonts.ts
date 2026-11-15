@@ -1,4 +1,4 @@
-import { Geist_Mono, Sora } from "next/font/google";
+import { Geist_Mono, IBM_Plex_Sans, Sora } from "next/font/google";
 
 /**
  * Shared font instances. Loaded once here and consumed by both the root layout
@@ -17,5 +17,16 @@ export const geistMono = Geist_Mono({
   display: "swap",
 });
 
-/** The `className` that exposes both font variables. */
-export const FONT_CLASSES = `${sora.variable} ${geistMono.variable}`;
+/**
+ * IBM Plex Sans is the native app's interface face. It is used only inside the
+ * product demos, so a faux Orbit window reads in the same type as the real one.
+ */
+export const plexSans = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex",
+  display: "swap",
+});
+
+/** The `className` that exposes every font variable. */
+export const FONT_CLASSES = `${sora.variable} ${geistMono.variable} ${plexSans.variable}`;

@@ -249,10 +249,11 @@ fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
         "{entries} folder rows must tile at {row_h}px each: expected {expected_entries}, was {}",
         f32::from(entries_group.size.height)
     );
-    let expected_actions = 4. * row_h;
+    let action_rows = app.update(window_cx, |app, _cx| expected_action_rows(app));
+    let expected_actions = action_rows as f32 * row_h;
     assert!(
         (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
-        "4 action rows tile at {row_h}px each (plus the hairline): expected ~{expected_actions}, was {}",
+        "{action_rows} action rows tile at {row_h}px each (plus the hairline): expected ~{expected_actions}, was {}",
         f32::from(actions_group.size.height)
     );
 
@@ -323,9 +324,122 @@ fn a_filter_that_matches_nothing_keeps_the_action_rows(cx: &mut gpui::TestAppCon
         "one no-match row: was {}",
         f32::from(rows.size.height)
     );
+    let action_rows = app.update(window_cx, |app, _cx| expected_action_rows(app));
     assert!(
-        (f32::from(actions.size.height) - 4. * row_h).abs() <= 2.,
-        "all four verbs remain: was {}",
+        (f32::from(actions.size.height) - action_rows as f32 * row_h).abs() <= 2.,
+        "all {action_rows} verbs remain: was {}",
         f32::from(actions.size.height)
+    );
+}
+
+/// The verb rows the picker builds: the folder actions, then one row per
+/// configured remote host and the host-setup row. Hosts come from the
+/// machine's own `remote-hosts.json`, so the count is read, not assumed.
+fn expected_action_rows(app: &OrbitApp) -> usize {
+    app.folder_actions().len() + OrbitApp::remote_actions(&crate::remote_hosts::load().0).len()
+}
+
+/// Open the picker over a repository with one linked worktree: enough folder
+/// and verb rows that the list scrolls.
+fn open_scrolling_picker<'a>(
+    cx: &'a mut gpui::TestAppContext,
+    fixture: &Fixture,
+) -> (Entity<OrbitApp>, &'a mut gpui::VisualTestContext) {
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let app = cx.update(|cx| cx.new(OrbitApp::new));
+    let window_cx = cx.add_empty_window();
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.worktrees = vec![
+                worktree(&fixture.repo(), "repo", true),
+                worktree(&fixture.linked(), "113", false),
+            ];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.current_workspace = Some(fixture.repo());
+            app.workspace_picker = None;
+            app.toggle_workspace_picker(window, cx);
+        });
+    });
+    draw_picker(window_cx, &app);
+    (app, window_cx)
+}
+
+fn draw_picker(cx: &mut gpui::VisualTestContext, app: &Entity<OrbitApp>) {
+    let app = app.clone();
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(420.), px(640.)),
+        move |_, cx| cx.new(|_| PickerProbe { app: app.clone() }),
+    );
+}
+
+/// The wheel scrolls the list and the list stays where it was put. Render
+/// used to re-reveal the highlighted row every frame, so each redraw pulled
+/// the list back to the first folder and it flipped between the folders and
+/// the verbs instead of scrolling.
+#[gpui::test]
+fn a_wheel_scroll_stays_where_it_was_put(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new();
+    let (app, cx) = open_scrolling_picker(cx, &fixture);
+    let list = cx.debug_bounds("workspace-picker-list").expect("list");
+    let rows_before = cx.debug_bounds("workspace-rows").expect("rows");
+
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: list.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-60.))),
+        ..Default::default()
+    });
+    draw_picker(cx, &app);
+    let rows_scrolled = cx.debug_bounds("workspace-rows").expect("rows");
+    assert!(
+        rows_scrolled.top() < rows_before.top() - px(10.),
+        "the wheel must move the list: {rows_before:?} → {rows_scrolled:?}"
+    );
+
+    // Later frames (a caret blink, a hover) must not snap it back.
+    draw_picker(cx, &app);
+    draw_picker(cx, &app);
+    let rows_after = cx.debug_bounds("workspace-rows").expect("rows");
+    assert!(
+        (rows_after.top() - rows_scrolled.top()).abs() < px(0.5),
+        "the list stays scrolled across redraws: {rows_scrolled:?} → {rows_after:?}"
+    );
+}
+
+/// Arrowing down to the last verb shows all of it. The reveal used to model
+/// the list as rows × height, missing the list's padding and the group
+/// hairlines, so it capped the scroll short of the last row.
+#[gpui::test]
+fn arrowing_to_the_last_verb_reveals_it_whole(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new();
+    let (app, cx) = open_scrolling_picker(cx, &fixture);
+    let (entries, actions) = app.update(cx, |app, _| {
+        (app.recent_workspaces().len(), expected_action_rows(app))
+    });
+    for _ in 0..(entries + actions - 1) {
+        cx.dispatch_action(crate::PickerSelectNext);
+        draw_picker(cx, &app);
+    }
+    let list = cx.debug_bounds("workspace-picker-list").expect("list");
+    // `debug_bounds` wants a `'static` selector.
+    let last_selector: &'static str =
+        Box::leak(format!("workspace-action-{}", actions - 1).into_boxed_str());
+    let last = cx
+        .debug_bounds(last_selector)
+        .expect("the last verb laid out");
+    assert!(
+        last.top() >= list.top() - px(0.5) && last.bottom() <= list.bottom() + px(0.5),
+        "the last verb is fully inside the list: {last:?} in {list:?}"
+    );
+
+    // And back up to the first folder brings the top of the list back.
+    for _ in 0..(entries + actions - 1) {
+        cx.dispatch_action(crate::PickerSelectPrev);
+        draw_picker(cx, &app);
+    }
+    let first = cx.debug_bounds("workspace-rows").expect("rows");
+    assert!(
+        first.top() >= list.top() - px(0.5),
+        "the first folder is visible again: {first:?} in {list:?}"
     );
 }

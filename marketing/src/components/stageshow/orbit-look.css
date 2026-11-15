@@ -1,0 +1,160 @@
+/*
+ * The Orbit look for every Stageshow demo on the site.
+ *
+ * Every stage renders with `theme="dark"` so the kit's dark shadows and inks
+ * apply, then these unlayered rules (the kit lives in `@layer stageshow`, so
+ * plain rules win) map Orbit's own palette onto the kit tokens. The page
+ * toggles light mode with `html:not(.dark)`, and the second block follows it,
+ * so a demo always matches the page around it — the way the real app follows
+ * its Light / Dark setting.
+ *
+ * Values come from the app (the session screenshot) and from the site's
+ * `globals.css`: near-black window, a darker sidebar, the brand blue as the
+ * one accent, and IBM Plex Sans — the app's interface face.
+ */
+.orbit-look .ss-stage {
+  --ss-font: var(--font-plex), var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  --ss-mono: var(--font-mono), ui-monospace, Menlo, monospace;
+
+  --ss-accent: #5b9dff;
+  --ss-accent-2: #5b9dff;
+  --ss-accent-soft: rgba(91, 157, 255, 0.16);
+  --ss-accent-text: #8dbbff;
+
+  --ss-canvas: #0e0e11;
+  --ss-surface: #0e0e11;
+  --ss-chrome: #0e0e11;
+  --ss-well: #09090b;
+  --ss-raised: #17171b;
+  --ss-fill: #26262b;
+
+  --ss-line: rgba(255, 255, 255, 0.08);
+  --ss-line-faint: rgba(255, 255, 255, 0.055);
+  --ss-text-strong: rgba(255, 255, 255, 0.92);
+  --ss-text: rgba(255, 255, 255, 0.6);
+  --ss-text-faint: rgba(255, 255, 255, 0.4);
+  --ss-icon: rgba(255, 255, 255, 0.58);
+  --ss-icon-faint: rgba(255, 255, 255, 0.32);
+
+  --ss-success: #3fb950;
+  --ss-success-text: #56d364;
+  --ss-danger: #f85149;
+  --ss-danger-text: #ff7b72;
+
+  --ss-radius-sm: 6px;
+  --ss-radius-md: 8px;
+  --ss-radius-lg: 12px;
+  --ss-radius-window: 14px;
+
+  /* Orbit-only roles the demos share. */
+  --orbit-side: #0a0a0c;
+  --orbit-card: #131316;
+  --orbit-code: #16161a;
+  --orbit-add: #56d364;
+  --orbit-del: #ff7b72;
+  --orbit-add-soft: rgba(63, 185, 80, 0.12);
+  --orbit-del-soft: rgba(248, 81, 73, 0.12);
+  --orbit-window-edge: 0 0 0 1px rgba(255, 255, 255, 0.09);
+}
+
+html:not(.dark) .orbit-look .ss-stage {
+  --ss-accent: #2f6fe0;
+  --ss-accent-2: #2f6fe0;
+  --ss-accent-soft: rgba(47, 111, 224, 0.12);
+  --ss-accent-text: #2259c0;
+
+  --ss-canvas: #ffffff;
+  --ss-surface: #ffffff;
+  --ss-chrome: #ffffff;
+  --ss-well: #f6f6f7;
+  --ss-raised: #ffffff;
+  --ss-fill: #e4e4e8;
+
+  --ss-ink-1: rgba(0, 0, 0, 0.045);
+  --ss-ink-2: rgba(0, 0, 0, 0.065);
+  --ss-ink-3: rgba(0, 0, 0, 0.09);
+  --ss-ink-4: rgba(0, 0, 0, 0.12);
+  --ss-ink-5: rgba(0, 0, 0, 0.18);
+
+  --ss-line: rgba(0, 0, 0, 0.09);
+  --ss-line-faint: rgba(0, 0, 0, 0.06);
+  --ss-text-strong: rgba(0, 0, 0, 0.88);
+  --ss-text: rgba(0, 0, 0, 0.6);
+  --ss-text-faint: rgba(0, 0, 0, 0.42);
+  --ss-icon: rgba(0, 0, 0, 0.55);
+  --ss-icon-faint: rgba(0, 0, 0, 0.3);
+
+  --ss-success: #1a7f37;
+  --ss-success-text: #1a7f37;
+  --ss-success-soft: rgba(26, 127, 55, 0.1);
+  --ss-danger: #cf222e;
+  --ss-danger-text: #cf222e;
+  --ss-danger-soft: rgba(207, 34, 46, 0.1);
+
+  --ss-shadow-hero: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 30px 60px -20px rgba(0, 0, 0, 0.18);
+  --ss-shadow-satellite: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 14px 32px -10px rgba(0, 0, 0, 0.2), 0 3px 8px -3px rgba(0, 0, 0, 0.1);
+  --ss-shadow-float: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 24px -6px rgba(0, 0, 0, 0.16);
+  --ss-shadow-ground: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 24px 48px -24px rgba(0, 0, 0, 0.2);
+
+  --orbit-side: #f4f4f5;
+  --orbit-card: #fafafa;
+  --orbit-code: #f6f6f8;
+  --orbit-add: #1a7f37;
+  --orbit-del: #cf222e;
+  --orbit-add-soft: rgba(26, 127, 55, 0.08);
+  --orbit-del-soft: rgba(207, 34, 46, 0.08);
+  --orbit-window-edge: 0 0 0 1px rgba(0, 0, 0, 0.09);
+}
+
+/* Shared Orbit primitives the demos reuse. */
+.orbit-look .o-mono {
+  font-family: var(--ss-mono);
+  font-size: 0.94em;
+  letter-spacing: -0.01em;
+}
+
+.orbit-look .o-add {
+  color: var(--orbit-add);
+}
+
+.orbit-look .o-del {
+  color: var(--orbit-del);
+}
+
+.orbit-look .o-icon {
+  flex: none;
+  color: var(--ss-icon);
+}
+
+/* A composer chip: icon + label, the way the app draws Build / model / effort. */
+.orbit-look .o-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--ss-radius-sm);
+  color: var(--ss-text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.orbit-look .o-chip .o-icon {
+  color: var(--ss-icon-faint);
+}
+
+/* Code colors follow the page theme too (the kit's dark set is pastel). */
+html:not(.dark) .orbit-look .ss-stage .ss-code {
+  --ss-code-key: #cf222e;
+  --ss-code-str: #0a3069;
+  --ss-code-num: #0550ae;
+  --ss-code-fn: #8250df;
+}
+
+.orbit-look .ss-stage[data-theme="dark"] .ss-code {
+  --ss-code-key: #ff7b72;
+  --ss-code-str: #a5d6ff;
+  --ss-code-num: #79c0ff;
+  --ss-code-fn: #d2a8ff;
+}

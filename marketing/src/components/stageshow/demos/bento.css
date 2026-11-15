@@ -1,0 +1,463 @@
+/* Feature-grid pictures. Each stage sits on its tile's ground, so the stage
+   itself is transparent; the tile (page CSS) owns the radius and the bleed. */
+
+.ob .ss-stage {
+  overflow: hidden;
+  background: transparent;
+}
+
+/* ── Approvals ──────────────────────────────────────────────────────── */
+
+/* Anchored to the bottom: the composer runs off the tile's foot, so whatever
+   the turn adds grows upward and the tile never ends on an empty band. */
+.ob-ap {
+  position: absolute;
+  inset: auto 32px -36px 32px;
+  display: grid;
+  gap: 10px;
+}
+
+.ob-approve .ss-stage[data-layout="compact"] .ob-ap {
+  inset: auto 16px -36px 16px;
+}
+
+.ob-ap__tool {
+  display: grid;
+  grid-template-columns: 14px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--ss-radius-md);
+  background: var(--orbit-card);
+  box-shadow: inset 0 0 0 1px var(--ss-line-faint);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.ob-ap__verb {
+  color: var(--ss-text-strong);
+  font-weight: 500;
+}
+
+.ob-ap__cmd {
+  overflow: hidden;
+  color: var(--ss-text);
+  text-overflow: ellipsis;
+}
+
+.ob-approve .ss-stage[data-layout="compact"] .ob-ap__tool {
+  grid-template-columns: 14px auto minmax(0, 1fr);
+}
+
+.ob-approve .ss-stage[data-layout="compact"] .ob-ap__status {
+  display: none;
+}
+
+.ob-ap__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ss-warning-text);
+  font-size: 12px;
+  transition: color 0.25s ease;
+}
+
+.ob-ap__status[data-phase="run"] {
+  color: var(--ss-text);
+}
+
+.ob-ap__status[data-phase="done"] {
+  color: var(--ss-success-text);
+}
+
+.ob-ap__mark {
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+}
+
+.ob-ap__mark > * {
+  grid-area: 1 / 1;
+  transition: opacity 0.2s ease;
+}
+
+.ob-ap__status[data-phase="ask"] .ob-ap__mark {
+  display: none;
+}
+
+.ob-ap__mark[data-done] .ss-spinner,
+.ob-ap__mark:not([data-done]) svg {
+  opacity: 0;
+}
+
+/* The inline approval bar: Allow once / Always allow / Deny, ↑ ↓ ⏎ esc. */
+.ob-ap__bar {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 2px;
+  padding: 14px;
+  border-radius: var(--ss-radius-lg);
+  background: var(--ss-raised);
+  box-shadow: inset 0 0 0 1px var(--ss-line), 0 0 0 3px var(--ss-warning-soft);
+}
+
+.ob-ap__ask {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ss-text-strong);
+  font-size: 13px;
+}
+
+.ob-ap__q b {
+  font-family: var(--ss-mono);
+  font-weight: 500;
+}
+
+.ob-ap__lock {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ss-radius-sm);
+  background: var(--ss-warning-soft);
+}
+
+.ob-ap__lock .o-icon {
+  color: var(--ss-warning-text);
+}
+
+.ob-ap__mode {
+  margin-left: auto;
+  color: var(--ss-text-faint);
+  font-size: 12px;
+}
+
+.ob-ap__choices {
+  display: flex;
+  gap: 8px;
+}
+
+.ob-ap__btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--ss-radius-md);
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+  color: var(--ss-text-strong);
+  font-size: 12.5px;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, scale 0.15s ease;
+}
+
+.ob-ap__btn kbd {
+  color: var(--ss-text-faint);
+  font-family: var(--ss-mono);
+  font-size: 11px;
+}
+
+.ob-ap__btn[data-primary] {
+  background: var(--ss-text-strong);
+  box-shadow: none;
+  color: var(--ss-surface);
+}
+
+.ob-ap__btn[data-primary] kbd {
+  color: inherit;
+  opacity: 0.55;
+}
+
+.ob-ap__btn[data-primary][data-hover] {
+  background: color-mix(in srgb, var(--ss-text-strong) 88%, var(--ss-surface));
+}
+
+.ob-ap__btn[data-pressed] {
+  scale: 0.97;
+}
+
+.ob-ap__out {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 2px;
+  padding: 12px 14px;
+  border-radius: var(--ss-radius-md);
+  background: var(--orbit-code);
+  box-shadow: inset 0 0 0 1px var(--ss-line-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: hidden;
+}
+
+.ob-ap__line {
+  color: var(--ss-text);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.ob-ap__line[data-on] {
+  opacity: 1;
+}
+
+.ob-ap__line[data-ok] {
+  color: var(--ss-success-text);
+}
+
+.ob-ap__composer {
+  height: 84px;
+  padding: 14px;
+  border-radius: var(--ss-radius-lg);
+  background: var(--orbit-card);
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
+
+.ob-ap__ph {
+  color: var(--ss-text-faint);
+  font-size: 13px;
+}
+
+/* ── Plan / Build / Ask ─────────────────────────────────────────────── */
+
+.ob-md {
+  position: absolute;
+  inset: 8px 28px auto 28px;
+  display: grid;
+  gap: 14px;
+}
+
+.ob-md__seg {
+  --n: 3;
+  justify-self: start;
+  width: 228px;
+}
+
+.ob-md__seg .ss-seg__thumb {
+  background: var(--ss-raised);
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
+
+.ob-md__list {
+  border-radius: var(--ss-radius-lg);
+  background: var(--orbit-card);
+  box-shadow: inset 0 0 0 1px var(--ss-line-faint);
+}
+
+.ob-md__row {
+  display: grid;
+  grid-template-columns: 14px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--ss-line-faint);
+  font-size: 12.5px;
+}
+
+.ob-md__row:last-child {
+  border-bottom: 0;
+}
+
+.ob-md__name {
+  color: var(--ss-text-strong);
+  transition: color 0.25s ease;
+}
+
+.ob-md__row[data-off] .ob-md__name {
+  color: var(--ss-text-faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--ss-icon-faint);
+}
+
+.ob-md__note {
+  justify-self: end;
+  color: var(--ss-warning-text);
+  font-size: 11.5px;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.ob-md__note[data-on] {
+  opacity: 1;
+}
+
+.ob-md__toggle {
+  flex: none;
+}
+
+.ob-md__gate {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  opacity: 0.35;
+  transition: opacity 0.3s ease;
+}
+
+.ob-md__gate[data-on] {
+  opacity: 1;
+}
+
+.ob-md__gate[data-on] .o-icon {
+  color: var(--ss-warning-text);
+}
+
+/* ── Last Turn review ───────────────────────────────────────────────── */
+
+.ob-rv {
+  position: absolute;
+  inset: 8px -40px auto 28px;
+  overflow: hidden;
+  border-radius: var(--ss-radius-lg);
+  background: var(--orbit-card);
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
+
+.ob-rv__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 52px 0 10px;
+  border-bottom: 1px solid var(--ss-line-faint);
+}
+
+.ob-rv__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--ss-radius-sm);
+  background: var(--ss-ink-2);
+  color: var(--ss-text-strong);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ob-rv__nav {
+  color: var(--ss-text-faint);
+  font-size: 11.5px;
+}
+
+.ob-rv__file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 52px 0 14px;
+  color: var(--ss-text-strong);
+  font-size: 12.5px;
+}
+
+.ob-rv__rs {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: #e0763a;
+  color: #fff;
+  font-family: var(--ss-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+}
+
+.ob-rv__count {
+  margin-left: auto;
+  font-size: 11.5px;
+}
+
+.ob-rv__code {
+  padding-bottom: 8px;
+  font-size: 11.5px;
+}
+
+/* ── Models ─────────────────────────────────────────────────────────── */
+
+.ob-ml {
+  position: absolute;
+  inset: 8px 28px auto 28px;
+  overflow: hidden;
+  padding: 6px;
+  border-radius: var(--ss-radius-lg);
+  background: var(--ss-raised);
+  box-shadow: var(--ss-shadow-float);
+}
+
+.ob-ml__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  margin-bottom: 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--ss-line-faint);
+  color: var(--ss-text-faint);
+  font-size: 12.5px;
+}
+
+.ob-ml__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 40px 14px;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--ss-radius-sm);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.ob-ml__row[data-on] {
+  background: var(--ss-ink-2);
+}
+
+.ob-ml__name {
+  overflow: hidden;
+  color: var(--ss-text-strong);
+  text-overflow: ellipsis;
+}
+
+.ob-ml__provider {
+  color: var(--ss-text-faint);
+  font-size: 11.5px;
+}
+
+.ob-ml__ctx {
+  justify-self: end;
+  color: var(--ss-text-faint);
+  font-size: 11px;
+}
+
+.ob-ml__check {
+  display: grid;
+  place-items: center;
+  color: var(--ss-accent);
+}
+
+.ob-ml__effort {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 10px 8px 4px;
+  border-top: 1px solid var(--ss-line-faint);
+  color: var(--ss-text);
+  font-size: 12px;
+}
+
+.ob-ml__seg {
+  --n: 4;
+  width: 216px;
+}
+
+.ob-ml__seg .ss-seg__option {
+  padding: 0 6px;
+  font-size: 11.5px;
+}

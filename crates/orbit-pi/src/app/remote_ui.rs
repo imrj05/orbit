@@ -1,0 +1,124 @@
+//! Remote (SSH) sessions in the app: where a new task runs, the one spawn
+//! seam every restart goes through, and the honest "not on this machine"
+//! state for surfaces that read the local disk. Hosts are managed in
+//! Settings → Remote hosts (`remote_hosts_ui.rs`).
+//!
+//! Only the agent runs on the host (see `crates/orbit-pi/docs/remote-sessions.md`).
+//! The explorer, Review, Git, Files and Worktrees describe the local disk, so
+//! while [`OrbitApp::remote`] is set they render [`remote_unavailable`]
+//! instead of the wrong machine's files.
+
+use super::*;
+use crate::remote_hosts::RemoteHost;
+
+/// Where a new task runs.
+pub(crate) enum TaskPlace {
+    /// A local folder; it becomes the current workspace.
+    Folder(PathBuf),
+    /// A configured remote host; the local workspace is left as it was.
+    Remote(RemoteHost),
+}
+
+/// The host a `remote-host` picker row stands for: the row's position among
+/// the host rows indexes the host list they were built from.
+pub(crate) fn remote_host_for_action(
+    action_ids: &[&'static str],
+    ix: usize,
+    hosts: &[RemoteHost],
+) -> Option<RemoteHost> {
+    if action_ids.get(ix).copied() != Some("remote-host") {
+        return None;
+    }
+    let nth = action_ids[..ix]
+        .iter()
+        .filter(|id| **id == "remote-host")
+        .count();
+    hosts.get(nth).cloned()
+}
+
+impl OrbitApp {
+    /// Spawn pi for the session this view is showing: on the remote host
+    /// while the session is remote, otherwise locally in `workspace`. Every
+    /// restart path (Start, reconnect, MCP apply, forced-stop respawn) goes
+    /// through here so a remote session never quietly comes back local.
+    pub(super) fn spawn_pi(
+        &self,
+        workspace: &Path,
+        apply_default: bool,
+    ) -> anyhow::Result<orbit_rpc::PiClient> {
+        match &self.remote {
+            Some(host) => {
+                let secret = self.remote_secret(host);
+                self.extensions
+                    .spawn_remote(&host.target()?, secret.as_deref())
+            }
+            None => self
+                .extensions
+                .spawn(workspace, apply_default, &self.mcp.secret_env()),
+        }
+    }
+
+    /// The remote host's name while the active session runs there.
+    pub(super) fn remote_host_name(&self) -> Option<&str> {
+        self.remote.as_ref().map(|host| host.name.as_str())
+    }
+
+    /// Say why a local-disk surface is unavailable, instead of opening it on
+    /// the wrong machine. Returns whether the caller should stop.
+    pub(super) fn block_local_surface_for_remote(&mut self) -> bool {
+        let Some(name) = self.remote_host_name().map(str::to_owned) else {
+            return false;
+        };
+        self.toast_info(tr!("remote.surface_unavailable", host = name));
+        true
+    }
+}
+
+/// The page body for Files / Git / Worktrees while the session is remote.
+pub(super) fn remote_unavailable(theme: Theme, host: &str) -> AnyElement {
+    empty_state(
+        theme,
+        "icons/server-stack.svg",
+        &tr!("remote.unavailable_title", host = host.to_string()),
+        Some(&tr!("remote.unavailable_detail")),
+        EmptyFill::Full,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host(name: &str) -> RemoteHost {
+        RemoteHost {
+            name: name.into(),
+            ssh: name.into(),
+            user: None,
+            port: None,
+            dir: "/srv".into(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn host_rows_map_to_hosts_by_their_order_among_host_rows() {
+        let ids = [
+            "clone-repository",
+            "remote-host",
+            "remote-host",
+            "remote-setup",
+        ];
+        let hosts = [host("a"), host("b")];
+        assert_eq!(
+            remote_host_for_action(&ids, 1, &hosts).map(|h| h.name),
+            Some("a".into())
+        );
+        assert_eq!(
+            remote_host_for_action(&ids, 2, &hosts).map(|h| h.name),
+            Some("b".into())
+        );
+        assert!(remote_host_for_action(&ids, 0, &hosts).is_none());
+        assert!(remote_host_for_action(&ids, 3, &hosts).is_none());
+        assert!(remote_host_for_action(&ids, 9, &hosts).is_none());
+    }
+}

@@ -30,6 +30,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use orbit_rpc::remote::{RemoteFile, RemoteTarget};
 use orbit_rpc::PiClient;
 
 use crate::session_defaults::SessionDefault;
@@ -38,6 +39,26 @@ const QUOTA_INDEX_JS: &str = include_str!("../../../contrib/orbit-quota-extensio
 const QUOTA_ADAPTERS_JS: &str = include_str!("../../../contrib/orbit-quota-extension/adapters.js");
 const GUARD_INDEX_JS: &str = include_str!("../../../contrib/orbit-guard-extension/index.js");
 const GUARD_POLICY_JS: &str = include_str!("../../../contrib/orbit-guard-extension/policy.js");
+const GUARD_PACKAGE_JSON: &str =
+    include_str!("../../../contrib/orbit-guard-extension/package.json");
+
+/// The guard as it is written onto a remote host. `package.json` ships too:
+/// it carries `"type": "module"`, without which Node loads `index.js` as
+/// CommonJS and the guard fails to import.
+const REMOTE_GUARD_FILES: [RemoteFile<'static>; 3] = [
+    RemoteFile {
+        name: "index.js",
+        contents: GUARD_INDEX_JS,
+    },
+    RemoteFile {
+        name: "policy.js",
+        contents: GUARD_POLICY_JS,
+    },
+    RemoteFile {
+        name: "package.json",
+        contents: GUARD_PACKAGE_JSON,
+    },
+];
 const SUGGESTIONS_INDEX_JS: &str =
     include_str!("../../../contrib/orbit-suggestions-extension/index.js");
 const TITLE_INDEX_JS: &str = include_str!("../../../contrib/orbit-title-extension/index.js");
@@ -181,6 +202,35 @@ impl BundledExtensions {
             &env_refs,
             &args,
         )
+    }
+
+    /// Spawn an agent-only pi session on a remote host over SSH. The launch
+    /// script installs the access guard on the host and pins its mode to
+    /// supervised before it execs pi (see `orbit_rpc::remote`).
+    ///
+    /// Fails closed: when the guard could not be materialized locally, the
+    /// bundled copy is suspect too, so no remote session starts unguarded.
+    pub(crate) fn spawn_remote(
+        &self,
+        target: &RemoteTarget,
+        password: Option<&str>,
+    ) -> anyhow::Result<PiClient> {
+        if self.guard.is_none() {
+            anyhow::bail!(
+                "Orbit's access guard is unavailable; refusing to start a remote session without it"
+            );
+        }
+        // With a password, ssh answers its one prompt through the askpass
+        // helper; without one it never asks (keys and the agent only).
+        let askpass = match password {
+            Some(_) => Some(crate::remote_hosts::askpass_path()?),
+            None => None,
+        };
+        let password = askpass
+            .as_deref()
+            .zip(password)
+            .map(|(askpass, secret)| orbit_rpc::remote::SshPassword { askpass, secret });
+        PiClient::spawn_remote_with_bin("ssh", target, &REMOTE_GUARD_FILES, password)
     }
 
     /// The installed bundled extension entry points, in load order.

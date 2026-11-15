@@ -3,7 +3,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { LinuxIcon, MacosIcon, WindowsIcon } from "@/components/brand-icons";
 import { OrbitField } from "@/components/orbit-field";
 import { OsDownloadButton } from "@/components/download-button";
-import { Shot } from "@/components/shot";
+import { HeroDemoWithReplay } from "@/components/stageshow/demos/hero";
 import { Band, ButtonLink, Shell } from "@/components/ui";
 import { getLatestRelease, LATEST_RELEASE_URL } from "@/lib/releases";
 import { downloadLabels } from "@/i18n/labels";
@@ -110,16 +110,14 @@ export async function Hero({ locale }: { locale: Locale }) {
           </div>
         </div>
 
-        {/* The product is the hero; the frame carries the only deep shadow
-         * in the whole design. */}
-        <div className="relative z-[1] mt-12 sm:mt-14">
-          <div className="rise-window relative mx-auto w-full max-w-[1180px]">
-            <Shot
-              src="/screens/session.png"
-              srcLight="/screens/session-light.png"
-              priority
-              alt={t("shotAlt")}
-            />
+        {/* The product is the hero: an Orbit session played out as a faux
+         * product demo (Stageshow). It plays once in view and holds on the
+         * payoff; reduced motion shows that payoff as a still. */}
+        <div className="relative z-[1] mt-12 sm:mt-16">
+          <div
+            className="rise-window relative mx-auto w-full max-w-[1120px]"
+          >
+            <HeroDemoWithReplay label={t("shotAlt")} replayLabel={t("replay")} />
           </div>
         </div>
       </Band>

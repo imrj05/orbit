@@ -10,6 +10,7 @@
 //! - the client never blocks a UI frame: draining is `try_recv`-based
 
 pub mod client;
+pub mod remote;
 pub mod types;
 
 pub use client::{

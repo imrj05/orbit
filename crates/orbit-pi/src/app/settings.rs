@@ -223,6 +223,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         "settings.plugins",
     ),
     (SettingsSection::Mcp, "icons/tools/mcp.svg", "settings.mcp"),
+    (
+        SettingsSection::RemoteHosts,
+        "icons/server-stack.svg",
+        "settings.remote_hosts",
+    ),
     (SettingsSection::About, "icons/info.svg", "settings.about"),
     (
         SettingsSection::ReportBug,
@@ -512,6 +517,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Mcp,
         "settings.mcp",
         "mcp model context protocol servers tools",
+    ),
+    (
+        SettingsSection::RemoteHosts,
+        "settings.remote_hosts",
+        "remote hosts ssh server vps machine environment connection devbox",
     ),
     (
         SettingsSection::Providers,
@@ -844,6 +854,10 @@ impl OrbitApp {
             .children(self.provider_usage_layer(theme, this.clone(), cx))
             // ── MCP add/edit modal ──
             .children(self.mcp_editor_layer(theme, this.clone(), cx))
+            // ── Remote hosts add/edit modal ──
+            .children(self.remote_host_editor_layer(theme, this.clone(), cx))
+            // ── a host's Add API key dialog ──
+            .children(self.remote_key_layer(theme, this.clone(), cx))
             .children(self.provider_key_layer(theme, this, cx))
     }
 
@@ -1070,6 +1084,10 @@ impl OrbitApp {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
             }
             SettingsSection::Mcp => (tr!("settings.mcp"), tr!("settings.mcp_description")),
+            SettingsSection::RemoteHosts => (
+                tr!("settings.remote_hosts"),
+                tr!("settings.remote_hosts_description"),
+            ),
             SettingsSection::Appearance => (
                 tr!("settings.appearance"),
                 tr!("settings.appearance_description"),
@@ -1217,8 +1235,13 @@ impl OrbitApp {
             // The MCP page's rows are owned by `mcp_ui`; it needs the cursor
             // and filter state that lives beside the manager.
             SettingsSection::Mcp => self.mcp_rows(theme, this.clone(), cx),
+            SettingsSection::RemoteHosts => self.remote_hosts_rows(theme, this.clone()),
             SettingsSection::Appearance => self.appearance_rows(theme, this.clone(), cx),
-            SettingsSection::Providers => self.provider_rows(theme, this.clone(), cx),
+            SettingsSection::Providers => match self.providers_remote_host() {
+                // A host shows its own providers, read from its pi.
+                Some(host) => self.remote_provider_rows(&host, theme, this.clone()),
+                None => self.provider_rows(theme, this.clone(), cx),
+            },
             SettingsSection::Shortcuts => self.shortcut_rows(theme),
             SettingsSection::Privacy => self.privacy_rows(theme, this.clone(), cx),
             SettingsSection::About => {
@@ -1294,9 +1317,24 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         match self.settings_section {
-            SettingsSection::Providers => Some(self.provider_toolbar(theme, this, cx)),
+            SettingsSection::Providers => Some(match self.providers_remote_host() {
+                Some(host) => self.remote_provider_toolbar(&host, theme, this),
+                None => match self.providers_machine_selector(theme, this.clone()) {
+                    // The selector sits above this Mac's own toolbar.
+                    Some(selector) => div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .child(selector)
+                        .child(self.provider_toolbar(theme, this, cx))
+                        .into_any_element(),
+                    None => self.provider_toolbar(theme, this, cx),
+                },
+            }),
             SettingsSection::Plugins => Some(self.plugin_toolbar(theme, this, cx)),
             SettingsSection::Mcp => Some(self.mcp_toolbar(theme, this, cx)),
+            SettingsSection::RemoteHosts => Some(self.remote_hosts_toolbar(theme, this)),
             SettingsSection::GitAccounts => Some(self.git_accounts_toolbar(theme, this)),
             _ => None,
         }
@@ -2621,6 +2659,40 @@ impl OrbitApp {
         });
 
         let mut rows: Vec<AnyElement> = Vec::new();
+
+        // ── remote session: which machine each control acts on ──
+        if let Some(host) = self.remote_host_name() {
+            rows.push(
+                div()
+                    .debug_selector(|| "providers-remote-notice".to_string())
+                    .w_full()
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(panel::RADIUS.px(&theme))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
+                    .flex()
+                    .items_start()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(icon(
+                        "icons/server-stack.svg",
+                        IconSize::Medium.px(&theme),
+                        theme.text_muted,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_secondary)
+                            .child(tr!(
+                                "remote_hosts.providers_notice_local",
+                                host = host.to_string()
+                            )),
+                    )
+                    .into_any_element(),
+            );
+        }
 
         // ── credential-changed banner ──
         if self.provider_auth_dirty {
@@ -8707,6 +8779,12 @@ impl OrbitApp {
         // discards it like the provider editors above.
         self.mcp_editor = None;
         self.mcp_remove_confirm = None;
+        // Likewise the Remote hosts form and its pending remove.
+        self.remote_host_editor = None;
+        self.remote_host_remove_confirm = None;
+        self.remote_host_menu = None;
+        self.providers_machine_menu = false;
+        self.remote_key_editor = None;
         match section {
             SettingsSection::General => self.refresh_notification_auth(cx),
             SettingsSection::GitAccounts => self.refresh_git_accounts_for_workspace(cx),
@@ -8715,12 +8793,14 @@ impl OrbitApp {
                 // auth.json) lands after this frame.
                 self.reload_custom_providers_later(cx);
                 self.refresh_auth();
+                self.providers_section_opened(cx);
             }
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Subagents => self.refresh_subagents(cx),
             SettingsSection::Permissions => self.refresh_permissions(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),
+            SettingsSection::RemoteHosts => self.remote_hosts_section_opened(cx),
             _ => {}
         }
         cx.notify();
@@ -8979,6 +9059,18 @@ impl OrbitApp {
             cx.notify();
             return;
         }
+        // A remote session's file lives on the host, not in the local list:
+        // reattach to it there, the way a reconnect does.
+        if self.remote.is_some() {
+            self.drop_client();
+            if !self.respawn_into_session(cx) {
+                self.runtime_start(cx);
+            }
+            self.provider_auth_dirty = false;
+            self.toast_success(tr!("settings.pi_restarted_credentials_loaded"));
+            cx.notify();
+            return;
+        }
         let resume = self
             .current_session_path
             .clone()
@@ -9075,11 +9167,14 @@ impl OrbitApp {
             cx.notify();
             return;
         }
+        // This page acts on this Mac; a host's providers are signed in from
+        // its own view (the Machine selector, `remote_providers_ui`).
         let command = format!("pi /login {id}");
+        let done_hint = tr!("settings.finish_sign_in_terminal", name = name);
         match platform::open_terminal_command(&command) {
             Ok(()) => {
                 self.provider_auth_dirty = true;
-                self.toast_info(tr!("settings.finish_sign_in_terminal", name = name));
+                self.toast_info(done_hint);
             }
             Err(err) => {
                 self.toast_warning(tr!(

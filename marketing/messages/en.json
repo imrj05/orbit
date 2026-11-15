@@ -31,7 +31,8 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "A completed Orbit session: the agent's summary of the open-in options change and a Changed 3 files card with per-file line counts, above the composer."
+    "shotAlt": "An Orbit session: a task is sent, pi reads, edits and tests the RPC client, streams its answer, and a Changed 2 files card lists the edits with their line counts.",
+    "replay": "Replay"
   },
   "trust": {
     "items": [
@@ -614,5 +615,143 @@
       "home": "Back home",
       "reference": "Reference {digest}"
     }
+  },
+  "tour": {
+    "eyebrow": "Inside Orbit",
+    "title": "Every surface of pi, in one native window.",
+    "copy": "Pick a surface to see it as it ships. These are real screenshots of Orbit running against the pi CLI, in the theme you are reading this page in.",
+    "tablist": "Orbit features"
+  },
+  "highlights": {
+    "eyebrow": "Why Orbit",
+    "title": "The agent does the work. You stay in charge.",
+    "copy": "Orbit renders pi's real tool calls, diffs, and models as they happen, so every run is something you can read, steer, and approve.",
+    "approve": {
+      "lead": "Nothing runs unasked.",
+      "rest": "In Supervised mode the access guard stops every mutating call: allow it once, always allow the tool, or deny it, right above the composer."
+    },
+    "modes": {
+      "lead": "Plan before you build.",
+      "rest": "Plan and Ask drop the write tools and gate bash to read-only commands."
+    },
+    "review": {
+      "lead": "Review the turn, not the tree.",
+      "rest": "Last Turn shows exactly what one agent turn changed, from per-turn checkpoints."
+    },
+    "stat": {
+      "value": "0",
+      "label": "telemetry",
+      "rest": "No analytics client, no install identifier, no usage pings. The network carries only what you ask for."
+    },
+    "models": {
+      "lead": "Any provider, any model.",
+      "rest": "Hosted or local through Ollama, with thinking effort set per task."
+    }
+  },
+  "capabilities": {
+    "eyebrow": "Everything else",
+    "title": "The details that make it a workbench.",
+    "copy": "The tour shows the big surfaces. This is the rest of what ships today, all running against your own pi install.",
+    "groups": [
+      {
+        "title": "Chat & transcript",
+        "items": [
+          "Steer a run mid-flight or queue a follow-up; edit a queued message or send it now.",
+          "A GPU-rendered, virtualized transcript with paint-only syntax highlighting, so streaming never reflows.",
+          "Mermaid flowcharts drawn natively, with the copyable source one click away.",
+          "Image, file, and long-paste attachments, with images compressed at ingest.",
+          "⌘F find in the transcript and Markdown export of any response."
+        ]
+      },
+      {
+        "title": "Sessions",
+        "items": [
+          "Grouped by project, shared with the pi CLI, and refreshed live when the terminal writes.",
+          "Live status from real pi events: Running, Waiting for approval, Retrying, Compacting, Failed.",
+          "A run that finishes in the background leaves a Needs review mark and a desktop notification.",
+          "Rename, pin, clone, or rewind; ⌘1 to ⌘9 jump straight to a session."
+        ]
+      },
+      {
+        "title": "Safeguards",
+        "items": [
+          "Supervised, Auto-accept edits, or Full access, chosen per task from the composer.",
+          "Permission rules per tool family with patterns, so bash may run while rm still asks.",
+          "Subagents with their own context window, held to the same access and workflow modes.",
+          "A confirmation guard, not a sandbox, and Orbit says so plainly."
+        ]
+      },
+      {
+        "title": "Review & Git",
+        "items": [
+          "Diff sources for Last Turn, Uncommitted, Staged, Committed, and Branch.",
+          "Stage, commit, stash, push, pull, merge, and rebase from the Git page.",
+          "Commit messages and pull-request drafts generated on a model you pick.",
+          "Issues and pull requests through gh, and Git worktrees as first-class workspaces."
+        ]
+      },
+      {
+        "title": "Files & terminal",
+        "items": [
+          "A gitignore-aware project tree with git badges and file operations.",
+          "Editable, syntax-highlighted files with autosave and Markdown preview.",
+          "An integrated terminal (⌘J) whose background tabs keep running.",
+          "Open the workspace in your editor or terminal from the header."
+        ]
+      },
+      {
+        "title": "Workbench",
+        "items": [
+          "Providers with API-key or OAuth sign-in, plus local models through Ollama.",
+          "MCP servers, skills, and pi packages managed without editing JSON.",
+          "Usage from pi's own meter: tokens, cost, and cache, kept on your machine.",
+          "Auto session titles, a command palette (⌘P), and ten interface languages."
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "eyebrow": "Under the hood",
+    "copy": "No web views, no Node daemon, no account. Orbit is a Rust app drawn by GPUI that talks to the pi you already have installed, over the same RPC protocol pi documents.",
+    "nodes": [
+      {
+        "title": "Orbit",
+        "mono": "Rust · GPUI",
+        "detail": "The native window. Transcript, sidebar, and diffs drawn on the GPU and virtualized."
+      },
+      {
+        "title": "JSONL over stdio",
+        "mono": "newline-delimited JSON",
+        "detail": "Commands in, events out. Unknown events pass through, so a newer pi never crashes the app."
+      },
+      {
+        "title": "pi CLI",
+        "mono": "pi --mode rpc",
+        "detail": "One child process per open session, the same sessions the terminal sees on disk."
+      },
+      {
+        "title": "Your models",
+        "mono": "hosted or local",
+        "detail": "Whatever pi is configured to call: hosted providers or a local Ollama on your machine."
+      }
+    ],
+    "stats": [
+      {
+        "value": "~90 ms",
+        "label": "event heartbeat; a frame never waits on I/O"
+      },
+      {
+        "value": "1 process",
+        "label": "of pi per open session, kept alive in the background"
+      },
+      {
+        "value": "0",
+        "label": "web views, Node daemons, or accounts"
+      },
+      {
+        "value": "10",
+        "label": "interface languages, plus your system's"
+      }
+    ]
   }
 }

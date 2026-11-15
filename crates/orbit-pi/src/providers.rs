@@ -732,6 +732,21 @@ fn write_api_key_at(path: &Path, id: &str, key: &str) -> Result<(), String> {
     write_json_secure(path, &root)
 }
 
+/// This Mac's stored API key for `id`, for **Use this Mac's key** on a remote
+/// host. Only a literal `api_key` entry qualifies: an OAuth credential is
+/// never copied (providers rotate refresh tokens, so two machines sharing one
+/// sign each other out), and a `!command` key names a secret manager that
+/// exists on this machine, not the host.
+pub(crate) fn local_api_key(id: &str) -> Option<String> {
+    let root = read_auth_root_at(&auth_path()).ok()?;
+    let entry = root.get(id)?.as_object()?;
+    if entry.get("type").and_then(Value::as_str) != Some("api_key") {
+        return None;
+    }
+    let key = entry.get("key").and_then(Value::as_str)?.trim();
+    (!key.is_empty() && !key.starts_with('!')).then(|| key.to_string())
+}
+
 /// Remove a provider's stored credential (sign out).
 pub(crate) fn remove_auth(id: &str) -> Result<(), String> {
     remove_auth_at(&auth_path(), id)

@@ -874,3 +874,30 @@ body {
     @apply font-sans;
   }
 }
+
+/* Feature tour: the tab strip scrolls sideways on a phone without a bar,
+ * and a newly selected panel rises in (copy first, then its screenshot). */
+.tour-tabs {
+  scrollbar-width: none;
+}
+
+.tour-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tour-in {
+    animation: tour-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .tour-in--late {
+    animation-delay: 70ms;
+  }
+}
+
+@keyframes tour-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}

@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Run the agent on a VPS over SSH.** Settings → Remote hosts manages the machines,
+  after t3code's environment panel: **Add host** opens a form for the SSH host or
+  `~/.ssh/config` alias (your aliases are offered as suggestions), an optional user and
+  port, the remote directory and a display name, and **Test connection** checks — without
+  changing anything on the host — that ssh connects, the directory exists and `pi` is
+  installed, before you save. Each host row shows `user@host:port`, the directory and its
+  last check, with Test, Edit and Remove. Hosts are stored in
+  `~/.orbit-pi/remote-hosts.json`, written surgically so hand edits survive. The new-task
+  folder picker lists the hosts, and **Add a remote host…** opens the form. Picking
+  a host spawns `pi --mode rpc` there over `ssh`; the RPC stream rides ssh's stdio, so
+  no server, port forward or pairing is involved. Agent only: Files, Git, Review,
+  Worktrees, the Explorer and `@` mentions read this machine's disk and are off for a
+  remote session, which the folder chip and status bar name by host. The access guard is
+  installed on the host on every launch and the host's mode is pinned to Supervised; a
+  session never starts without it. Connections try SSH keys first; when the server refuses
+  them and accepts a password, Orbit asks for it in a masked dialog and hands it to that
+  one ssh process through an askpass helper — kept in memory until Orbit quits, never
+  written to disk, up to three tries. Unknown host keys are verified in a terminal, never
+  trusted from the app. Password logins need macOS or Linux; keys work everywhere.
+  Each host is a card (name, `SSH user@host:port · status`, an on/off switch that hides
+  it from the folder picker, and a ⋯ menu with Test connection / Edit / Remove). A failed
+  check says why — a cloud image that only allows `opc`/`ubuntu` (**Use opc**), a login
+  profile stopped by a signal, or pi missing — and **Install pi** installs it over ssh
+  with pi's official installer, plus checksum-verified Node.js 22 from nodejs.org when the
+  server has none; no sudo, no profile edits. Orbit also finds pi through your own login
+  shell and in pi's usual install folders, as t3code does for its agent CLIs.
+  During a remote session, Settings → Providers → **Sign in** runs `pi /login` on the
+  server in Terminal (over `ssh -t`, so ssh and pi ask their own questions there), and
+  **Restart pi** reattaches to the server's session so the model picker lists the newly
+  signed-in provider. The page says which machine each control acts on.
+  Providers & models has a **Machine** selector (This Mac, plus each enabled remote host,
+  after t3code's environment picker). A host shows its own signed-in providers and their
+  models, read from that server's `pi --list-models` over ssh so credentials never leave
+  it, with **Sign in** (pi's own `/login` on the server: OAuth and API keys) and **Refresh**.
+  The page opens on the machine the current session runs on. On a host, **Add API key**
+  saves a key there without leaving Orbit (typed into a masked field, or **Use this Mac's
+  key**); it travels on ssh's stdin only and is merged into the server's `auth.json`
+  (0600). Subscription sign-ins open pi's `/login` for the server in a tab of Orbit's own
+  terminal panel. OAuth credentials are never copied between machines.
+  Restarts and reconnects stay on the host; leaving a remote session stops its process,
+  and remote sessions are not listed in the sidebar (pi keeps their files on the host).
+
 ## [0.2.19] - 2026-11-15
 
 ### Added

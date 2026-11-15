@@ -101,6 +101,7 @@ mod providers;
 mod quota;
 mod quota_hidden;
 mod recent_models;
+mod remote_hosts;
 mod repository_clone;
 mod review;
 mod rewind;

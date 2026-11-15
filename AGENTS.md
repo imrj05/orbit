@@ -109,6 +109,17 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   docs/mcp.md           MCP architecture, configuration, secrets, lifecycle, troubleshooting
   src/app/updater_ui.rs signed-updater modal (check/version+changelog/Download with progress/Restart, Version History), rows, pill, event drain
   src/app/search.rs     in-transcript find (⌘F): matches, counts, prev/next, row wash
+  src/app/remote_ui.rs  remote (SSH) sessions: picker host rows, the `spawn_pi` seam every restart
+                        uses, the host-config action, and the unavailable state for local-disk surfaces
+  src/app/remote_hosts_ui.rs  Settings → Remote hosts: host rows (Test / Edit / Remove), the add/edit
+                        modal with `~/.ssh/config` alias suggestions, and the background Test connection
+  src/app/remote_providers_ui.rs  Providers & models per machine: the Machine selector, a host's
+                        signed-in providers from its own `pi --list-models`, Sign in / Refresh on the host
+  src/app/ssh_auth_ui.rs  SSH password logins: keys first, then the masked password dialog and the
+                        askpass retry; passwords in memory only, keyed by ssh account
+  src/remote_hosts.rs   `~/.orbit-pi/remote-hosts.json`: lenient host list, validated ssh targets,
+                        surgical upsert/remove, `~/.ssh/config` alias discovery, the read-only probe
+  docs/remote-sessions.md  agent-only SSH sessions: launch script, safety, what is off while remote
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
   src/app/view.rs       top-level chrome: sidebar, transcript, composer, status bar, onboarding, image lightbox
   src/app/open_in.rs    installed-editor/terminal detection and the "open in" menu
@@ -175,6 +186,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
 crates/orbit-rpc/       pi CLI process + JSONL protocol
   src/client.rs         spawn, writer/reader/stderr threads, kill-on-drop
   src/types.rs          CommandBody / Event (permissive serde) + auth.* / quota.* wire types
+  src/remote.rs         ssh target validation, ssh argv, and the guarded remote launch script
+  tests/remote_fake_ssh.rs  fake-ssh round trip: guard installed, mode pinned, RPC over ssh stdio
   docs/auth-rpc.md      provider-auth RPC server contract (secrets never cross it)
   docs/quota-rpc.md     provider-quota RPC server contract (normalized, non-secret)
   tests/live_pi.rs      live get_state / prompt / process-alive (skip if no pi)

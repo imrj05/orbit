@@ -1346,7 +1346,7 @@ fn thinking_chip(level: &str, theme: Theme) -> impl IntoElement + use<> {
 /// Recents/Favorites sections. Coloured brands keep their hue; monochrome
 /// wordmarks fall back to the muted ink. It uses the same mark scale as the
 /// rail's chips, so the provider is recognisable in both places.
-fn provider_mark(provider: &str, theme: Theme) -> AnyElement {
+pub(crate) fn provider_mark(provider: &str, theme: Theme) -> AnyElement {
     div()
         .flex_none()
         .child(icon_dyn(
