@@ -84,6 +84,17 @@ frame or the first draw after a two-second gap. Gaussian kernels remain cached
 (up to four) until eviction or renderer destruction; an idle window does not
 run a timer to release either cache.
 
+## 5. `src/text_system.rs` + `src/text_system/line_layout.rs` — per-character advances
+
+Upstream's `shape_line`/`layout_line` take `force_width: Option<Pixels>`: one
+scalar pitch, snapped per *glyph*. Orbit's terminal renders from a cell grid, so
+it needs a pitch per *character* — a wide glyph owns two cells and a combining
+mark owns none. Both entry points take `force_widths: Option<&[Pixels]>` (one
+advance per char, `None` keeps upstream's natural shaping), and the cache key
+stores the widths so the same text at two pitches cannot share a layout. Zero
+widths anchor to the preceding cell; every glyph takes its cluster's column.
+Replay these two files when re-vendoring.
+
 ## Re-verifying a re-vendor
 
 - `cargo clippy --lib -p gpui --no-deps -- -D warnings` is clean, so the

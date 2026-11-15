@@ -359,6 +359,11 @@ impl WindowTextSystem {
     /// Shape the given line, at the given font_size, for painting to the screen.
     /// Subsets of the line can be styled independently with the `runs` parameter.
     ///
+    /// `force_widths`, when given, carries one advance per character of `text`
+    /// and pins every glyph to its character's column instead of the font's own
+    /// advances — a grid whose cells are authoritative (a terminal) uses this.
+    /// A zero advance is a combining mark and stays on the cell before it.
+    ///
     /// Note that this method can only shape a single line of text. It will panic
     /// if the text contains newlines. If you need to shape multiple lines of text,
     /// use [`Self::shape_text`] instead.
@@ -367,7 +372,7 @@ impl WindowTextSystem {
         text: SharedString,
         font_size: Pixels,
         runs: &[TextRun],
-        force_width: Option<Pixels>,
+        force_widths: Option<&[Pixels]>,
     ) -> ShapedLine {
         debug_assert!(
             text.find('\n').is_none(),
@@ -394,7 +399,7 @@ impl WindowTextSystem {
             });
         }
 
-        let layout = self.layout_line(&text, font_size, runs, force_width);
+        let layout = self.layout_line(&text, font_size, runs, force_widths);
 
         ShapedLine {
             layout,
@@ -537,7 +542,7 @@ impl WindowTextSystem {
         text: &str,
         font_size: Pixels,
         runs: &[TextRun],
-        force_width: Option<Pixels>,
+        force_widths: Option<&[Pixels]>,
     ) -> Arc<LineLayout> {
         let mut last_run = None::<&TextRun>;
         let mut last_font: Option<FontId> = None;
@@ -577,7 +582,7 @@ impl WindowTextSystem {
             &SharedString::new(text),
             font_size,
             &font_runs,
-            force_width,
+            force_widths,
         );
 
         self.font_runs_pool.lock().push(font_runs);
