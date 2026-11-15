@@ -578,6 +578,10 @@ struct ScrollIndicator {
 struct PreparedRow {
     text: String,
     runs: Vec<TextRun>,
+    /// Cell span per emitted character: 1, 2 for a wide glyph, and 0 for a
+    /// combining mark so it shares the cell before it. `text.chars().count()`
+    /// entries, always.
+    widths: Vec<u8>,
 }
 
 struct PreparedGrid {
@@ -638,6 +642,7 @@ fn prepare_grid(
 
     for chunk in all.chunks(columns.max(1)) {
         let mut text = String::with_capacity(columns);
+        let mut widths: Vec<u8> = Vec::with_capacity(columns);
         let mut runs: Vec<TextRun> = Vec::with_capacity(columns);
         let mut run_style: Option<CellStyle> = None;
         let mut run_len = 0usize;
@@ -698,10 +703,19 @@ fn prepare_grid(
             let character = if cell.c == '\0' { ' ' } else { cell.c };
             run_len += character.len_utf8();
             text.push(character);
+            // The grid, not the font, decides the pitch: a wide cell covers
+            // two columns and its spacer (skipped above) is already counted
+            // here. Marks are zero-width and must not advance the pen.
+            widths.push(if flags.contains(Flags::WIDE_CHAR) {
+                2
+            } else {
+                1
+            });
             if let Some(zerowidth) = cell.zerowidth() {
                 for mark in zerowidth {
                     run_len += mark.len_utf8();
                     text.push(*mark);
+                    widths.push(0);
                 }
             }
         }
@@ -713,6 +727,7 @@ fn prepare_grid(
         // give it one space so paint always has a glyph box.
         if text.is_empty() {
             text.push(' ');
+            widths.push(1);
             runs.push(text_run(
                 1,
                 &CellStyle {
@@ -727,7 +742,7 @@ fn prepare_grid(
             ));
         }
 
-        rows.push(PreparedRow { text, runs });
+        rows.push(PreparedRow { text, runs, widths });
     }
 
     let cursor_cell = cursor_paint.map(|paint| CursorCell {
@@ -1449,21 +1464,23 @@ impl TerminalView {
                     let term = term.lock();
                     prepare_grid(&term, &current, &theme, &font, focused, blinking)
                 };
-                // `force_width` is a per-glyph pitch, not the row width: gpui
-                // snaps each glyph to `glyph_index * force_width` so the grid
-                // stays column-aligned. The full row is `cell_width * columns`,
-                // but passing that would fling every glyph after the first a
-                // whole row off the edge.
-                let force_width = cell_width;
                 let lines = prepared
                     .rows
                     .into_iter()
                     .map(|row| {
+                        // The grid is authoritative: each character's advance
+                        // is its cell span times the pitch, so a wide glyph
+                        // covers two cells and a combining mark covers none.
+                        let widths: Vec<Pixels> = row
+                            .widths
+                            .iter()
+                            .map(|cells| cell_width * f32::from(*cells))
+                            .collect();
                         window.text_system().shape_line(
                             SharedString::from(row.text),
                             font_size,
                             &row.runs,
-                            Some(force_width),
+                            Some(&widths),
                         )
                     })
                     .collect::<Vec<_>>();
@@ -2324,6 +2341,61 @@ mod tests {
         assert_eq!(row.runs[2].background_color, Some(palette.foreground));
     }
 
+    /// The grid supplies the pitch, not the font: a wide character must carry
+    /// two cells so the glyph after it starts two columns on. The paired test
+    /// `wide_glyphs_snap_to_their_columns` pins what the paint path does with
+    /// these widths.
+    #[test]
+    fn prepare_grid_measures_wide_cells_as_two_columns() {
+        let palette = test_palette();
+        let theme = Theme::for_id(theme::ThemeId::Orbit);
+        let font = test_font();
+        let mut term = test_term(4, 2);
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, "中ab".as_bytes());
+
+        let prepared = prepare_grid(&term, &palette, &theme, &font, true, true);
+        let row = &prepared.rows[0];
+        assert!(row.text.starts_with("中ab"), "text was {:?}", row.text);
+        assert_eq!(
+            row.widths,
+            vec![2, 1, 1],
+            "a wide glyph is two cells, then one per ASCII column"
+        );
+        assert_eq!(
+            row.widths.len(),
+            row.text.chars().count(),
+            "one width per emitted character, always"
+        );
+    }
+
+    /// A combining mark shapes as its own glyph but owns no column: the cell
+    /// after the base still starts on the next column.
+    #[test]
+    fn prepare_grid_measures_combining_marks_as_zero_columns() {
+        let palette = test_palette();
+        let theme = Theme::for_id(theme::ThemeId::Orbit);
+        let font = test_font();
+        let mut term = test_term(4, 2);
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, "e\u{301}a".as_bytes());
+
+        let prepared = prepare_grid(&term, &palette, &theme, &font, true, true);
+        let row = &prepared.rows[0];
+        assert_eq!(
+            row.text.chars().take(3).collect::<String>(),
+            "e\u{301}a",
+            "text was {:?}",
+            row.text
+        );
+        assert_eq!(
+            row.widths,
+            vec![1, 0, 1, 1, 1],
+            "the mark stays on its base's cell and moves nothing after it"
+        );
+        assert_eq!(row.widths.len(), row.text.chars().count());
+    }
+
     #[test]
     fn prepare_grid_paints_the_selection() {
         let palette = test_palette();
@@ -2970,6 +3042,78 @@ mod tests {
             "cargo test",
             "a shell that sets a title names its own tab"
         );
+    }
+
+    fn shape_with_columns(text: &str, widths: &[Pixels], window: &mut Window) -> gpui::ShapedLine {
+        let run = TextRun {
+            len: text.len(),
+            font: test_font(),
+            color: Hsla::from(gpui::rgba(0x000000ff)),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        window.text_system().shape_line(
+            SharedString::from(text.to_owned()),
+            px(14.),
+            &[run],
+            Some(widths),
+        )
+    }
+
+    fn glyph_x(line: &gpui::ShapedLine, byte_ix: usize) -> Pixels {
+        line.runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter())
+            .find(|glyph| glyph.index == byte_ix)
+            .unwrap_or_else(|| panic!("no glyph at byte {byte_ix} in {:?}", line.text))
+            .position
+            .x
+    }
+
+    /// The regression case from the issue: `中ab` must lay out as
+    /// `0, 2 * cell, 3 * cell`, not as three one-cell glyphs. Driven through
+    /// the real `shape_line`, so the per-character widths actually reach the
+    /// layout cache and the glyph snapping.
+    #[gpui::test]
+    fn wide_glyphs_snap_to_their_columns(cx: &mut gpui::TestAppContext) {
+        let cell = px(10.);
+        let cx = cx.add_empty_window();
+        let line =
+            cx.update(|window, _| shape_with_columns("中ab", &[cell * 2., cell, cell], window));
+
+        assert_eq!(glyph_x(&line, 0), px(0.));
+        assert_eq!(glyph_x(&line, 3), cell * 2., "`a` starts after both cells");
+        assert_eq!(glyph_x(&line, 4), cell * 3., "`b` follows `a`");
+    }
+
+    #[gpui::test]
+    fn combining_marks_take_no_column_before_the_next_glyph(cx: &mut gpui::TestAppContext) {
+        let cell = px(10.);
+        let cx = cx.add_empty_window();
+        let line =
+            cx.update(|window, _| shape_with_columns("e\u{301}a", &[cell, px(0.), cell], window));
+
+        assert_eq!(glyph_x(&line, 0), px(0.), "the base owns the cell");
+        assert_eq!(glyph_x(&line, 1), px(0.), "the mark sits on the base");
+        assert_eq!(glyph_x(&line, 3), cell, "`a` keeps the next column");
+    }
+
+    /// The forced widths are layout geometry, so they must be part of the
+    /// cached layout's identity: the same text at two pitches is two layouts.
+    #[gpui::test]
+    fn forced_columns_are_parts_of_the_layout_cache_key(cx: &mut gpui::TestAppContext) {
+        let cell = px(10.);
+        let cx = cx.add_empty_window();
+        let (narrow, wide) = cx.update(|window, _| {
+            (
+                shape_with_columns("ab", &[cell, cell], window),
+                shape_with_columns("ab", &[cell * 2., cell], window),
+            )
+        });
+
+        assert_eq!(glyph_x(&narrow, 1), cell);
+        assert_eq!(glyph_x(&wide, 1), cell * 2.);
     }
 
     #[test]

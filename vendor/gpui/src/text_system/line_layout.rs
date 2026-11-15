@@ -482,7 +482,7 @@ impl LineLayoutCache {
             font_size,
             runs,
             wrap_width,
-            force_width: None,
+            force_widths: None,
         } as &dyn AsCacheKeyRef;
 
         let current_frame = self.current_frame.upgradable_read();
@@ -517,7 +517,7 @@ impl LineLayoutCache {
                 font_size,
                 runs: SmallVec::from(runs),
                 wrap_width,
-                force_width: None,
+                force_widths: None,
             });
 
             let mut current_frame = self.current_frame.write();
@@ -535,7 +535,7 @@ impl LineLayoutCache {
         text: Text,
         font_size: Pixels,
         runs: &[FontRun],
-        force_width: Option<Pixels>,
+        force_widths: Option<&[Pixels]>,
     ) -> Arc<LineLayout>
     where
         Text: AsRef<str>,
@@ -546,7 +546,7 @@ impl LineLayoutCache {
             font_size,
             runs,
             wrap_width: None,
-            force_width,
+            force_widths,
         } as &dyn AsCacheKeyRef;
 
         let current_frame = self.current_frame.upgradable_read();
@@ -565,14 +565,31 @@ impl LineLayoutCache {
                 .platform_text_system
                 .layout_line(&text, font_size, runs);
 
-            if let Some(force_width) = force_width {
-                let mut glyph_pos = 0;
+            if let Some(force_widths) = force_widths
+                && force_widths.len() == text.chars().count()
+            {
+                // One advance per character. Every glyph takes its cluster's
+                // column, so a wide character occupies two cells and the glyph
+                // after it starts past both; a zero advance is a combining mark
+                // and keeps the cell it sits on, moving nothing after it.
+                let mut advances = Vec::with_capacity(text.len() + 1);
+                let mut x = Pixels::ZERO;
+                let mut anchor = Pixels::ZERO;
+                for ((ix, _), width) in text.char_indices().zip(force_widths.iter().copied()) {
+                    if width > Pixels::ZERO {
+                        anchor = x;
+                        x += width;
+                    }
+                    advances.push((ix, anchor));
+                }
+                advances.push((text.len(), x));
+
                 for run in layout.runs.iter_mut() {
                     for glyph in run.glyphs.iter_mut() {
-                        if (glyph.position.x - glyph_pos * force_width).abs() > px(1.) {
-                            glyph.position.x = glyph_pos * force_width;
-                        }
-                        glyph_pos += 1;
+                        let pos = advances
+                            .partition_point(|(start, _)| *start <= glyph.index)
+                            .saturating_sub(1);
+                        glyph.position.x = advances[pos].1;
                     }
                 }
             }
@@ -582,7 +599,7 @@ impl LineLayoutCache {
                 font_size,
                 runs: SmallVec::from(runs),
                 wrap_width: None,
-                force_width,
+                force_widths: force_widths.map(SmallVec::from_slice),
             });
             let layout = Arc::new(layout);
             current_frame.lines.insert(key.clone(), layout.clone());
@@ -609,7 +626,8 @@ struct CacheKey {
     font_size: Pixels,
     runs: SmallVec<[FontRun; 1]>,
     wrap_width: Option<Pixels>,
-    force_width: Option<Pixels>,
+    /// One advance per character of `text`; see `layout_line`.
+    force_widths: Option<SmallVec<[Pixels; 8]>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -618,7 +636,7 @@ struct CacheKeyRef<'a> {
     font_size: Pixels,
     runs: &'a [FontRun],
     wrap_width: Option<Pixels>,
-    force_width: Option<Pixels>,
+    force_widths: Option<&'a [Pixels]>,
 }
 
 impl PartialEq for dyn AsCacheKeyRef + '_ {
@@ -642,7 +660,7 @@ impl AsCacheKeyRef for CacheKey {
             font_size: self.font_size,
             runs: self.runs.as_slice(),
             wrap_width: self.wrap_width,
-            force_width: self.force_width,
+            force_widths: self.force_widths.as_deref(),
         }
     }
 }

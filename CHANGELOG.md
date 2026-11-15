@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Wide glyphs in the terminal take their real two-column pitch.** A CJK or emoji
+  character no longer draws at a one-cell pitch and overlaps its neighbour, so every
+  following column stays lined up with the cursor and selection. The grid supplies a
+  width per character (a combining mark takes none) instead of the font's advances (#140).
+
 ## [0.2.19] - 2026-11-15
 
 ### Added
