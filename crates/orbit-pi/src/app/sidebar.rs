@@ -2265,13 +2265,7 @@ where
                 this.update(cx, |app, cx| (on_click)(app, cx));
             })
             .child(icon(icon_path, context_menu::ICON.px(&theme), theme.error))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(label),
-            ),
+            .child(div().flex_1().min_w_0().truncate().child(label)),
         id,
         &theme,
         Hover::fill(theme.error.opacity(0.12), theme.error.opacity(0.18)),
@@ -2333,7 +2327,10 @@ fn workspace_delete_confirm(
                         .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_primary)
-                        .child(tr!("sidebar.delete_project_confirm", name = menu.label.clone())),
+                        .child(tr!(
+                            "sidebar.delete_project_confirm",
+                            name = menu.label.clone()
+                        )),
                 )
                 .child(
                     div()
@@ -3396,13 +3393,7 @@ fn menu_item_unavailable(
             context_menu::ICON.px(&theme),
             theme.text_disabled,
         ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(label.into()),
-        )
+        .child(div().flex_1().min_w_0().truncate().child(label.into()))
         .tip(reason)
         .into_any_element()
 }
@@ -4087,7 +4078,10 @@ impl OrbitApp {
                 match result {
                     Ok(()) => {
                         app.remove_workspace(&target, cx);
-                        app.toast_success(tr!("sidebar.project_deleted", name = menu.label.clone()));
+                        app.toast_success(tr!(
+                            "sidebar.project_deleted",
+                            name = menu.label.clone()
+                        ));
                     }
                     Err(error) => app.toast_error(tr!(
                         "sidebar.project_delete_failed",

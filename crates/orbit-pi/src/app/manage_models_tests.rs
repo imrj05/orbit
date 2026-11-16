@@ -127,9 +127,7 @@ fn providers_render_as_one_grid_without_model_lists(cx: &mut gpui::TestAppContex
     open(searched, "anthropic-model");
     assert!(searched.debug_bounds("provider-card-anthropic").is_some());
     assert!(
-        searched
-            .debug_bounds("provider-card-opencode-go")
-            .is_none(),
+        searched.debug_bounds("provider-card-opencode-go").is_none(),
         "a model search keeps only the providers that offer a match"
     );
 }

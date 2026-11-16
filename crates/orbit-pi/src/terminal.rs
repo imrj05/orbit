@@ -57,6 +57,7 @@ use crate::app::{
     button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, ControlExt,
     PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
+use crate::motion::Hover;
 use crate::theme::tokens::{button, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::tokens::{RaisedExt, StyledExt};
 use crate::theme::{self, Theme};
@@ -1675,6 +1676,10 @@ pub struct TerminalPanel {
     /// Restart feedback: the header button spins until this instant, so the
     /// click is acknowledged while the fresh shell starts.
     restart_spin_until: Option<Instant>,
+    /// Whether the panel has left the chat column to own the page — the Review
+    /// pane's "full width", for the shell. The app reads it to mount the panel
+    /// as the column instead of a strip in it; closing the panel docks it again.
+    full_width: bool,
 }
 
 impl TerminalPanel {
@@ -1689,6 +1694,7 @@ impl TerminalPanel {
             active: 0,
             tab_scroll: ScrollHandle::new(),
             restart_spin_until: None,
+            full_width: false,
         }
     }
 
@@ -1699,6 +1705,7 @@ impl TerminalPanel {
         self.tabs.clear();
         self.active = 0;
         self.restart_spin_until = None;
+        self.full_width = false;
         cx.notify();
     }
 
@@ -1710,6 +1717,72 @@ impl TerminalPanel {
     /// commands on it.
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
+    }
+
+    /// Whether the panel is a page of its own instead of a strip in the chat.
+    /// The app mounts it as the column when it is.
+    pub fn is_full_width(&self) -> bool {
+        self.full_width
+    }
+
+    /// Take the whole column as a page, or return to the strip at the bottom of
+    /// the chat. Nothing moves on a closed panel — there is no column to leave.
+    pub fn toggle_full_width(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        self.full_width = !self.full_width;
+        cx.notify();
+    }
+
+    /// The top-bar identity of the terminal page, drawn while the shell owns
+    /// the column: Back returns it to the docked strip, and the glyph with the
+    /// title names the page — the same leading Git and Usage put in the shared
+    /// bar. Back flips the panel's own flag; the app's observer moves the
+    /// mount (this is not a feature page, so there is no `on_close` to call).
+    pub fn top_bar_leading(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let back = crate::motion::hover(
+            press(
+                button_frame(div().id("terminal-back"), &theme, ButtonSize::Medium)
+                    .cursor_pointer(),
+            )
+            .on_click(
+                cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.toggle_full_width(cx)),
+            )
+            .child(icon(
+                "icons/arrow-left.svg",
+                ButtonSize::Medium.icon_size().px(&theme),
+                theme.text_secondary,
+            ))
+            .child(div().child(tr!("common.back"))),
+            "terminal-back-hover",
+            &theme,
+            Hover::row(&theme),
+        );
+        div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(back)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .child(icon(
+                        "icons/terminal.svg",
+                        IconSize::Medium.px(&theme),
+                        theme.text_secondary,
+                    ))
+                    .child(
+                        div()
+                            .text_size(TextSize::Large.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(tr!("terminal.title")),
+                    ),
+            )
+            .into_any_element()
     }
 
     pub fn set_height(&mut self, height: Pixels, cx: &mut Context<Self>) {
@@ -1761,6 +1834,10 @@ impl TerminalPanel {
                 None => self.new_tab(window, cx),
             }
         } else {
+            // A closed panel comes back docked, like the Review pane: the
+            // expanded width is a property of the shell the user is looking
+            // at, not a preference.
+            self.full_width = false;
             self.sync_active(false, cx);
         }
         cx.notify();
@@ -1812,6 +1889,7 @@ impl TerminalPanel {
         if self.tabs.is_empty() {
             self.active = 0;
             self.open = false;
+            self.full_width = false;
             cx.notify();
             return;
         }
@@ -1868,6 +1946,7 @@ impl TerminalPanel {
             return;
         }
         self.open = false;
+        self.full_width = false;
         self.sync_active(false, cx);
         cx.notify();
     }
@@ -2099,6 +2178,40 @@ impl TerminalPanel {
                     .child(tr!("terminal.exited")),
             );
         }
+        // Full width — the shell leaves its strip and owns the page, the way
+        // the Review pane does (the app mounts it as the column). The glyph
+        // shows what the next click does, as Review's toggle does.
+        let full_width = self.full_width;
+        header = header.child(crate::motion::hover(
+            icon_button_frame(div().id("terminal-full-width"), &theme, ButtonSize::Default)
+                .group(BUTTON_GROUP)
+                .tip(if full_width {
+                    tr!("terminal.restore_width")
+                } else {
+                    tr!("terminal.full_width")
+                })
+                .cursor_pointer()
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_click(
+                    cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.toggle_full_width(cx)),
+                )
+                .child(icon(
+                    if full_width {
+                        "icons/arrow-shrink.svg"
+                    } else {
+                        "icons/arrow-expand.svg"
+                    },
+                    ButtonSize::Default.icon_size().px(&theme),
+                    if full_width {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    },
+                )),
+            "terminal-full-width-hover",
+            &theme,
+            Hover::wash(&theme),
+        ));
         header
             // Restart reads as the primary action once the shell has exited,
             // and only ever touches the active tab.
@@ -2208,20 +2321,31 @@ impl Render for TerminalPanel {
         }
         let theme = *theme::get(cx);
         let active = self.active_terminal().cloned();
-        div()
+        // Expanded, the shell is a page — it owns the whole column, so it takes
+        // the height it is given instead of its docked strip and drops the
+        // splitter (there is nothing below it to resize against).
+        let page = self.full_width;
+        let mut panel = div()
             .id("terminal-panel")
+            .debug_selector(|| "terminal-panel".into())
             .relative()
-            .flex_none()
             .w_full()
-            .h(self.height)
             .bg(theme.code_bg)
-            .border_t_1()
-            .border_color(theme.border)
             .flex()
             .flex_col()
             .min_h_0()
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_panel_mouse_down))
-            .child(self.splitter(theme))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_panel_mouse_down));
+        panel = if page {
+            panel.flex_1().h_full()
+        } else {
+            panel
+                .flex_none()
+                .h(self.height)
+                .border_t_1()
+                .border_color(theme.border)
+        };
+        panel
+            .children((!page).then(|| self.splitter(theme)))
             .child(self.header(theme, cx))
             .child(
                 div()
@@ -2905,6 +3029,31 @@ mod tests {
             assert!(!panel.tabs[0].read(cx).active);
             assert!(panel.tabs[1].read(cx).active);
         });
+    }
+
+    /// The full-width toggle is the shell's own dock/expand switch: it flips
+    /// and is undone by closing the panel, so ⌘J always brings the terminal
+    /// back in the chat column rather than under the docks.
+    #[gpui::test]
+    fn full_width_is_a_toggle_that_closing_resets(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+
+        let panel = panel_with_tabs(cx, 1, std::env::temp_dir());
+        assert!(!cx.update(|_, cx| panel.read(cx).is_full_width()), "docked by default");
+        cx.update(|_, cx| panel.update(cx, |panel, cx| panel.toggle_full_width(cx)));
+        assert!(cx.update(|_, cx| panel.read(cx).is_full_width()));
+        cx.update(|_, cx| panel.update(cx, |panel, cx| panel.toggle_full_width(cx)));
+        assert!(!cx.update(|_, cx| panel.read(cx).is_full_width()));
+
+        cx.update(|_, cx| panel.update(cx, |panel, cx| panel.toggle_full_width(cx)));
+        assert!(cx.update(|_, cx| panel.read(cx).is_full_width()));
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle(window, cx)));
+        assert!(!cx.update(|_, cx| panel.read(cx).is_open()));
+        assert!(
+            !cx.update(|_, cx| panel.read(cx).is_full_width()),
+            "a reopened panel is docked again"
+        );
     }
 
     /// Hiding the whole panel deactivates every tab, not just the selected one:

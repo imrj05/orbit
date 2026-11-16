@@ -22,8 +22,8 @@ use super::helpers::*;
 use super::*;
 use crate::motion::Hover;
 use crate::theme::tokens::{
-    context_menu, input, modal, panel, picker, popover, ButtonSize, DynamicSpacing,
-    IconSize, Radius, RaisedExt, TextSize,
+    context_menu, input, modal, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
+    Radius, RaisedExt, TextSize,
 };
 use crate::worktree::{self, Worktree, WorktreeError, WorktreeManager};
 use crate::worktree_setup;
@@ -3177,7 +3177,8 @@ pub(super) fn missing_worktree_local(missing: &Path, candidates: &[PathBuf]) -> 
 // folder, or a configured remote host (the agent runs over SSH there; see
 // `docs/remote-sessions.md`). The chip replaces the old workspace-chip +
 // work-in-chip pair — a readout that restarted the session and a switch that
-// appeared only inside a worktree.
+// appeared only inside a worktree. Host setup (Add / Edit) lives in
+// Settings → Remote hosts, reachable from the command palette.
 //
 // The local row is built from the cached worktree list, so render never runs
 // Git. The host rows come from `remote-hosts.json`, read once when the picker
@@ -3363,7 +3364,8 @@ impl OrbitApp {
     /// Keep keyboard navigation visible: every row is a direct child of the
     /// scrolling list, so gpui can scroll to the row itself.
     fn reveal_work_in_highlight(&self, _cx: &Context<Self>) {
-        self.work_in_scroll.scroll_to_item(self.work_in_menu_highlight);
+        self.work_in_scroll
+            .scroll_to_item(self.work_in_menu_highlight);
     }
 
     pub(super) fn on_work_in_confirm(
@@ -3732,11 +3734,15 @@ impl OrbitApp {
                 })
                 .children(prunable.then(|| work_in_tag(tr!("working_folder.prunable"), theme)))
                 .when(selected, |row| {
-                    row.child(div().debug_selector(|| "work-in-check".to_string()).child(icon(
-                        "icons/check.svg",
-                        context_menu::ICON.px(theme),
-                        theme.accent_text,
-                    )))
+                    row.child(
+                        div()
+                            .debug_selector(|| "work-in-check".to_string())
+                            .child(icon(
+                                "icons/check.svg",
+                                context_menu::ICON.px(theme),
+                                theme.accent_text,
+                            )),
+                    )
                 }),
             )
             .into_any_element()

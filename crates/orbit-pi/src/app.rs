@@ -88,8 +88,10 @@ use crate::workspace_mark::WorkspaceMark;
 use crate::workspace_picker::{EntryMark, PickerAction, WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 272.;
-// Keep the wordmark, window buttons and titlebar controls clear at minimum width.
-pub(crate) const SIDEBAR_MIN_W: f32 = 260.;
+// Keep the wordmark (now with its own lead past the traffic lights), the window
+// buttons and the titlebar controls clear at minimum width: 80 clearance + 12
+// lead + 60 wordmark + 8 gap + 106 controls + 6 edge pad = 272.
+pub(crate) const SIDEBAR_MIN_W: f32 = 272.;
 /// Sessions shown under each workspace group before "Show more" appears.
 const SIDEBAR_GROUP_SESSIONS_VISIBLE: usize = 3;
 /// Room the side-pane resize keeps for the transcript column.
@@ -425,6 +427,11 @@ pub struct OrbitApp {
     /// rising edge opens the sessions sidebar, so a maximized review never
     /// strands the reader without a way to switch sessions.
     pane_full_last: bool,
+    /// Whether the terminal panel was expanded to the main-area width when its
+    /// last notify was handled — the panel's own header can flip it, so the
+    /// app's observer compares against this to repaint only on a real change
+    /// (a splitter drag notifies every frame).
+    terminal_full_last: bool,
     /// Whether the new-task backdrop was on screen on the previous frame —
     /// recorded by `render`, read by `tick`. It is the only surface whose
     /// dithered field is alive, so the heartbeat only repaints for it here.
@@ -1074,15 +1081,14 @@ pub struct OrbitApp {
     host: platform::Host,
     /// Whether the setup page's Refresh check is in flight (spins the button).
     refreshing: bool,
-    /// Whether the top-bar session-details popover is open.
+    /// Whether the session-details panel is open in the right dock.
     session_details_open: bool,
+    /// Whether the panel's name row is in edit mode (the rename field and its
+    /// Update / Cancel buttons) rather than showing the title as text.
+    session_name_editing: bool,
     /// A row-menu rename waiting for the target session's state to load.
     pending_session_rename: Option<PathBuf>,
     session_rename_ready: bool,
-    /// Whether the top bar's overflow ("more") menu is open. Holds the
-    /// surfaces that no longer earn a permanent chip: Session details,
-    /// Explorer, the Terminal, and the Git page.
-    header_more_open: bool,
     /// A popover-triggered title generation is in flight; the next
     /// `session_info_changed` seeds the rename field from its result.
     title_generating: bool,
@@ -1121,6 +1127,10 @@ pub struct OrbitApp {
     /// width, full-page state, or collapse from its header, and the app's
     /// layout (sidebar, main column, terminal) must follow immediately.
     _sidepane_sub: Subscription,
+    /// Keeps the terminal shell's layout observer alive: the panel can leave the
+    /// chat column from its own header chip, and the *app* is what mounts it
+    /// outside the column, so that change has to repaint the shell.
+    _terminal_width_sub: Subscription,
     /// Keeps the file viewer's observer alive: the Explorer marks the active
     /// file from the viewer's selected tab.
     _file_viewer_sub: Subscription,
@@ -1919,7 +1929,7 @@ impl OrbitApp {
         });
         let mcp_filter_sub = cx.observe(&mcp_filter, |_, _, cx| cx.notify());
 
-        // Session-details popover: rename field. Default `Composer` key context
+        // Session-details panel: rename field. Default `Composer` key context
         // keeps real text editing (selection, clipboard, arrows); Enter routes
         // to Submit, which commits the name instead of the composer while this
         // field holds focus (see `on_submit`).
@@ -2088,6 +2098,18 @@ impl OrbitApp {
         });
         // Bottom panel: an integrated shell.
         let terminal_panel = cx.new(TerminalPanel::new);
+        // The panel can widen itself from its own header (the full-width chip),
+        // and only this app can mount it outside the chat column — so a change
+        // there has to reach the shell's render. Guarded on the flag: the panel
+        // notifies on every splitter step, and resizing it must not repaint the
+        // whole window once per frame.
+        let terminal_width_sub = cx.observe(&terminal_panel, |app: &mut Self, panel, cx| {
+            let full = panel.read(cx).is_full_width();
+            if full != app.terminal_full_last {
+                app.terminal_full_last = full;
+                cx.notify();
+            }
+        });
         // Full-page Git panel (Changes / History / Graph).
         let git_panel = cx.new(GitPanel::new);
         // Usage analytics over pi's own session store.
@@ -2295,6 +2317,7 @@ impl OrbitApp {
             new_task_settle_gen: 0,
             new_task_folder_focus: cx.focus_handle().tab_stop(true),
             pane_full_last: false,
+            terminal_full_last: false,
             sidebar_cursor: None,
             sidebar_focus: cx.focus_handle().tab_stop(true),
             input,
@@ -2557,9 +2580,9 @@ impl OrbitApp {
             host,
             refreshing: false,
             session_details_open: false,
+            session_name_editing: false,
             pending_session_rename: None,
             session_rename_ready: false,
-            header_more_open: false,
             title_generating: false,
             rename_saved_at: None,
             quota_popup_open: false,
@@ -2572,6 +2595,7 @@ impl OrbitApp {
             turns: crate::turn_review::TurnClock::default(),
             sidepane,
             _sidepane_sub: sidepane_sub,
+            _terminal_width_sub: terminal_width_sub,
             project_panel,
             file_viewer,
             _file_viewer_sub: file_viewer_sub,
@@ -3818,8 +3842,7 @@ pub(super) fn project_delete_refusal(
         return Some(ProjectDeleteRefusal::ContainsProjects);
     }
     if sessions.iter().any(|session| {
-        sessions::canonical_workspace_path(&session.cwd) == target
-            && live.contains(&session.path)
+        sessions::canonical_workspace_path(&session.cwd) == target && live.contains(&session.path)
     }) {
         return Some(ProjectDeleteRefusal::SessionLive);
     }
@@ -4378,6 +4401,8 @@ mod send_progress_tests;
 #[cfg(test)]
 mod session_default_apply_tests;
 #[cfg(test)]
+mod session_details_tests;
+#[cfg(test)]
 mod session_open_card_tests;
 #[cfg(test)]
 mod session_park_tests;
@@ -4408,6 +4433,8 @@ mod stop_escalation_tests;
 #[cfg(test)]
 mod switch_tests;
 #[cfg(test)]
+mod terminal_full_width_tests;
+#[cfg(test)]
 mod theme_switch_tests;
 #[cfg(test)]
 mod titlebar_layout_tests;
@@ -4430,7 +4457,7 @@ pub(crate) use helpers::{
     modal_card, modal_scrim, nerd_font_family, picker_entry, picker_row_height,
     picker_search_frame, picker_surface, press, provider_mark_color, refresh_glyph,
     running_spinner, spinner, working_folder_keyboard_hints, AccentWash, ControlExt, EmptyFill,
-    PickerRow, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+    EntryMarkLike, PickerRow, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use sidebar::sessions_with_placeholder;
 

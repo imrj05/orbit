@@ -194,11 +194,7 @@ fn deleting_the_home_folder_is_refused() {
 fn deleting_a_parent_of_another_project_is_refused() {
     let sessions = [session_in("nested", "/guard-test/alpha/sub")];
     assert_eq!(
-        project_delete_refusal(
-            Path::new("/guard-test/alpha"),
-            &sessions,
-            &HashSet::new()
-        ),
+        project_delete_refusal(Path::new("/guard-test/alpha"), &sessions, &HashSet::new()),
         Some(ProjectDeleteRefusal::ContainsProjects)
     );
 }
@@ -209,11 +205,7 @@ fn deleting_a_parent_of_another_project_is_refused() {
 fn the_projects_own_sessions_do_not_block_it() {
     let sessions = [session_in("own", "/guard-test/alpha")];
     assert_eq!(
-        project_delete_refusal(
-            Path::new("/guard-test/alpha"),
-            &sessions,
-            &HashSet::new()
-        ),
+        project_delete_refusal(Path::new("/guard-test/alpha"), &sessions, &HashSet::new()),
         None
     );
 }

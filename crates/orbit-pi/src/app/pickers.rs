@@ -7,7 +7,8 @@ impl OrbitApp {
     /// runs on, once — the current workspace. Remote hosts are the picker's
     /// action rows (see [`Self::remote_actions`]) and the native dialog covers
     /// anywhere else, so linked worktrees and recent session folders no longer
-    /// crowd the list.
+    /// crowd the list. Host setup lives in Settings → Remote hosts, reached
+    /// from the "Work in" menu.
     pub(super) fn workspace_entries(&self) -> Vec<WorkspaceEntry> {
         let current = self
             .current_workspace
@@ -35,11 +36,13 @@ impl OrbitApp {
         }]
     }
 
-    /// One row per configured remote host, then the row that opens the host
-    /// config. Host rows carry the id `remote-host`; the picker dispatches
-    /// them by their order among the host rows (see `remote_host_for_action`).
+    /// One row per configured remote host. Host rows carry the id
+    /// `remote-host`; the picker dispatches them by their order among the
+    /// host rows (see `remote_host_for_action`). The host config lives in
+    /// Settings → Remote hosts — reachable from the "Work in" menu — so the
+    /// picker lists no setup row of its own.
     pub(super) fn remote_actions(hosts: &[crate::remote_hosts::RemoteHost]) -> Vec<PickerAction> {
-        let mut actions: Vec<PickerAction> = hosts
+        hosts
             .iter()
             .enumerate()
             .map(|(ix, host)| PickerAction {
@@ -50,21 +53,7 @@ impl OrbitApp {
                 group_start: ix == 0,
                 mono: true,
             })
-            .collect();
-        actions.push(PickerAction {
-            id: "remote-setup",
-            icon: "icons/settings.svg",
-            label: if hosts.is_empty() {
-                tr!("remote.add_host")
-            } else {
-                tr!("remote.edit_hosts")
-            },
-            hint: Some(tr!("remote.setup_hint")),
-            // With no host above it, the setup row opens the remote group.
-            group_start: hosts.is_empty(),
-            mono: false,
-        });
-        actions
+            .collect()
     }
 
     /// Toggle the workspace picker under the new-task page's folder field.
@@ -92,7 +81,7 @@ impl OrbitApp {
         let entries = self.workspace_entries();
         let (remote_hosts, skipped) = crate::remote_hosts::load();
         // A host switched off in Settings → Remote hosts stays out of the
-        // picker; the setup row still opens the page where it can be turned on.
+        // picker.
         let remote_hosts: Vec<_> = remote_hosts
             .into_iter()
             .filter(|host| host.enabled)
@@ -105,7 +94,7 @@ impl OrbitApp {
             ));
         }
         // The verbs are the machine list: one row per remote host, then the
-        // row that opens the host config, then the local folder verb.
+        // row that adds a folder as a project.
         let mut actions = Self::remote_actions(&remote_hosts);
         actions.push(PickerAction {
             id: "new-project",
@@ -146,9 +135,8 @@ impl OrbitApp {
             })
             .ok();
         }) as Box<dyn Fn(&mut Window, &mut App)>;
-        // The machine rows under the device: remote hosts and the row that
-        // opens their config. Each one closes the picker first — a host starts
-        // a connection check, the config row opens Settings, and a popover left
+        // The machine rows under the device: remote hosts. Each closes the
+        // picker first — a host starts a connection check, and a popover left
         // behind a modal is the wrong layer.
         let this = cx.weak_entity();
         let action_ids: Vec<&'static str> = actions.iter().map(|action| action.id).collect();
@@ -169,14 +157,7 @@ impl OrbitApp {
                     }
                     // A folder added as a project, without a pi process: the
                     // project's own "+" is where a task starts (#131).
-                    "new-project" => app.new_project(window, cx),
-                    // The host-setup row: with no host yet, go straight to
-                    // the Add form; otherwise land on the list to pick what to
-                    // edit.
-                    _ => {
-                        let add = remote_hosts.is_empty();
-                        app.open_remote_hosts_settings(add, window, cx);
-                    }
+                    _ => app.new_project(window, cx),
                 }
             })
             .ok();
@@ -205,8 +186,21 @@ impl OrbitApp {
 
         let picker = cx.new(|cx| {
             WorkspacePicker::new(
-                entries, actions, current, width, list_max_h, on_pick, on_browse, on_action,
-                on_dismiss, cx,
+                entries,
+                actions,
+                current,
+                // The device row leads with the workspace's own mark — the
+                // same logo the header's folder chip shows — and carries the
+                // active branch as its trailing note.
+                self.workspace_logo.clone(),
+                self.branch.as_ref().map(|branch| branch.name.clone()),
+                width,
+                list_max_h,
+                on_pick,
+                on_browse,
+                on_action,
+                on_dismiss,
+                cx,
             )
         });
         window.focus(&picker.read(cx).focus_handle(cx));

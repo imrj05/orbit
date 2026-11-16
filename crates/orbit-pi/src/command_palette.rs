@@ -639,7 +639,7 @@ impl CommandPalette {
                 SettingsSection::RemoteHosts,
                 "icons/server-stack.svg",
                 tr!("settings.remote_hosts"),
-                "settings preferences remote hosts ssh server vps machine environment",
+                "settings preferences remote hosts ssh server vps machine environment add host",
             ),
             (
                 SettingsSection::About,

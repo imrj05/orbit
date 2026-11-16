@@ -4145,13 +4145,10 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
-        let provider_id = editor
-            .original_id
-            .clone()
-            .or_else(|| {
-                let id = editor.id.read(cx).text().trim().to_string();
-                (!id.is_empty()).then_some(id)
-            })?;
+        let provider_id = editor.original_id.clone().or_else(|| {
+            let id = editor.id.read(cx).text().trim().to_string();
+            (!id.is_empty()).then_some(id)
+        })?;
         let listed = providers::model_ids_in(&editor.models.read(cx).text());
         let mut offered: Vec<String> = listed.clone();
         for id in &editor.fetched {
@@ -4319,7 +4316,9 @@ impl OrbitApp {
                 if let Some(editor) = app.provider_editor.as_mut() {
                     let next =
                         providers::toggle_model_id(&editor.models.read(cx).text(), &id, !included);
-                    editor.models.update(cx, |input, cx| input.set_text(next, cx));
+                    editor
+                        .models
+                        .update(cx, |input, cx| input.set_text(next, cx));
                     cx.notify();
                 }
             });
@@ -6532,6 +6531,8 @@ impl OrbitApp {
         // short when the first timer lands.
         let saved_at = Instant::now();
         self.rename_saved_at = Some(saved_at);
+        // The committed name is the title now; the row goes back to text.
+        self.session_name_editing = false;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(RENAME_FEEDBACK).await;
             let _ = this.update(cx, |app, cx| {

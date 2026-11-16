@@ -1,4 +1,5 @@
 use super::helpers::*;
+use super::session::{SESSION_DETAILS_GUTTER, SESSION_DETAILS_W};
 use super::sidebar::*;
 use super::*;
 
@@ -117,6 +118,10 @@ fn feature_card(theme: Theme, body: AnyElement) -> AnyElement {
     div()
         .flex_1()
         .min_h_0()
+        // A flex item's minimum width defaults to its content's: without this
+        // a page with a wide intrinsic row (the Files tab strip) refuses to
+        // shrink and pushes the right dock past the window edge.
+        .min_w_0()
         .w_full()
         .pl(DynamicSpacing::Base12.px(&theme))
         .child(
@@ -136,50 +141,6 @@ fn feature_card(theme: Theme, body: AnyElement) -> AnyElement {
                 .child(body),
         )
         .into_any_element()
-}
-
-/// One row in the top bar's overflow menu: a picker entry with a leading
-/// icon, a label, the command's platform chord, and a trailing check when its
-/// surface is open. Reuses the picker's row metrics so it lines up with the
-/// app's other dropdowns.
-fn header_menu_row(
-    id: &'static str,
-    icon_path: &'static str,
-    label: String,
-    shortcut: Option<String>,
-    active: bool,
-    theme: Theme,
-    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui::App) + 'static,
-) -> AnyElement {
-    let row = press(
-        picker_entry(div().id(id).group(BUTTON_GROUP), &theme)
-            .h(picker::entry_height(&theme))
-            .flex_none()
-            .cursor_pointer()
-            .text_color(theme.text_secondary),
-    )
-    .on_mouse_up(MouseButton::Left, listener)
-    .child(icon(
-        icon_path,
-        context_menu::ICON.px(&theme),
-        theme.text_muted,
-    ))
-    .child(div().flex_1().min_w_0().truncate().child(label))
-    .children(shortcut.map(|chord| {
-        div()
-            .flex_none()
-            .text_size(TextSize::XSmall.px(&theme))
-            .text_color(theme.text_muted)
-            .child(chord)
-    }))
-    .when(active, |row| {
-        row.child(icon(
-            "icons/check.svg",
-            context_menu::ICON.px(&theme),
-            theme.accent_text,
-        ))
-    });
-    crate::motion::hover(row, id, &theme, Hover::row(&theme))
 }
 
 /// The Access and Workflow mode picker popups share one width.
@@ -464,6 +425,11 @@ impl Render for OrbitApp {
             && !self.git_open
             && !self.worktrees_open
             && !pane_full;
+        // An expanded terminal is a page of its own, like Git or Usage: the
+        // chat is skipped and the panel fills the card under the top bar. The
+        // docks keep their place — it is the column, not the window.
+        // `terminal_visible` already covers the surfaces that hide the panel.
+        let terminal_full = terminal_visible && self.terminal_panel.read(cx).is_full_width();
         // The embedded Review browser on the Git page's Changes tab lays out
         // against the page width, so its stats and tree follow the column.
         let git_review_width = viewport.width
@@ -500,6 +466,10 @@ impl Render for OrbitApp {
         } else {
             px(0.)
         };
+        // ── session details (right dock) ── shares the slot with Review and
+        // the Explorer; opening any one of them closes the others.
+        let details_visible = self.session_details_visible(cx);
+        let details_width = self.session_details_width(cx);
         // The pane's ceiling is the window minus the sidebar and the Explorer;
         // Full width expands to it and collapses the chat column. The Explorer
         // is closed whenever the pane opens, so this is usually the sidebar's
@@ -510,7 +480,8 @@ impl Render for OrbitApp {
             } else {
                 px(0.)
             }
-            - explorer_width;
+            - explorer_width
+            - details_width;
         self.sidepane
             .update(cx, |pane, cx| pane.set_available_width(pane_ceiling, cx));
         // Read the pane's width after the ceiling update: a full-width pane
@@ -551,7 +522,8 @@ impl Render for OrbitApp {
         // +/− chip (Review already shows the same stats).
         // The top bar spans the whole main area, so the docks do not squeeze
         // it — compact only when the main area itself is tight.
-        let compact_chrome = f32::from(main_width + explorer_width + pane_width) < 720.;
+        let compact_chrome =
+            f32::from(main_width + explorer_width + pane_width + details_width) < 720.;
         // While a feature card is open, its title moves up into the shared top
         // bar (see `GitPanel::top_bar_leading` / `UsagePage::top_bar_leading`);
         // the card's own chrome (branch selector, filters) stays with the view
@@ -567,11 +539,28 @@ impl Render for OrbitApp {
         let worktrees_leading = self
             .worktrees_open
             .then(|| self.worktrees_top_bar_leading(theme, cx));
+        // The expanded shell is a page too, so its Back and title take the same
+        // place in the bar (see `TerminalPanel::top_bar_leading`) — but only
+        // while it actually owns the column: a Files page opened over it keeps
+        // the bar's own leading.
+        let terminal_leading = (terminal_full && !feature_open).then(|| {
+            self.terminal_panel
+                .update(cx, |panel, cx| panel.top_bar_leading(theme, cx))
+        });
         let mut top_controls = div().flex_none().flex().items_center().gap_2();
         // Provider quota — a compact, provider-independent headroom meter.
         // Hidden entirely on a pi without `quota.*` (or when no provider
         // reports anything), so the bar never shows a fabricated value.
         top_controls = top_controls.children(self.render_quota_chip(compact_chrome, cx));
+        // Session details — its own chip right after the usage meter. It
+        // toggles the details panel in the right dock (see
+        // `render_session_details_panel`).
+        // A new task has no session to describe yet, so the chip waits for the
+        // first message, like the panel it opens.
+        top_controls = top_controls.children(
+            self.session_has_details()
+                .then(|| self.render_session_details_control(theme, cx)),
+        );
         // Debug builds only: while a frame-time capture runs, the bar carries a
         // live count. It is the only feedback that proves frames are arriving —
         // a capture that samples nothing writes no report.
@@ -585,10 +574,12 @@ impl Render for OrbitApp {
             // change counts folded into one chip
             // (see `render_review_panel_control`).
             .child(self.render_review_panel_control(theme, pane_visible, cx))
-            // The remaining surfaces (Session details, Explorer, Terminal, Git)
-            // sit behind one "…" menu so the bar keeps only what shows live
-            // state: the quota, open-in, and Review. See `render_header_more`.
-            .child(self.render_header_more(theme, explorer_visible, terminal_visible, cx));
+            // Terminal toggle — the bottom panel is a live surface a keystroke
+            // away (⌘J), so it keeps its own chip beside Review rather than
+            // hiding in a menu. See `render_terminal_control`.
+            .child(self.render_terminal_control(theme, terminal_visible, cx))
+            // Explorer — the project panel's own toggle, after the terminal's.
+            .child(self.render_explorer_control(theme, explorer_visible, cx));
 
         // A blocking extension dialog owns the keyboard while it is open. Focus
         // it (or its text field) once, on the first frame it appears — `tick`
@@ -729,15 +720,20 @@ impl Render for OrbitApp {
                             // arrows/Enter/Escape to the row cursor.
                             .track_focus(&self.sidebar_focus)
                             .key_context("Sidebar")
-                            // The minimum sidebar width leaves the wordmark,
-                            // OS buttons and overlaid controls clear of each other.
+                            // The minimum sidebar width (272px) leaves the
+                            // wordmark, OS buttons and overlaid controls
+                            // clear of each other at its own lead.
                             .child(window_drag_region(
                                 div().h(px(TOP_BAR_H)).w_full().relative().child({
                                     let controls_left = titlebar_controls_left(true, panel_w);
                                     let mark_left = if cfg!(windows) {
                                         controls_left + TITLEBAR_CONTROLS_W + TITLEBAR_TITLE_GAP
                                     } else {
-                                        TRAFFIC_LIGHT_CLEARANCE
+                                        // A little breathing room past the traffic
+                                        // lights: 80px clearance lands the wordmark
+                                        // flush on their edge, so give it its own
+                                        // margin like the controls' TITLEBAR_CONTROLS_LEAD.
+                                        TRAFFIC_LIGHT_CLEARANCE + TITLEBAR_CONTROLS_LEAD
                                     };
                                     div()
                                         .absolute()
@@ -1100,8 +1096,10 @@ impl Render for OrbitApp {
                                 .h_full()
                                 .flex()
                                 .items_center();
-                            if let Some(leading) =
-                                git_leading.or(usage_leading).or(worktrees_leading)
+                            if let Some(leading) = git_leading
+                                .or(usage_leading)
+                                .or(worktrees_leading)
+                                .or(terminal_leading)
                             {
                                 // A feature page's leading controls (Back and the
                                 // page title) are interactive, so they sit outside
@@ -1472,9 +1470,10 @@ impl Render for OrbitApp {
                         // mounted at all in a session.
                         .children(gap)
                         // bottom terminal panel — the last row of the page, under
-                        // the composer, so it hugs the window's bottom edge
+                        // the composer, so it hugs the window's bottom edge. An
+                        // expanded panel is the page itself (see below).
                         .children(
-                            terminal_visible
+                            (terminal_visible && !terminal_full)
                                 .then(|| self.terminal_panel.clone().into_any_element()),
                         )
                         .into_any_element()
@@ -1522,6 +1521,11 @@ impl Render for OrbitApp {
                                 div().into_any_element()
                             } else if feature_open {
                                 feature_card(theme, body)
+                            } else if terminal_full {
+                                // The expanded shell owns the page the way Git
+                                // and Usage do: the chat is skipped and the
+                                // panel fills the card under the top bar.
+                                feature_card(theme, self.terminal_panel.clone().into_any_element())
                             } else {
                                 body
                             })
@@ -1531,6 +1535,9 @@ impl Render for OrbitApp {
                             )
                             .children(
                                 pane_visible.then(|| self.sidepane.clone().into_any_element()),
+                            )
+                            .children(
+                                details_visible.then(|| self.render_session_details_panel(cx)),
                             ),
                     )
                     .into_any_element()
@@ -3000,8 +3007,38 @@ impl OrbitApp {
                 px(0.)
             }
             - explorer_width
-            - pane_width)
-            .max(px(0.))
+            - pane_width
+            - self.session_details_width(cx))
+        .max(px(0.))
+    }
+
+    /// Whether the session-details panel takes the right dock this frame. It
+    /// is hidden while Settings owns the window, and gives way to Review or
+    /// the Explorer if either is showing (opening them clears it anyway).
+    pub(super) fn session_details_visible(&self, cx: &App) -> bool {
+        self.session_details_open
+            && self.session_has_details()
+            && !self.settings_open
+            && !self.sidepane.read(cx).is_open()
+            && !self.project_panel.read(cx).is_open()
+    }
+
+    /// Whether there is a session to describe. The new-task page (no
+    /// transcript yet) has no name, context or identifiers worth showing, so
+    /// the chip and the panel stay hidden until the first message lands; a
+    /// panel the user left open comes back with it.
+    pub(super) fn session_has_details(&self) -> bool {
+        !self.transcript.is_empty()
+    }
+
+    /// The width the session-details dock takes from the main area: its card
+    /// plus the gutter beside the chat, or nothing while it is hidden.
+    pub(super) fn session_details_width(&self, cx: &App) -> Pixels {
+        if self.session_details_visible(cx) {
+            px(SESSION_DETAILS_GUTTER + SESSION_DETAILS_W)
+        } else {
+            px(0.)
+        }
     }
 
     /// The new-task composer's context header: folder and branch on the left,
@@ -4100,132 +4137,103 @@ impl OrbitApp {
         )
     }
 
-    /// The top bar's overflow menu: one "…" control holding the surfaces that
-    /// no longer earn a permanent chip — Session details, Explorer, the
-    /// Terminal, the Git page, and Worktrees. It keeps the bar to the controls
-    /// that carry live state (quota, open-in, Review, this), with the rest one
-    /// click away and still on their shortcuts. Session details' popover is
-    /// mounted here so it keeps its top-right anchor now that its info chip is
-    /// gone.
-    pub(super) fn render_header_more(
+    /// The top bar's terminal toggle (⌘J): one chip, lifting while the bottom
+    /// panel is open. It sits directly after the Review chip because the two
+    /// panels share the window — each is one click, never a menu away.
+    pub(super) fn render_terminal_control(
         &self,
         theme: Theme,
-        explorer_visible: bool,
         terminal_visible: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        let open = self.header_more_open;
-        let lifted = open || self.session_details_open;
-        div()
-            .relative()
-            .children(self.render_session_details_popup(cx))
-            .children(self.render_header_more_popup(theme, explorer_visible, terminal_visible, cx))
-            .child(
-                header_icon_button(
-                    "header-more",
-                    &theme,
-                    lifted,
-                    icon(
-                        "icons/more.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        if lifted {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        },
-                    ),
-                )
-                .tip(tr!("sidebar.more_actions"))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_header_more_click)),
-            )
+        header_icon_button(
+            "header-terminal",
+            &theme,
+            terminal_visible,
+            icon(
+                "icons/terminal.svg",
+                ButtonSize::Medium.icon_size().px(&theme),
+                if terminal_visible {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                },
+            ),
+        )
+        .tip(commands::tooltip(
+            CommandId::ToggleTerminal,
+            terminal_visible,
+        ))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                this.on_toggle_terminal(&crate::ToggleTerminal, window, cx);
+            }),
+        )
     }
 
-    /// The overflow menu itself, anchored under the "…" chip. Rows mirror the
-    /// command registry's titles, so the menu, the palette, and the shortcut
-    /// help can never drift apart.
-    pub(super) fn render_header_more_popup(
+    /// The top bar's session-details chip: toggles the details panel in the
+    /// right dock, and stays lifted while that panel is showing.
+    pub(super) fn render_session_details_control(
+        &self,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let open = self.session_details_open;
+        div().relative().child(
+            header_icon_button(
+                "header-session-details",
+                &theme,
+                open,
+                icon(
+                    "icons/info.svg",
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    if open {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    },
+                ),
+            )
+            .tip(tr!("session.session_details"))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(Self::on_session_details_click),
+            ),
+        )
+    }
+
+    /// The top bar's Explorer toggle (⌘⇧E): its own chip beside the
+    /// terminal's, lifting while the project panel is showing. It used to sit
+    /// alone in a "…" menu, one click further away than its neighbours.
+    pub(super) fn render_explorer_control(
         &self,
         theme: Theme,
         explorer_visible: bool,
-        terminal_visible: bool,
         cx: &Context<Self>,
-    ) -> Option<AnyElement> {
-        if !self.header_more_open {
-            return None;
-        }
-        let menu = picker_surface(div().id("header-more-popup"), &theme)
-            .w(px(220.))
-            .py(picker::list_padding_y(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
-            .occlude()
-            .on_mouse_down_out(
-                cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_header_more(cx)),
-            )
-            .child(header_menu_row(
-                "header-more-session",
-                "icons/info.svg",
-                tr!("session.session_details"),
-                None,
-                self.session_details_open,
-                theme,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| this.open_session_details(cx)),
-            ))
-            .child(header_menu_row(
-                "header-more-explorer",
-                "icons/folder.svg",
-                commands::title(CommandId::ToggleProjectPanel, explorer_visible),
-                commands::spec(CommandId::ToggleProjectPanel).shortcut(),
-                explorer_visible,
-                theme,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.header_more_open = false;
-                    this.toggle_project_panel(cx);
-                }),
-            ))
-            .child(header_menu_row(
-                "header-more-terminal",
-                "icons/terminal.svg",
-                commands::title(CommandId::ToggleTerminal, terminal_visible),
-                commands::spec(CommandId::ToggleTerminal).shortcut(),
-                terminal_visible,
-                theme,
-                cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                    this.header_more_open = false;
-                    this.on_toggle_terminal(&crate::ToggleTerminal, window, cx);
-                }),
-            ))
-            .child(header_menu_row(
-                "header-more-git",
-                "icons/github.svg",
-                commands::title(CommandId::OpenGit, false),
-                commands::spec(CommandId::OpenGit).shortcut(),
-                self.git_open,
-                theme,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.header_more_open = false;
-                    if this.git_open {
-                        this.close_git(cx);
-                    } else {
-                        this.open_git(cx);
-                    }
-                }),
-            ));
-        Some(
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), popover::MENU_OFFSET),
-                    menu,
-                    "anchored_popover-in-16",
-                    &theme,
-                ))
-                .into_any_element(),
+    ) -> impl IntoElement + use<> {
+        header_icon_button(
+            "header-explorer",
+            &theme,
+            explorer_visible,
+            icon(
+                "icons/folder-open.svg",
+                ButtonSize::Medium.icon_size().px(&theme),
+                if explorer_visible {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                },
+            ),
+        )
+        .debug_selector(|| "header-explorer".into())
+        .tip(commands::tooltip(
+            CommandId::ToggleProjectPanel,
+            explorer_visible,
+        ))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _: &MouseUpEvent, _, cx| this.toggle_project_panel(cx)),
         )
     }
 
@@ -4257,7 +4265,7 @@ impl OrbitApp {
             ))
     }
 
-    /// The sidebar footer's utility icons: Usage and Settings. Icon-only —
+    /// The sidebar footer's utility icons: Git, Usage and Settings. Icon-only —
     /// each glyph is labelled by its tooltip, which
     /// also names its chord — so the column keeps labels for the primary
     /// action and the session list alone.
@@ -4266,6 +4274,30 @@ impl OrbitApp {
         theme: Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
+        // Git — opens (or leaves) the Git page (⌘⇧G). Lives in the footer,
+        // ahead of Usage, because it is a workbench destination, not a
+        // readout; the top bar keeps it in the "…" overflow.
+        let git = icon_button_frame(div().id("sidebar-git"), &theme, ButtonSize::Medium)
+            .tip(commands::tooltip(CommandId::OpenGit, false))
+            .when(self.git_open, |btn| btn.bg(theme.surface_active))
+            .cursor_pointer()
+            .hover_state_open(&theme, self.git_open)
+            .when(self.git_open, |btn| {
+                btn.pressed_state(&theme, PressedRamp::Selected)
+            })
+            .when(!self.git_open, |btn| {
+                btn.pressed_state(&theme, PressedRamp::Wash)
+            })
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_git_nav_click))
+            .child(icon(
+                "icons/github.svg",
+                ButtonSize::Medium.icon_size().px(&theme),
+                if self.git_open {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                },
+            ));
         // Usage — opens (or leaves) the Usage page (⌘U).
         let usage = icon_button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Medium)
             .tip(commands::tooltip(CommandId::ToggleUsage, false))
@@ -4314,6 +4346,7 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
+            .child(git)
             .child(usage)
             .child(settings)
     }

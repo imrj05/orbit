@@ -23,29 +23,34 @@ use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
 use crate::app::{
-    anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
-    context_menu_surface, disclosure_chevron, empty_state, file_badge, file_glyph, icon,
-    icon_button_frame, nerd_font_family, picker_search_frame, press, refresh_glyph, AccentWash,
-    ControlExt, EmptyFill, TipExt, BUTTON_GROUP,
+    anchored_popover, anchored_popover_at, button_frame, context_menu_entry,
+    context_menu_separator, context_menu_surface, disclosure_chevron, empty_state, file_badge,
+    file_glyph, icon, icon_button_frame, nerd_font_family, press, AccentWash, ControlExt,
+    EmptyFill, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, panel, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
+    context_menu, input, panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt,
+    TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Panel width defaults / drag clamps.
 pub const PANEL_DEFAULT_W: f32 = 248.;
-pub const PANEL_MIN_W: f32 = 172.;
+/// The narrowest dock that still fits the header: the workspace name beside
+/// New File, New Folder, "…" and Close. A narrower saved width (the old
+/// minimum was 172) is clamped up to this on load.
+pub const PANEL_MIN_W: f32 = 220.;
 pub const PANEL_MAX_W: f32 = 460.;
 
 /// Fixed tree row height — 28px, the design system's navigation-row height.
 const ROW_H: f32 = 28.;
-const HEADER_H: f32 = 40.;
-const FOOTER_H: f32 = 26.;
+/// Two-line header: the workspace name over its `~/` path.
+const HEADER_H: f32 = 48.;
+const FOOTER_H: f32 = 24.;
 
 /// What a row click does when the app is told a file was picked. The string
 /// is the workspace-relative path, used to label the file in the viewer.
@@ -148,6 +153,12 @@ pub struct ProjectPanel {
     menu: Option<PanelMenu>,
     /// When the menu was dismissed by an outside click; guards re-open.
     menu_dismissed_at: Option<Instant>,
+    /// Whether the header's "…" menu (refresh, collapse all, hidden files)
+    /// is open.
+    header_menu_open: bool,
+    /// When the header menu was dismissed by an outside click, so that same
+    /// click's mouse-up on the "…" button cannot reopen it.
+    header_menu_dismissed_at: Option<Instant>,
     /// Inline name prompt (new file/folder or rename), if open.
     entry: Option<EntryEditor>,
     /// A pending delete confirmation, if any.
@@ -202,6 +213,8 @@ impl ProjectPanel {
             active: None,
             menu: None,
             menu_dismissed_at: None,
+            header_menu_open: false,
+            header_menu_dismissed_at: None,
             entry: None,
             pending_delete: None,
             notice: None,
@@ -234,6 +247,7 @@ impl ProjectPanel {
         self.open = !self.open;
         if !self.open {
             self.menu = None;
+            self.header_menu_open = false;
         } else {
             self.ensure_loaded(cx);
         }
@@ -756,6 +770,10 @@ fn badge_color(badge: StatusBadge, theme: &Theme) -> Hsla {
 }
 
 impl ProjectPanel {
+    /// The panel's header: the workspace's name over its `~/` path on the
+    /// left; New File, New Folder, a "…" menu for the occasional actions
+    /// (refresh, collapse all, hidden files) and the close button on the
+    /// right. A spinner beside the name says a snapshot is loading.
     fn header(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let title = self
             .workspace
@@ -763,6 +781,7 @@ impl ProjectPanel {
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| tr!("explorer.files"));
+        let subtitle = self.workspace.as_deref().map(crate::skills::display_path);
         div()
             .h(px(HEADER_H))
             .flex_none()
@@ -777,14 +796,54 @@ impl ProjectPanel {
             }))
             .child(
                 div()
+                    .id("explorer-title")
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(TextSize::Small.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(title),
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .when_some(
+                        self.workspace
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().into_owned()),
+                        |el, path| el.tip(path),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base06.px(&theme))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.text_primary)
+                                    .child(title),
+                            )
+                            .when(self.loading, |row| {
+                                row.child(crate::app::spinner(
+                                    "explorer-header-loading",
+                                    IconSize::XSmall.px(&theme),
+                                    theme.text_muted,
+                                    theme,
+                                ))
+                            }),
+                    )
+                    // The path gets its own flex row, like the title: a bare
+                    // block in a column is measured at min-content, which
+                    // ellipsizes the whole path down to "…".
+                    .children(subtitle.map(|path| {
+                        div().flex().min_w_0().child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(TextSize::XSmall.px(&theme))
+                                .text_color(theme.text_muted)
+                                .child(path),
+                        )
+                    })),
             )
             .child(ghost_icon(
                 &theme,
@@ -806,61 +865,7 @@ impl ProjectPanel {
                     this.start_new_folder(window, cx);
                 }),
             ))
-            .child(
-                press(
-                    icon_button_frame(
-                        div().id("explorer-refresh").group(BUTTON_GROUP),
-                        &theme,
-                        ButtonSize::Default,
-                    )
-                    .tip(tr!("common.refresh"))
-                    .cursor_pointer()
-                    .hover_state(&theme),
-                )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.mark_stale(cx);
-                }))
-                .child(refresh_glyph(
-                    "explorer-refresh-spin",
-                    ButtonSize::Default.icon_size().px(&theme),
-                    self.loading,
-                    theme.text_muted,
-                    theme,
-                )),
-            )
-            .child(ghost_icon(
-                &theme,
-                "explorer-collapse",
-                "icons/chevron-up.svg",
-                theme.text_muted,
-                tr!("explorer.collapse"),
-                cx.listener(|this, _: &ClickEvent, _, cx| this.collapse_all(cx)),
-            ))
-            .child(ghost_icon(
-                &theme,
-                "explorer-hidden",
-                if self.show_hidden {
-                    "icons/eye.svg"
-                } else {
-                    "icons/eye-off.svg"
-                },
-                if self.show_hidden {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                },
-                if self.show_hidden {
-                    tr!("explorer.hide_hidden")
-                } else {
-                    tr!("explorer.show_hidden")
-                },
-                cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.show_hidden = !this.show_hidden;
-                    this.stale = true;
-                    this.ensure_loaded(cx);
-                    cx.notify();
-                }),
-            ))
+            .child(self.header_menu(theme, cx))
             .child(ghost_icon(
                 &theme,
                 "explorer-close",
@@ -879,29 +884,182 @@ impl ProjectPanel {
             .into_any_element()
     }
 
-    fn filter_row(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let has_text = !self.filter.read(cx).text().is_empty();
-        picker_search_frame(div(), &theme)
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.filter.clone()))
-            .when(has_text, |row| {
-                row.child(ghost_icon(
-                    &theme,
-                    "explorer-filter-clear",
-                    "icons/x.svg",
-                    theme.text_muted,
-                    tr!("view.clear_filters"),
-                    cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.filter.update(cx, |input, cx| input.clear(cx));
-                        this.refresh_rows(cx);
+    /// The header's "…" button and the menu it anchors: Refresh, Collapse
+    /// All Folders, and the hidden-files toggle (checked while shown).
+    fn header_menu(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.header_menu_open;
+        let button = press(
+            icon_button_frame(
+                div().id("explorer-more").group(BUTTON_GROUP),
+                &theme,
+                ButtonSize::Default,
+            )
+            .debug_selector(|| "explorer-more".into())
+            .tip(tr!("sidebar.more_actions"))
+            .cursor_pointer()
+            .when(open, |button| button.bg(theme.surface_active)),
+        )
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_header_menu(cx)))
+        .child(icon(
+            "icons/more.svg",
+            ButtonSize::Default.icon_size().px(&theme),
+            if open {
+                theme.text_primary
+            } else {
+                theme.text_muted
+            },
+        ));
+        let button = if open {
+            button.into_any_element()
+        } else {
+            crate::motion::hover(
+                button,
+                "explorer-more",
+                &theme,
+                crate::motion::Hover::wash(&theme),
+            )
+        };
+        let popup = open.then(|| {
+            let menu = context_menu_surface(div().id("explorer-header-menu"), &theme)
+                .w(px(220.))
+                .flex()
+                .flex_col()
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    if this.header_menu_open {
+                        this.header_menu_open = false;
+                        this.header_menu_dismissed_at = Some(Instant::now());
                         cx.notify();
+                    }
+                }))
+                .child(menu_row(
+                    theme,
+                    "icons/refresh.svg",
+                    tr!("common.refresh"),
+                    None,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.header_menu_open = false;
+                        this.mark_stale(cx);
                     }),
                 ))
-            })
+                .child(menu_row(
+                    theme,
+                    "icons/collapse-all.svg",
+                    tr!("explorer.collapse_all"),
+                    None,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.header_menu_open = false;
+                        this.collapse_all(cx);
+                    }),
+                ))
+                .child(separator(theme))
+                .child(menu_row(
+                    theme,
+                    if self.show_hidden {
+                        "icons/eye-off.svg"
+                    } else {
+                        "icons/eye.svg"
+                    },
+                    if self.show_hidden {
+                        tr!("explorer.hide_hidden")
+                    } else {
+                        tr!("explorer.show_hidden")
+                    },
+                    None,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.header_menu_open = false;
+                        this.show_hidden = !this.show_hidden;
+                        this.stale = true;
+                        this.ensure_loaded(cx);
+                        cx.notify();
+                    }),
+                ));
+            div()
+                .absolute()
+                .bottom_0()
+                .right_0()
+                .size(px(0.))
+                .child(anchored_popover(
+                    gpui::Corner::TopRight,
+                    gpui::point(px(0.), popover::MENU_OFFSET),
+                    menu,
+                    "explorer-header-menu-in",
+                    &theme,
+                ))
+        });
+        div()
+            .relative()
+            .flex_none()
+            .child(button)
+            .children(popup)
+            .into_any_element()
+    }
+
+    /// Flip the header menu. The click that dismissed it from outside also
+    /// lands here on mouse-up; the stamp keeps it from reopening.
+    fn toggle_header_menu(&mut self, cx: &mut Context<Self>) {
+        if self
+            .header_menu_dismissed_at
+            .take()
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(200))
+        {
+            return;
+        }
+        self.header_menu_open = !self.header_menu_open;
+        if self.header_menu_open {
+            self.menu = None;
+        }
+        cx.notify();
+    }
+
+    /// The filter: an inset, rounded field on the panel's nested surface,
+    /// whose hairline takes the focus ring while it holds the caret.
+    fn filter_row(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let has_text = !self.filter.read(cx).text().is_empty();
+        let focused = gpui::Focusable::focus_handle(self.filter.read(cx), cx).is_focused(window);
+        div()
+            .flex_none()
+            .px(DynamicSpacing::Base08.px(&theme))
+            .pb(DynamicSpacing::Base06.px(&theme))
+            .child(
+                div()
+                    .h(ButtonSize::Medium.height(&theme))
+                    .pl(DynamicSpacing::Base08.px(&theme))
+                    .pr(DynamicSpacing::Base02.px(&theme))
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .rounded(input::RADIUS.px(&theme))
+                    .bg(theme.surface_secondary)
+                    .border_1()
+                    .border_color(if focused {
+                        theme.focus_ring
+                    } else {
+                        theme.border_subtle
+                    })
+                    .overflow_hidden()
+                    .text_size(TextSize::Small.px(&theme))
+                    .child(icon(
+                        "icons/search.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_muted,
+                    ))
+                    .child(div().flex_1().min_w_0().child(self.filter.clone()))
+                    .when(has_text, |row| {
+                        row.child(ghost_icon(
+                            &theme,
+                            "explorer-filter-clear",
+                            "icons/x.svg",
+                            theme.text_muted,
+                            tr!("view.clear_filters"),
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.filter.update(cx, |input, cx| input.clear(cx));
+                                this.refresh_rows(cx);
+                                cx.notify();
+                            }),
+                        ))
+                    }),
+            )
             .into_any_element()
     }
 
@@ -1031,10 +1189,10 @@ impl ProjectPanel {
             .flex_none()
             .px(DynamicSpacing::Base12.px(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.border_subtle)
             .flex()
             .items_center()
-            .text_size(TextSize::Small.px(&theme))
+            .text_size(TextSize::XSmall.px(&theme))
             .text_color(if self.index.truncated {
                 theme.warning
             } else {
@@ -1071,6 +1229,7 @@ impl ProjectPanel {
             .id(gpui::ElementId::Name(
                 format!("explorer-row-{}", row.path).into(),
             ))
+            .relative()
             .w_full()
             .h(px(ROW_H))
             .pl(px(indent))
@@ -1124,6 +1283,22 @@ impl ProjectPanel {
                         }
                     }),
                 );
+        }
+
+        // Indent guides: one hairline per ancestor, through the centre of
+        // that ancestor's chevron, so nesting reads at a glance in a deep
+        // tree. Painted under the row's own content; no layout cost.
+        let chevron_mid = f32::from(IconSize::Indicator.px(&theme)) / 2.;
+        for level in 0..row.depth {
+            content = content.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(7.0 + level as f32 * 14.0 + chevron_mid))
+                    .w(px(1.))
+                    .bg(theme.border_subtle),
+            );
         }
 
         if row.is_dir() {
@@ -1206,7 +1381,7 @@ impl ProjectPanel {
         if active && cursor && !renaming && self.focus.is_focused(window) {
             // Paint the ring over the selected row without changing its layout
             // or replacing the open-file selection fill.
-            content = content.relative().child(
+            content = content.child(
                 div()
                     .debug_selector(|| "explorer-selected-focus-ring".to_string())
                     .absolute()
@@ -1544,15 +1719,18 @@ fn ghost_icon(
     label: String,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    press(
-        icon_button_frame(div().id(id).group(BUTTON_GROUP), theme, ButtonSize::Default)
-            .tip(label)
-            .cursor_pointer()
-            .hover_state(theme),
+    crate::motion::hover(
+        press(
+            icon_button_frame(div().id(id).group(BUTTON_GROUP), theme, ButtonSize::Default)
+                .tip(label)
+                .cursor_pointer(),
+        )
+        .on_click(listener)
+        .child(icon(path, ButtonSize::Default.icon_size().px(theme), color)),
+        id,
+        theme,
+        crate::motion::Hover::wash(theme),
     )
-    .on_click(listener)
-    .child(icon(path, ButtonSize::Default.icon_size().px(theme), color))
-    .into_any_element()
 }
 
 fn separator(theme: Theme) -> AnyElement {
@@ -1646,6 +1824,7 @@ impl Render for ProjectPanel {
         let theme = *theme::get(cx);
         div()
             .id("project-panel")
+            .debug_selector(|| "project-panel".into())
             .relative()
             .flex_none()
             .w(self.width)
@@ -1685,7 +1864,7 @@ impl Render for ProjectPanel {
                     .flex()
                     .flex_col()
                     .child(self.header(theme, cx))
-                    .child(self.filter_row(theme, cx))
+                    .child(self.filter_row(theme, window, cx))
                     .child(self.tree(theme, cx))
                     .child(self.footer(theme, cx)),
             )
@@ -1699,6 +1878,50 @@ impl Render for ProjectPanel {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// The header's "…" menu toggles, closes with the panel, and the click
+    /// that dismissed it from outside cannot reopen it on mouse-up.
+    #[gpui::test]
+    fn header_menu_toggles_and_guards_the_dismissing_click(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, app| app.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let open: OpenHandler = Rc::new(|_, _, _| {});
+        let op: FileOpHandler = Rc::new(|_, _| {});
+        let panel = cx.update(|_, app| {
+            app.new(|cx| ProjectPanel::new(open, op, Rc::new(|_: &mut App| {}), cx))
+        });
+
+        cx.update(|_, app| {
+            panel.update(app, |panel, cx| {
+                panel.open = true;
+                panel.toggle_header_menu(cx);
+            })
+        });
+        assert!(cx.update(|_, app| panel.read(app).header_menu_open));
+
+        cx.update(|_, app| {
+            panel.update(app, |panel, cx| {
+                panel.header_menu_open = false;
+                panel.header_menu_dismissed_at = Some(Instant::now());
+                panel.toggle_header_menu(cx);
+            })
+        });
+        assert!(
+            !cx.update(|_, app| panel.read(app).header_menu_open),
+            "the dismissing click must not reopen the menu"
+        );
+
+        cx.update(|_, app| {
+            panel.update(app, |panel, cx| {
+                panel.toggle_header_menu(cx);
+                panel.toggle(cx);
+            })
+        });
+        assert!(
+            !cx.update(|_, app| panel.read(app).header_menu_open),
+            "closing the panel closes its menu"
+        );
+    }
 
     #[test]
     fn parent_of_splits_workspace_paths() {

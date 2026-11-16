@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 use crate::motion::Hover;
 use crate::platform::WindowCommand;
@@ -7,7 +9,7 @@ use crate::theme::tokens::{
     StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
-use gpui::{Font, FontFeatures, FontStyle, InteractiveElement};
+use gpui::{Font, FontFeatures, FontStyle, InteractiveElement, ObjectFit};
 
 /// Attach Orbit's native tooltip to any interactive element.
 ///
@@ -848,6 +850,31 @@ pub(crate) struct PickerRow {
     detail_color: Hsla,
     /// A leading glyph, drawn on the **title's** line.
     icon: Option<(&'static str, Hsla)>,
+    /// A leading mark that is a logo image instead of a tinted icon.
+    mark: Option<MarkElement>,
+}
+
+/// The leading mark of a picker row: either a tinted icon or a logo image.
+pub(crate) enum MarkElement {
+    Icon(&'static str),
+    Image(Arc<gpui::Image>),
+}
+
+/// What a row's leading glyph says about the place, for rows that may carry a
+/// logo image instead (`PickerRow::mark`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum EntryMarkLike {
+    Local,
+    Folder,
+}
+
+impl EntryMarkLike {
+    fn icon_path(self) -> &'static str {
+        match self {
+            Self::Local => "icons/monitor.svg",
+            Self::Folder => "icons/folder.svg",
+        }
+    }
 }
 
 impl PickerRow {
@@ -862,6 +889,7 @@ impl PickerRow {
             title_color,
             detail_color,
             icon: None,
+            mark: None,
         }
     }
 
@@ -873,6 +901,23 @@ impl PickerRow {
     /// each other.
     pub(crate) fn icon(mut self, path: &'static str, color: Hsla) -> Self {
         self.icon = Some((path, color));
+        self
+    }
+
+    /// The leading mark: a logo image when the workspace has one (the same
+    /// mark the header's folder chip shows), else the [`EntryMark`] glyph.
+    /// Drawn exactly like [`Self::icon`], on the title's line.
+    pub(crate) fn mark(
+        mut self,
+        logo: Option<Arc<gpui::Image>>,
+        entry_mark: EntryMarkLike,
+        theme: &Theme,
+    ) -> Self {
+        self.mark = Some(match logo {
+            Some(logo) => MarkElement::Image(logo),
+            None => MarkElement::Icon(entry_mark.icon_path()),
+        });
+        let _ = theme;
         self
     }
 
@@ -903,16 +948,45 @@ impl PickerRow {
     pub(crate) fn into_element(self, theme: &Theme) -> AnyElement {
         let gap = list_item::content_gap(theme);
         let icon_size = context_menu::ICON.px(theme);
-        let leading = self.icon.map(|(path, color)| {
-            div()
+        let leading = self.mark.map(|mark| match mark {
+            MarkElement::Image(logo) => div()
                 .debug_selector(|| "picker-row-leading".to_string())
                 .flex_none()
-                // Exactly the title's line box, so the glyph and the title
+                // Exactly the title's line box, so the mark and the title
                 // share one optical line whatever the row's total height.
                 .h(picker_line_height(picker::TEXT, theme))
                 .flex()
                 .items_center()
-                .child(icon(path, icon_size, color))
+                .child(
+                    img(ImageSource::Image(logo))
+                        .size(icon_size)
+                        .flex_none()
+                        .rounded(Radius::Small.px(theme))
+                        .object_fit(ObjectFit::Contain),
+                )
+                .into_any_element(),
+            MarkElement::Icon(path) => div()
+                .debug_selector(|| "picker-row-leading".to_string())
+                .flex_none()
+                .h(picker_line_height(picker::TEXT, theme))
+                .flex()
+                .items_center()
+                .child(icon(path, icon_size, theme.text_muted))
+                .into_any_element(),
+        });
+        let leading = leading.or_else(|| {
+            self.icon.map(|(path, color)| {
+                div()
+                    .debug_selector(|| "picker-row-leading".to_string())
+                    .flex_none()
+                    // Exactly the title's line box, so the glyph and the title
+                    // share one optical line whatever the row's total height.
+                    .h(picker_line_height(picker::TEXT, theme))
+                    .flex()
+                    .items_center()
+                    .child(icon(path, icon_size, color))
+                    .into_any_element()
+            })
         });
         let indent = if leading.is_some() {
             icon_size + gap
@@ -1658,7 +1732,23 @@ fn caption_button(
 /// on the platform where the app paints the caption — see
 /// [`platform::start_window_drag`] for why that path is closed to this app.
 /// Elsewhere the platform's own drag area is what moves the window.
+///
+/// A double-click on a titlebar is the platform's own gesture — zoom, minimise,
+/// or nothing, per System Settings → Desktop & Dock. Because the app paints its
+/// own titlebar, AppKit's titlebar view never sees the press, so the action is
+/// asked for explicitly instead of being handled here: `titlebar_double_click`
+/// reads `AppleActionOnDoubleClick` and runs exactly what every other app on the
+/// machine would run. A single click stays a no-op, so the drag strip is
+/// unaffected.
 pub(crate) fn window_drag_region(el: gpui::Div) -> gpui::Div {
+    #[cfg(target_os = "macos")]
+    let el = el.on_mouse_down(MouseButton::Left, |event: &gpui::MouseDownEvent, window, _| {
+        // The second press of a double-click carries the count; a drag starts
+        // on the first, so this never fires for one.
+        if event.click_count == 2 {
+            window.titlebar_double_click();
+        }
+    });
     #[cfg(windows)]
     {
         el.on_mouse_down(MouseButton::Left, |_, window, _| {

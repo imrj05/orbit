@@ -7,6 +7,7 @@
 //! following the popover conventions of [`crate::branch_picker::BranchPicker`].
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{
     div, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle, Focusable,
@@ -86,15 +87,6 @@ pub enum EntryMark {
     Folder,
 }
 
-impl EntryMark {
-    fn icon_path(self) -> &'static str {
-        match self {
-            Self::Local => "icons/monitor.svg",
-            Self::Folder => "icons/folder.svg",
-        }
-    }
-}
-
 /// One selectable place: this device's workspace, as its folder chip names it.
 #[derive(Debug, Clone)]
 pub struct WorkspaceEntry {
@@ -108,13 +100,12 @@ pub struct WorkspaceEntry {
     pub mark: EntryMark,
 }
 
-/// A row that is a machine rather than a folder (a remote host, and the row
-/// that opens the host config). Actions sit below the folders, above the
-/// native-dialog row, and never take part in the filter: they are always one
-/// step away.
+/// A row that is a machine rather than a folder (a remote host). Actions sit
+/// below the folders, above the native-dialog row, and never take part in the
+/// filter: they are always one step away.
 #[derive(Debug, Clone)]
 pub struct PickerAction {
-    /// Stable id the app dispatches on (`remote-host`, `remote-setup`).
+    /// Stable id the app dispatches on (`remote-host`).
     pub id: &'static str,
     pub icon: &'static str,
     pub label: String,
@@ -131,6 +122,12 @@ pub struct WorkspacePicker {
     /// The machine rows under the device (remote hosts, host config).
     actions: Vec<PickerAction>,
     current: Option<PathBuf>,
+    /// The workspace's own mark (logo image, else the folder glyph) leading
+    /// the device row — the same glyph the new-task header's folder chip
+    /// shows. `None` keeps the plain folder glyph.
+    device_mark: Option<Arc<gpui::Image>>,
+    /// The active branch, shown as the device row's trailing note.
+    branch_note: Option<String>,
     /// Matches the available chat-column width, measured with every dock
     /// excluded so the popover never overflows or juts past the folder chip.
     width: f32,
@@ -156,6 +153,8 @@ impl WorkspacePicker {
         entries: Vec<WorkspaceEntry>,
         actions: Vec<PickerAction>,
         current: Option<PathBuf>,
+        device_mark: Option<Arc<gpui::Image>>,
+        branch_note: Option<String>,
         width: f32,
         list_max_h: f32,
         on_pick: WorkspacePick,
@@ -184,6 +183,8 @@ impl WorkspacePicker {
             entries,
             actions,
             current,
+            device_mark,
+            branch_note,
             width,
             list_max_h,
             filter,
@@ -395,8 +396,16 @@ impl Render for WorkspacePicker {
         let this = cx.entity();
 
         let rows = self.filtered(&self.last_filter);
+        let current_path = self.current.clone();
+        // The workspace's own mark (logo image or folder glyph) leads the
+        // device row, the same glyph the folder chip in the header shows.
+        let device_mark = self.device_mark.clone();
+        let branch_note = self.branch_note.clone();
 
-        // ── folder rows ──
+        // ── scrolling body ───────────────────────────────────────────────
+        // Folder rows, then the machine group (remote hosts) under a
+        // hairline; both groups never take part in the filter's count but
+        // stay put while it narrows the folders.
         let mut list = div()
             .id("workspace-picker-list")
             .debug_selector(|| "workspace-picker-list".to_string())
@@ -412,9 +421,9 @@ impl Render for WorkspacePicker {
             .w_full()
             .flex()
             .flex_col();
-        // Zed's no-match state: one muted two-line row where the folders would
-        // be. The verbs below stay put, because "new worktree" is exactly what
-        // a search that found nothing should still offer.
+        // Zed's no-match state: one muted two-line row where the folders
+        // would be. The verbs below stay put, because "Choose folder…" is
+        // exactly what a search that found nothing should still offer.
         if rows.is_empty() {
             entry_list = entry_list.child(
                 picker_entry(div(), &theme)
@@ -436,7 +445,7 @@ impl Render for WorkspacePicker {
             );
         }
         for (ix, entry) in rows.iter().enumerate() {
-            let is_current = self.current.as_ref() == Some(&entry.path);
+            let is_current = current_path.as_ref() == Some(&entry.path);
             let highlighted = ix == self.highlighted;
             let this = this.clone();
             entry_list = entry_list.child(
@@ -476,8 +485,6 @@ impl Render for WorkspacePicker {
                         picker.activate(ix, &rows, window, cx);
                     }),
                 )
-                // The check carries "current" — the icon stays quiet, one
-                // accent signal per fact.
                 .child(
                     PickerRow::new(
                         entry.name.clone(),
@@ -494,7 +501,17 @@ impl Render for WorkspacePicker {
                             theme.text_muted
                         },
                     )
-                    .icon(entry.mark.icon_path(), theme.text_muted)
+                    // The workspace mark (logo or folder glyph) leads the row's
+                    // title line; the detail path sits under it, indented to
+                    // clear the glyph.
+                    .mark(
+                        device_mark.clone(),
+                        match entry.mark {
+                            EntryMark::Local => crate::app::EntryMarkLike::Local,
+                            EntryMark::Folder => crate::app::EntryMarkLike::Folder,
+                        },
+                        &theme,
+                    )
                     .detail(entry.path.to_string_lossy().into_owned())
                     .mono()
                     .weight(if highlighted || is_current {
@@ -504,7 +521,9 @@ impl Render for WorkspacePicker {
                     })
                     .into_element(&theme),
                 )
-                .when_some(entry.note.clone(), |row, note| {
+                // The branch rides the title line, right-aligned, as a quiet
+                // muted note — not a third text line.
+                .when_some(entry.note.clone().or(branch_note.clone()), |row, note| {
                     row.child(
                         div()
                             .flex_none()
@@ -529,98 +548,100 @@ impl Render for WorkspacePicker {
 
         list = list.child(entry_list);
 
-        // ── action rows ──
-        // Verbs, not folders: "new worktree", "existing worktree", "remote
-        // branch". They sit under a hairline so they never read as another
-        // folder, and they stay put while the filter narrows the list.
-        let mut action_list = div()
-            .debug_selector(|| "workspace-actions".to_string())
-            .w_full()
-            .flex()
-            .flex_col();
-        for (action_ix, action) in self.actions.iter().enumerate() {
-            let ix = rows.len() + action_ix;
-            let highlighted = self.highlighted == ix;
-            let this = this.clone();
-            action_list = action_list.child(
-                div()
-                    .debug_selector(move || format!("workspace-action-{action_ix}"))
-                    // A hairline above the verbs, drawn inside the first
-                    // action's own box: the list's row count stays exactly what
-                    // the reveal math assumes.
-                    .when(action_ix == 0 || action.group_start, |row| {
-                        row.border_t_1().border_color(theme.border)
-                    })
-                    .child(
-                        picker_entry(
-                            // Keyed by position: several rows can share an id
-                            // (one `remote-host` per host), and a shared element
-                            // id would share one hover/press state across them.
-                            div().id(ElementId::NamedInteger(
-                                "workspace-action".into(),
-                                action_ix as u64,
-                            )),
-                            &theme,
-                        )
-                        .h(px(row_h(&theme)))
-                        .flex_none()
-                        .cursor_pointer()
-                        .pressed_state(&theme, PressedRamp::Wash)
-                        .when(highlighted, |row| row.bg(theme.surface_selected))
-                        .when(!highlighted, |row| row.hover_state(&theme))
-                        .on_mouse_move({
-                            let this = this.clone();
-                            move |_, _, cx| {
-                                this.update(cx, |picker, cx| {
-                                    if picker.highlighted != ix {
-                                        picker.highlighted = ix;
-                                        cx.notify();
-                                    }
-                                });
-                            }
+        // ── machine rows (remote hosts) ──────────────────────────────────
+        // Under a hairline so they never read as another folder. With no
+        // hosts configured the group is omitted — host setup lives in
+        // Settings → Remote hosts, not here.
+        if !self.actions.is_empty() {
+            let mut action_list = div()
+                .debug_selector(|| "workspace-actions".to_string())
+                .w_full()
+                .flex()
+                .flex_col();
+            for (action_ix, action) in self.actions.iter().enumerate() {
+                let ix = rows.len() + action_ix;
+                let highlighted = self.highlighted == ix;
+                let this = this.clone();
+                action_list = action_list.child(
+                    div()
+                        .debug_selector(move || format!("workspace-action-{action_ix}"))
+                        // A hairline above the group, drawn inside the first
+                        // action's own box: the list's row count stays exactly
+                        // what the reveal math assumes.
+                        .when(action_ix == 0 || action.group_start, |row| {
+                            row.border_t_1().border_color(theme.border)
                         })
-                        .on_mouse_up(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |picker, _, window, cx| {
-                                (picker.on_action)(action_ix, window, cx);
+                        .child(
+                            picker_entry(
+                                // Keyed by position: several rows can share an id
+                                // (one `remote-host` per host), and a shared
+                                // element id would share one hover/press state.
+                                div().id(ElementId::NamedInteger(
+                                    "workspace-action".into(),
+                                    action_ix as u64,
+                                )),
+                                &theme,
+                            )
+                            .h(px(row_h(&theme)))
+                            .flex_none()
+                            .cursor_pointer()
+                            .pressed_state(&theme, PressedRamp::Wash)
+                            .when(highlighted, |row| row.bg(theme.surface_selected))
+                            .when(!highlighted, |row| row.hover_state(&theme))
+                            .on_mouse_move({
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |picker, cx| {
+                                        if picker.highlighted != ix {
+                                            picker.highlighted = ix;
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            })
+                            .on_mouse_up(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |picker, _, window, cx| {
+                                    (picker.on_action)(action_ix, window, cx);
+                                }),
+                            )
+                            .child({
+                                let mut row = PickerRow::new(
+                                    action.label.clone(),
+                                    if highlighted {
+                                        theme.text_primary
+                                    } else {
+                                        theme.text_secondary
+                                    },
+                                    theme.text_muted,
+                                )
+                                .icon(
+                                    action.icon,
+                                    if highlighted {
+                                        theme.accent_text
+                                    } else {
+                                        theme.text_muted
+                                    },
+                                )
+                                .weight(if highlighted {
+                                    FontWeight::MEDIUM
+                                } else {
+                                    FontWeight::NORMAL
+                                });
+                                if let Some(hint) = action.hint.clone() {
+                                    row = row.detail(hint);
+                                }
+                                if action.mono {
+                                    row = row.mono();
+                                }
+                                row.into_element(&theme)
                             }),
-                        )
-                        .child({
-                            let mut row = PickerRow::new(
-                                action.label.clone(),
-                                if highlighted {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_secondary
-                                },
-                                theme.text_muted,
-                            )
-                            .icon(
-                                action.icon,
-                                if highlighted {
-                                    theme.accent_text
-                                } else {
-                                    theme.text_muted
-                                },
-                            )
-                            .weight(if highlighted {
-                                FontWeight::MEDIUM
-                            } else {
-                                FontWeight::NORMAL
-                            });
-                            if let Some(hint) = action.hint.clone() {
-                                row = row.detail(hint);
-                            }
-                            if action.mono {
-                                row = row.mono();
-                            }
-                            row.into_element(&theme)
-                        }),
-                    ),
-            );
-        }
+                        ),
+                );
+            }
 
-        list = list.child(action_list);
+            list = list.child(action_list);
+        }
 
         let browse_highlighted = self.highlighted == rows.len() + self.actions.len();
 
@@ -647,10 +668,10 @@ impl Render for WorkspacePicker {
                     ))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
-            // section label — a count on the right, like every other list
-            // header, in a trailing slot on the sub-header's own metrics.
+            // section label — "This device" over the folder rows, with a
+            // count on the right, like every other list header.
             .child(
-                menu_header(tr!("working_folder.title"), &theme)
+                menu_header(tr!("workspace_picker.this_device"), &theme)
                     .pt(picker::list_padding_y(&theme))
                     .when(!rows.is_empty(), |header| {
                         header.child(

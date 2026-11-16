@@ -228,9 +228,9 @@ fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
     let entries_group = window_cx
         .debug_bounds("workspace-rows")
         .expect("the folder rows laid out");
-    let actions_group = window_cx
-        .debug_bounds("workspace-actions")
-        .expect("the action rows laid out");
+    // The machine group only exists while a host is configured; on a machine
+    // without `remote-hosts.json` entries the group is omitted entirely.
+    let actions_group = window_cx.debug_bounds("workspace-actions");
 
     let entries = app.update(window_cx, |app, _cx| app.workspace_entries().len());
     let theme = window_cx.update(|_window, cx| *theme::get(cx));
@@ -247,18 +247,31 @@ fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
         f32::from(entries_group.size.height)
     );
     let action_rows = expected_action_rows();
-    let expected_actions = action_rows as f32 * row_h;
-    assert!(
-        (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
-        "{action_rows} action rows tile at {row_h}px each (plus the hairline): expected ~{expected_actions}, was {}",
-        f32::from(actions_group.size.height)
-    );
+    if action_rows == 0 {
+        // No configured host: the "new project" verb is still there, so the
+        // machine group exists with exactly that one row.
+        let actions_group = actions_group.expect("the verb row laid out");
+        let expected_actions = row_h + 1.; // one row plus its hairline
+        assert!(
+            (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
+            "with no configured host only the new-project verb remains: expected ~{expected_actions}, was {}",
+            f32::from(actions_group.size.height)
+        );
+    } else {
+        let actions_group = actions_group.expect("the action rows laid out");
+        let expected_actions = action_rows as f32 * row_h;
+        assert!(
+            (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
+            "{action_rows} action rows tile at {row_h}px each (plus the hairline): expected ~{expected_actions}, was {}",
+            f32::from(actions_group.size.height)
+        );
 
-    // The verbs sit under the folders, not on top of them.
-    assert!(
-        f32::from(actions_group.top()) >= f32::from(entries_group.bottom()) - 1.,
-        "the actions must follow the folders: folders {entries_group:?}, actions {actions_group:?}"
-    );
+        // The verbs sit under the folders, not on top of them.
+        assert!(
+            f32::from(actions_group.top()) >= f32::from(entries_group.bottom()) - 1.,
+            "the actions must follow the folders: folders {entries_group:?}, actions {actions_group:?}"
+        );
+    }
 
     // No scroll offset is applied when the picker opens, so the first folder
     // is fully inside the viewport.
@@ -313,25 +326,35 @@ fn a_filter_that_matches_nothing_keeps_the_action_rows(cx: &mut gpui::TestAppCon
     let rows = window_cx
         .debug_bounds("workspace-rows")
         .expect("the empty state laid out");
-    let actions = window_cx
-        .debug_bounds("workspace-actions")
-        .expect("the verbs stayed");
+    let actions = window_cx.debug_bounds("workspace-actions");
     assert!(
         (f32::from(rows.size.height) - row_h).abs() <= 1.,
         "one no-match row: was {}",
         f32::from(rows.size.height)
     );
     let action_rows = expected_action_rows();
-    assert!(
-        (f32::from(actions.size.height) - action_rows as f32 * row_h).abs() <= 2.,
-        "all {action_rows} machine rows remain: was {}",
-        f32::from(actions.size.height)
-    );
+    if action_rows == 0 {
+        // No configured host: the "new project" verb still keeps the group.
+        let actions = actions.expect("the verb row stayed");
+        let expected_actions = row_h + 1.; // one row plus its hairline
+        assert!(
+            (f32::from(actions.size.height) - expected_actions).abs() <= 2.,
+            "with no configured host only the new-project verb remains: was {}",
+            f32::from(actions.size.height)
+        );
+    } else {
+        let actions = actions.expect("the verbs stayed");
+        assert!(
+            (f32::from(actions.size.height) - action_rows as f32 * row_h).abs() <= 2.,
+            "all {action_rows} machine rows remain: was {}",
+            f32::from(actions.size.height)
+        );
+    }
 }
 
-/// The machine rows the picker builds: one row per configured remote host and
-/// the host-setup row. Hosts come from the machine's own `remote-hosts.json`, so
-/// the count is read, not assumed.
+/// The machine rows the picker builds: one row per configured remote host.
+/// Hosts come from the machine's own `remote-hosts.json`, so the count is
+/// read, not assumed.
 fn expected_action_rows() -> usize {
     OrbitApp::remote_actions(&crate::remote_hosts::load().0).len()
 }
@@ -422,9 +445,9 @@ fn a_wheel_scroll_stays_where_it_was_put(cx: &mut gpui::TestAppContext) {
 fn arrowing_to_the_last_verb_reveals_it_whole(cx: &mut gpui::TestAppContext) {
     let fixture = Fixture::new();
     let (app, cx) = open_scrolling_picker(cx, &fixture);
-    let (entries, actions) = app.update(cx, |app, _| {
-        (app.workspace_entries().len(), expected_action_rows())
-    });
+    // The scrolling fixture swaps in ten host rows, so the last machine row is
+    // the ninth of them (the picker's own list has no setup row anymore).
+    let (entries, actions) = app.update(cx, |app, _| (app.workspace_entries().len(), 10));
     for _ in 0..(entries + actions - 1) {
         cx.dispatch_action(crate::PickerSelectNext);
         draw_picker(cx, &app);

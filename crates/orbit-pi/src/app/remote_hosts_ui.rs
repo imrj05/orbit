@@ -155,8 +155,9 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Open Settings → Remote hosts, optionally straight into the Add form
-    /// (the folder picker's **Add a remote host…** row).
+    /// Open Settings → Remote hosts, optionally straight into the Add form.
+    /// The command palette's "Remote hosts" entry lands here.
+    #[allow(dead_code)]
     pub(super) fn open_remote_hosts_settings(
         &mut self,
         add: bool,

@@ -24,17 +24,18 @@ fn host(name: &str) -> RemoteHost {
 }
 
 #[test]
-fn picker_offers_setup_alone_without_hosts_and_hosts_before_edit() {
+fn picker_lists_hosts_only_without_a_setup_row() {
     let empty = OrbitApp::remote_actions(&[]);
     assert_eq!(
         empty.iter().map(|a| a.id).collect::<Vec<_>>(),
-        ["remote-setup"]
+        Vec::<&str>::new(),
+        "with no hosts there is no machine row (host config lives in Settings)"
     );
 
     let rows = OrbitApp::remote_actions(&[host("a"), host("b")]);
     assert_eq!(
         rows.iter().map(|a| a.id).collect::<Vec<_>>(),
-        ["remote-host", "remote-host", "remote-setup"]
+        ["remote-host", "remote-host"]
     );
     assert_eq!(rows[0].hint.as_deref(), Some("a.example:/srv/app"));
 }
@@ -96,15 +97,12 @@ fn remote_rows_open_their_own_group_and_set_locations_in_mono() {
     let with_hosts = OrbitApp::remote_actions(&[host("a"), host("b")]);
     assert!(with_hosts[0].group_start, "the first host opens the group");
     assert!(!with_hosts[1].group_start);
-    assert!(
-        !with_hosts[2].group_start,
-        "setup stays in the hosts' group"
-    );
     assert!(with_hosts[0].mono && with_hosts[1].mono);
-    assert!(!with_hosts[2].mono, "the setup hint is prose");
 
-    let alone = OrbitApp::remote_actions(&[]);
-    assert!(alone[0].group_start, "with no hosts, setup opens the group");
+    assert!(
+        OrbitApp::remote_actions(&[]).is_empty(),
+        "with no hosts the machine group is gone entirely"
+    );
 }
 
 // ── Settings → Remote hosts ───────────────────────────────────────────────

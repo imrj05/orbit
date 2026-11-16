@@ -60,7 +60,8 @@ fn wordmark_and_controls_fit_at_minimum_sidebar_width() {
         let mark_left = controls_left + view::TITLEBAR_CONTROLS_W + view::TITLEBAR_TITLE_GAP;
         assert!(mark_left + view::SIDEBAR_WORDMARK_W + view::SIDEBAR_EDGE_PAD <= SIDEBAR_MIN_W);
     } else {
-        let mark_right = view::TRAFFIC_LIGHT_CLEARANCE + view::SIDEBAR_WORDMARK_W;
+        let mark_right =
+            view::TRAFFIC_LIGHT_CLEARANCE + view::TITLEBAR_CONTROLS_LEAD + view::SIDEBAR_WORDMARK_W;
         assert!(mark_right + view::TITLEBAR_TITLE_GAP <= controls_left);
     }
 }

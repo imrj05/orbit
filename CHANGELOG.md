@@ -61,9 +61,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the confirmation says which). Guards refuse a filesystem root, the home folder, a
   folder that contains another project, and a folder a live task is still working in; the
   row only leaves the sidebar once the folder is actually gone (#131).
+- **The terminal opens as a page.** The bottom panel's header carries an expand
+  control beside Restart: one click and the shell leaves its strip to own the main
+  column the way the Git page and Usage do — chat skipped, tab strip and controls at
+  the top, the grid filling everything below, a **Back** and the page title in the
+  shared top bar. The same control (now a shrink glyph) puts the strip back. The
+  docks keep their place, since a page is the column, not the window, and the panel
+  reopens docked after it is closed — ⌘J never changes two things at once.
 
 ### Changed
 
+- **The Git page (GitHub) button moved from the top bar's "…" overflow menu to
+  the left sidebar's footer**, ahead of the Usage button, where it sits as a
+  workbench destination (⌘⇧G unchanged). The top bar keeps only live-state
+  controls: quota, session details, open-in, Review, Terminal, and "…" for the
+  Explorer.
+- **The Explorer has its own top-bar button, and the project panel is redesigned.**
+  The "…" overflow menu held only the Explorer toggle, so it is gone: a folder
+  button after the Terminal chip toggles the project panel (⌘⇧E), lifting while
+  it is open. The panel's header now names the workspace over its `~/` path
+  (full path on hover) with a spinner while the tree loads, and keeps New File,
+  New Folder and Close visible; Refresh, **Collapse All Folders** and the
+  hidden-files toggle moved into a "…" menu beside them. The filter is an inset,
+  rounded field whose border takes the focus ring, rows draw indent guides
+  through each ancestor's chevron so nesting reads at a glance, and the file
+  count sits in a quieter footer.
+- **The Terminal toggle has its own top-bar chip.** ⌘J's control left the "…"
+  overflow menu and now sits directly after the Review chip, lifting while the
+  panel is open — the bottom panel is one click away, like Review, instead of
+  two.
+- **Session details is a side panel with its own top-bar chip.** The `ⓘ` row
+  left the "…" overflow menu and now sits immediately after the usage meter.
+  It no longer drops a popover: it opens the session's details in the right
+  dock beside the chat, laid out as an inspector with a close button in its
+  header. **Session** shows the title as text with an edit (pencil) button and Generate
+  title; editing swaps in a compact rename field with **Update** and **Cancel**
+  (Enter commits, Escape cancels), sized from the same tokens as the rest of
+  the panel so it follows the UI font size;
+  **Environment** names the machine (this computer, or the remote host), the
+  folder and the branch with its ↑/↓ divergence; **Model** shows the provider
+  mark, model and thinking level; **Context** shows a fill bar, the percentage
+  and tokens used of the window (or "No usage yet" before pi measures any);
+  **Changes** shows the working tree's `+N −N` with **Review** and, when there
+  is something to commit, **Commit**; **Details** keeps the copyable session id
+  and file. The same chip closes it; an outside
+  click does not, and Escape only hands focus back from the rename field. The
+  panel shares the dock with Review and the Explorer, one at a time, and the
+  palette's Rename Session opens it. A new task has no session to describe, so the chip and the panel stay hidden on the new-task page until the first message; a panel left open comes back with it.
 - **The folder picker is a machine picker.** The two places that ask "where does
   this task run?" — the new-task composer's folder chip and a session's status
   bar **Work in** chip — now list two kinds of place: **this device** (the current
@@ -72,6 +116,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remote-branch verbs no longer crowd the list. Worktrees keep their own page
   (which now also carries **Clone repository**, since cloning left the picker),
   and the new-task picker still has **Choose folder…** for the native dialog.
+  The picker's **Add a remote host…** row is gone — host setup lives in
+  Settings → Remote hosts, reached from the **Work in** menu. The device row
+  now leads with the workspace's own logo (the same mark the header's folder
+  chip shows) and carries the active branch as its trailing note, and the
+  section header reads **This device**.
 - **Remote hosts are reachable from an open session.** The status bar's **Work in**
   picker reads `~/.orbit-pi/remote-hosts.json` when it opens, so a running session
   can move to a host without going back to the new-task page; the connection check,
@@ -87,6 +136,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Explorer no longer slides off the window as files open.** The Files,
+  Git, Usage and Worktrees pages could not shrink below their content's width,
+  so a long run of open file tabs pushed the project panel past the right edge
+  (its Close button out of reach). The page now yields and its tab strip
+  scrolls, keeping the panel at its width against the edge. The panel's minimum
+  width is now 220 px — enough for the redesigned header — and a narrower saved
+  width opens at that minimum. The header's path line now shows the path
+  instead of a lone "…".
+
+- **Double-clicking the header now zooms the window.** Orbit paints its own titlebar,
+  so the press never reached AppKit's titlebar view and the system's
+  Double-click-a-window's-title-bar action did nothing. The header strips (the sidebar
+  wordmark, the top bar's drag spacer, the Settings header) now ask the platform to run
+  that action on a double-click — zoom, minimise, fill, or nothing, exactly as
+  System Settings → Desktop & Dock says — while a single press still just drags.
 - **Delete session no longer disappears from the task menu.** It was hidden for the task
   that was open or running, which read as a missing feature; the row is now always
   listed and, while pi's process still owns the file, disabled with the reason on hover.

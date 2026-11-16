@@ -50,6 +50,7 @@ summary sparkline to read that day across the whole row:
   click away; every other Mermaid diagram type keeps the honest source block instead of a fake
   preview
 - In-transcript find (⌘F) and a full-window image lightbox
+- **Session details side panel** — the top bar's `ⓘ` chip opens an inspector in the right dock — rename (or generate a title), the machine, folder and branch, model and thinking level, context usage, working-tree changes with Review / Commit, and the copyable session id and file — beside the chat, sharing it with Review and the Explorer
 - Save any settled response as Markdown from its footer, or export the **visible transcript** from the command palette. Both use a native save dialog and refuse to overwrite files. Exports omit thinking, tool output, and image data; the visible transcript may omit earlier history after compaction
 - **Compressed image attachments** — images you attach or paste are downscaled and re-encoded at ingest (1400 px longest edge, 512 KiB base64, JPEG; transparency keeps lossless WebP), so a large screenshot no longer bloats the prompt or the session history; the status line reports the before/after size
 - **An attachment tray for images, files, and long pastes** — every queued item is one chip above the input showing what it is (image thumbnail or file-type badge), its name, its size or line count, and its own remove button; two or more chips add a count header with **Clear**. Dropping or picking a non-image file, or pasting one copied in macOS Finder or Windows Explorer, queues it as a file chip instead of splicing a path into the sentence, and on send it folds into the prompt as an `@path` mention the agent opens with its tools. The sent message shows those files as the same chips under the bubble (the path stays selectable), so a reloaded session looks like the live send. Pasting an image file copied in Finder or Windows Explorer attaches its contents rather than its file icon. On Linux, file URI lists exposed as clipboard text are supported; file-only clipboard offers are not yet supported. The **+** menu picks several images or files at once. All three kinds share one eight-item budget
@@ -96,7 +97,7 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 
 **Explorer and Files**
 
-- Project panel (⌘⇧E) — a gitignore-aware workspace tree with expand/collapse, filter, hidden-files toggle, devicons, `M/A/D/R/U` git badges, and keyboard navigation
+- Project panel (⌘⇧E, or its own folder button in the top bar) — a gitignore-aware workspace tree with indent guides, expand/collapse, filter, hidden-files toggle, devicons, `M/A/D/R/U` git badges, and keyboard navigation
 - File operations from the tree: new file, new folder, rename, and delete to Trash, plus open / reveal / copy path actions
 - Files page with a tab strip and an editor for the active workspace: syntax-highlighted editable buffers, Markdown Edit/Preview, images, debounced autosave (and ⌘S) with dirty/saving state, and honest read-only guards for binary, oversized, truncated, and non-UTF-8 files
 

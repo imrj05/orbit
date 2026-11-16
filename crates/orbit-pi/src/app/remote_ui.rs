@@ -102,12 +102,7 @@ mod tests {
 
     #[test]
     fn host_rows_map_to_hosts_by_their_order_among_host_rows() {
-        let ids = [
-            "clone-repository",
-            "remote-host",
-            "remote-host",
-            "remote-setup",
-        ];
+        let ids = ["new-project", "remote-host", "remote-host"];
         let hosts = [host("a"), host("b")];
         assert_eq!(
             remote_host_for_action(&ids, 1, &hosts).map(|h| h.name),
