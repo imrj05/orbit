@@ -22,6 +22,10 @@ use crate::platform::shortcuts;
 pub enum CommandId {
     // Session
     NewSession,
+    /// Add a folder to the sidebar as a project, without starting a task.
+    /// Palette-only: the new-task page's folder picker carries the pointer
+    /// path (#131).
+    NewProject,
     RefreshSessions,
     FocusSessions,
     /// ⌘1–⌘9 (payload: which slot).
@@ -271,6 +275,13 @@ pub static COMMANDS: &[CommandSpec] = &[
             "new session chat conversation start task",
         ),
         shortcuts::NEW_SESSION,
+    ),
+    command(
+        CommandId::NewProject,
+        Session,
+        "icons/folder-plus.svg",
+        "command_palette.new_project",
+        "new project folder workspace sidebar add directory",
     ),
     with_chord(
         command(
@@ -1280,6 +1291,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::ReviewClose => KeyBinding::new(chord, ReviewClose, context),
         // Palette-only commands have no keymap row.
         CommandId::RenameSession
+        | CommandId::NewProject
         | CommandId::PinSession
         | CommandId::CloneSession
         | CommandId::RewindConversation

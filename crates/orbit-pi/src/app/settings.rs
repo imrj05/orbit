@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use crate::git_panel::widgets::check_box;
 use crate::motion::Hover;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
@@ -1601,89 +1602,6 @@ impl OrbitApp {
         }
     }
 
-    /// One connected provider's models on the Providers & models page,
-    /// directly under its card (#131): a count with Hide all / Show all, then
-    /// the model cards — eye, star and "set active" each.
-    fn provider_models(
-        &self,
-        provider: &str,
-        models: &[&ModelEntry],
-        favorites: &crate::favorites::Favorites,
-        hidden: &crate::hidden_models::HiddenModels,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-    ) -> AnyElement {
-        // The provider's whole catalog, not just the filtered cards: "Hide
-        // all" acts on what the provider offers, and the count reads it.
-        let group: Vec<(String, String)> = self
-            .available_models
-            .iter()
-            .filter(|model| model.provider == provider)
-            .map(|model| (model.provider.clone(), model.id.clone()))
-            .collect();
-        let hidden_in_group = group
-            .iter()
-            .filter(|(p, id)| hidden.contains(p, id))
-            .count();
-        let count = if hidden_in_group == 0 {
-            tr!("settings.n_models", count = group.len())
-        } else {
-            tr!(
-                "settings.n_models_shown",
-                shown = group.len() - hidden_in_group,
-                total = group.len()
-            )
-        };
-        let cards: Vec<AnyElement> = models
-            .iter()
-            .map(|model| self.model_card(model, favorites, hidden, theme, this.clone()))
-            .collect();
-        let selector = format!("provider-models-{provider}");
-        div()
-            .debug_selector(move || selector)
-            .w_full()
-            .pl(DynamicSpacing::Base16.px(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(count),
-                    )
-                    .child(provider_visibility_button(
-                        provider,
-                        group,
-                        hidden_in_group
-                            == self
-                                .available_models
-                                .iter()
-                                .filter(|model| model.provider == provider)
-                                .count(),
-                        theme,
-                        this,
-                    )),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .grid()
-                    .grid_cols(3)
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .children(cards),
-            )
-            .into_any_element()
-    }
-
     /// A section label on the Providers & models page, with its count.
     fn provider_section_label(&self, label: String, count: usize, theme: Theme) -> AnyElement {
         div()
@@ -1708,200 +1626,6 @@ impl OrbitApp {
                     .text_color(theme.text_muted)
                     .child(count.to_string()),
             )
-            .into_any_element()
-    }
-
-    /// One card in the Models grid: name + star, the model id, and a footer
-    /// with the context window and the active mark. Clicking anywhere sets
-    /// the model; the star stops propagation so favoriting never switches.
-    fn model_card(
-        &self,
-        model: &ModelEntry,
-        favorites: &crate::favorites::Favorites,
-        hidden: &crate::hidden_models::HiddenModels,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-    ) -> AnyElement {
-        let (provider, id) = (model.provider.clone(), model.id.clone());
-        let active = self.model_id == model.id && self.model_provider == model.provider;
-        let is_favorite = favorites.contains(&model.provider, &model.id);
-        let is_hidden = hidden.contains(&model.provider, &model.id);
-
-        // Ink on the active fill comes from `selection_fg`, stepped down for the
-        // secondary lines — `text_muted` is authored for the canvas, not a
-        // selected card.
-        let meta_ink = if active {
-            theme.text_primary.opacity(0.72)
-        } else {
-            theme.text_muted
-        };
-        let visibility =
-            model_visibility_button(&provider, &id, is_hidden, meta_ink, theme, this.clone());
-
-        let star = icon_button_frame(
-            div().id(ElementId::Name(
-                format!("model-star-{provider}-{id}").into(),
-            )),
-            &theme,
-            ButtonSize::Default,
-        )
-        .tip(if is_favorite {
-            tr!("settings.unfavorite")
-        } else {
-            tr!("settings.favorite")
-        })
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_mouse_up(MouseButton::Left, {
-            let this = this.clone();
-            let (provider, id) = (provider.clone(), id.clone());
-            move |_, _, cx| {
-                // Keep the star from bubbling to the card's
-                // "set active model" handler.
-                cx.stop_propagation();
-                crate::favorites::toggle(&provider, &id);
-                this.update(cx, |_, cx| cx.notify());
-            }
-        })
-        .child(icon(
-            "icons/star.svg",
-            ButtonSize::Default.icon_size().px(&theme),
-            if is_favorite {
-                theme.accent_text
-            } else {
-                meta_ink
-            },
-        ));
-
-        let mut footer = div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme));
-        if let Some(window) = model.context_window {
-            footer = footer.child(
-                div()
-                    .h(DynamicSpacing::Base20.px(&theme))
-                    .px(DynamicSpacing::Base06.px(&theme))
-                    .rounded(Radius::Small.px(&theme))
-                    .bg(theme.overlay_strong)
-                    .flex()
-                    .items_center()
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(meta_ink)
-                    .child(tr!(
-                        "settings.n_ctx",
-                        count = crate::context_meter::format_tokens(window)
-                    )),
-            );
-        }
-        footer = footer.child(div().flex_1());
-        if active {
-            footer = footer.child(
-                div()
-                    .h(DynamicSpacing::Base20.px(&theme))
-                    .px(DynamicSpacing::Base06.px(&theme))
-                    .rounded(Radius::Small.px(&theme))
-                    .bg(theme.overlay_strong)
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base06.px(&theme))
-                    .child(icon(
-                        "icons/check.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.text_primary,
-                    ))
-                    .child(
-                        div()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(tr!("settings.active")),
-                    ),
-            );
-        } else {
-            // Revealed on card hover; the reserved space keeps every card's
-            // footer the same height.
-            footer = footer.child(
-                div()
-                    .h(DynamicSpacing::Base20.px(&theme))
-                    .flex()
-                    .items_center()
-                    .opacity(0.)
-                    .group_hover("model-card", |s| s.opacity(1.))
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_muted)
-                    .child(tr!("settings.set_active")),
-            );
-        }
-
-        div()
-            .id(ElementId::Name(
-                format!("model-card-{provider}-{id}").into(),
-            ))
-            .group("model-card")
-            .w_full()
-            .min_w_0()
-            .bg(if active {
-                theme.surface_active
-            } else {
-                theme.surface_secondary
-            })
-            .border_1()
-            .border_color(if active {
-                theme.border_strong
-            } else {
-                theme.border
-            })
-            .rounded(panel::RADIUS.px(&theme))
-            .p(DynamicSpacing::Base12.px(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .cursor_pointer()
-            .when(!active, |card| card.hover_bordered(&theme))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |app, cx| {
-                        app.set_model(id.clone(), provider.clone(), cx)
-                    });
-                }
-            })
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(TextSize::Default.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(if is_hidden {
-                                theme.text_muted
-                            } else {
-                                theme.text_primary
-                            })
-                            .child(model.name.clone()),
-                    )
-                    .child(visibility)
-                    .child(star),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .font_family(theme::code_font_family())
-                    .text_size(theme.code_px(10.5))
-                    .text_color(meta_ink)
-                    .child(model.id.clone()),
-            )
-            .child(div().flex_1())
-            .child(footer)
             .into_any_element()
     }
 
@@ -2597,7 +2321,6 @@ impl OrbitApp {
         let all = self.provider_views();
         let needle = self.provider_filter.read(cx).text().trim().to_lowercase();
         let favorites = crate::favorites::all();
-        let hidden = crate::hidden_models::all();
         let favorites_only = self.models_favorites_only;
         let provider_hit = |view: &ProviderView| {
             needle.is_empty()
@@ -2797,50 +2520,26 @@ impl OrbitApp {
                     .into_any_element(),
             );
         } else {
-            // The current selection leads, then the connected providers with
-            // their models directly beneath, then everything not set up yet
-            // (#131): one page for both, instead of a Models page that only
-            // listed what the connected providers already offer.
+            // The current selection leads, then one grid for the providers in
+            // use and another for the rest (#131). Both sections use the same
+            // 3-column cards: a connected provider is not a taller object than
+            // an unconnected one, and its models live in its own editor rather
+            // than under the card, where a long catalog buried the page.
             if !self.available_models.is_empty() {
                 rows.push(self.active_model_row(theme, this.clone(), cx));
             }
             let (connected, other): (Vec<&ProviderView>, Vec<&ProviderView>) = views
                 .into_iter()
                 .partition(|view| view.active || view.connected());
-            if !connected.is_empty() {
-                rows.push(self.provider_section_label(
-                    tr!("settings.connected_providers"),
-                    connected.len(),
-                    theme,
-                ));
-                for view in connected {
-                    let models = models_of(view);
-                    let mut group = div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .child(self.provider_card(view, theme, this.clone()));
-                    if !models.is_empty() {
-                        group = group.child(self.provider_models(
-                            &view.id,
-                            &models,
-                            &favorites,
-                            &hidden,
-                            theme,
-                            this.clone(),
-                        ));
-                    }
-                    rows.push(group.into_any_element());
+            for (label, group) in [
+                (tr!("settings.connected_providers"), connected),
+                (tr!("settings.not_connected_providers"), other),
+            ] {
+                if group.is_empty() {
+                    continue;
                 }
-            }
-            if !other.is_empty() {
-                rows.push(self.provider_section_label(
-                    tr!("settings.not_connected_providers"),
-                    other.len(),
-                    theme,
-                ));
-                let cards: Vec<AnyElement> = other
+                rows.push(self.provider_section_label(label, group.len(), theme));
+                let cards: Vec<AnyElement> = group
                     .iter()
                     .map(|view| self.provider_card(view, theme, this.clone()))
                     .collect();
@@ -3851,6 +3550,10 @@ impl OrbitApp {
         };
 
         div()
+            .debug_selector({
+                let id = view.id.clone();
+                move || format!("provider-card-{id}")
+            })
             .w_full()
             .min_w_0()
             .bg(theme.surface_secondary)
@@ -4427,6 +4130,260 @@ impl OrbitApp {
             .into_any_element()
     }
 
+    /// The provider editor's model chips (#131): every id Orbit can offer for
+    /// this provider — the ones already in the field, the last **Fetch models**
+    /// result, then pi's catalog for it — as one-click toggles.
+    ///
+    /// A chip is *included* when the field lists it, so a click and a paste
+    /// write the same text. Models pi reports carry their context window and a
+    /// picker-visibility eye; a freshly fetched id pi has no metadata for shows
+    /// its bare id instead of a badge Orbit cannot vouch for.
+    fn provider_model_chips(
+        &self,
+        editor: &ProviderEditor,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let provider_id = editor
+            .original_id
+            .clone()
+            .or_else(|| {
+                let id = editor.id.read(cx).text().trim().to_string();
+                (!id.is_empty()).then_some(id)
+            })?;
+        let listed = providers::model_ids_in(&editor.models.read(cx).text());
+        let mut offered: Vec<String> = listed.clone();
+        for id in &editor.fetched {
+            if !offered.iter().any(|known| known == id) {
+                offered.push(id.clone());
+            }
+        }
+        let catalog: Vec<&ModelEntry> = self
+            .available_models
+            .iter()
+            .filter(|model| model.provider == provider_id)
+            .collect();
+        for model in &catalog {
+            if !offered.iter().any(|known| known == &model.id) {
+                offered.push(model.id.clone());
+            }
+        }
+        if offered.is_empty() {
+            return None;
+        }
+        let total = offered.len();
+
+        let hidden = crate::hidden_models::all();
+        let mut chips = div()
+            .flex()
+            .flex_wrap()
+            .gap(DynamicSpacing::Base04.px(&theme));
+        for id in offered {
+            let included = listed.iter().any(|known| known == &id);
+            let known = catalog.iter().find(|model| model.id == id);
+            let context = known.and_then(|model| model.context_window);
+            let is_hidden = hidden.contains(&provider_id, &id);
+            chips = chips.child(self.provider_model_chip(
+                &provider_id,
+                &id,
+                included,
+                context,
+                known.map(|_| is_hidden),
+                theme,
+                this.clone(),
+            ));
+        }
+
+        // Bulk picker visibility, the same verb the page's per-provider header
+        // carried before the models moved in here (#131). Only offered when pi
+        // actually reports models for this provider.
+        let bulk = if catalog.is_empty() {
+            None
+        } else {
+            let provider = provider_id.clone();
+            let all_hidden = catalog
+                .iter()
+                .all(|model| hidden.contains(&provider_id, &model.id));
+            let ids: Vec<(String, String)> = catalog
+                .iter()
+                .map(|model| (model.provider.clone(), model.id.clone()))
+                .collect();
+            let label = if all_hidden {
+                tr!("settings.show_all_models")
+            } else {
+                tr!("settings.hide_all_models")
+            };
+            Some(
+                button_frame(
+                    div().id(ElementId::Name(
+                        format!("provider-models-visibility-{provider}").into(),
+                    )),
+                    &theme,
+                    ButtonSize::Compact,
+                )
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_muted)
+                .cursor_pointer()
+                .hover_state(&theme)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    for (provider, id) in &ids {
+                        crate::hidden_models::set(provider, id, !all_hidden);
+                    }
+                    this.update(cx, |_, cx| cx.notify());
+                })
+                .child(label)
+                .into_any_element(),
+            )
+        };
+
+        Some(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_muted)
+                                .child(tr!(
+                                    "settings.n_models_selected",
+                                    shown = listed.len(),
+                                    total = total
+                                )),
+                        )
+                        .children(bulk),
+                )
+                .child(chips)
+                .into_any_element(),
+        )
+    }
+
+    /// One chip: the id, its context badge when pi reports one, and (only for a
+    /// model pi knows) the eye that decides whether the composer's picker
+    /// offers it.
+    #[allow(clippy::too_many_arguments)]
+    fn provider_model_chip(
+        &self,
+        provider: &str,
+        id: &str,
+        included: bool,
+        context: Option<u64>,
+        hidden: Option<bool>,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        let chip_id = format!("provider-model-chip-{provider}-{id}");
+        let toggle_id = id.to_string();
+        let this_chip = this.clone();
+        let mut chip = button_frame(
+            div().id(ElementId::Name(chip_id.clone().into())),
+            &theme,
+            ButtonSize::Compact,
+        )
+        .group("provider-model-chip")
+        .border_1()
+        .border_color(if included {
+            theme.border_strong
+        } else {
+            theme.border
+        })
+        .raised(
+            if included {
+                theme.surface_selected
+            } else {
+                theme.surface_elevated
+            },
+            &theme,
+        )
+        .text_color(if included {
+            theme.text_primary
+        } else {
+            theme.text_muted
+        })
+        .cursor_pointer()
+        .when(!included, |chip| chip.hover_state(&theme))
+        .tip(id.to_string())
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            let id = toggle_id.clone();
+            this_chip.update(cx, |app, cx| {
+                if let Some(editor) = app.provider_editor.as_mut() {
+                    let next =
+                        providers::toggle_model_id(&editor.models.read(cx).text(), &id, !included);
+                    editor.models.update(cx, |input, cx| input.set_text(next, cx));
+                    cx.notify();
+                }
+            });
+        })
+        .child(check_box(included, theme))
+        .child(
+            div()
+                .font_family(theme::code_font_family())
+                .text_size(theme.code_px(10.5))
+                .child(id.to_string()),
+        );
+        if let Some(context) = context {
+            chip = chip.child(
+                div()
+                    .px(DynamicSpacing::Base04.px(&theme))
+                    .rounded(Radius::Small.px(&theme))
+                    .bg(theme.overlay_strong)
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .child(crate::context_meter::format_tokens(context)),
+            );
+        }
+        if let Some(is_hidden) = hidden {
+            let provider = provider.to_string();
+            let id = id.to_string();
+            let eye = icon_button_frame(
+                div().id(ElementId::Name(
+                    format!("provider-model-eye-{provider}-{id}").into(),
+                )),
+                &theme,
+                ButtonSize::Compact,
+            )
+            .tip(if is_hidden {
+                tr!("settings.show_in_model_picker")
+            } else {
+                tr!("settings.hide_from_model_picker")
+            })
+            .cursor_pointer()
+            .hover_state(&theme)
+            .on_mouse_up(MouseButton::Left, {
+                let this = this.clone();
+                move |_, _, cx| {
+                    cx.stop_propagation();
+                    crate::hidden_models::set(&provider, &id, !is_hidden);
+                    this.update(cx, |_, cx| cx.notify());
+                }
+            })
+            .child(icon(
+                if is_hidden {
+                    "icons/eye-off.svg"
+                } else {
+                    "icons/eye.svg"
+                },
+                ButtonSize::Compact.icon_size().px(&theme),
+                if is_hidden {
+                    theme.text_muted
+                } else {
+                    theme.text_secondary
+                },
+            ));
+            chip = chip.child(eye);
+        }
+        chip.into_any_element()
+    }
+
     /// The provider editor modal (add / configure), or `None` when closed.
     pub(super) fn provider_editor_layer(
         &self,
@@ -4602,6 +4559,9 @@ impl OrbitApp {
                 }),
                 editor.models.clone(),
             ))
+            // Click-to-select chips under the field (#131): the field stays the
+            // source of truth, so paste and click write the same list.
+            .children(self.provider_model_chips(editor, theme, this.clone(), cx))
             .when(
                 providers::models_endpoint("https://x", &editor.api).is_some(),
                 |body| body.child(self.provider_fetch_button(editor.fetching, theme, this.clone())),
@@ -4808,8 +4768,10 @@ impl OrbitApp {
                     )
                     .children(desc.map(|desc| {
                         div()
+                            .min_w_0()
                             .text_size(TextSize::Default.px(&theme))
                             .text_color(theme.text_secondary)
+                            .whitespace_normal()
                             .child(desc.to_string())
                     })),
             )
@@ -4881,8 +4843,12 @@ impl OrbitApp {
                     )
                     .children(desc.map(|d| {
                         div()
+                            .min_w_0()
                             .text_size(TextSize::Default.px(&theme))
                             .text_color(theme.text_secondary)
+                            // A long localised sentence wraps inside the row
+                            // instead of running under the control (#131).
+                            .whitespace_normal()
                             .child(d.to_string())
                     }))
                     .children(meta.map(|m| {
@@ -9322,6 +9288,7 @@ impl OrbitApp {
             had_api_key,
             error: None,
             fetching: false,
+            fetched: Vec::new(),
             _fetch: None,
         });
         cx.notify();
@@ -9368,6 +9335,9 @@ impl OrbitApp {
                         editor
                             .models
                             .update(cx, |input, cx| input.set_text(merged, cx));
+                        // The chips are the fetched list itself: click one to
+                        // take it out again without retyping the field (#131).
+                        editor.fetched = ids;
                     }
                     Err(error) => {
                         editor.error = Some(tr!("settings.fetch_models_failed", error = error));
@@ -10034,77 +10004,4 @@ mod settings_search_tests {
     fn no_match_is_empty() {
         assert!(settings_search_hits("zzzzzz").is_empty());
     }
-}
-
-/// The eye on a Models card (#131): show or hide the model in the composer's
-/// picker. Hiding deselects rather than deletes — the provider's catalog is
-/// untouched, and the card stays here, dimmed, to turn back on.
-fn model_visibility_button(
-    provider: &str,
-    id: &str,
-    hidden: bool,
-    ink: Hsla,
-    theme: Theme,
-    this: Entity<OrbitApp>,
-) -> AnyElement {
-    let name = format!("model-visibility-{provider}-{id}");
-    let (provider, id) = (provider.to_string(), id.to_string());
-    let button = icon_button_frame(
-        div().id(ElementId::Name(name.clone().into())),
-        &theme,
-        ButtonSize::Default,
-    )
-    .tip(if hidden {
-        tr!("settings.show_in_model_picker")
-    } else {
-        tr!("settings.hide_from_model_picker")
-    })
-    .cursor_pointer()
-    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-        // Keep the click from bubbling to the card's "set active model".
-        cx.stop_propagation();
-        crate::hidden_models::set(&provider, &id, !hidden);
-        this.update(cx, |_, cx| cx.notify());
-    })
-    .child(icon(
-        if hidden {
-            "icons/eye-off.svg"
-        } else {
-            "icons/eye.svg"
-        },
-        ButtonSize::Default.icon_size().px(&theme),
-        ink,
-    ));
-    crate::motion::hover(button, name, &theme, Hover::wash(&theme))
-}
-
-/// "Hide all" / "Show all" on a provider's header in Settings → Providers & models: the
-/// bulk form of the per-card eye, for providers with long catalogs.
-fn provider_visibility_button(
-    provider: &str,
-    models: Vec<(String, String)>,
-    all_hidden: bool,
-    theme: Theme,
-    this: Entity<OrbitApp>,
-) -> AnyElement {
-    let name = format!("provider-visibility-{provider}");
-    let button = button_frame(
-        div().id(ElementId::Name(name.clone().into())),
-        &theme,
-        ButtonSize::Compact,
-    )
-    .text_size(TextSize::XSmall.px(&theme))
-    .cursor_pointer()
-    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-        for (provider, id) in &models {
-            crate::hidden_models::set(provider, id, !all_hidden);
-        }
-        this.update(cx, |_, cx| cx.notify());
-    })
-    .child(if all_hidden {
-        tr!("settings.show_all_models")
-    } else {
-        tr!("settings.hide_all_models")
-    });
-    crate::motion::hover(button, name, &theme, Hover::row(&theme))
 }

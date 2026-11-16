@@ -3,117 +3,36 @@ use crate::commands::CommandId;
 use crate::theme::tokens::{popover, DynamicSpacing};
 
 impl OrbitApp {
-    /// Rows for the new-task page's folder selector, in priority order:
-    /// this repository's locations (the main checkout, then each linked
-    /// worktree), then distinct session folders newest-first (`load_sessions`
-    /// pre-sorts), with the current workspace pinned to the top when it is not
-    /// already one of them. Every row is a place a task can start in, so the
-    /// same list serves the Worktrees page's vocabulary.
-    pub(super) fn recent_workspaces(&self) -> Vec<WorkspaceEntry> {
+    /// Rows for the new-task page's folder selector: the machine this task
+    /// runs on, once — the current workspace. Remote hosts are the picker's
+    /// action rows (see [`Self::remote_actions`]) and the native dialog covers
+    /// anywhere else, so linked worktrees and recent session folders no longer
+    /// crowd the list.
+    pub(super) fn workspace_entries(&self) -> Vec<WorkspaceEntry> {
         let current = self
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
-        let mut entries: Vec<WorkspaceEntry> = Vec::new();
-        let push = |entry: WorkspaceEntry, entries: &mut Vec<WorkspaceEntry>| {
-            if entries.iter().any(|e| e.path == entry.path) {
-                return;
-            }
-            entries.push(entry);
+        let Some(cwd) = current else {
+            return Vec::new();
         };
-
-        // The repository first: "Local" and each worktree, exactly as the
-        // status bar's picker orders them.
-        if let Some(root) = self.work_in_root() {
-            for row in
-                crate::working_folder::location_rows(&self.worktrees, &root, current.as_deref())
-            {
-                let mark = match &row.folder.location {
-                    crate::working_folder::Location::Local => EntryMark::Local,
-                    crate::working_folder::Location::Worktree { .. } => EntryMark::Worktree,
-                    _ => EntryMark::Folder,
-                };
-                push(
-                    WorkspaceEntry {
-                        name: row.label,
-                        path: row.folder.path,
-                        note: row.detail,
-                        mark,
-                    },
-                    &mut entries,
-                );
-            }
-        }
-
-        if let Some(cwd) = &current {
-            push(
-                WorkspaceEntry {
-                    name: sessions::workspace_label(cwd),
-                    path: cwd.clone(),
-                    note: None,
-                    mark: EntryMark::Folder,
-                },
-                &mut entries,
-            );
-        }
-        for session in &self.sessions {
-            if entries.len() >= crate::workspace_picker::MAX_RECENTS {
-                break;
-            }
-            push(
-                WorkspaceEntry {
-                    name: sessions::workspace_label(&session.cwd),
-                    path: session.cwd.clone(),
-                    note: Some(sessions::relative_time(session.modified)),
-                    mark: EntryMark::Folder,
-                },
-                &mut entries,
-            );
-        }
-        entries
-    }
-
-    /// Worktree actions require a repository; cloning does not.
-    pub(super) fn folder_actions(&self) -> Vec<PickerAction> {
-        let mut actions = if self.work_in_root().is_some() {
-            vec![
-                PickerAction {
-                    id: "new-worktree",
-                    icon: "icons/plus.svg",
-                    label: tr!("working_folder.new"),
-                    hint: Some(tr!("working_folder.new_hint")),
-                    group_start: false,
-                    mono: false,
-                },
-                PickerAction {
-                    id: "existing-worktree",
-                    icon: "icons/branch.svg",
-                    label: tr!("working_folder.existing"),
-                    hint: Some(tr!("working_folder.existing_hint")),
-                    group_start: false,
-                    mono: false,
-                },
-                PickerAction {
-                    id: "remote-branch",
-                    icon: "icons/cloud.svg",
-                    label: tr!("working_folder.remote"),
-                    hint: Some(tr!("working_folder.remote_hint")),
-                    group_start: false,
-                    mono: false,
-                },
-            ]
-        } else {
-            Vec::new()
-        };
-        actions.push(PickerAction {
-            id: "clone-repository",
-            icon: "icons/cloud.svg",
-            label: tr!("working_folder.clone_title"),
-            hint: Some(tr!("working_folder.clone_hint")),
-            group_start: false,
-            mono: false,
-        });
-        actions
+        let in_repo = self.work_in_root().is_some();
+        vec![WorkspaceEntry {
+            // In a repository the row answers "this device", the way the
+            // status bar's Local row does; outside one it names the folder.
+            name: if in_repo {
+                tr!("working_folder.local")
+            } else {
+                sessions::workspace_label(&cwd)
+            },
+            path: cwd,
+            note: self.branch.as_ref().map(|branch| branch.name.clone()),
+            mark: if in_repo {
+                EntryMark::Local
+            } else {
+                EntryMark::Folder
+            },
+        }]
     }
 
     /// One row per configured remote host, then the row that opens the host
@@ -170,8 +89,7 @@ impl OrbitApp {
         self.session_menu = None;
         self.dismiss_work_in_menu();
 
-        let entries = self.recent_workspaces();
-        let mut actions = self.folder_actions();
+        let entries = self.workspace_entries();
         let (remote_hosts, skipped) = crate::remote_hosts::load();
         // A host switched off in Settings → Remote hosts stays out of the
         // picker; the setup row still opens the page where it can be turned on.
@@ -186,7 +104,17 @@ impl OrbitApp {
                 reason = reason.clone()
             ));
         }
-        actions.extend(Self::remote_actions(&remote_hosts));
+        // The verbs are the machine list: one row per remote host, then the
+        // row that opens the host config, then the local folder verb.
+        let mut actions = Self::remote_actions(&remote_hosts);
+        actions.push(PickerAction {
+            id: "new-project",
+            icon: "icons/folder-plus.svg",
+            label: tr!("workspace_picker.new_project"),
+            hint: Some(tr!("workspace_picker.new_project_hint")),
+            group_start: false,
+            mono: false,
+        });
         let current = self
             .current_workspace
             .clone()
@@ -218,9 +146,10 @@ impl OrbitApp {
             })
             .ok();
         }) as Box<dyn Fn(&mut Window, &mut App)>;
-        // Verbs the picker offers under the folders. Each one closes the
-        // picker first: they open a dialog or a second surface, and a popover
-        // left behind a modal is the wrong layer.
+        // The machine rows under the device: remote hosts and the row that
+        // opens their config. Each one closes the picker first — a host starts
+        // a connection check, the config row opens Settings, and a popover left
+        // behind a modal is the wrong layer.
         let this = cx.weak_entity();
         let action_ids: Vec<&'static str> = actions.iter().map(|action| action.id).collect();
         let on_action = Box::new(move |ix: usize, window: &mut Window, cx: &mut App| {
@@ -238,19 +167,16 @@ impl OrbitApp {
                         }
                         cx.notify();
                     }
-                    "remote-setup" => {
-                        // With no host yet, go straight to the Add form;
-                        // otherwise land on the list to pick what to edit.
+                    // A folder added as a project, without a pi process: the
+                    // project's own "+" is where a task starts (#131).
+                    "new-project" => app.new_project(window, cx),
+                    // The host-setup row: with no host yet, go straight to
+                    // the Add form; otherwise land on the list to pick what to
+                    // edit.
+                    _ => {
                         let add = remote_hosts.is_empty();
                         app.open_remote_hosts_settings(add, window, cx);
                     }
-                    "new-worktree" => app.open_new_worktree_from_work_in(window, cx),
-                    "existing-worktree" => app.browse_for_existing_worktree(window, cx),
-                    "clone-repository" => app.open_clone_dialog(window, cx),
-                    // The create dialog's existing-branch list carries the
-                    // remote refs, and the manager turns one into a local
-                    // tracking branch instead of a detached worktree.
-                    _ => app.open_new_worktree_from_remote_branch(window, cx),
                 }
             })
             .ok();
@@ -705,6 +631,7 @@ impl OrbitApp {
     ) {
         match id {
             CommandId::NewSession => self.on_new_session(&crate::NewSession, window, cx),
+            CommandId::NewProject => self.new_project(window, cx),
             CommandId::RefreshSessions => self.on_refresh(&crate::RefreshSessions, window, cx),
             CommandId::FocusComposer => {
                 self.input.read(cx).focus(window);

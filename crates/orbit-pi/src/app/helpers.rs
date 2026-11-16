@@ -46,7 +46,7 @@ pub(crate) fn kbd_key(label: impl Into<SharedString>, theme: &Theme) -> AnyEleme
 
 /// Keyboard legend shared by both working-folder pickers. The remote level
 /// uses Escape to go back; elsewhere it closes the picker.
-pub(crate) fn working_folder_keyboard_hints(theme: &Theme, back: bool) -> gpui::Div {
+pub(crate) fn working_folder_keyboard_hints(theme: &Theme) -> gpui::Div {
     let group = |id: &'static str, keys: &[&str], label: String| {
         div()
             .debug_selector(move || id.to_string())
@@ -85,17 +85,9 @@ pub(crate) fn working_folder_keyboard_hints(theme: &Theme, back: bool) -> gpui::
             tr!("working_folder.hint_select"),
         ))
         .child(group(
-            if back {
-                "working-folder-hint-back"
-            } else {
-                "working-folder-hint-close"
-            },
+            "working-folder-hint-close",
             &["escape"],
-            if back {
-                tr!("common.back")
-            } else {
-                tr!("common.close")
-            },
+            tr!("common.close"),
         ))
 }
 

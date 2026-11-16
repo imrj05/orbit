@@ -232,13 +232,10 @@ fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
         .debug_bounds("workspace-actions")
         .expect("the action rows laid out");
 
-    let entries = app.update(window_cx, |app, _cx| app.recent_workspaces().len());
+    let entries = app.update(window_cx, |app, _cx| app.workspace_entries().len());
     let theme = window_cx.update(|_window, cx| *theme::get(cx));
     let row_h = f32::from(picker::two_line_entry_height(&theme));
-    assert!(
-        entries >= 2,
-        "the fixture contributes a folder and a worktree"
-    );
+    assert_eq!(entries, 1, "the picker lists this device, once");
 
     // Each group is exactly one two-line entry per row. A row whose text is
     // taller than the height the list assumes is the bug this pins: the group
@@ -249,7 +246,7 @@ fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
         "{entries} folder rows must tile at {row_h}px each: expected {expected_entries}, was {}",
         f32::from(entries_group.size.height)
     );
-    let action_rows = app.update(window_cx, |app, _cx| expected_action_rows(app));
+    let action_rows = expected_action_rows();
     let expected_actions = action_rows as f32 * row_h;
     assert!(
         (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
@@ -324,19 +321,19 @@ fn a_filter_that_matches_nothing_keeps_the_action_rows(cx: &mut gpui::TestAppCon
         "one no-match row: was {}",
         f32::from(rows.size.height)
     );
-    let action_rows = app.update(window_cx, |app, _cx| expected_action_rows(app));
+    let action_rows = expected_action_rows();
     assert!(
         (f32::from(actions.size.height) - action_rows as f32 * row_h).abs() <= 2.,
-        "all {action_rows} verbs remain: was {}",
+        "all {action_rows} machine rows remain: was {}",
         f32::from(actions.size.height)
     );
 }
 
-/// The verb rows the picker builds: the folder actions, then one row per
-/// configured remote host and the host-setup row. Hosts come from the
-/// machine's own `remote-hosts.json`, so the count is read, not assumed.
-fn expected_action_rows(app: &OrbitApp) -> usize {
-    app.folder_actions().len() + OrbitApp::remote_actions(&crate::remote_hosts::load().0).len()
+/// The machine rows the picker builds: one row per configured remote host and
+/// the host-setup row. Hosts come from the machine's own `remote-hosts.json`, so
+/// the count is read, not assumed.
+fn expected_action_rows() -> usize {
+    OrbitApp::remote_actions(&crate::remote_hosts::load().0).len()
 }
 
 /// Open the picker over a repository with one linked worktree: enough folder
@@ -350,14 +347,26 @@ fn open_scrolling_picker<'a>(
     let window_cx = cx.add_empty_window();
     window_cx.update(|window, cx| {
         app.update(cx, |app, cx| {
-            app.worktrees = vec![
-                worktree(&fixture.repo(), "repo", true),
-                worktree(&fixture.linked(), "113", false),
-            ];
+            app.worktrees = vec![worktree(&fixture.repo(), "repo", true)];
             app.worktree_repo_root = Some(fixture.repo());
             app.current_workspace = Some(fixture.repo());
             app.workspace_picker = None;
             app.toggle_workspace_picker(window, cx);
+            // The machine's own host list would decide how many rows there
+            // are; a layout test needs a list long enough to scroll.
+            let picker = app.workspace_picker.clone().expect("picker open");
+            let entries = app.workspace_entries();
+            let actions: Vec<crate::workspace_picker::PickerAction> = (0..10)
+                .map(|ix| crate::workspace_picker::PickerAction {
+                    id: "remote-host",
+                    icon: "icons/server-stack.svg",
+                    label: format!("host-{ix}"),
+                    hint: Some(format!("ssh:/srv/app-{ix}")),
+                    group_start: ix == 0,
+                    mono: true,
+                })
+                .collect();
+            picker.update(cx, |picker, cx| picker.set_rows(entries, actions, cx));
         });
     });
     draw_picker(window_cx, &app);
@@ -414,7 +423,7 @@ fn arrowing_to_the_last_verb_reveals_it_whole(cx: &mut gpui::TestAppContext) {
     let fixture = Fixture::new();
     let (app, cx) = open_scrolling_picker(cx, &fixture);
     let (entries, actions) = app.update(cx, |app, _| {
-        (app.recent_workspaces().len(), expected_action_rows(app))
+        (app.workspace_entries().len(), expected_action_rows())
     });
     for _ in 0..(entries + actions - 1) {
         cx.dispatch_action(crate::PickerSelectNext);

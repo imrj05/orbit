@@ -87,8 +87,9 @@ use crate::workflow::WorkflowMode;
 use crate::workspace_mark::WorkspaceMark;
 use crate::workspace_picker::{EntryMark, PickerAction, WorkspaceEntry, WorkspacePicker};
 
-const SIDEBAR_DEFAULT_W: f32 = 248.;
-pub(crate) const SIDEBAR_MIN_W: f32 = 200.;
+const SIDEBAR_DEFAULT_W: f32 = 272.;
+// Keep the wordmark, window buttons and titlebar controls clear at minimum width.
+pub(crate) const SIDEBAR_MIN_W: f32 = 260.;
 /// Sessions shown under each workspace group before "Show more" appears.
 const SIDEBAR_GROUP_SESSIONS_VISIBLE: usize = 3;
 /// Room the side-pane resize keeps for the transcript column.
@@ -818,18 +819,15 @@ pub struct OrbitApp {
     /// The dismissible "How worktrees work" card was closed (persisted beside
     /// the other one-time hints).
     worktree_howto_dismissed: bool,
-    /// Whether the status bar's "Work in" picker (Local / worktrees) is open.
+    /// Whether the status bar's "Work in" picker (this device / remote
+    /// hosts) is open.
     work_in_menu_open: bool,
-    /// The picker's remote-branch level is showing instead of the location
-    /// rows.
-    work_in_remote_open: bool,
-    /// Full details for the highlighted remote branch.
-    work_in_details_open: bool,
     /// Highlighted row in the "Work in" picker.
     work_in_menu_highlight: usize,
     work_in_scroll: ScrollHandle,
-    /// Highlighted row in the picker's remote-branch level.
-    work_in_remote_highlight: usize,
+    /// The enabled remote hosts the open picker lists. Read from
+    /// `remote-hosts.json` when the picker opens, never per frame.
+    work_in_hosts: Vec<crate::remote_hosts::RemoteHost>,
     /// Focus handle that carries the `WorkInMenu` key context while the picker
     /// is open (focus moves here so ↑/↓/Enter/Escape hit it).
     work_in_menu_focus: FocusHandle,
@@ -842,8 +840,6 @@ pub struct OrbitApp {
     /// Local branch names, for choosing a free name when a remote branch is
     /// checked out as a new local branch.
     worktree_local_branches: Vec<String>,
-    /// A remote-ref fetch is in flight.
-    worktree_remotes_busy: bool,
     /// Linked worktrees Git reports for the active repository (main first).
     worktrees: Vec<crate::worktree::Worktree>,
     /// Main worktree root of the active repository, cached from the last
@@ -2454,16 +2450,13 @@ impl OrbitApp {
                 worktrees::WORKTREE_HOWTO_HINT_KEY,
             ),
             work_in_menu_open: false,
-            work_in_remote_open: false,
-            work_in_details_open: false,
             work_in_menu_highlight: 0,
             work_in_scroll: ScrollHandle::new(),
-            work_in_remote_highlight: 0,
+            work_in_hosts: Vec::new(),
             work_in_menu_focus: cx.focus_handle(),
             worktree_remotes: Vec::new(),
             worktree_remote_names: Vec::new(),
             worktree_local_branches: Vec::new(),
-            worktree_remotes_busy: false,
             worktrees: Vec::new(),
             worktree_repo_root: None,
             worktrees_busy: false,
@@ -3769,6 +3762,70 @@ fn drop_workspace(workspaces: &mut Vec<PathBuf>, cwd: &Path) -> bool {
     workspaces.len() != before
 }
 
+/// Why a project folder cannot be deleted from disk. Deleting a folder is the
+/// one irreversible action in the sidebar, so the guards are deliberately
+/// blunt: a filesystem root, the home directory, a folder that merely
+/// *contains* other projects, and a folder a live pi process is still working
+/// in are all refused (#131).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProjectDeleteRefusal {
+    /// A root, or a single-component path.
+    Root,
+    /// The user's home directory.
+    Home,
+    /// Another project's folder lives inside this one.
+    ContainsProjects,
+    /// A live pi process (open or parked) still runs in it.
+    SessionLive,
+}
+
+impl ProjectDeleteRefusal {
+    /// The sentence the user sees, named after this refusal.
+    pub(super) fn reason(self) -> String {
+        match self {
+            Self::Root => tr!("sidebar.delete_project_refused_root"),
+            Self::Home => tr!("sidebar.delete_project_refused_home"),
+            Self::ContainsProjects => tr!("sidebar.delete_project_refused_contains"),
+            Self::SessionLive => tr!("sidebar.delete_project_refused_live"),
+        }
+    }
+}
+
+/// The first reason `cwd` may not be deleted from disk, or `None` when it is
+/// safe to remove. `live` holds the session files pi currently has open (the
+/// active one and every parked one).
+pub(super) fn project_delete_refusal(
+    cwd: &Path,
+    sessions: &[SessionInfo],
+    live: &HashSet<PathBuf>,
+) -> Option<ProjectDeleteRefusal> {
+    let target = sessions::canonical_workspace_path(cwd);
+    if target.components().count() < 2 || target.parent().is_none() {
+        return Some(ProjectDeleteRefusal::Root);
+    }
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home = sessions::canonical_workspace_path(Path::new(&home));
+        if target == home {
+            return Some(ProjectDeleteRefusal::Home);
+        }
+    }
+    // A folder that only *contains* a project is not the project the user
+    // right-clicked: removing it would take unrelated work with it.
+    if sessions.iter().any(|session| {
+        let cwd = sessions::canonical_workspace_path(&session.cwd);
+        cwd != target && cwd.starts_with(&target)
+    }) {
+        return Some(ProjectDeleteRefusal::ContainsProjects);
+    }
+    if sessions.iter().any(|session| {
+        sessions::canonical_workspace_path(&session.cwd) == target
+            && live.contains(&session.path)
+    }) {
+        return Some(ProjectDeleteRefusal::SessionLive);
+    }
+    None
+}
+
 /// State of the row-actions popup in the sessions sidebar: which session
 /// it belongs to (by path), what the row can offer, and whether the popup
 /// is currently showing the delete confirmation.
@@ -3798,6 +3855,8 @@ struct WorkspaceMenu {
     at: Option<Point<Pixels>>,
     /// The menu is showing the icon/tint picker instead of the action list.
     picker: bool,
+    /// The menu is showing the **Delete project & files** confirmation.
+    confirm_delete: bool,
 }
 
 /// User-requested GitHub CLI release check, separate from local inspection.
@@ -3966,6 +4025,9 @@ struct ProviderEditor {
     error: Option<String>,
     /// A **Fetch models** request is in flight (#131).
     fetching: bool,
+    /// Ids the last successful fetch returned, offered as click-to-select
+    /// chips under the model field (#131). Empty until a fetch runs.
+    fetched: Vec<String>,
     /// The in-flight fetch; dropping the editor cancels its result.
     _fetch: Option<gpui::Task<()>>,
 }

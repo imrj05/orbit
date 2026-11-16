@@ -1469,6 +1469,55 @@ impl OrbitApp {
         .detach();
     }
 
+    /// Add a folder to the sidebar as a project, without starting a task.
+    ///
+    /// A project is Orbit's own grouping of sessions by working folder, so this
+    /// writes nothing to pi: it records the folder in `workspaces.json` and the
+    /// group appears with its own `+` for starting a task there. Used by the
+    /// palette's **New project…** and the new-task folder picker's row (#131).
+    pub(super) fn new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let receiver = cx.update(|_window, app| {
+                app.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: Some(tr!("session.new_project_prompt").into()),
+                })
+            });
+            let Ok(receiver) = receiver else {
+                return;
+            };
+            let folder = match receiver.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
+            };
+            let Some(folder) = folder else {
+                return;
+            };
+            let _ = this.update(cx, |app, cx| app.add_project(folder, cx));
+        })
+        .detach();
+    }
+
+    /// Record `folder` as a project and say so. Adding one that is already
+    /// listed is a no-op with a different sentence, rather than silence.
+    fn add_project(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        let name = sessions::workspace_label(&folder);
+        let target = sessions::canonical_workspace_path(&folder);
+        let listed = self
+            .workspaces
+            .iter()
+            .any(|workspace| sessions::canonical_workspace_path(workspace) == target);
+        if listed {
+            self.toast_info(tr!("sidebar.project_already_listed", name = name));
+        } else {
+            self.add_workspace(folder, cx);
+            self.toast_success(tr!("sidebar.project_added", name = name));
+        }
+        cx.notify();
+    }
+
     /// Switch the live session. With `push`, the visit is recorded in the
     /// top-bar history (forward entries are dropped, like browser history).
     ///

@@ -83,11 +83,12 @@ fn hidden_models_leave_the_picker_except_the_active_one(cx: &mut gpui::TestAppCo
     });
 }
 
-/// Settings → Providers & models (#131): a provider with models in the
-/// catalog is connected, and its models sit under its card on the same page.
-/// A search for one model narrows the page to that model's provider.
+/// Settings → Providers & models (#131): connected and unconnected providers
+/// render as the same three-column cards, and a provider's models no longer sit
+/// under its card — they live in its editor. A search for one model still
+/// narrows the page to that model's provider.
 #[gpui::test]
-fn connected_providers_list_their_models_on_the_providers_page(cx: &mut gpui::TestAppContext) {
+fn providers_render_as_one_grid_without_model_lists(cx: &mut gpui::TestAppContext) {
     cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
     let draw = |cx: &mut gpui::VisualTestContext, app: &Entity<OrbitApp>| {
         let app = app.clone();
@@ -114,16 +115,20 @@ fn connected_providers_list_their_models_on_the_providers_page(cx: &mut gpui::Te
 
     let all = cx.add_empty_window();
     open(all, "");
-    assert!(all.debug_bounds("provider-models-anthropic").is_some());
-    assert!(all.debug_bounds("provider-models-opencode-go").is_some());
+    assert!(all.debug_bounds("provider-card-anthropic").is_some());
+    assert!(all.debug_bounds("provider-card-opencode-go").is_some());
+    assert!(
+        all.debug_bounds("provider-models-anthropic").is_none(),
+        "a provider's models belong in its editor, not under its card"
+    );
 
     // A fresh window: `debug_bounds` remembers anything a window ever painted.
     let searched = cx.add_empty_window();
     open(searched, "anthropic-model");
-    assert!(searched.debug_bounds("provider-models-anthropic").is_some());
+    assert!(searched.debug_bounds("provider-card-anthropic").is_some());
     assert!(
         searched
-            .debug_bounds("provider-models-opencode-go")
+            .debug_bounds("provider-card-opencode-go")
             .is_none(),
         "a model search keeps only the providers that offer a match"
     );

@@ -386,6 +386,7 @@ impl OrbitApp {
         };
 
         let mut footer = div()
+            .flex_none()
             .px(px(14.))
             .py(DynamicSpacing::Base08.px(&theme))
             .border_t_1()

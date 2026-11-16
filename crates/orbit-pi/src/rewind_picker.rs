@@ -443,7 +443,7 @@ impl Render for RewindPicker {
                     .text_color(theme.text_muted)
                     .child(tr!("rewind.note")),
             )
-            .child(working_folder_keyboard_hints(&theme, false));
+            .child(working_folder_keyboard_hints(&theme));
 
         div()
             .id("rewind-layer")

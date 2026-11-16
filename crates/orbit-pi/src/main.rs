@@ -302,8 +302,7 @@ actions!(
         WorkInMenuNext,
         WorkInMenuPrev,
         WorkInMenuConfirm,
-        WorkInMenuClose,
-        WorkInMenuDetails
+        WorkInMenuClose
     ]
 );
 
@@ -538,7 +537,6 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", AccessMenuNext, Some("AccessMenu")),
         // Work-in picker keys — same shape again.
         KeyBinding::new("escape", WorkInMenuClose, Some("WorkInMenu")),
-        KeyBinding::new("space", WorkInMenuDetails, Some("WorkInMenu")),
         KeyBinding::new("enter", WorkInMenuConfirm, Some("WorkInMenu")),
         KeyBinding::new("up", WorkInMenuPrev, Some("WorkInMenu")),
         KeyBinding::new("down", WorkInMenuNext, Some("WorkInMenu")),

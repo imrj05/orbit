@@ -983,6 +983,31 @@ pub(crate) fn merge_model_ids(existing: &str, fetched: &[String]) -> String {
     ids.join("\n")
 }
 
+/// The ids currently listed in the editor's model field, in order.
+pub(crate) fn model_ids_in(existing: &str) -> Vec<String> {
+    existing
+        .split(['\n', ','])
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The editor's model field with `id` added (or removed), one id per line.
+///
+/// This is what a chip click writes: the field stays the source of truth, so a
+/// bulk paste and a click land in the same place (#131).
+pub(crate) fn toggle_model_id(existing: &str, id: &str, include: bool) -> String {
+    let mut ids = model_ids_in(existing);
+    let listed = ids.iter().any(|known| known == id);
+    if include && !listed {
+        ids.push(id.to_string());
+    } else if !include {
+        ids.retain(|known| known != id);
+    }
+    ids.join("\n")
+}
+
 /// Ask a custom provider for its model list. Blocking: run it off the UI
 /// thread. Only called from the editor's explicit **Fetch models** action,
 /// and only against the base URL the user typed, with the key they typed.
@@ -1366,5 +1391,17 @@ mod tests {
         let fetched = vec!["b".to_string(), "c".to_string(), "a".to_string()];
         assert_eq!(merge_model_ids("a, x\n\n", &fetched), "a\nx\nb\nc");
         assert_eq!(merge_model_ids("", &fetched), "b\nc\na");
+    }
+
+    #[test]
+    fn a_chip_click_adds_or_removes_one_id() {
+        assert_eq!(toggle_model_id("a\nb", "c", true), "a\nb\nc");
+        // Adding one that is already listed changes nothing — no duplicate row.
+        assert_eq!(toggle_model_id("a\nb", "a", true), "a\nb");
+        assert_eq!(toggle_model_id("a\nb\nc", "b", false), "a\nc");
+        // Removing an id the field does not list is a no-op, not a panic.
+        assert_eq!(toggle_model_id("a", "z", false), "a");
+        // Comma-separated paste and one-per-line list are the same list.
+        assert_eq!(toggle_model_id("a, b\n", "c", true), "a\nb\nc");
     }
 }

@@ -1192,6 +1192,7 @@ pub(crate) fn render_side_row(
                                     cwd: cwd.clone(),
                                     at: Some(event.position),
                                     picker: false,
+                                    confirm_delete: false,
                                 };
                                 this.update(cx, |app, cx| {
                                     app.open_workspace_menu_at(menu, window, cx);
@@ -1897,8 +1898,8 @@ fn session_title(id: usize, title: SharedString, theme: Theme, running: bool) ->
 
 // ── sidebar row-actions popup ──────────────────────────────────────────
 
-/// The actions popup anchored to a session row: Copy path / Reveal in
-/// Finder / Delete, or the delete confirmation once armed. Painted via
+/// The actions popup anchored to a session row: rename / pin / archive /
+/// copy path / clone / delete, or the delete confirmation once armed. Painted via
 /// `deferred` + `anchored` (same convention as the composer pickers),
 /// dismissed by any outside mouse-down.
 pub(crate) fn session_menu_popup(
@@ -2048,15 +2049,6 @@ pub(crate) fn session_menu_popup(
                 |app, cx| app.on_menu_copy_path(cx),
             ))
             .child(menu_item(
-                "menu-reveal",
-                "icons/folder.svg",
-                tr!("sidebar.reveal_in_finder"),
-                theme,
-                this.clone(),
-                false,
-                |app, cx| app.on_menu_reveal(cx),
-            ))
-            .child(menu_item(
                 "menu-clone",
                 "icons/git-fork.svg",
                 tr!("sidebar.clone_session"),
@@ -2065,8 +2057,13 @@ pub(crate) fn session_menu_popup(
                 false,
                 |app, cx| app.on_menu_clone_session(cx),
             ))
-            .when(deletable, |menu| {
-                menu.child(context_menu_separator(&theme)).child(menu_item(
+            // Delete is always listed. A session that is open or running
+            // cannot be deleted — pi would recreate the file mid-run — but
+            // hiding the row made the action look missing; a disabled row
+            // that explains itself is the honest shape (#131).
+            .child(context_menu_separator(&theme))
+            .child(if deletable {
+                menu_item(
                     "menu-delete",
                     "icons/trash.svg",
                     tr!("sidebar.delete_session_menu"),
@@ -2074,7 +2071,16 @@ pub(crate) fn session_menu_popup(
                     this.clone(),
                     true,
                     |app, cx| app.on_menu_delete_request(cx),
-                ))
+                )
+                .into_any_element()
+            } else {
+                menu_item_unavailable(
+                    "menu-delete",
+                    "icons/trash.svg",
+                    tr!("sidebar.delete_session_menu"),
+                    tr!("sidebar.delete_session_blocked"),
+                    theme,
+                )
             })
             .into_any_element()
     };
@@ -2163,6 +2169,7 @@ pub(crate) fn workspace_menu_button(
             cwd: cwd_for_click.clone(),
             at: None,
             picker: false,
+            confirm_delete: false,
         };
         this.update(cx, |app, cx| app.toggle_workspace_menu(menu, window, cx));
     })
@@ -2231,17 +2238,155 @@ where
     )
 }
 
-/// The actions popup anchored to a workspace header: Copy path / Icon & color /
-/// Remove from sidebar, or — once `Icon & color` is chosen — the picker itself.
+/// The destructive row of the workspace menu: same metrics as
+/// [`workspace_menu_item`], in the error ramp, because “delete this folder”
+/// must not look like “copy path”.
+fn workspace_menu_item_danger<C, L>(
+    id: &'static str,
+    icon_path: &'static str,
+    label: L,
+    theme: Theme,
+    this: Entity<OrbitApp>,
+    on_click: C,
+) -> impl IntoElement + use<C, L>
+where
+    C: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
+    L: Into<SharedString>,
+{
+    let label: SharedString = label.into();
+    crate::motion::hover(
+        picker_entry(div().id(id), &theme)
+            .h(picker::entry_height(&theme))
+            .flex_none()
+            .cursor_pointer()
+            .text_color(theme.error)
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                this.update(cx, |app, cx| (on_click)(app, cx));
+            })
+            .child(icon(icon_path, context_menu::ICON.px(&theme), theme.error))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(label),
+            ),
+        id,
+        &theme,
+        Hover::fill(theme.error.opacity(0.12), theme.error.opacity(0.18)),
+    )
+}
+
+/// The **Delete project & files** confirmation: the folder that would go, then
+/// what the platform actually does with it. The buttons are named for the
+/// action, not “OK”, and the destructive one never carries the accent.
+fn workspace_delete_confirm(
+    menu: &WorkspaceMenu,
+    this: Entity<OrbitApp>,
+    theme: Theme,
+) -> AnyElement {
+    let path = menu.cwd.display().to_string();
+    let body = if crate::platform::TRASH_IS_RECOVERABLE {
+        tr!("sidebar.delete_project_body_trash")
+    } else {
+        tr!("sidebar.delete_project_body_permanent")
+    };
+    let cancel = {
+        let this = this.clone();
+        button_frame(div().id("wm-delete-cancel"), &theme, ButtonSize::Default)
+            .raised(theme.surface_elevated, &theme)
+            .cursor_pointer()
+            .text_color(theme.text_secondary)
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                this.update(cx, |app, cx| app.on_workspace_delete_files_cancel(cx));
+            })
+            .child(tr!("sidebar.cancel"))
+    };
+    let confirm = {
+        let this = this.clone();
+        button_frame(div().id("wm-delete-confirm"), &theme, ButtonSize::Default)
+            .raised(theme.error, &theme)
+            .cursor_pointer()
+            .hover_danger(&theme)
+            .text_color(theme.error_fg)
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                this.update(cx, |app, cx| app.on_workspace_delete_files_confirm(cx));
+            })
+            .child(tr!("sidebar.delete"))
+    };
+    div()
+        .w_full()
+        .p(DynamicSpacing::Base12.px(&theme))
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base02.px(&theme))
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_primary)
+                        .child(tr!("sidebar.delete_project_confirm", name = menu.label.clone())),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .font_family(theme::code_font_family())
+                        .text_color(theme.text_muted)
+                        .truncate()
+                        .tip(path.clone())
+                        .child(path),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
+                        .whitespace_normal()
+                        .child(body),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(crate::motion::hover(
+                    cancel,
+                    "wm-delete-cancel",
+                    &theme,
+                    Hover::fill(theme.surface_elevated, theme.surface_hover),
+                ))
+                .child(confirm),
+        )
+        .into_any_element()
+}
+
+/// The actions popup anchored to a workspace header: Copy path / Worktrees /
+/// Icon & color / Archive sessions / Delete project / Delete project & files,
+/// or — once `Icon & color` is chosen — the picker itself, or the
+/// delete-from-disk confirmation.
+///
 /// Uses the branch selector's picker surface and row metrics; deferred and
 /// anchored like the session row menu, dismissed by any outside mouse-down.
+/// The destructive row leads to a confirmation that names the folder and says
+/// whether the platform can undo the delete, so the wording never promises a
+/// recovery it cannot deliver.
 pub(crate) fn workspace_menu_popup(
     menu: &WorkspaceMenu,
     mark: WorkspaceMark,
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> AnyElement {
-    let body: AnyElement = if menu.picker {
+    let body: AnyElement = if menu.confirm_delete {
+        workspace_delete_confirm(menu, this.clone(), theme)
+    } else if menu.picker {
         workspace_appearance_picker(menu, mark, this.clone(), theme)
     } else {
         // The action rows wear the branch selector's picker metrics — the
@@ -2288,13 +2433,22 @@ pub(crate) fn workspace_menu_popup(
                 this.clone(),
                 |app, cx| app.on_workspace_archive_sessions(cx),
             ))
+            .child(context_menu_separator(&theme))
             .child(workspace_menu_item(
-                "wm-remove",
+                "wm-delete",
                 "icons/minus.svg",
-                tr!("sidebar.remove_from_sidebar"),
+                tr!("sidebar.delete_project"),
                 theme,
                 this.clone(),
-                |app, cx| app.on_workspace_remove(cx),
+                |app, cx| app.on_workspace_delete(cx),
+            ))
+            .child(workspace_menu_item_danger(
+                "wm-delete-files",
+                "icons/trash.svg",
+                tr!("sidebar.delete_project_and_files"),
+                theme,
+                this.clone(),
+                |app, cx| app.on_workspace_delete_files_request(cx),
             ))
             .into_any_element()
     };
@@ -2513,7 +2667,7 @@ fn workspace_appearance_picker(
         .into_any_element()
 }
 
-/// The hover-revealed view control on the sidebar's header. Opens the
+/// The view control in the sidebar toolbar. Opens the
 /// sidebar-options menu anchored below: how sessions are grouped, ordered,
 /// and filtered (each active choice checked).
 #[allow(clippy::too_many_arguments)]
@@ -3221,22 +3375,36 @@ where
     crate::motion::hover(press(entry), id, &theme, hover)
 }
 
-/// Reveal a session file in the OS file manager (macOS first, matching the
-/// product's platform stance; other platforms get the containing folder).
-pub(crate) fn reveal_in_file_manager(path: PathBuf) {
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .spawn();
-    #[cfg(not(target_os = "macos"))]
-    if let Some(dir) = path.parent() {
-        #[cfg(target_os = "linux")]
-        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
-        #[cfg(target_os = "windows")]
-        let _ = std::process::Command::new("explorer").arg(dir).spawn();
-        let _ = dir;
-    }
+/// A menu row for a command that exists but cannot run right now: same
+/// metrics as [`menu_item`], muted, with the reason on hover. A row that
+/// silently disappears reads as a missing feature, so a blocked command says
+/// so instead (#131).
+fn menu_item_unavailable(
+    id: &'static str,
+    icon_path: &'static str,
+    label: impl Into<SharedString>,
+    reason: String,
+    theme: Theme,
+) -> AnyElement {
+    picker_entry(div().id(id), &theme)
+        .h(picker::entry_height(&theme))
+        .flex_none()
+        .cursor_not_allowed()
+        .text_color(theme.text_disabled)
+        .child(icon(
+            icon_path,
+            context_menu::ICON.px(&theme),
+            theme.text_disabled,
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(label.into()),
+        )
+        .tip(reason)
+        .into_any_element()
 }
 
 /// Empty-state panel for a fresh pi store: what this space is for and how
@@ -3432,14 +3600,6 @@ impl OrbitApp {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 menu.path.to_string_lossy().into_owned(),
             ));
-        }
-        self.session_menu = None;
-        cx.notify();
-    }
-
-    pub(super) fn on_menu_reveal(&mut self, cx: &mut Context<Self>) {
-        if let Some(menu) = &self.session_menu {
-            reveal_in_file_manager(menu.path.clone());
         }
         self.session_menu = None;
         cx.notify();
@@ -3831,6 +3991,7 @@ impl OrbitApp {
     pub(super) fn on_workspace_open_picker(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = self.workspace_menu.as_mut() {
             menu.picker = true;
+            menu.confirm_delete = false;
         }
         cx.notify();
     }
@@ -3863,10 +4024,10 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Remove the workspace the open header menu belongs to from Orbit's own
-    /// project list. pi's session files are never touched — the folder can be
-    /// added again by picking it to work in.
-    pub(super) fn on_workspace_remove(&mut self, cx: &mut Context<Self>) {
+    /// **Delete project**: drop the workspace from Orbit's own project list.
+    /// pi's session files are never touched — the folder can be added again by
+    /// picking it to work in.
+    pub(super) fn on_workspace_delete(&mut self, cx: &mut Context<Self>) {
         let Some(menu) = self.workspace_menu.take() else {
             return;
         };
@@ -3876,6 +4037,81 @@ impl OrbitApp {
         self.expanded_workspace_groups.remove(&menu.label);
         self.expanded_session_groups.remove(&menu.label);
         cx.notify();
+    }
+
+    /// **Delete project & files**: arm the confirmation. The delete itself is
+    /// irreversible on every platform Orbit ships, so it gets its own step that
+    /// names the folder.
+    pub(super) fn on_workspace_delete_files_request(&mut self, cx: &mut Context<Self>) {
+        if let Some(menu) = self.workspace_menu.as_mut() {
+            menu.confirm_delete = true;
+            cx.notify();
+        }
+    }
+
+    /// Back out of the delete-from-disk confirmation, keeping the menu open.
+    pub(super) fn on_workspace_delete_files_cancel(&mut self, cx: &mut Context<Self>) {
+        if let Some(menu) = self.workspace_menu.as_mut() {
+            menu.confirm_delete = false;
+            cx.notify();
+        }
+    }
+
+    /// Confirmed: remove the folder from disk, then drop the project row.
+    ///
+    /// The guards in [`project_delete_refusal`] run first and refuse loudly
+    /// (a root, the home directory, a parent of other projects, a folder a live
+    /// process is working in). The removal runs off the UI thread; the row only
+    /// leaves the sidebar once the folder is actually gone, so a failure leaves
+    /// the project where the user can retry it.
+    pub(super) fn on_workspace_delete_files_confirm(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.workspace_menu.take() else {
+            return;
+        };
+        let live = self.live_session_paths();
+        if let Some(refusal) = project_delete_refusal(&menu.cwd, &self.sessions, &live) {
+            self.toast_warning(refusal.reason());
+            cx.notify();
+            return;
+        }
+        let target = menu.cwd.clone();
+        self.collapsed_workspaces.remove(&menu.label);
+        self.expanded_workspace_groups.remove(&menu.label);
+        self.expanded_session_groups.remove(&menu.label);
+        cx.spawn(async move |this, cx| {
+            let trash = target.clone();
+            let result = cx
+                .background_spawn(async move { crate::platform::trash_path(&trash) })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                match result {
+                    Ok(()) => {
+                        app.remove_workspace(&target, cx);
+                        app.toast_success(tr!("sidebar.project_deleted", name = menu.label.clone()));
+                    }
+                    Err(error) => app.toast_error(tr!(
+                        "sidebar.project_delete_failed",
+                        error = error.to_string()
+                    )),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The session files pi currently has open: the active process plus every
+    /// parked one. The delete-from-disk guard reads this so a folder some pi is
+    /// still writing into cannot be removed underneath it.
+    fn live_session_paths(&self) -> HashSet<PathBuf> {
+        let mut live: HashSet<PathBuf> = self.lives.keys().cloned().collect();
+        if self.runtime_is_live() {
+            if let Some(path) = &self.current_session_path {
+                live.insert(path.clone());
+            }
+        }
+        live
     }
 
     /// Keep the row menu honest: close it when its session vanishes from
@@ -3967,8 +4203,8 @@ impl OrbitApp {
             .position(|row| matches!(row, SideRow::Session(ix) if *ix == session_ix))
     }
 
-    /// The sidebar's session search: one field over the list, below the
-    /// section label. It is always mounted so the control never moves, and its
+    /// The sidebar's session search: one field over the list. It is always
+    /// mounted so the control never moves, and its
     /// text mirrors into `sidebar_query`, which both the row builder and
     /// keyboard navigation read.
     pub(super) fn sidebar_search_bar(&self, theme: Theme) -> AnyElement {
@@ -4015,14 +4251,12 @@ impl OrbitApp {
             )
         });
         div()
-            .w_full()
-            .flex_shrink_0()
-            .px_2()
-            .pb_1()
+            .flex_1()
+            .min_w_0()
             .flex()
             .items_center()
             .gap_1()
-            .child(field)
+            .child(div().flex_1().min_w_0().child(field))
             .children(clear)
             .into_any_element()
     }

@@ -1,13 +1,10 @@
 //! Workspace picker — the new-task page's "Work in" selector.
 //!
 //! The same question the status bar's chip answers, asked before there is a
-//! session: *where does this task run?* It lists the repository's locations
-//! first (the main checkout, then each linked worktree), then the folders you
-//! already run sessions in, newest activity first, then the ways to reach a new
-//! place — a new worktree, an existing worktree folder, a remote branch — and
-//! the native dialog ("Choose folder…") for anywhere else. Filterable and
-//! keyboard-driven, following the popover conventions of
-//! [`crate::branch_picker::BranchPicker`].
+//! session: *where does this task run?* Two kinds of answer: this device (the
+//! active workspace) and each configured remote host, plus the native dialog
+//! ("Choose folder…") for anywhere else. Filterable and keyboard-driven,
+//! following the popover conventions of [`crate::branch_picker::BranchPicker`].
 
 use std::path::PathBuf;
 
@@ -63,9 +60,6 @@ pub fn list_max_height(theme: &Theme, viewport_height: Pixels) -> f32 {
         (f32::from(viewport_height) * LIST_VIEWPORT_HEIGHT_SHARE).max(1.5 * row_h);
     (VISIBLE_ROWS * row_h).min(viewport_budget)
 }
-/// Recents the app hands us at most.
-pub const MAX_RECENTS: usize = 8;
-
 /// Pick callback: the chosen folder plus the ambient window.
 type WorkspacePick = Box<dyn Fn(PathBuf, &mut Window, &mut App)>;
 /// Browse callback: open the native folder dialog.
@@ -86,10 +80,8 @@ pub fn width_for_window(viewport_w: f32) -> f32 {
 /// What a row's leading glyph says about the place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryMark {
-    /// The repository's main checkout.
+    /// This machine.
     Local,
-    /// A linked worktree.
-    Worktree,
     /// Any other folder.
     Folder,
 }
@@ -98,40 +90,36 @@ impl EntryMark {
     fn icon_path(self) -> &'static str {
         match self {
             Self::Local => "icons/monitor.svg",
-            Self::Worktree => "icons/branch.svg",
             Self::Folder => "icons/folder.svg",
         }
     }
 }
 
-/// One selectable folder: a location in the repository, a recent workspace, or
-/// the current one.
+/// One selectable place: this device's workspace, as its folder chip names it.
 #[derive(Debug, Clone)]
 pub struct WorkspaceEntry {
     /// Folder display name (`workspace_label`).
     pub name: String,
     pub path: PathBuf,
-    /// The row's trailing note: the age of the newest session here (`2h`) for a
-    /// recent folder, or the branch a location is on. `None` when there is
-    /// nothing to add.
+    /// The row's trailing note: the branch the workspace is on. `None` when
+    /// there is nothing to add.
     pub note: Option<String>,
     /// Which glyph the row leads with.
     pub mark: EntryMark,
 }
 
-/// A row that is a verb rather than a folder ("New worktree…"). Actions sit
-/// below the folders, above the native-dialog row, and never take part in the
-/// filter: they are always one step away.
+/// A row that is a machine rather than a folder (a remote host, and the row
+/// that opens the host config). Actions sit below the folders, above the
+/// native-dialog row, and never take part in the filter: they are always one
+/// step away.
 #[derive(Debug, Clone)]
 pub struct PickerAction {
-    /// Stable id the app dispatches on (`new-worktree`, `existing-worktree`,
-    /// `remote-branch`).
+    /// Stable id the app dispatches on (`remote-host`, `remote-setup`).
     pub id: &'static str,
     pub icon: &'static str,
     pub label: String,
     pub hint: Option<String>,
-    /// Draw a hairline above this row: it opens a new group of verbs (the
-    /// remote hosts sit apart from the worktree and clone verbs).
+    /// Draw a hairline above this row: it opens a new group of machines.
     pub group_start: bool,
     /// Set the hint in the monospace family, as the folder rows set their
     /// paths: a host's `ssh:dir` is a location, not prose.
@@ -140,8 +128,7 @@ pub struct PickerAction {
 
 pub struct WorkspacePicker {
     entries: Vec<WorkspaceEntry>,
-    /// Verb rows under the folders; empty when the workspace is not a
-    /// repository.
+    /// The machine rows under the device (remote hosts, host config).
     actions: Vec<PickerAction>,
     current: Option<PathBuf>,
     /// Matches the available chat-column width, measured with every dock
@@ -253,6 +240,22 @@ impl WorkspacePicker {
     }
 
     // ── internals ────────────────────────────────────────────────────────
+
+    /// Test seam: replace the rows, so a layout test can drive a long list
+    /// without depending on the machine's hosts or session store.
+    #[cfg(test)]
+    pub(crate) fn set_rows(
+        &mut self,
+        entries: Vec<WorkspaceEntry>,
+        actions: Vec<PickerAction>,
+        cx: &mut Context<Self>,
+    ) {
+        self.entries = entries;
+        self.actions = actions;
+        self.highlighted = 0;
+        self.scroll.set_offset(point(px(0.), px(0.)));
+        cx.notify();
+    }
 
     /// Test seam: type into the filter the way a user would, so a layout test
     /// can assert what the list does when nothing matches.
@@ -712,6 +715,6 @@ impl Render for WorkspacePicker {
                             ),
                     ),
             )
-            .child(working_folder_keyboard_hints(&theme, false))
+            .child(working_folder_keyboard_hints(&theme))
     }
 }

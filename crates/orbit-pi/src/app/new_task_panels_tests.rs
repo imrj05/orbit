@@ -13,18 +13,23 @@ fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     })
 }
 
+/// The picker is a machine list: this device plus the configured hosts, in and
+/// out of a repository. Only the worktree verbs used to depend on the Git root,
+/// and they are no longer offered here.
 #[gpui::test]
-fn clone_is_available_on_the_new_task_page_outside_a_repository(cx: &mut gpui::TestAppContext) {
+fn the_picker_offers_this_device_outside_a_repository(cx: &mut gpui::TestAppContext) {
     let app = test_app(cx);
     cx.update(|cx| {
         app.update(cx, |app, _cx| {
-            app.current_workspace = None;
             app.worktree_repo_root = None;
             app.worktrees.clear();
-            assert!(app
-                .folder_actions()
-                .iter()
-                .any(|action| action.id == "clone-repository"));
+            let entries = app.workspace_entries();
+            assert_eq!(entries.len(), 1, "one row: this device");
+            assert_eq!(
+                entries[0].mark,
+                EntryMark::Folder,
+                "outside a repository the row is a plain folder"
+            );
         });
     });
 }

@@ -22,7 +22,7 @@ use super::helpers::*;
 use super::*;
 use crate::motion::Hover;
 use crate::theme::tokens::{
-    context_menu, input, list_item, modal, panel, picker, popover, ButtonSize, DynamicSpacing,
+    context_menu, input, modal, panel, picker, popover, ButtonSize, DynamicSpacing,
     IconSize, Radius, RaisedExt, TextSize,
 };
 use crate::worktree::{self, Worktree, WorktreeError, WorktreeManager};
@@ -1623,31 +1623,56 @@ impl OrbitApp {
             ));
         }
         let advanced = self.worktree_advanced_control(theme, this.clone(), cx);
-        right = right.child(advanced).child(
-            button_frame(div().id("worktrees-new"), &theme, ButtonSize::Medium)
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .hover_state(&theme)
-                .child(icon(
-                    "icons/plus.svg",
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    theme.accent_text,
-                ))
-                .child(
-                    div()
-                        .text_color(theme.text_primary)
-                        .child(tr!("worktree.page.new")),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                        this.open_create_worktree_dialog(cx)
-                    }),
-                ),
-        );
+        // Cloning used to live in the folder picker's verb list, which is now
+        // the machine list (this device / remote hosts). Provisioning a
+        // repository belongs beside "New worktree", not under a folder chip.
+        right = right
+            .child(advanced)
+            .child(
+                button_frame(div().id("worktrees-clone"), &theme, ButtonSize::Medium)
+                    .border_1()
+                    .border_color(theme.border)
+                    .raised(theme.surface_elevated, &theme)
+                    .cursor_pointer()
+                    .hover_state(&theme)
+                    .tip(tr!("working_folder.clone_hint"))
+                    .child(icon(
+                        "icons/cloud.svg",
+                        ButtonSize::Medium.icon_size().px(&theme),
+                        theme.text_secondary,
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                            this.open_clone_dialog(window, cx)
+                        }),
+                    ),
+            )
+            .child(
+                button_frame(div().id("worktrees-new"), &theme, ButtonSize::Medium)
+                    .border_1()
+                    .border_color(theme.border)
+                    .raised(theme.surface_elevated, &theme)
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .hover_state(&theme)
+                    .child(icon(
+                        "icons/plus.svg",
+                        ButtonSize::Medium.icon_size().px(&theme),
+                        theme.accent_text,
+                    ))
+                    .child(
+                        div()
+                            .text_color(theme.text_primary)
+                            .child(tr!("worktree.page.new")),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                            this.open_new_worktree_with_suggestion(window, cx)
+                        }),
+                    ),
+            );
 
         div()
             .h(px(44.))
@@ -3148,35 +3173,23 @@ pub(super) fn missing_worktree_local(missing: &Path, candidates: &[PathBuf]) -> 
 
 // ── "Work in" picker (status bar) ─────────────────────────────────────
 //
-// One control answers "where does this task run?" for every kind of place
-// Orbit supports: the repository's main checkout, a linked worktree, a
-// worktree folder that Git no longer lists, a new worktree (from a local or a
-// remote branch), or any folder at all. The chip replaces the old
-// workspace-chip + work-in-chip pair — a readout that restarted the session and
-// a switch that appeared only inside a worktree.
+// One control answers "where does this task run?": this device's working
+// folder, or a configured remote host (the agent runs over SSH there; see
+// `docs/remote-sessions.md`). The chip replaces the old workspace-chip +
+// work-in-chip pair — a readout that restarted the session and a switch that
+// appeared only inside a worktree.
 //
-// The rows are built from the cached worktree list, so render never runs Git.
-// Remote refs are the one exception: they are fetched when their level opens,
-// because a repository can have hundreds and the picker is opened far more
-// often than that level is.
+// The local row is built from the cached worktree list, so render never runs
+// Git. The host rows come from `remote-hosts.json`, read once when the picker
+// opens — never per frame.
 
 /// One row of the status bar's "Work in" picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WorkInRow {
-    /// An existing place: the main checkout, a linked worktree.
+    /// This device: the working folder the task would run in.
     Folder(crate::working_folder::FolderRow),
-    /// Create a new worktree (opens the create dialog).
-    NewWorktree,
-    /// Browse to a worktree folder Git may not have listed.
-    ExistingWorktree,
-    /// Open the remote-branch level.
-    RemoteRef,
-    /// Clone a repository from a URL.
-    Clone,
-    /// The native folder dialog, for any directory.
-    ChooseFolder,
-    /// A folder from a recent session outside the listed locations.
-    Recent(PathBuf),
+    /// A configured SSH host, where only the agent runs.
+    Remote(crate::remote_hosts::RemoteHost),
 }
 
 impl OrbitApp {
@@ -3187,46 +3200,21 @@ impl OrbitApp {
             .or_else(|| self.main_worktree_path())
     }
 
-    /// Every row of the picker's first level: the locations Git reports, then
-    /// the ways to reach a new one. `None` when there is no repository, so the
-    /// control hides and non-worktree projects are unchanged (§39).
+    /// The picker's rows: this device's working folder, then each enabled
+    /// remote host. `None` when there is no repository, so the control hides
+    /// and non-worktree projects are unchanged (§39).
     pub(super) fn work_in_rows(&self) -> Option<Vec<WorkInRow>> {
         let root = self.work_in_root()?;
-        let mut rows: Vec<WorkInRow> = crate::working_folder::location_rows(
+        let local = crate::working_folder::location_rows(
             &self.worktrees,
             &root,
             self.current_workspace.as_deref(),
         )
         .into_iter()
-        .map(WorkInRow::Folder)
-        .collect();
-        rows.push(WorkInRow::NewWorktree);
-        rows.push(WorkInRow::ExistingWorktree);
-        rows.push(WorkInRow::RemoteRef);
-        rows.push(WorkInRow::Clone);
-        rows.push(WorkInRow::ChooseFolder);
-
-        // Session cwd values are canonicalized when sessions are loaded. Use
-        // the same identity for worktrees so aliases do not produce two rows.
-        let mut seen: HashSet<PathBuf> = self
-            .worktrees
-            .iter()
-            .map(|worktree| sessions::canonical_workspace_path(&worktree.path))
-            .collect();
-        seen.insert(sessions::canonical_workspace_path(&root));
-        if let Some(active) = &self.current_workspace {
-            seen.insert(sessions::canonical_workspace_path(active));
-        }
-        let mut recent_count = 0;
-        for session in &self.sessions {
-            if seen.insert(session.cwd.clone()) {
-                rows.push(WorkInRow::Recent(session.cwd.clone()));
-                recent_count += 1;
-                if recent_count == crate::workspace_picker::MAX_RECENTS {
-                    break;
-                }
-            }
-        }
+        .next()
+        .map(WorkInRow::Folder);
+        let mut rows: Vec<WorkInRow> = local.into_iter().collect();
+        rows.extend(self.work_in_hosts.iter().cloned().map(WorkInRow::Remote));
         Some(rows)
     }
 
@@ -3269,23 +3257,9 @@ impl OrbitApp {
             .unwrap_or(0)
     }
 
-    /// The remote-branch rows: remote-tracking refs resolved into the local
-    /// branch each one would create.
-    pub(super) fn work_in_remote_rows(&self) -> Vec<crate::working_folder::RemoteRow> {
-        crate::working_folder::remote_ref_rows(
-            &self.worktree_remotes,
-            &self.worktree_remote_names,
-            &self.worktree_local_branches,
-        )
-    }
-
-    /// Rows the highlighted index walks over, for the level that is showing.
+    /// Rows the highlighted index walks over.
     fn work_in_row_count(&self) -> usize {
-        if self.work_in_remote_open {
-            self.work_in_remote_rows().len()
-        } else {
-            self.work_in_rows().map_or(0, |rows| rows.len())
-        }
+        self.work_in_rows().map_or(0, |rows| rows.len())
     }
 
     /// Toggle the "Work in" picker. Mutually exclusive with the composer and
@@ -3304,12 +3278,20 @@ impl OrbitApp {
         self.open_in_menu_open = false;
         self.workspace_picker = None;
         self.worktree_menu = None;
+        // Read the host list once, here: the rows are rebuilt every frame the
+        // popover is open, and no render path may touch the disk.
+        let (hosts, skipped) = crate::remote_hosts::load();
+        self.work_in_hosts = hosts.into_iter().filter(|host| host.enabled).collect();
+        if let Some(reason) = skipped.first() {
+            self.toast_error(tr!(
+                "remote.config_skipped",
+                count = skipped.len(),
+                reason = reason.clone()
+            ));
+        }
         let rows = self.work_in_rows().unwrap_or_default();
         self.work_in_menu_highlight = self.work_in_selected_ix(&rows);
         self.work_in_scroll.set_offset(point(px(0.), px(0.)));
-        self.work_in_remote_open = false;
-        self.work_in_details_open = false;
-        self.work_in_remote_highlight = 0;
         self.work_in_menu_open = true;
         // The list a worktree was created in from a terminal may be one
         // revision behind; refresh once on open (a background list, not a
@@ -3320,19 +3302,14 @@ impl OrbitApp {
     }
 
     /// Close the picker without touching focus — for the other popovers that
-    /// must not overlap it. Resets the remote level too, so the next open
-    /// starts on the locations.
+    /// must not overlap it.
     pub(super) fn dismiss_work_in_menu(&mut self) {
         self.work_in_menu_open = false;
-        self.work_in_remote_open = false;
-        self.work_in_details_open = false;
     }
 
     pub(super) fn close_work_in_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.work_in_menu_open {
             self.work_in_menu_open = false;
-            self.work_in_remote_open = false;
-            self.work_in_details_open = false;
             self.input.read(cx).focus(window);
             cx.notify();
         }
@@ -3361,19 +3338,9 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.work_in_details_open {
-            self.scroll_work_in_details(false);
-            cx.notify();
-            return;
-        }
         let count = self.work_in_row_count();
         if count > 0 {
-            let highlighted = if self.work_in_remote_open {
-                &mut self.work_in_remote_highlight
-            } else {
-                &mut self.work_in_menu_highlight
-            };
-            *highlighted = (*highlighted + 1) % count;
+            self.work_in_menu_highlight = (self.work_in_menu_highlight + 1) % count;
             self.reveal_work_in_highlight(cx);
         }
         cx.notify();
@@ -3385,107 +3352,18 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.work_in_details_open {
-            self.scroll_work_in_details(true);
-            cx.notify();
-            return;
-        }
         let count = self.work_in_row_count();
         if count > 0 {
-            let highlighted = if self.work_in_remote_open {
-                &mut self.work_in_remote_highlight
-            } else {
-                &mut self.work_in_menu_highlight
-            };
-            *highlighted = (*highlighted + count - 1) % count;
+            self.work_in_menu_highlight = (self.work_in_menu_highlight + count - 1) % count;
             self.reveal_work_in_highlight(cx);
         }
         cx.notify();
     }
 
-    fn scroll_work_in_details(&self, backwards: bool) {
-        let mut offset = self.work_in_scroll.offset();
-        let distance = if backwards { px(80.) } else { px(-80.) };
-        offset.y = (offset.y + distance).clamp(-self.work_in_scroll.max_offset().height, px(0.));
-        self.work_in_scroll.set_offset(offset);
-    }
-
-    fn toggle_work_in_details(&mut self, cx: &mut Context<Self>) {
-        if !self.work_in_details_open
-            && (!self.work_in_remote_open
-                || self
-                    .work_in_remote_rows()
-                    .get(self.work_in_remote_highlight)
-                    .is_none())
-        {
-            return;
-        }
-        self.work_in_details_open = !self.work_in_details_open;
-        self.work_in_scroll.set_offset(point(px(0.), px(0.)));
-        if !self.work_in_details_open {
-            self.work_in_scroll
-                .scroll_to_item(self.work_in_remote_highlight + 1);
-        }
-        cx.notify();
-    }
-
-    fn on_work_in_details(
-        &mut self,
-        _: &crate::WorkInMenuDetails,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_work_in_details(cx);
-    }
-
-    /// Keep keyboard navigation visible across the mixed-height sections.
-    fn reveal_work_in_highlight(&self, cx: &Context<Self>) {
-        if self.work_in_remote_open {
-            self.work_in_scroll
-                .scroll_to_item(self.work_in_remote_highlight + 1);
-            return;
-        }
-        let Some(rows) = self.work_in_rows() else {
-            return;
-        };
-        let folders = rows
-            .iter()
-            .filter(|row| matches!(row, WorkInRow::Folder(_)))
-            .count();
-        let actions = rows
-            .iter()
-            .filter(|row| !matches!(row, WorkInRow::Folder(_) | WorkInRow::Recent(_)))
-            .count();
-        let index = self.work_in_menu_highlight;
-        let theme = theme::get(cx);
-        let (group, offset, height) = if index < folders {
-            (0, index, picker::two_line_entry_height(theme))
-        } else if index < folders + actions {
-            (
-                if folders > 0 { 2 } else { 1 },
-                index - folders,
-                picker::entry_height(theme),
-            )
-        } else {
-            (
-                if folders > 0 { 5 } else { 4 },
-                index - folders - actions,
-                picker::two_line_entry_height(theme),
-            )
-        };
-        let Some(bounds) = self.work_in_scroll.bounds_for_item(group) else {
-            return;
-        };
-        let viewport = self.work_in_scroll.bounds();
-        let mut scroll = self.work_in_scroll.offset();
-        let top = bounds.top() + height * offset as f32 + scroll.y;
-        let bottom = top + height;
-        if top < viewport.top() {
-            scroll.y += viewport.top() - top;
-        } else if bottom > viewport.bottom() {
-            scroll.y -= bottom - viewport.bottom();
-        }
-        self.work_in_scroll.set_offset(scroll);
+    /// Keep keyboard navigation visible: every row is a direct child of the
+    /// scrolling list, so gpui can scroll to the row itself.
+    fn reveal_work_in_highlight(&self, _cx: &Context<Self>) {
+        self.work_in_scroll.scroll_to_item(self.work_in_menu_highlight);
     }
 
     pub(super) fn on_work_in_confirm(
@@ -3494,11 +3372,6 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.work_in_remote_open {
-            let ix = self.work_in_remote_highlight;
-            self.run_work_in_remote_item(ix, window, cx);
-            return;
-        }
         let ix = self.work_in_menu_highlight;
         self.run_work_in_item(ix, window, cx);
     }
@@ -3509,33 +3382,7 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Escape returns from details to the remote list, then to locations.
-        if self.work_in_details_open {
-            self.toggle_work_in_details(cx);
-            return;
-        }
-        if self.work_in_remote_open {
-            self.work_in_remote_open = false;
-            self.work_in_scroll.set_offset(point(px(0.), px(0.)));
-            self.work_in_menu_highlight = self
-                .work_in_rows()
-                .map(|rows| self.work_in_selected_ix(&rows))
-                .unwrap_or(0);
-            cx.notify();
-            return;
-        }
         self.close_work_in_menu(window, cx);
-    }
-
-    /// Back out of the remote level (the header's back row).
-    pub(super) fn back_work_in_remote(&mut self, cx: &mut Context<Self>) {
-        if self.work_in_details_open {
-            self.toggle_work_in_details(cx);
-            return;
-        }
-        self.work_in_remote_open = false;
-        self.work_in_scroll.set_offset(point(px(0.), px(0.)));
-        cx.notify();
     }
 
     /// Run row `ix` of the picker's first level.
@@ -3563,165 +3410,30 @@ impl OrbitApp {
                     self.adopt_worktree(target.path, window, cx);
                     return;
                 }
-                self.work_in_menu_open = false;
-                self.work_in_remote_open = false;
                 if !target.location.is_usable() {
                     self.close_work_in_menu(window, cx);
                     self.adopt_worktree(target.path, window, cx);
                     return;
                 }
+                self.work_in_menu_open = false;
                 if !self.worktree_is_active(&target.path) {
                     self.open_worktree(&target.path, cx);
                 }
             }
-            WorkInRow::NewWorktree => {
-                self.work_in_menu_open = false;
-                self.open_new_worktree_from_work_in(window, cx);
-            }
-            WorkInRow::ExistingWorktree => {
-                self.work_in_menu_open = false;
-                self.browse_for_existing_worktree(window, cx);
-            }
-            WorkInRow::RemoteRef => {
-                self.work_in_scroll.set_offset(point(px(0.), px(0.)));
-                self.work_in_details_open = false;
-                self.work_in_remote_open = true;
-                self.work_in_remote_highlight = 0;
-                self.load_worktree_remotes(cx);
-                cx.notify();
-            }
-            WorkInRow::Clone => {
-                self.work_in_menu_open = false;
-                self.open_clone_dialog(window, cx);
-            }
-            WorkInRow::ChooseFolder => {
-                self.work_in_menu_open = false;
-                self.browse_for_folder(window, cx);
-            }
-            WorkInRow::Recent(path) => {
+            WorkInRow::Remote(host) => {
+                // Starting on the host parks this session the way any other
+                // folder change does; the probe asks for a password first if
+                // the host wants one.
                 self.close_work_in_menu(window, cx);
-                match crate::working_folder::classify(&path, None) {
-                    crate::working_folder::Location::Broken(
-                        crate::working_folder::BrokenReason::Missing,
-                    ) => {
-                        self.toast_error(tr!(
-                            "worktree.error.missing_directory",
-                            path = path.to_string_lossy()
-                        ));
-                        cx.notify();
-                    }
-                    crate::working_folder::Location::Broken(_) => {
-                        self.toast_error(tr!("working_folder.broken"));
-                        cx.notify();
-                    }
-                    _ => self.open_worktree(&path, cx),
-                }
+                self.connect_remote_task(host, cx);
             }
         }
     }
 
-    /// Run row `ix` of the remote-branch level: create a worktree on a local
-    /// branch that tracks the remote ref, then open it.
-    fn run_work_in_remote_item(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(row) = self.work_in_remote_rows().get(ix).cloned() else {
-            return;
-        };
-        self.work_in_menu_open = false;
-        self.work_in_remote_open = false;
-        self.work_in_details_open = false;
-        self.open_worktree_from_remote(row, window, cx);
-    }
-
-    /// Load remote-tracking refs for the remote level. One background fetch;
-    /// a second request while it runs is dropped (the rows refresh when it
-    /// lands).
-    fn load_worktree_remotes(&mut self, cx: &mut Context<Self>) {
-        if self.worktree_remotes_busy {
-            return;
-        }
-        let Some(manager) = self.worktree_manager() else {
-            return;
-        };
-        self.worktree_remotes_busy = true;
-        cx.spawn(async move |this, cx| {
-            let fetched = cx
-                .background_executor()
-                .spawn(async move {
-                    let repo = manager.repository_root().ok()?;
-                    Some((
-                        crate::git_ops::list_refs(&repo),
-                        crate::git_ops::list_remotes(&repo),
-                        manager.local_branches(),
-                    ))
-                })
-                .await;
-            let _ = this.update(cx, |app, cx| {
-                app.worktree_remotes_busy = false;
-                if let Some((refs, remotes, local_branches)) = fetched {
-                    app.worktree_remotes = refs;
-                    app.worktree_remote_names = remotes;
-                    app.worktree_local_branches = local_branches;
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Open the create dialog pointed at a remote-tracking ref: the "Existing"
-    /// branch choice is the ref, and the create path turns it into a local
-    /// branch that tracks it (never a detached worktree).
-    pub(super) fn open_worktree_from_remote(
-        &mut self,
-        row: crate::working_folder::RemoteRow,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_create_worktree_dialog(cx);
-        self.worktree_branch_mode = WorktreeBranchMode::Existing;
-        self.worktree_branch_choice = Some(row.remote_ref.clone());
-        // The branch list loads off-thread; put the ref in it immediately so
-        // the row shows as chosen before the fetch lands.
-        if !self.worktree_branches.iter().any(|b| b == &row.remote_ref) {
-            self.worktree_branches.push(row.remote_ref.clone());
-        }
-        let suggestion = self.suggest_worktree_name_from(&row.short);
-        self.worktree_name_input
-            .update(cx, |input, cx| input.set_text(suggestion, cx));
-        let handle = self.worktree_name_input.read(cx).focus_handle(cx);
-        window.focus(&handle);
-        self.set_status(tr!(
-            "working_folder.tracking_hint",
-            branch = row.local_branch.clone(),
-            upstream = row.remote_ref.clone()
-        ));
-        cx.notify();
-    }
-
-    /// Open the create dialog on its "existing branch" list, which is where
-    /// remote-tracking refs are listed. Choosing one there creates a local
-    /// branch that tracks it (`WorktreeManager::create` routes remote-only
-    /// refs through the tracking path), so this is the remote-branch entry
-    /// from the new-task page without a second picker screen.
-    pub(super) fn open_new_worktree_from_remote_branch(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_create_worktree_dialog(cx);
-        self.worktree_branch_mode = WorktreeBranchMode::Existing;
-        let suggestion = self.suggest_worktree_name();
-        self.worktree_name_input
-            .update(cx, |input, cx| input.set_text(suggestion, cx));
-        let handle = self.worktree_name_input.read(cx).focus_handle(cx);
-        window.focus(&handle);
-        cx.notify();
-    }
-
-    /// The quick "New worktree" flow: open the create dialog with a suggested
-    /// name (fully editable — the custom-name option) and a new branch derived
+    /// The quick create flow the Worktrees page's **New** button uses: open the
+    /// dialog with a suggested name (fully editable) and a new branch derived
     /// from it, focused so the name can be typed over immediately.
-    pub(super) fn open_new_worktree_from_work_in(
+    pub(super) fn open_new_worktree_with_suggestion(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -3744,17 +3456,6 @@ impl OrbitApp {
             .map(|branch| worktree::slugify(&branch.name))
             .filter(|slug| !slug.is_empty())
             .unwrap_or_else(|| "worktree".to_string());
-        self.free_worktree_name(base)
-    }
-
-    /// A free worktree name derived from `raw` (a branch or ref's short name).
-    fn suggest_worktree_name_from(&self, raw: &str) -> String {
-        let base = worktree::slugify(raw);
-        let base = if base.is_empty() {
-            "worktree".to_string()
-        } else {
-            base
-        };
         self.free_worktree_name(base)
     }
 
@@ -3846,9 +3547,8 @@ impl OrbitApp {
         )
     }
 
-    /// The "Work in" popover, while open. First level: the repository's
-    /// locations and the ways to reach a new one. Remote level: the
-    /// remote-tracking refs, each with the local branch it would create.
+    /// The "Work in" popover, while open: this device's working folder, then
+    /// one row per configured remote host.
     pub(super) fn work_in_popup(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if !self.work_in_menu_open {
             return None;
@@ -3858,8 +3558,8 @@ impl OrbitApp {
         let rows = self.work_in_rows().unwrap_or_default();
         let selected_ix = self.work_in_selected_ix(&rows);
         // Worth saying whenever there is a conversation to leave behind, not
-        // only while a turn streams: `start_task_in_folder` parks a live run
-        // and tears down an idle session either way.
+        // only while a turn streams: starting a task in another place parks a
+        // live run and tears down an idle session either way.
         let leaving = self.is_running() || !self.transcript.is_empty();
 
         let mut list = div()
@@ -3873,135 +3573,20 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base01.px(&theme));
-        if self.work_in_details_open {
-            list = list.child(self.work_in_back_row(&theme, this.clone()));
-            if let Some(row) = self
-                .work_in_remote_rows()
-                .get(self.work_in_remote_highlight)
-            {
-                list = list.child(
-                    div()
-                        .debug_selector(|| "work-in-remote-details".to_string())
-                        .flex_none()
-                        .w_full()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .px(picker::search_padding_x(&theme))
-                        .child(
-                            div()
-                                .text_size(TextSize::XSmall.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(tr!("working_folder.remote_detail_label")),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(|| "work-in-remote-full-ref".to_string())
-                                .w_full()
-                                .text_color(theme.text_primary)
-                                .child(row.remote_ref.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(TextSize::XSmall.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(tr!("working_folder.local_detail_label")),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(|| "work-in-remote-full-local".to_string())
-                                .w_full()
-                                .text_color(theme.text_primary)
-                                .child(row.local_branch.clone()),
-                        ),
-                );
-            }
-        } else if self.work_in_remote_open {
-            list = list.child(self.work_in_back_row(&theme, this.clone()));
-            let remote_rows = self.work_in_remote_rows();
-            if self.worktree_remotes_busy && remote_rows.is_empty() {
-                list =
-                    list.child(self.work_in_note(&theme, tr!("worktree.field.loading_branches")));
-            } else if remote_rows.is_empty() {
-                list = list.child(self.work_in_note(&theme, tr!("working_folder.remote_empty")));
-            }
-            for (ix, row) in remote_rows.iter().enumerate() {
-                let highlighted = ix == self.work_in_remote_highlight;
-                let entry = div()
-                    .id(ElementId::NamedInteger("work-in-remote".into(), ix as u64))
-                    .debug_selector(move || format!("work-in-remote-{ix}"));
-                let this_row = this.clone();
-                list = list.child(
-                    picker_entry(entry, &theme)
-                        .h(picker_row_height(&theme))
-                        .flex_none()
-                        .min_w_0()
-                        .when(highlighted, |row| row.bg(theme.surface_selected))
-                        .when(!highlighted, |row| row.hover_state(&theme))
-                        .on_mouse_move({
-                            let this_row = this_row.clone();
-                            move |_, _, cx| {
-                                this_row
-                                    .update(cx, |app, cx| {
-                                        if app.work_in_remote_highlight != ix {
-                                            app.work_in_remote_highlight = ix;
-                                            cx.notify();
-                                        }
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .on_mouse_up(MouseButton::Left, {
-                            let this_row = this_row.clone();
-                            move |_, window, cx| {
-                                this_row
-                                    .update(cx, |app, cx| {
-                                        app.run_work_in_remote_item(ix, window, cx)
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .child(
-                            PickerRow::new(
-                                row.remote_ref.clone(),
-                                if highlighted {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_secondary
-                                },
-                                theme.text_muted,
-                            )
-                            .icon(
-                                "icons/branch.svg",
-                                if highlighted {
-                                    theme.accent_text
-                                } else {
-                                    theme.text_muted
-                                },
-                            )
-                            .detail(tr!(
-                                "working_folder.remote_creates",
-                                branch = row.local_branch.clone()
-                            ))
-                            .weight(FontWeight::MEDIUM)
-                            .into_element(&theme),
-                        ),
-                );
-            }
-        } else {
-            let has_locations = rows.iter().any(|row| matches!(row, WorkInRow::Folder(_)));
-            list = list.child(self.work_in_locations(&rows, selected_ix, &theme, this.clone()));
-            if has_locations {
-                list = list.child(work_in_divider(&theme));
-            }
-            list = list.child(self.work_in_actions(&rows, &theme, this.clone()));
-            if rows.iter().any(|row| matches!(row, WorkInRow::Recent(_))) {
-                list = list
-                    .child(work_in_divider(&theme))
-                    .child(menu_header(tr!("working_folder.recent"), &theme))
-                    .child(self.work_in_recents(&rows, &theme, this.clone()));
-            }
+        for (ix, row) in rows.iter().enumerate() {
+            // The device row and the hosts are one list; a hairline opens the
+            // host group where it starts.
+            let group_start = ix > 0
+                && matches!(row, WorkInRow::Remote(_))
+                && matches!(rows[ix - 1], WorkInRow::Folder(_));
+            list = list.child(self.work_in_row(
+                ix,
+                row,
+                ix == selected_ix,
+                group_start,
+                &theme,
+                this.clone(),
+            ));
         }
 
         let mut popup = picker_surface(div(), &theme)
@@ -4017,22 +3602,14 @@ impl OrbitApp {
             .on_action(cx.listener(Self::on_work_in_prev))
             .on_action(cx.listener(Self::on_work_in_confirm))
             .on_action(cx.listener(Self::on_work_in_close))
-            .on_action(cx.listener(Self::on_work_in_details))
             .on_mouse_down_out(cx.listener(|app, _, window, cx| {
                 app.menu_dismissed_at = Some(Instant::now());
                 app.close_work_in_menu(window, cx);
             }))
-            .child(menu_header(
-                if self.work_in_remote_open {
-                    tr!("working_folder.remote")
-                } else {
-                    tr!("working_folder.title")
-                },
-                &theme,
-            ))
+            .child(menu_header(tr!("working_folder.title"), &theme))
             .child(list);
-        // One honest line: choosing a folder starts a task in it, and the
-        // conversation on screen belongs to the folder being left.
+        // One honest line: choosing another place starts a task there, and the
+        // conversation on screen belongs to the place being left.
         if leaving {
             popup = popup.child(
                 div()
@@ -4043,30 +3620,7 @@ impl OrbitApp {
                     .child(tr!("working_folder.new_task_note")),
             );
         }
-        if self.work_in_remote_open
-            && !self.work_in_details_open
-            && !self.work_in_remote_rows().is_empty()
-        {
-            popup = popup.child(
-                button_frame(
-                    div().id("work-in-details-trigger"),
-                    &theme,
-                    ButtonSize::Medium,
-                )
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|app, _, _, cx| app.toggle_work_in_details(cx)),
-                )
-                .child(kbd_shortcut("space", &theme))
-                .child(tr!("working_folder.remote_details")),
-            );
-        }
-        popup = popup.child(working_folder_keyboard_hints(
-            &theme,
-            self.work_in_remote_open,
-        ));
+        popup = popup.child(working_folder_keyboard_hints(&theme));
         Some(
             anchored_popover(
                 Corner::BottomLeft,
@@ -4079,130 +3633,65 @@ impl OrbitApp {
         )
     }
 
-    /// The location rows: Local first, then each linked worktree.
-    fn work_in_locations(
+    /// One row of the picker: this device, or a remote host. Both are two-line
+    /// rows — the place over where it runs — so the list never mixes heights.
+    /// `group_start` draws the hairline above the first host inside that row's
+    /// own box, so `scroll_to_item` keeps counting rows one for one.
+    fn work_in_row(
         &self,
-        rows: &[WorkInRow],
-        selected_ix: usize,
+        ix: usize,
+        row: &WorkInRow,
+        selected: bool,
+        group_start: bool,
         theme: &Theme,
         this: gpui::WeakEntity<OrbitApp>,
     ) -> AnyElement {
-        let mut list = div()
-            .debug_selector(|| "work-in-locations".to_string())
-            .w_full()
-            .flex()
-            .flex_col();
-        for (ix, row) in rows.iter().enumerate() {
-            let WorkInRow::Folder(folder) = row else {
-                continue;
-            };
-            let highlighted = ix == self.work_in_menu_highlight;
-            let selected = ix == selected_ix;
-            let icon_path = match &folder.folder.location {
-                crate::working_folder::Location::Local => "icons/monitor.svg",
-                crate::working_folder::Location::Worktree { .. } => "icons/branch.svg",
-                crate::working_folder::Location::PlainFolder { .. } => "icons/folder.svg",
-                crate::working_folder::Location::Broken(_) => "icons/alert-circle.svg",
-            };
-            let entry = div().id(ElementId::NamedInteger("work-in-row".into(), ix as u64));
-            let this_row = this.clone();
-            list =
-                list.child(
-                    picker_entry(entry, theme)
-                        .when(selected || highlighted, |row| {
-                            row.bg(theme.surface_selected)
-                        })
-                        .when(!selected && !highlighted, |row| row.hover_state(theme))
-                        // Scrolling rows under a stationary pointer must not
-                        // change the keyboard highlight or trigger a rebuild.
-                        .on_mouse_move({
-                            let this_row = this_row.clone();
-                            move |_, _, cx| {
-                                this_row
-                                    .update(cx, |app, cx| {
-                                        if app.work_in_menu_highlight != ix {
-                                            app.work_in_menu_highlight = ix;
-                                            cx.notify();
-                                        }
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .on_mouse_up(MouseButton::Left, {
-                            let this_row = this_row.clone();
-                            move |_, window, cx| {
-                                this_row
-                                    .update(cx, |app, cx| app.run_work_in_item(ix, window, cx))
-                                    .ok();
-                            }
-                        })
-                        .child({
-                            let mut row = PickerRow::new(
-                                folder.label.clone(),
-                                if selected || highlighted {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_secondary
-                                },
-                                if selected || highlighted {
-                                    theme.text_secondary
-                                } else {
-                                    theme.text_muted
-                                },
-                            )
-                            .icon(icon_path, theme.text_muted)
-                            .weight(FontWeight::MEDIUM);
-                            if let Some(detail) = folder.detail.clone() {
-                                row = row.detail(detail).mono();
-                            }
-                            row.into_element(theme)
-                        })
-                        .children(
-                            folder
-                                .prunable
-                                .then(|| work_in_tag(tr!("working_folder.prunable"), theme)),
-                        )
-                        .when(selected, |row| {
-                            row.child(div().debug_selector(|| "work-in-check".to_string()).child(
-                                icon(
-                                    "icons/check.svg",
-                                    context_menu::ICON.px(theme),
-                                    theme.accent_text,
-                                ),
-                            ))
-                        }),
-                );
-        }
-        list.into_any_element()
-    }
-
-    fn work_in_recents(
-        &self,
-        rows: &[WorkInRow],
-        theme: &Theme,
-        this: gpui::WeakEntity<OrbitApp>,
-    ) -> AnyElement {
-        let mut list = div()
-            .debug_selector(|| "work-in-recents".to_string())
-            .w_full()
-            .flex()
-            .flex_col();
-        for (ix, row) in rows.iter().enumerate() {
-            let WorkInRow::Recent(path) = row else {
-                continue;
-            };
-            let highlighted = ix == self.work_in_menu_highlight;
-            let entry = div()
-                .id(ElementId::NamedInteger("work-in-recent".into(), ix as u64))
-                .debug_selector(move || format!("work-in-recent-{ix}"));
-            let hover_this = this.clone();
-            let click_this = this.clone();
-            list = list.child(
-                picker_entry(entry, theme)
-                    .when(highlighted, |row| row.bg(theme.surface_selected))
-                    .when(!highlighted, |row| row.hover_state(theme))
-                    .on_mouse_move(move |_, _, cx| {
-                        hover_this
+        let highlighted = ix == self.work_in_menu_highlight;
+        let (icon_path, label, detail, prunable) = match row {
+            WorkInRow::Folder(folder) => {
+                let icon_path = match &folder.folder.location {
+                    crate::working_folder::Location::Local => "icons/monitor.svg",
+                    crate::working_folder::Location::Worktree { .. } => "icons/branch.svg",
+                    crate::working_folder::Location::PlainFolder { .. } => "icons/folder.svg",
+                    crate::working_folder::Location::Broken(_) => "icons/alert-circle.svg",
+                };
+                (
+                    icon_path,
+                    folder.label.clone(),
+                    folder.detail.clone(),
+                    folder.prunable,
+                )
+            }
+            // A host's `ssh:dir` is a location, so it reads in the mono family
+            // the same way a path does.
+            WorkInRow::Remote(host) => (
+                "icons/server-stack.svg",
+                tr!("remote.host_row", host = host.name.clone()),
+                Some(host.location()),
+                false,
+            ),
+        };
+        let this_row = this;
+        div()
+            .debug_selector(move || format!("work-in-row-{ix}"))
+            .when(group_start, |cell| {
+                cell.border_t_1().border_color(theme.border)
+            })
+            .child(
+                picker_entry(
+                    div().id(ElementId::NamedInteger("work-in-entry".into(), ix as u64)),
+                    theme,
+                )
+                .when(selected || highlighted, |row| {
+                    row.bg(theme.surface_selected)
+                })
+                .when(!selected && !highlighted, |row| row.hover_state(theme))
+                // Scrolling rows under a stationary pointer must not change
+                // the keyboard highlight or trigger a rebuild.
+                .on_mouse_move({
+                    let this_row = this_row.clone();
+                    move |_, _, cx| {
+                        this_row
                             .update(cx, |app, cx| {
                                 if app.work_in_menu_highlight != ix {
                                     app.work_in_menu_highlight = ix;
@@ -4210,147 +3699,46 @@ impl OrbitApp {
                                 }
                             })
                             .ok();
-                    })
-                    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                        click_this
+                    }
+                })
+                .on_mouse_up(MouseButton::Left, {
+                    let this_row = this_row.clone();
+                    move |_, window, cx| {
+                        this_row
                             .update(cx, |app, cx| app.run_work_in_item(ix, window, cx))
                             .ok();
-                    })
-                    .child(
-                        PickerRow::new(
-                            sessions::workspace_label(path),
-                            theme.text_secondary,
-                            theme.text_muted,
-                        )
-                        .icon("icons/folder.svg", theme.text_muted)
-                        .detail(shorten_home(path))
-                        .weight(FontWeight::MEDIUM)
-                        .into_element(theme),
-                    ),
-            );
-        }
-        list.into_any_element()
-    }
-
-    /// The action rows: new worktree, an existing worktree folder, a remote
-    /// branch, any folder.
-    fn work_in_actions(
-        &self,
-        rows: &[WorkInRow],
-        theme: &Theme,
-        this: gpui::WeakEntity<OrbitApp>,
-    ) -> AnyElement {
-        let mut list = div()
-            .debug_selector(|| "work-in-actions".to_string())
-            .w_full()
-            .flex()
-            .flex_col();
-        for (ix, row) in rows.iter().enumerate() {
-            // A menu row is one line. The sentence-length hint lives in the
-            // new-task page's picker, which has the width for it; inside a
-            // 300px popover it could only ellipsize mid-sentence, and a
-            // tooltip for it would be a second floating layer over a list
-            // that scrolls.
-            let (icon_path, title) = match row {
-                WorkInRow::Folder(_) | WorkInRow::Recent(_) => continue,
-                WorkInRow::NewWorktree => ("icons/plus.svg", tr!("working_folder.new")),
-                WorkInRow::ExistingWorktree => ("icons/branch.svg", tr!("working_folder.existing")),
-                WorkInRow::RemoteRef => ("icons/cloud.svg", tr!("working_folder.remote")),
-                WorkInRow::Clone => ("icons/cloud.svg", tr!("working_folder.clone_title")),
-                WorkInRow::ChooseFolder => ("icons/folder-open.svg", tr!("working_folder.choose")),
-            };
-            let highlighted = ix == self.work_in_menu_highlight;
-            let entry = div().id(ElementId::NamedInteger("work-in-action".into(), ix as u64));
-            let this_row = this.clone();
-            list = list.child(
-                picker_entry(entry, theme)
-                    .when(highlighted, |row| row.bg(theme.surface_selected))
-                    .when(!highlighted, |row| row.hover_state(theme))
-                    .on_mouse_move({
-                        let this_row = this_row.clone();
-                        move |_, _, cx| {
-                            this_row
-                                .update(cx, |app, cx| {
-                                    if app.work_in_menu_highlight != ix {
-                                        app.work_in_menu_highlight = ix;
-                                        cx.notify();
-                                    }
-                                })
-                                .ok();
-                        }
-                    })
-                    .on_mouse_up(MouseButton::Left, {
-                        let this_row = this_row.clone();
-                        move |_, window, cx| {
-                            this_row
-                                .update(cx, |app, cx| app.run_work_in_item(ix, window, cx))
-                                .ok();
-                        }
-                    })
-                    .child(
-                        PickerRow::new(
-                            title,
-                            if highlighted {
-                                theme.text_primary
-                            } else {
-                                theme.text_secondary
-                            },
-                            theme.text_muted,
-                        )
-                        .icon(
-                            icon_path,
-                            if highlighted {
-                                theme.accent_text
-                            } else {
-                                theme.text_muted
-                            },
-                        )
-                        .weight(FontWeight::MEDIUM)
-                        .into_element(theme),
-                    ),
-            );
-        }
-        list.into_any_element()
-    }
-
-    /// The remote level's back row. Built on the same [`picker_entry`] frame as
-    /// a real row, so its icon and label line up with the refs below it instead
-    /// of stepping in by the row inset.
-    fn work_in_back_row(&self, theme: &Theme, this: gpui::WeakEntity<OrbitApp>) -> AnyElement {
-        div()
-            .py(DynamicSpacing::Base02.px(theme))
-            .child(
-                picker_entry(div().id("work-in-back"), theme)
-                    .h(picker::entry_height(theme))
-                    .cursor_pointer()
-                    .hover_state(theme)
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        this.update(cx, |app, cx| app.back_work_in_remote(cx)).ok();
-                    })
-                    .child(icon(
-                        "icons/chevron-left.svg",
+                    }
+                })
+                .child({
+                    let mut body = PickerRow::new(
+                        label,
+                        if selected || highlighted {
+                            theme.text_primary
+                        } else {
+                            theme.text_secondary
+                        },
+                        if selected || highlighted {
+                            theme.text_secondary
+                        } else {
+                            theme.text_muted
+                        },
+                    )
+                    .icon(icon_path, theme.text_muted)
+                    .weight(FontWeight::MEDIUM);
+                    if let Some(detail) = detail {
+                        body = body.detail(detail).mono();
+                    }
+                    body.into_element(theme)
+                })
+                .children(prunable.then(|| work_in_tag(tr!("working_folder.prunable"), theme)))
+                .when(selected, |row| {
+                    row.child(div().debug_selector(|| "work-in-check".to_string()).child(icon(
+                        "icons/check.svg",
                         context_menu::ICON.px(theme),
-                        theme.text_muted,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.text_secondary)
-                            .child(tr!("common.back")),
-                    ),
+                        theme.accent_text,
+                    )))
+                }),
             )
-            .into_any_element()
-    }
-
-    fn work_in_note(&self, theme: &Theme, text: String) -> AnyElement {
-        div()
-            .px(list_item::padding_x(theme))
-            .py(DynamicSpacing::Base08.px(theme))
-            .text_size(TextSize::XSmall.px(theme))
-            .text_color(theme.text_muted)
-            .child(text)
             .into_any_element()
     }
 }
@@ -4366,15 +3754,6 @@ fn work_in_tag(text: String, theme: &Theme) -> AnyElement {
         .text_size(TextSize::XSmall.px(theme))
         .text_color(theme.warning)
         .child(text)
-        .into_any_element()
-}
-
-fn work_in_divider(theme: &Theme) -> AnyElement {
-    div()
-        .mx(list_item::inset(theme))
-        .my(DynamicSpacing::Base04.px(theme))
-        .h(px(1.))
-        .bg(theme.border)
         .into_any_element()
 }
 

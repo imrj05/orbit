@@ -50,9 +50,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminal panel. OAuth credentials are never copied between machines.
   Restarts and reconnects stay on the host; leaving a remote session stops its process,
   and remote sessions are not listed in the sidebar (pi keeps their files on the host).
+- **New project without starting a task.** **New project…** in the new-task folder
+  picker (and in the command palette) asks for a folder and adds it to the sidebar as an
+  empty project group, whose own `+` starts a task there. Nothing is written to pi, and a
+  folder that is already listed says so instead of appearing twice (#131).
+- **Delete project & files.** The sidebar project menu now separates the two meanings:
+  **Delete project** drops the row from the sidebar (pi's sessions untouched, as before),
+  and **Delete project & files** asks once, naming the folder, before removing it from
+  disk — to the Trash on macOS, permanently where the platform has no recoverable delete
+  (the confirmation says which). Guards refuse a filesystem root, the home folder, a
+  folder that contains another project, and a folder a live task is still working in; the
+  row only leaves the sidebar once the folder is actually gone (#131).
+
+### Changed
+
+- **The folder picker is a machine picker.** The two places that ask "where does
+  this task run?" — the new-task composer's folder chip and a session's status
+  bar **Work in** chip — now list two kinds of place: **this device** (the current
+  working folder) and each configured **remote host** from Settings → Remote hosts.
+  Linked worktrees, the eight recent session folders and the new / existing /
+  remote-branch verbs no longer crowd the list. Worktrees keep their own page
+  (which now also carries **Clone repository**, since cloning left the picker),
+  and the new-task picker still has **Choose folder…** for the native dialog.
+- **Remote hosts are reachable from an open session.** The status bar's **Work in**
+  picker reads `~/.orbit-pi/remote-hosts.json` when it opens, so a running session
+  can move to a host without going back to the new-task page; the connection check,
+  password prompt and guarded launch are the same path the picker uses.
+- **Providers & models is one grid, and models live in their provider's editor.**
+  Connected and unconnected providers are the same three-column cards, so a connected
+  provider is no taller than a disconnected one and a long catalog no longer buries the
+  page. A provider's models are in its **Configure** editor instead: after **Fetch
+  models** the fetched ids render as click-to-select chips (✓ when the field lists one),
+  the text field stays as the bulk-paste path, each model pi reports carries its context
+  window and the eye that decides whether the composer's picker offers it, and **Hide
+  all / Show all** sits beside the count (#131).
 
 ### Fixed
 
+- **Delete session no longer disappears from the task menu.** It was hidden for the task
+  that was open or running, which read as a missing feature; the row is now always
+  listed and, while pi's process still owns the file, disabled with the reason on hover.
+  **Reveal in Finder** — a macOS-only label shown on every platform — is gone from that
+  menu (#131).
 - **Wide glyphs in the terminal take their real two-column pitch.** A CJK or emoji
   character no longer draws at a one-cell pitch and overlaps its neighbour, so every
   following column stays lined up with the cursor and selection. The grid supplies a

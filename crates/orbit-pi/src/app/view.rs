@@ -60,6 +60,8 @@ pub(super) const TITLEBAR_LEADING: f32 =
 /// sidebar's 6px resize handle lives against that edge, so the pad keeps the
 /// chips off it (and off the sidebar's rounded boundary).
 pub(super) const SIDEBAR_EDGE_PAD: f32 = 6.;
+/// Width of the wordmark in the sidebar's titlebar drag strip.
+pub(super) const SIDEBAR_WORDMARK_W: f32 = 60.;
 
 /// Where the titlebar's left controls sit. While the sidebar is open they
 /// right-align inside its strip — [`SIDEBAR_EDGE_PAD`] off the column's right
@@ -72,8 +74,7 @@ pub(super) const SIDEBAR_EDGE_PAD: f32 = 6.;
 /// ([`platform::draws_window_controls`]) — so the cluster left-aligns on the
 /// fixed lead whether the sidebar is open or not, the way a Windows app's own
 /// titlebar controls sit. Nothing else changes there: the lead still clears
-/// the window edge, and the sidebar's drag strip and wordmark live on other
-/// rows of that column.
+/// the window edge, and the wordmark sits after the controls in the drag strip.
 /// The debug recorder's live chip: `REC · 128` while a capture runs, nothing
 /// when it does not. Debug builds only.
 #[cfg(debug_assertions)]
@@ -728,11 +729,33 @@ impl Render for OrbitApp {
                             // arrows/Enter/Escape to the row cursor.
                             .track_focus(&self.sidebar_focus)
                             .key_context("Sidebar")
-                            // traffic-light strip (drag region); the window's
-                            // left controls float above it in the titlebar
-                            // overlay — right-aligned against this column's
-                            // edge while the sidebar is open.
-                            .child(window_drag_region(div().h(px(TOP_BAR_H)).w_full()))
+                            // The minimum sidebar width leaves the wordmark,
+                            // OS buttons and overlaid controls clear of each other.
+                            .child(window_drag_region(
+                                div().h(px(TOP_BAR_H)).w_full().relative().child({
+                                    let controls_left = titlebar_controls_left(true, panel_w);
+                                    let mark_left = if cfg!(windows) {
+                                        controls_left + TITLEBAR_CONTROLS_W + TITLEBAR_TITLE_GAP
+                                    } else {
+                                        TRAFFIC_LIGHT_CLEARANCE
+                                    };
+                                    div()
+                                        .absolute()
+                                        .left(px(mark_left))
+                                        .top_0()
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .child(embedded_image_w(
+                                            if theme.mode == ThemeMode::Light {
+                                                crate::app_icon::LOGO_DARK_ASSET
+                                            } else {
+                                                crate::app_icon::LOGO_ASSET
+                                            },
+                                            px(SIDEBAR_WORDMARK_W),
+                                        ))
+                                }),
+                            ))
                             // Resize handle: drag the sidebar's right edge to
                             // adjust its width. Kept fully inside the panel so
                             // the slide wrapper's clip doesn't halve its hit
@@ -762,37 +785,28 @@ impl Render for OrbitApp {
                                             }),
                                     ),
                             )
-                            // brand — the wordmark, centred over the nav
-                            // column and held to a quiet size. White mark on
-                            // dark sidebars; the dark-ink mark on light ones,
-                            // where the white wordmark vanishes.
+                            // Search and session actions share a stable toolbar.
                             .child(
                                 div()
-                                    .px_3()
-                                    .pt(px(2.))
-                                    .pb_3()
+                                    .px_2()
+                                    .pb_1()
                                     .flex()
                                     .items_center()
-                                    .justify_center()
-                                    .child(embedded_image_w(
-                                        if theme.mode == ThemeMode::Light {
-                                            crate::app_icon::LOGO_DARK_ASSET
-                                        } else {
-                                            crate::app_icon::LOGO_ASSET
-                                        },
-                                        px(76.),
-                                    )),
-                            )
-                            // nav — the primary action (New Task); the
-                            // utility icons live in the footer
-                            .child(
-                                div()
-                                    .px_3()
-                                    .pt_1()
-                                    .pb_2()
-                                    .flex()
-                                    .flex_col()
                                     .gap_1()
+                                    .child(self.sidebar_search_bar(theme))
+                                    .child(sidebar_options_button(
+                                        self.sidebar_group_by,
+                                        self.workspace_sort,
+                                        self.sidebar_archived_filter,
+                                        show_first_message,
+                                        show_updated,
+                                        self.sidebar_show_menu,
+                                        self.naming_layout,
+                                        self.layout_name.clone(),
+                                        self.sidebar_sort_menu,
+                                        cx.entity(),
+                                        theme,
+                                    ))
                                     .child(self.sidebar_new_task_button(theme, cx)),
                             )
                             // session list (scrolls), grouped by workspace — or
@@ -805,49 +819,29 @@ impl Render for OrbitApp {
                                     .min_h_0()
                                     .flex()
                                     .flex_col()
-                                    // section label — anchors the list below the nav;
-                                    // the view control on its right opens the options
+                                    // Section label stays visible in every grouping.
                                     .child(
-                                        div()
-                                            .px(px(14.))
-                                            .pb(px(2.))
-                                            .flex()
-                                            .items_center()
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .truncate()
-                                                    .text_size(TextSize::Small.px(&theme))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(theme.text_muted)
-                                                    .child(match self.sidebar_group_by {
-                                                        SidebarGroupBy::OneList => {
-                                                            tr!("sidebar.all_sessions")
-                                                        }
-                                                        SidebarGroupBy::Recent => {
-                                                            tr!("sidebar.recent")
-                                                        }
-                                                        SidebarGroupBy::Workspace => {
-                                                            tr!("sidebar.projects")
-                                                        }
-                                                    }),
-                                            )
-                                            .child(sidebar_options_button(
-                                                self.sidebar_group_by,
-                                                self.workspace_sort,
-                                                self.sidebar_archived_filter,
-                                                show_first_message,
-                                                show_updated,
-                                                self.sidebar_show_menu,
-                                                self.naming_layout,
-                                                self.layout_name.clone(),
-                                                self.sidebar_sort_menu,
-                                                cx.entity(),
-                                                theme,
-                                            )),
+                                        div().px(px(14.)).pb(px(2.)).flex().items_center().child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_size(TextSize::Small.px(&theme))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.text_muted)
+                                                .child(match self.sidebar_group_by {
+                                                    SidebarGroupBy::OneList => {
+                                                        tr!("sidebar.all_sessions")
+                                                    }
+                                                    SidebarGroupBy::Recent => {
+                                                        tr!("sidebar.recent")
+                                                    }
+                                                    SidebarGroupBy::Workspace => {
+                                                        tr!("sidebar.projects")
+                                                    }
+                                                }),
+                                        ),
                                     )
-                                    .child(self.sidebar_search_bar(theme))
                                     .child(if side_rows.is_empty() {
                                         if self.sidebar_query.is_empty() {
                                             empty_sessions_state(theme, cx.entity())
@@ -4235,22 +4229,20 @@ impl OrbitApp {
         )
     }
 
-    /// The sidebar's primary action: a raised New Task button in the same
-    /// `ButtonSize::Large` frame as the Search and Usage rows, marked by its
-    /// accent icon and the ⌘N shortcut hint.
+    /// The sidebar's New Task action, with its shortcut in the tooltip.
     pub(super) fn sidebar_new_task_button(
         &self,
         theme: Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        button_frame(div().id("sidebar-new-session"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .w_full()
-            .raised(theme.surface_elevated, &theme)
-            .border_1()
-            .border_color(theme.border)
+        icon_button_frame(div().id("sidebar-new-session"), &theme, ButtonSize::Large)
+            .tip(crate::commands::tooltip(
+                crate::commands::CommandId::NewSession,
+                false,
+            ))
             .cursor_pointer()
-            .hover_bordered(&theme)
+            .bg(theme.overlay)
+            .hover_state(&theme)
             .pressed_state(&theme, PressedRamp::Wash)
             .on_mouse_up(
                 MouseButton::Left,
@@ -4259,29 +4251,10 @@ impl OrbitApp {
                 }),
             )
             .child(icon(
-                "icons/task-add-01.svg",
+                "icons/task-edit-01.svg",
                 ButtonSize::Large.icon_size().px(&theme),
-                theme.accent_text,
+                theme.text_primary,
             ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(tr!("view.new_task")),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .ml(button::keybinding_gap(&theme))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(crate::platform::shortcuts::label(
-                        crate::platform::shortcuts::NEW_SESSION,
-                    )),
-            )
     }
 
     /// The sidebar footer's utility icons: Usage and Settings. Icon-only —
