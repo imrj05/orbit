@@ -13,6 +13,7 @@ use gpui::{Font, FontFeatures, FontStyle, InteractiveElement, ObjectFit};
 // `crate::app::{ControlExt, …}` and `helpers::{…}` keep resolving while
 // call sites migrate (docs/plans/ui-component-layer.md, phase 1a).
 pub(crate) use crate::ui::button::{button_frame, icon_button_frame};
+pub(crate) use crate::ui::switch::switch;
 pub(crate) use crate::ui::style::control::{
     AccentWash, ControlExt, PressedRamp, StatefulControlExt, TipExt,
 };
@@ -879,123 +880,6 @@ pub(crate) fn dropdown_chevron(
 /// down), a half turn (180°) while open (pointing up).
 fn dropdown_angle(value: f32) -> f32 {
     std::f32::consts::PI * value.clamp(0.0, 1.0)
-}
-
-/// The app's one switch: a 36×20 track and a 14px knob that travels between the
-/// ends on [`Motion::Interaction`], with the track cross-fading from
-/// `surface_elevated` to `accent`.
-///
-/// The settings switches (Reduce Motion, automatic updates, a skill's or a
-/// subagent's enablement) all render through this, so a switch cannot drift in
-/// shape, motion or behavior. `id` must be unique per switch — it keys the
-/// transition, the element and the switch's focus.
-///
-/// It is a keyboard control as well: Tab reaches it, it draws the focus ring
-/// while focused, and Space or Enter flips it (`SwitchToggle` in the `Switch`
-/// context) through the same `on_toggle` a click runs. A native accessible
-/// name is still a GPUI gap.
-pub(crate) fn switch(
-    id: impl Into<SharedString>,
-    on: bool,
-    theme: &Theme,
-    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
-) -> AnyElement {
-    Switch {
-        id: id.into(),
-        on,
-        theme: *theme,
-        on_toggle: std::rc::Rc::new(on_toggle),
-    }
-    .into_any_element()
-}
-
-/// What a switch runs when it flips, shared by its click and key paths.
-type SwitchToggleFn = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
-
-#[derive(IntoElement)]
-struct Switch {
-    id: SharedString,
-    on: bool,
-    theme: Theme,
-    on_toggle: SwitchToggleFn,
-}
-
-impl RenderOnce for Switch {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let Switch {
-            id,
-            on,
-            theme,
-            on_toggle,
-        } = self;
-        // The handle has to outlive the frame so focus survives a repaint;
-        // keyed state lives as long as this switch keeps being drawn.
-        let focus = window
-            .use_keyed_state(
-                gpui::ElementId::Name(format!("{id}-focus").into()),
-                cx,
-                |_, cx| cx.focus_handle().tab_stop(true),
-            )
-            .read(cx)
-            .clone();
-        let focused = focus.is_focused(window);
-        let padding = DynamicSpacing::Base02.px(&theme);
-        let travel = switch_travel(&theme);
-        let track = div()
-            .id(gpui::ElementId::Name(id.clone()))
-            .track_focus(&focus)
-            .key_context("Switch")
-            .w(px(36.))
-            .h(DynamicSpacing::Base20.px(&theme))
-            .rounded_full()
-            .p(padding)
-            .border_1()
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            // Focus wins over the hover edge, so the ring never blinks off
-            // under the pointer.
-            .when(focused, |track| track.border_color(theme.focus_ring))
-            .when(!focused, |track| {
-                track.border_color(theme.border).hover_border(&theme)
-            })
-            .on_mouse_up(MouseButton::Left, {
-                let on_toggle = on_toggle.clone();
-                move |_, window, cx| on_toggle(window, cx)
-            })
-            .on_action(move |_: &crate::SwitchToggle, window, cx| on_toggle(window, cx));
-        crate::motion::state(
-            track,
-            id,
-            &theme,
-            Motion::Interaction,
-            if on { 1.0 } else { 0.0 },
-            move |track, value| {
-                track
-                    .bg(crate::motion::blend(
-                        theme.surface_elevated,
-                        theme.accent,
-                        value,
-                    ))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(14.))
-                            .rounded_full()
-                            .bg(theme.toggle_knob)
-                            // Relative, so the knob travels without re-laying out the
-                            // track — and without moving the hitbox the click lands on.
-                            .relative()
-                            .left(travel * value),
-                    )
-            },
-        )
-    }
-}
-
-/// How far a switch's knob travels: the track, less its padding and the knob.
-fn switch_travel(theme: &Theme) -> Pixels {
-    px(36.) - DynamicSpacing::Base02.px(theme) * 2.0 - px(14.)
 }
 
 /// A text field's box, Zed's `InputField`: at least 32px tall, `px_2`
@@ -1934,31 +1818,6 @@ mod tests {
         );
         assert!((dropdown_angle(2.0) - std::f32::consts::PI).abs() < 1e-6);
         assert_eq!(dropdown_angle(-1.0), 0.0);
-    }
-
-    /// A switch's knob travels the track's inner span, and the span has to stay
-    /// positive at every spacing density the user can choose — at Compact the
-    /// padding shrinks and the knob has further to go, not less.
-    #[test]
-    fn a_switch_knob_travels_the_tracks_inner_span() {
-        for density in crate::theme::SPACING_DENSITIES {
-            let mut theme = Theme::dark();
-            theme.ui.spacing_density = density;
-            let travel = switch_travel(&theme);
-            let padding = DynamicSpacing::Base02.px(&theme);
-            assert!(
-                travel > px(0.),
-                "the knob would fall off the track at {density}% density"
-            );
-            // Track = padding + knob + travel + padding.
-            assert_eq!(
-                padding + px(14.) + travel + padding,
-                px(36.),
-                "the knob must land flush with the far edge at {density}%"
-            );
-        }
-        // The default density is the geometry the design system states.
-        assert_eq!(switch_travel(&Theme::dark()), px(18.));
     }
 
     /// `header_chip` dresses the surface (hairline, glass, hover lift) but

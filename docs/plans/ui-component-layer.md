@@ -4,7 +4,7 @@
 seam moved into it (`ui/style/control.rs`, re-exported so no call site changed),
 the shared tooltip moved out of the `usage/` page, and
 `scripts/check_ui_layers.py` enforces the dependency direction. Phase 2's first
-navigation control is implemented but unverified; later work remains proposed.
+navigation controls and the switch move are implemented but unverified; later work remains proposed.
 The document is the inventory and the plan for giving
 every UI element in `crates/orbit-pi` exactly one named owner. It builds on
 `docs/design-system-audit.md` (which finished the *vocabulary*: colour roles,
@@ -286,7 +286,7 @@ snapshot, reproducible — see Appendix) or call sites (measured with
 | Segmented control | composer delivery mode, reduce motion, permissions scope | `segmented_segment` + `SegmentPosition` (11 sites) | `ButtonGroup` |
 | Link / text button | settings, MCP, onboarding, git panel (`text_button`, `mcp_text_button`, `row_button`, `name_action_button`) | one-off `div` per surface | `LinkButton` |
 | Menu trigger | top bar chips, git toolbar, usage filters (`chip_with_menu`, `workspace_menu_button`, `add_menu_button`) | `chip` + hand-rolled `open_menu`/`toggle_menu` | `Dropdown` |
-| Toggle switch | settings, permissions, MCP | `switch()` + `Switch` `RenderOnce` (10 sites) | `ui/switch.rs` (move, unchanged) |
+| Toggle switch | settings, permissions, MCP | `ui/switch.rs::switch()` + `Switch` `RenderOnce`, re-exported by `app/helpers.rs` | `ui/switch.rs` (moved, unchanged) |
 | Window controls | title bar (minimize / maximize / close) | `window_controls`, `platform.rs` | `ui/chrome.rs` |
 | Disclosure | explorer tree, fold rows (13 sites) | `disclosure_chevron`, `dropdown_chevron` | `TreeRow` / `ui/icon.rs` |
 | *(absent)* Checkbox / radio | — | selection is done with rows and segments | do not add without a real need |
@@ -509,9 +509,12 @@ Usage and Settings buttons. The callers retain localized tooltips, icons and mou
 open, hover, press and focus treatments are unchanged. A separate quiet icon
 action recipe now also owns the existing frame, pointer, hover and wash-press
 treatment for Review's tree, refresh and close buttons; their tooltips and
-handlers remain at the call sites. This is not a general `IconButton` API or
-completion of the phase. Cargo and manual visual/glass verification remain
-pending.
+handlers remain at the call sites. `ui/switch.rs` now owns the existing switch
+and its knob-travel test; `app/helpers.rs` re-exports `switch` unchanged, and
+the existing keyboard test remains at the compatibility path. This is not a
+general `IconButton` API or completion of the phase. `cargo check -p orbit-pi`
+passes after the switch move; switch tests and manual visual/glass verification
+remain pending.
 
 `Button`, `IconButton`, `ButtonGroup`, `LinkButton`, `Chip`, `ChipButton`,
 `Badge`, `Pill`, `Kbd`, `Switch` (moved), `Icon`.

@@ -28,4 +28,5 @@
 
 pub(crate) mod button;
 pub(crate) mod style;
+pub(crate) mod switch;
 pub(crate) mod tooltip;
