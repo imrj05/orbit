@@ -12,18 +12,22 @@
 //! so the patch logic, markers, `.orbit-orig` backup, and revert keep living
 //! in one place; this module only decides *when* to run them.
 //!
-//! The whole thing is best-effort: a missing `node`, a read-only global npm
+//! The optional RPC pass is best-effort: a missing `node`, a read-only global npm
 //! install, or anchor drift after a `pi update` degrades to today's unpatched
 //! behavior (custom UI absent, quota/auth fall back) rather than blocking
 //! launch. A fast path skips the work entirely when the embedded sources and
 //! the pi bundle are unchanged since the last successful apply.
+//! Auth-profile routing is a separate mandatory, uncached spawn gate: callers
+//! must reject launching with routes when `ensure_auth_profile_routing` fails.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +38,16 @@ const CUSTOM_UI_HANDLER: &str =
 const QUOTA_APPLY: &str = include_str!("../../../contrib/pi-quota-rpc/apply.mjs");
 const QUOTA_HANDLER: &str = include_str!("../../../contrib/pi-quota-rpc/quota-handler.js");
 const AUTH_APPLY: &str = include_str!("../../../contrib/pi-auth-rpc/apply.mjs");
+const AUTH_PROFILES_APPLY: &str = include_str!("../../../contrib/pi-auth-profiles/apply.mjs");
+const AUTH_PROFILES_ROUTING: &str = include_str!("../../../contrib/pi-auth-profiles/routing.js");
+const AUTH_PROFILES_PATCH: Patch = Patch {
+    name: "auth profiles",
+    dir: "auth-profiles",
+    files: &[
+        ("apply.mjs", AUTH_PROFILES_APPLY),
+        ("routing.js", AUTH_PROFILES_ROUTING),
+    ],
+};
 
 /// How long a single `apply.mjs` run may take before it is killed. The scripts
 /// only read a bundle and rewrite a string, so this is generous.
@@ -248,6 +262,150 @@ pub(crate) fn apply_on_launch() -> PatchReport {
     report
 }
 
+/// Mandatory gate before spawning *any* process with profile routes
+/// (RPC, one-shot or delegated parent). Unlike optional RPC patches, failure
+/// must reject the spawn. Run off the UI thread; the caller must pass the same
+/// routes to the child and may not fall back to a default account on error.
+/// Remote installs are deliberately unsupported: a local probe proves nothing
+/// about the pi executable on an SSH host.
+///
+/// The capability is cached for this process against the exact pi bundle the
+/// probe verified (path + size + mtime), so a session switch does not spawn
+/// Node again. A pi update changes those ids and forces a fresh probe. Route
+/// paths are validated here in Rust on every call, so a newly selected profile
+/// does not need another Node run either.
+pub(crate) fn ensure_auth_profile_routing(routes: &str, remote: bool) -> Result<(), String> {
+    if remote {
+        return Err("Auth profiles are unavailable for remote sessions".to_string());
+    }
+    if !profile_routes_valid(routes) {
+        return Err("Invalid auth-profile routes".to_string());
+    }
+    if !enabled() {
+        return Err("Auth profiles require pi patches to be enabled".to_string());
+    }
+    let base = base_dir().ok_or_else(|| "No home directory for pi patches".to_string())?;
+    // Do not use a saved package root: a stale install cannot prove that the
+    // executable about to be launched supports credential routing.
+    let root = orbit_rpc::pi_package_root()?;
+    let targets = find_targets(&root);
+    if targets.is_empty() {
+        return Err("pi RPC bundle not found (layout changed?)".to_string());
+    }
+    let ids: Vec<TargetId> = targets.iter().filter_map(|path| target_id(path)).collect();
+    if ids.len() != targets.len() {
+        return Err("pi RPC bundle could not be inspected".to_string());
+    }
+    let gate = PROFILE_GATE.get_or_init(|| Mutex::new(None));
+    {
+        let cached = gate
+            .lock()
+            .map_err(|_| "Auth-profile routing state is unavailable".to_string())?;
+        if cached.as_ref() == Some(&ids) {
+            return Ok(());
+        }
+    }
+
+    let pi = PathBuf::from(orbit_rpc::pi_binary());
+    let node = crate::providers::node_binary().ok_or_else(|| "node not found".to_string())?;
+    let _lock = Lock::acquire(&base)?;
+    // Another spawn may have verified the bundle while this one waited.
+    {
+        let cached = gate
+            .lock()
+            .map_err(|_| "Auth-profile routing state is unavailable".to_string())?;
+        if cached.as_ref() == Some(&ids) {
+            return Ok(());
+        }
+    }
+    let dir = materialize_patch(&base, &AUTH_PROFILES_PATCH)?;
+    let mut command = Command::new(node);
+    command
+        .arg(dir.join("apply.mjs"))
+        .current_dir(&dir)
+        .env(orbit_rpc::PI_BIN_ENV, &pi)
+        .env(orbit_rpc::PI_PACKAGE_ROOT_ENV, &root)
+        .env("ORBIT_AUTH_PROFILE_ROUTES", routes)
+        .env("PATH", orbit_rpc::augmented_path(pi.parent()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    orbit_rpc::hide_console(&mut command);
+    // The patch command checks exact bytes and executes synthetic read/write/
+    // delete probes in both pi's CLI bundle and source module. No credentials
+    // are read by the probe. A pi update invalidates this capability immediately.
+    run_with_timeout(command).map_err(|_| {
+        "Auth-profile routing unavailable; refusing to use another account".to_string()
+    })?;
+    let verified: Vec<TargetId> = find_targets(&root)
+        .iter()
+        .filter_map(|path| target_id(path))
+        .collect();
+    if verified.is_empty() || verified.len() != targets.len() {
+        return Err("Auth-profile routing could not be verified".to_string());
+    }
+    *gate
+        .lock()
+        .map_err(|_| "Auth-profile routing state is unavailable".to_string())? = Some(verified);
+    Ok(())
+}
+
+/// The bundle ids the last successful auth-profile probe verified.
+static PROFILE_GATE: OnceLock<Mutex<Option<Vec<TargetId>>>> = OnceLock::new();
+
+/// Equivalent to the route checks the injected pi module performs, minus the
+/// write probe: this guards the cache so a newly selected profile path cannot
+/// reuse an earlier success without being validated.
+fn profile_routes_valid(routes: &str) -> bool {
+    let Ok(map) = serde_json::from_str::<BTreeMap<String, String>>(routes) else {
+        return false;
+    };
+    map.len() <= 128
+        && map.iter().all(|(provider, path)| {
+            !provider.is_empty()
+                && provider.len() <= 128
+                && provider
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+                && !matches!(provider.as_str(), "constructor" | "prototype" | "__proto__")
+                && profile_path_valid(path)
+        })
+}
+
+fn profile_path_valid(path: &str) -> bool {
+    if path.is_empty() || path.len() > 4096 || path.contains('\0') {
+        return false;
+    }
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path.file_name().and_then(|name| name.to_str()) != Some("auth.json")
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+    {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let parent_ok = fs::symlink_metadata(parent)
+        .map(|info| info.is_dir() && !info.file_type().is_symlink())
+        .unwrap_or(false)
+        && fs::canonicalize(parent).is_ok_and(|canonical| canonical == parent);
+    if !parent_ok {
+        return false;
+    }
+    match fs::symlink_metadata(path) {
+        Ok(info) => {
+            info.is_file()
+                && !info.file_type().is_symlink()
+                && info.len() <= 1_048_576
+                && fs::canonicalize(path).is_ok_and(|canonical| canonical == path)
+        }
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 /// Whether auto-apply is enabled (env override, then the persisted file).
 pub(crate) fn enabled() -> bool {
     if std::env::var_os("ORBIT_NO_RPC_PATCHES").is_some_and(|value| !value.is_empty()) {
@@ -431,14 +589,19 @@ fn read_config(base: &Path) -> Config {
         .unwrap_or_default()
 }
 
-/// Materialize one patch's scripts and run its `apply.mjs` against pi.
-fn run_patch(node: &str, pi: &Path, root: &Path, base: &Path, patch: &Patch) -> Result<(), String> {
+/// Materialize one patch's embedded sources without running it.
+fn materialize_patch(base: &Path, patch: &Patch) -> Result<PathBuf, String> {
     let dir = base.join(patch.dir);
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     for (name, contents) in patch.files {
         write_if_changed(&dir.join(name), contents).map_err(|error| error.to_string())?;
     }
+    Ok(dir)
+}
 
+/// Materialize one patch's scripts and run its `apply.mjs` against pi.
+fn run_patch(node: &str, pi: &Path, root: &Path, base: &Path, patch: &Patch) -> Result<(), String> {
+    let dir = materialize_patch(base, patch)?;
     let mut command = Command::new(node);
     command
         .arg(dir.join("apply.mjs"))
@@ -610,6 +773,59 @@ mod tests {
         let config = read_config(&dir);
         assert!(!config.enabled);
         assert_eq!(config.package_root.as_deref(), Some(root));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn auth_profile_routes_fail_closed_on_anything_but_a_canonical_auth_json() {
+        // The app passes paths canonicalized by `ProviderAccounts`; macOS's
+        // temp dir is a symlink, so canonicalize the fixture the same way.
+        let dir = fs::canonicalize(scratch_dir()).unwrap();
+        let profile = dir.join("profile");
+        fs::create_dir_all(&profile).unwrap();
+        let auth = profile.join("auth.json");
+        let routes = |path: &str| format!("{{\"p\":{}}}", serde_json::to_string(path).unwrap());
+
+        // A not-yet-created file under an existing canonical directory is the
+        // first-sign-in case and is allowed.
+        assert!(profile_routes_valid(&routes(auth.to_str().unwrap())));
+        fs::write(&auth, "{}").unwrap();
+        assert!(profile_routes_valid(&routes(auth.to_str().unwrap())));
+
+        assert!(!profile_routes_valid("{}x"), "malformed JSON");
+        assert!(!profile_routes_valid(&routes("relative/auth.json")));
+        assert!(!profile_routes_valid(&routes(
+            dir.join("credentials.json").to_str().unwrap()
+        )));
+        assert!(!profile_routes_valid(&routes(
+            dir.join("missing").join("auth.json").to_str().unwrap()
+        )));
+        assert!(!profile_routes_valid(&routes(
+            profile
+                .join("..")
+                .join("profile")
+                .join("auth.json")
+                .to_str()
+                .unwrap()
+        )));
+        assert!(!profile_routes_valid(&format!(
+            "{{\"__proto__\":{}}}",
+            serde_json::to_string(&auth).unwrap()
+        )));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let alias = profile.join("alias-auth.json");
+            symlink(&auth, &alias).unwrap();
+            assert!(
+                !profile_routes_valid(&routes(alias.to_str().unwrap())),
+                "a symlinked credential file is not canonical"
+            );
+        }
+
+        assert!(ensure_auth_profile_routing("{}", true).is_err());
+        assert!(ensure_auth_profile_routing(&routes("relative/auth.json"), false).is_err());
         fs::remove_dir_all(&dir).ok();
     }
 

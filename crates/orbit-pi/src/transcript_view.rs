@@ -61,6 +61,7 @@ use crate::theme::tokens::{
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, HistoryCard, Step, SummaryRow, ToolCall, ToolFacts};
+use crate::ui::style::surface::SurfaceExt;
 use crate::turn_review::{ChangedFile, TurnFiles};
 
 fn frosted_transcript_fill(theme: Theme) -> Hsla {

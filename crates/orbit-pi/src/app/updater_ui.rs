@@ -14,7 +14,7 @@ use crate::theme::tokens::{
     button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
 use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
-use crate::usage::tooltip::Tooltip;
+use crate::ui::tooltip::Tooltip;
 
 /// The sidebar updater pill: a `ButtonSize::Compact` disc at rest (the
 /// download icon), expanding sideways to reveal the "Update" label while

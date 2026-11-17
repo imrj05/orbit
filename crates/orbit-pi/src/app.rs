@@ -200,6 +200,7 @@ const RENAME_FEEDBACK: Duration = Duration::from_millis(1400);
 /// resumes exactly where the stream left off.
 struct ParkedSession {
     client: PiClient,
+    accounts: crate::provider_accounts::AccountSelection,
     transcript: Transcript,
     busy: bool,
     execution: SessionExecution,
@@ -461,6 +462,13 @@ pub struct OrbitApp {
     /// sidebar rows. `None` until the sidebar takes keyboard focus (⌘⇧B);
     /// the row it names paints the focused surface in `render_side_row`.
     sidebar_cursor: Option<usize>,
+    /// A project-group drag in flight (issue #143): the group being moved and
+    /// the landing spot the pointer implies. Set by the drag-move listener,
+    /// spent by the drop, and cleared whenever no drag is active.
+    project_drag: Option<ProjectDragState>,
+    /// A session-row drag in flight: the session being moved inside its
+    /// project group and the row it would land on.
+    session_drag: Option<SessionDragState>,
     /// Focus handle carrying the `Sidebar` key context while the sidebar is
     /// being keyboard-navigated (↑/↓/⏎/Esc).
     sidebar_focus: FocusHandle,
@@ -1170,6 +1178,20 @@ pub struct OrbitApp {
     /// The bundled pi extensions (quota bridge + access guard), spawned with
     /// `--extension` on every session process.
     extensions: BundledExtensions,
+    provider_accounts: crate::provider_accounts::ProviderAccounts,
+    /// Profiles per provider, cached so a provider row never reads the
+    /// account store while painting. Refreshed by the Settings controller.
+    account_profile_map:
+        std::collections::BTreeMap<String, Vec<crate::provider_accounts::AccountProfile>>,
+    /// The profile whose inline "Remove?" confirmation is showing.
+    account_remove_confirm: Option<String>,
+    /// Whether the account store could be read on the last refresh. A corrupt
+    /// store is shown as unavailable, never as "no accounts".
+    account_store_healthy: bool,
+    account_clone_pending: bool,
+    /// A profile switch is waiting on the credential-routing gate. No command
+    /// may reach a process spawned for the previous selection meanwhile.
+    account_switching: bool,
     /// The active access mode. Persisted to `~/.orbit-pi/access.json`, which
     /// the guard extension reads fresh on every tool call.
     access_mode: AccessMode,
@@ -1241,6 +1263,8 @@ pub struct OrbitApp {
     provider_metadata_loaded: bool,
     /// The open API-key editor, if any.
     provider_key_editor: Option<ProviderKeyEditor>,
+    /// The open Add-account modal, if any.
+    account_editor: Option<AccountEditor>,
     /// The open provider editor (add or edit), if any.
     provider_editor: Option<ProviderEditor>,
     /// Provider id awaiting inline remove confirmation.
@@ -1328,6 +1352,9 @@ pub struct OrbitApp {
     /// A Select / New / Duplicate held back because it would throw away
     /// unsaved edits; the header asks before running it.
     subagent_discard_pending: Option<subagents_ui::SubagentAction>,
+    /// The detail pane shows the machine-wide delegation limits instead of
+    /// the open agent; the agent's form (and its edits) stays alive behind it.
+    subagent_limits_open: bool,
     /// Why the last save/delete failed, shown under the form.
     subagent_error: Option<String>,
     /// Re-render the agent list as the filter is typed.
@@ -2332,6 +2359,8 @@ impl OrbitApp {
             pane_full_last: false,
             terminal_full_last: false,
             sidebar_cursor: None,
+            project_drag: None,
+            session_drag: None,
             sidebar_focus: cx.focus_handle().tab_stop(true),
             input,
             model_label: "…".into(),
@@ -2356,8 +2385,8 @@ impl OrbitApp {
             is_compacting: false,
             retrying: false,
             retry_detail: None,
-            error: None,
-            error_source: None,
+            error: (!connect_error.is_empty()).then(|| connect_error.clone()),
+            error_source: (!connect_error.is_empty()).then(|| "account_profiles".to_string()),
             auto_restarts: 0,
             auto_restart_scheduled: false,
             abort_requested: false,
@@ -2624,6 +2653,12 @@ impl OrbitApp {
             auth: AuthManager::new(),
             quota: QuotaManager::new(),
             extensions,
+            provider_accounts: crate::provider_accounts::ProviderAccounts::load(),
+            account_profile_map: std::collections::BTreeMap::new(),
+            account_remove_confirm: None,
+            account_store_healthy: true,
+            account_clone_pending: false,
+            account_switching: false,
             access_mode,
             permission_rules: crate::permissions::Rules::load(),
             permission_scope: crate::permissions::Scope::Any,
@@ -2649,6 +2684,7 @@ impl OrbitApp {
             provider_metadata: Vec::new(),
             provider_metadata_loaded: false,
             provider_key_editor: None,
+            account_editor: None,
             provider_editor: None,
             provider_remove_confirm: None,
             provider_usage_open: None,
@@ -2669,6 +2705,7 @@ impl OrbitApp {
             subagent_undo: None,
             subagent_delete_confirm: false,
             subagent_discard_pending: None,
+            subagent_limits_open: false,
             subagent_error: None,
             plugins: Vec::new(),
             plugins_error: None,
@@ -2839,6 +2876,7 @@ impl OrbitApp {
         });
         // Warm the store scan at launch so the page is instant when opened.
         app.usage.update(cx, |page, cx| page.open(cx));
+        app.refresh_account_map();
 
         // The theme observer above only fires on a *change*; the first sync
         // happens in `main`, so the initial paint is already themed.
@@ -2888,11 +2926,12 @@ impl OrbitApp {
             app.sidebar_shortcut_hints =
                 app.window_active && sidebar::show_session_shortcuts(window.modifiers());
             cx.notify();
-            // The OS Reduce Motion preference can only have changed while the
-            // user was elsewhere, so a window becoming active is the moment to
-            // re-read it. A repaint picks up the new value on the next frame.
+            // The OS Reduce Motion / Reduce Transparency preferences can only
+            // have changed while the user was elsewhere, so a window becoming
+            // active is the moment to re-read them. A repaint picks up the new
+            // values on the next frame.
             if app.window_active {
-                theme::refresh_os_reduce_motion();
+                theme::refresh_os_display_prefs();
             }
         });
         // Closing the window ends the observer above on its last value — and
@@ -3327,6 +3366,61 @@ enum SideRow {
     ShowLess { label: String },
 }
 
+/// The value carried by a project-group drag: the header's group label (the
+/// thing the sidebar actually reorders — two folders with the same basename
+/// share one header). Dropped on another header, it commits an order change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectDrag {
+    pub label: String,
+}
+
+/// Where a dragged project group would land: the group it is over and which
+/// edge of that group the pointer is nearer. Painted as the insertion line;
+/// only a drop writes the order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectDropTarget {
+    pub label: String,
+    /// Below the target's midpoint — land after its group instead of before.
+    pub after: bool,
+}
+
+/// A project-group drag in flight: what is moving and the landing spot the
+/// pointer currently implies (`None` when the pointer is not over a header).
+/// The render path reads it; a mouse-up clears it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectDragState {
+    pub dragging: String,
+    pub target: Option<ProjectDropTarget>,
+}
+
+/// The value carried by a session-row drag: the session file being moved
+/// inside its project group. A session never leaves its folder, so a drop on
+/// another project's row is refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionDrag {
+    pub path: PathBuf,
+    /// The row's title, for the chip that follows the pointer.
+    pub title: String,
+}
+
+/// Where a dragged session would land: the row it is over and which edge of
+/// that row the pointer is nearer. Painted as the insertion line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionDropTarget {
+    pub path: PathBuf,
+    /// Below the target row's midpoint — land after it instead of before.
+    pub after: bool,
+}
+
+/// A session-row drag in flight: what is moving and the landing spot the
+/// pointer currently implies (`None` when it is over another project, a
+/// non-session row, or outside the list).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionDragState {
+    pub dragging: PathBuf,
+    pub target: Option<SessionDropTarget>,
+}
+
 /// How the sidebar orders workspace groups. Persisted alongside the project
 /// list in `~/.orbit-pi/workspaces.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -3544,7 +3638,7 @@ thread_local! {
     };
 }
 
-fn workspace_store_dir() -> PathBuf {
+pub(crate) fn workspace_store_dir() -> PathBuf {
     #[cfg(test)]
     {
         TEST_WORKSPACE_STORE_DIR.with(|dir| dir.0.clone())
@@ -3881,6 +3975,15 @@ struct SessionMenu {
     /// pointer, context-menu style. `None` anchors it below the row's `…`
     /// button (the pointer-triggered path).
     at: Option<Point<Pixels>>,
+    /// Whether the row's project group can be rearranged where the sidebar is
+    /// (the grouped list). A flat or search list keeps recency order, so the
+    /// Move rows are left out entirely rather than shown doing nothing.
+    reorderable: bool,
+    /// Whether the row has a neighbour above / below in its project group,
+    /// resolved when the menu opens (#143). A move that cannot happen is
+    /// painted disabled instead of quietly doing nothing.
+    can_move_up: bool,
+    can_move_down: bool,
 }
 
 /// State of the row-actions popup on a workspace group header: which
@@ -3895,6 +3998,11 @@ struct WorkspaceMenu {
     picker: bool,
     /// The menu is showing the **Delete project & files** confirmation.
     confirm_delete: bool,
+    /// Whether the group has a neighbour above / below in the displayed order,
+    /// resolved when the menu opens (issue #143). A move that cannot happen is
+    /// painted disabled instead of quietly doing nothing.
+    can_move_up: bool,
+    can_move_down: bool,
 }
 
 /// User-requested GitHub CLI release check, separate from local inspection.
@@ -4081,6 +4189,16 @@ struct ProviderKeyEditor {
     error: Option<String>,
 }
 
+/// The Add-account modal: one name for the new local credential profile.
+/// With `rename` set it is the Rename modal for that existing profile.
+struct AccountEditor {
+    provider_id: String,
+    provider_name: String,
+    rename: Option<String>,
+    label: Entity<ComposerInput>,
+    error: Option<String>,
+}
+
 /// API families pi can speak for a custom endpoint, shown as chips.
 const PROVIDER_APIS: [&str; 9] = [
     "openai-completions",
@@ -4217,6 +4335,26 @@ enum ProviderAction {
         oauth: bool,
         note: &'static str,
     },
+    /// Open the Add-account modal for one provider.
+    AddAccount {
+        id: String,
+        name: String,
+    },
+    /// Open the Rename modal for one profile.
+    RenameAccount {
+        provider: String,
+        name: String,
+        id: String,
+        label: String,
+    },
+    /// Ask to remove a profile (inline confirmation).
+    RemoveAccount {
+        id: String,
+    },
+    ConfirmRemoveAccount {
+        id: String,
+    },
+    CancelRemoveAccount,
     SignOut {
         id: String,
     },
@@ -4235,6 +4373,7 @@ enum ProviderAction {
     },
     CancelRemove,
     SaveKey,
+    SaveAccount,
     Restart,
 }
 
@@ -4321,6 +4460,7 @@ enum SettingsSelect {
 // wiring. Rendering and feature-specific logic live in child modules; they
 // are descendants of `app`, so they reach private fields/methods directly.
 mod ask;
+mod auth_prompt;
 mod bug_report_ui;
 mod composer_ops;
 mod dialogs;
@@ -4334,6 +4474,7 @@ mod permissions_ui;
 mod pi_update_ui;
 mod pickers;
 mod plugin_update_ui;
+mod provider_accounts;
 mod remote_hosts_ui;
 mod remote_providers_ui;
 mod remote_ui;
@@ -4424,6 +4565,8 @@ mod session_open_card_tests;
 mod session_park_tests;
 #[cfg(test)]
 mod sidebar_active_reveal_tests;
+#[cfg(test)]
+mod sidebar_drag_tests;
 #[cfg(test)]
 mod sidebar_group_tests;
 #[cfg(test)]

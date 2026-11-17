@@ -90,6 +90,7 @@ mod palette_recents;
 mod pi_install;
 mod pi_update;
 mod pins;
+mod session_order;
 mod platform;
 // Frame-time sampling for the render baseline. Debug builds only: a release
 // binary must not carry a frame hook or a recorder.
@@ -97,6 +98,7 @@ mod platform;
 mod perf;
 mod permissions;
 mod plugins;
+mod provider_accounts;
 mod providers;
 mod quota;
 mod quota_hidden;
@@ -124,6 +126,7 @@ mod transcript;
 mod transcript_view;
 mod tray;
 mod turn_review;
+mod ui;
 mod updater;
 mod usage;
 mod wallpaper;
@@ -367,7 +370,8 @@ actions!(queue_edit_keys, [QueueEditConfirm, QueueEditCancel]);
 // Sessions-sidebar keyboard navigation (bound to the `Sidebar` context, which
 // rides the sidebar's focus handle while it is keyboard-focused). Arrow keys
 // move the cursor, Enter activates the row, Escape hands focus back to the
-// composer.
+// composer, and Option+↑/↓ move the row under the cursor — a project header,
+// or a session inside its project (the keyboard twin of dragging a row).
 actions!(
     sidebar_keys,
     [
@@ -376,7 +380,9 @@ actions!(
         SidebarHome,
         SidebarEnd,
         SidebarConfirm,
-        SidebarClose
+        SidebarClose,
+        SidebarMoveRowUp,
+        SidebarMoveRowDown
     ]
 );
 
@@ -639,6 +645,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", SidebarEnd, Some("Sidebar")),
         KeyBinding::new("enter", SidebarConfirm, Some("Sidebar")),
         KeyBinding::new("escape", SidebarClose, Some("Sidebar")),
+        // Option+↑/↓ reorder the row under the cursor — the keyboard path to
+        // what dragging a header or a session row does (issue #143).
+        KeyBinding::new("alt-up", SidebarMoveRowUp, Some("Sidebar")),
+        KeyBinding::new("alt-down", SidebarMoveRowDown, Some("Sidebar")),
         // `j`/`k` move the row cursor too, but only while no text field is
         // focused: the sidebar's search input sits inside this context, and a
         // plain letter binding would otherwise swallow what the user types.

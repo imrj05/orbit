@@ -50,6 +50,7 @@ fn rows_for(
         &None,
         &HashSet::new(),
         &HashSet::new(),
+        &HashMap::new(),
     )
 }
 
@@ -140,6 +141,7 @@ fn last_updated_does_not_override_activity_when_opening_a_session() {
         &active,
         &HashSet::new(),
         &HashSet::new(),
+        &HashMap::new(),
     );
     assert_eq!(group_labels(&rows), vec!["beta", "alpha"]);
 }
@@ -171,6 +173,7 @@ fn opening_or_running_does_not_reorder_a_group() {
         &active,
         &running,
         &HashSet::new(),
+        &HashMap::new(),
     );
     let indices: Vec<usize> = rows
         .iter()
@@ -326,4 +329,306 @@ fn workspace_marks_round_trip_through_the_store() {
     // No mark stored for beta or the legacy bare path.
     assert!(!store.marks.contains_key(&PathBuf::from("/work/beta")));
     assert!(!store.marks.contains_key(&PathBuf::from("/work/gamma")));
+}
+
+/// Dragging a project header above (or below) another moves that group to the
+/// new edge, and every other project keeps its order (issue #143).
+#[test]
+fn reorder_moves_a_group_before_or_after_its_target() {
+    let workspaces = workspace_paths(&["/work/alpha", "/work/beta", "/work/gamma"]);
+
+    assert_eq!(
+        reorder_workspaces(&workspaces, "gamma", "alpha", false),
+        workspace_paths(&["/work/gamma", "/work/alpha", "/work/beta"])
+    );
+    assert_eq!(
+        reorder_workspaces(&workspaces, "alpha", "gamma", true),
+        workspace_paths(&["/work/beta", "/work/gamma", "/work/alpha"])
+    );
+    assert_eq!(
+        reorder_workspaces(&workspaces, "alpha", "beta", true),
+        workspace_paths(&["/work/beta", "/work/alpha", "/work/gamma"])
+    );
+    assert_eq!(
+        reorder_workspaces(&workspaces, "alpha", "beta", false),
+        workspace_paths(&["/work/alpha", "/work/beta", "/work/gamma"]),
+        "a drop that lands where the group already is changes nothing"
+    );
+}
+
+/// Folders that share a basename share one sidebar header, so they move as one
+/// block and keep their relative order inside it.
+#[test]
+fn reorder_travels_duplicate_labels_together() {
+    let workspaces = workspace_paths(&["/one/app", "/work/api", "/two/app", "/work/web"]);
+
+    assert_eq!(
+        reorder_workspaces(&workspaces, "app", "web", true),
+        workspace_paths(&["/work/api", "/work/web", "/one/app", "/two/app"])
+    );
+}
+
+/// An unknown label (a stale row, a project removed mid-drag) leaves the list
+/// untouched instead of dropping projects.
+#[test]
+fn reorder_ignores_unknown_labels() {
+    let workspaces = workspace_paths(&["/work/alpha", "/work/beta"]);
+
+    assert_eq!(
+        reorder_workspaces(&workspaces, "ghost", "alpha", true),
+        workspaces
+    );
+    assert_eq!(
+        reorder_workspaces(&workspaces, "alpha", "ghost", false),
+        workspaces
+    );
+}
+
+/// A drag is applied to the order on screen: rewriting the stored list to the
+/// displayed group order first is what makes the move land where the user saw
+/// it, whatever sort mode produced that order.
+#[test]
+fn order_rewrites_the_store_to_the_displayed_groups() {
+    let workspaces = workspace_paths(&["/work/alpha", "/work/beta", "/work/gamma"]);
+    let displayed = vec!["gamma".to_string(), "alpha".to_string(), "beta".to_string()];
+
+    assert_eq!(
+        order_workspaces_by_labels(&workspaces, &displayed),
+        workspace_paths(&["/work/gamma", "/work/alpha", "/work/beta"])
+    );
+    // A project missing from the order keeps its place at the end, never lost.
+    assert_eq!(
+        order_workspaces_by_labels(&workspaces, &["beta".to_string()]),
+        workspace_paths(&["/work/beta", "/work/alpha", "/work/gamma"])
+    );
+}
+
+/// A drag is applied to the order on screen (issue #143): with "Last updated"
+/// active, the stored insertion order is not what the user sees, so a move
+/// pins the displayed order first, applies itself, and pins the sort to Manual
+/// — otherwise the next repaint would re-sort the move away.
+#[gpui::test]
+fn moving_a_project_applies_to_the_displayed_order(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    let app = cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.workspaces = workspace_paths(&["/work/alpha", "/work/beta", "/work/gamma"]);
+            app.workspace_sort = WorkspaceSort::LastUpdated;
+            app.sessions = vec![
+                store_session("a1", "/work/alpha", 10),
+                store_session("b1", "/work/beta", 20),
+                store_session("g1", "/work/gamma", 30),
+            ];
+            assert_eq!(
+                app.project_group_order(),
+                vec!["gamma", "beta", "alpha"],
+                "most recent activity leads"
+            );
+
+            // The user drags alpha between gamma and beta.
+            app.move_project_group("alpha", "beta", false, cx);
+
+            assert_eq!(
+                app.workspaces,
+                workspace_paths(&["/work/gamma", "/work/alpha", "/work/beta"])
+            );
+            assert_eq!(app.workspace_sort, WorkspaceSort::Manual);
+            assert_eq!(app.project_group_order(), vec!["gamma", "alpha", "beta"]);
+            // The order on disk is the order the user now sees.
+            let stored = load_workspace_store();
+            assert_eq!(stored.sort, WorkspaceSort::Manual);
+            assert_eq!(stored.workspaces, app.workspaces);
+        });
+    });
+}
+
+/// Moving a group past the edge of the list is a no-op — and it must not
+/// switch the sort as a side effect of an impossible move.
+#[gpui::test]
+fn moving_past_the_edge_keeps_the_order(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    let app = cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.workspaces = workspace_paths(&["/work/alpha", "/work/beta"]);
+            app.workspace_sort = WorkspaceSort::LastUpdated;
+            app.sessions = vec![
+                store_session("a1", "/work/alpha", 10),
+                store_session("b1", "/work/beta", 20),
+            ];
+
+            app.nudge_project_group("alpha", 1, cx);
+            assert_eq!(
+                app.workspaces,
+                workspace_paths(&["/work/alpha", "/work/beta"])
+            );
+            assert_eq!(
+                app.workspace_sort,
+                WorkspaceSort::LastUpdated,
+                "an edge move leaves the sort alone"
+            );
+
+            app.nudge_project_group("alpha", -1, cx);
+            assert_eq!(
+                app.workspaces,
+                workspace_paths(&["/work/alpha", "/work/beta"])
+            );
+        });
+    });
+}
+
+/// A drop that lands where the group already sits in the displayed order is a
+/// no-op — it must not pin the order or change the sort as a side effect.
+#[gpui::test]
+fn a_drop_that_changes_nothing_writes_nothing(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    let app = cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.workspaces = workspace_paths(&["/work/alpha", "/work/beta"]);
+            app.workspace_sort = WorkspaceSort::LastUpdated;
+            app.sessions = vec![
+                store_session("a1", "/work/alpha", 10),
+                store_session("b1", "/work/beta", 20),
+            ];
+            // Displayed: beta, alpha. Dropping alpha after beta is where it
+            // already is.
+            app.move_project_group("alpha", "beta", true, cx);
+
+            assert_eq!(
+                app.workspaces,
+                workspace_paths(&["/work/alpha", "/work/beta"]),
+                "the stored insertion order is left alone"
+            );
+            assert_eq!(app.workspace_sort, WorkspaceSort::LastUpdated);
+        });
+    });
+}
+
+/// Arranged sessions sort by their stored place; a session with no place (one
+/// created after the group was arranged) keeps its recency slot above the
+/// arranged block, so new work is still first under its project header.
+#[test]
+fn an_arranged_group_keeps_its_order_and_new_sessions_lead() {
+    let sessions = vec![
+        store_session("new", "/work/alpha", 40),
+        store_session("a2", "/work/alpha", 20),
+        store_session("a1", "/work/alpha", 10),
+    ];
+    let workspaces = workspace_paths(&["/work/alpha"]);
+    let expanded: HashSet<String> = ["alpha".to_string()].into_iter().collect();
+    let ranks: HashMap<PathBuf, usize> = [
+        (PathBuf::from("/store/a1.jsonl"), 0),
+        (PathBuf::from("/store/a2.jsonl"), 1),
+    ]
+    .into_iter()
+    .collect();
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspaces,
+        WorkspaceSort::Manual,
+        &HashMap::new(),
+        "none",
+        &HashSet::new(),
+        &expanded,
+        &HashMap::new(),
+        &HashSet::new(),
+        &None,
+        &HashSet::new(),
+        &HashSet::new(),
+        &ranks,
+    );
+    let order: Vec<String> = rows
+        .iter()
+        .filter_map(|row| match row {
+            SideRow::Session(ix) => Some(sessions[*ix].id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, vec!["new", "a1", "a2"]);
+}
+
+/// `reorder_session_paths` is the session twin of the project reorder: before /
+/// after a target row, a no-op onto itself, and nothing for an unknown path.
+#[test]
+fn reorder_session_paths_moves_a_row_before_or_after_its_target() {
+    let paths = workspace_paths(&["/store/a1.jsonl", "/store/a2.jsonl", "/store/a3.jsonl"]);
+
+    assert_eq!(
+        reorder_session_paths(&paths, &paths[2], &paths[0], false),
+        workspace_paths(&["/store/a3.jsonl", "/store/a1.jsonl", "/store/a2.jsonl"])
+    );
+    assert_eq!(
+        reorder_session_paths(&paths, &paths[0], &paths[2], true),
+        workspace_paths(&["/store/a2.jsonl", "/store/a3.jsonl", "/store/a1.jsonl"])
+    );
+    assert_eq!(
+        reorder_session_paths(&paths, &paths[1], &paths[1], true),
+        paths
+    );
+    assert_eq!(
+        reorder_session_paths(&paths, Path::new("/store/absent.jsonl"), &paths[0], true),
+        paths
+    );
+}
+
+/// Dragging a session inside its project group persists that group's order —
+/// the row builder then lays the group out that way.
+#[gpui::test]
+fn moving_a_session_persists_its_group_order(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    let app = cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.workspaces = workspace_paths(&["/work/alpha", "/work/beta"]);
+            // The active project is the one group that starts expanded; the
+            // rows below are alpha's.
+            app.current_workspace = Some(PathBuf::from("/work/alpha"));
+            app.sessions = vec![
+                store_session("a1", "/work/alpha", 30),
+                store_session("a2", "/work/alpha", 20),
+                store_session("b1", "/work/beta", 10),
+            ];
+            let a1 = PathBuf::from("/store/a1.jsonl");
+            let a2 = PathBuf::from("/store/a2.jsonl");
+            let b1 = PathBuf::from("/store/b1.jsonl");
+
+            // Recency puts a1 first; drag a1 below a2.
+            app.move_session(&a1, &a2, true, cx);
+            let sessions = app.sidebar_sessions_filtered();
+            let rows = app.sidebar_rows(&sessions, &HashSet::new());
+            let order: Vec<&PathBuf> = rows
+                .iter()
+                .filter_map(|row| match row {
+                    SideRow::Session(ix) => Some(&sessions[*ix].path),
+                    _ => None,
+                })
+                .collect();
+            // Alpha is the expanded group; beta's row is collapsed away.
+            assert_eq!(order, vec![&a2, &a1]);
+            assert_eq!(crate::session_order::ranks().get(&a1), Some(&1));
+
+            // A session never leaves its folder: a drop in another project is
+            // refused, and the stored order is left alone.
+            app.move_session(&a1, &b1, true, cx);
+            assert_eq!(crate::session_order::ranks().get(&a1), Some(&1));
+        });
+    });
 }

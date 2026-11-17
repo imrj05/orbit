@@ -43,7 +43,8 @@ use crate::theme::tokens::{
     TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
-use crate::usage::tooltip::Tooltip;
+use crate::ui::button::quiet_icon_button;
+use crate::ui::tooltip::Tooltip;
 
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
@@ -1439,12 +1440,14 @@ impl SidePane {
                     .child(title.clone()),
             )
             .children(tree_available.then(|| {
-                icon_button_frame(div().id("review-tree-toggle"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("sidepane.toggle_tree"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
+                quiet_icon_button(
+                    div()
+                        .id("review-tree-toggle")
+                        .group(BUTTON_GROUP)
+                        .tip(tr!("sidepane.toggle_tree")),
+                    &theme,
+                    ButtonSize::Default,
+                )
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
                     .child(icon(
                         "icons/folder.svg",
@@ -1457,12 +1460,14 @@ impl SidePane {
                     ))
             }))
             .child(
-                icon_button_frame(div().id("review-refresh"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("common.refresh"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
+                quiet_icon_button(
+                    div()
+                        .id("review-refresh")
+                        .group(BUTTON_GROUP)
+                        .tip(tr!("common.refresh")),
+                    &theme,
+                    ButtonSize::Default,
+                )
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
@@ -1497,12 +1502,14 @@ impl SidePane {
                     cx,
                 ))
                 .child(
-                    icon_button_frame(div().id("pane-close"), &theme, ButtonSize::Default)
-                        .group(BUTTON_GROUP)
-                        .tip(tr!("common.close"))
-                        .cursor_pointer()
-                        .hover_state(&theme)
-                        .pressed_state(&theme, PressedRamp::Wash)
+                    quiet_icon_button(
+                        div()
+                            .id("pane-close")
+                            .group(BUTTON_GROUP)
+                            .tip(tr!("common.close")),
+                        &theme,
+                        ButtonSize::Default,
+                    )
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
                         .child(icon(
                             "icons/x.svg",

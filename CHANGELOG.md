@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Frosted floating surfaces without a wallpaper.** In dark palettes on macOS,
+  menus, pickers, popovers, tooltips, notifications, modals and the
+  jump-to-latest button now frost the workbench behind them, a 24 pt blur
+  under a tint of the card colour, instead of painting a solid card. Each
+  palette gets the lightest tint its text allows: the lowest opacity (never
+  below 55%) at which text keeps its contrast even over a pure white backdrop,
+  so Onyx shows more glass than Flexoki.
+  Light palettes keep their solid cards. macOS **Reduce Transparency** or
+  **Increase Contrast** brings the solid card back everywhere, and over a
+  wallpaper, Settings → Appearance → Glass panes still decides. The sidebar,
+  panes and the composer frost only over a wallpaper, as before.
+
+- **Reordering projects and sessions in the sidebar.** Drag a project header onto
+  another one and a line shows exactly where it will land; release, and the order is
+  yours. Session rows rearrange the same way inside their own project (a session never
+  changes folder), newest-created tasks still landing at the top of the group. With the
+  sidebar focused, **⌥↑ / ⌥↓** move the row the cursor is on — a project header or a
+  session — and both row menus list **Move up** / **Move down** (shown disabled with the
+  reason at either end). A project move is applied to the order on screen and pins the
+  project sort to **Manual (added order)**, with a toast when that changes, so the new
+  order stays put instead of being re-sorted by activity on the next repaint.
+- **More than one account per provider, all usable at once.** Settings → Providers &
+  models has an **Accounts** panel in every provider's row: add, rename or remove an
+  extra account and see whether each one is signed in. Every account is its own
+  provider row (`ChatGPT (Codex) · Work`) with its own sign-in — browser, device code,
+  pasted code or API key — and all accounts are live in every session at the same
+  time: pick any account's model in the model picker, no switching and no restart.
+  A bundled pi extension registers each account as a copy of its provider under its
+  own id, so pi stores and refreshes every account's credential separately in its own
+  `auth.json`. Stores from the earlier per-session design migrate automatically (each
+  sign-in moves to its account; nothing is copied). Remote sessions keep the host's
+  own credentials.
 - **Add a project to a server.** Like t3code's "Add to another machine": the new-task
   folder picker's **Add this project to a server…** (or a host card's **Add a project from
   this Mac…**) clones the project's `origin` with git **on the server** — SSH or HTTPS, any
@@ -87,6 +119,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Settings → Subagents reads as one workflow.** The agent header is a single
+  bar — name and status on the left, Duplicate, Save and the Enabled switch on
+  the right — and the form follows the order an agent is written in: identity,
+  prompt, tools, mode, model, file, then the read-only preview. Delegation
+  limits apply to every agent, so they moved off each agent's form to their own
+  page, opened from a pinned row above the agent list; the open agent's edits
+  survive the trip. The form stops widening at 760 px.
+
+- **Sidebar Projects panel polish.** Sessions under an expanded project now step in
+  under the project mark, with a hairline tree guide down the chevron column, so the
+  project → session hierarchy reads at a glance; the "Show N more" / "Show less" rows
+  sit on the same indent and guide. Project marks are one consistent tile (logos fill
+  it, glyphs sit centred on it, both behind the same hairline). Session counts are
+  plain muted figures instead of filled chips, the preview line is muted beneath a
+  tighter title, and the section label is a small eyebrow with a rule to the edge.
+- **The UI got its own layer.** `crates/orbit-pi/src/ui/` now sits between the design
+  tokens and the surfaces, which is where every element will move as it gains one named
+  owner (`docs/plans/ui-component-layer.md`). This first landing is a pure move:
+  `TipExt`, `ControlExt`, `StatefulControlExt`, `PressedRamp` and `AccentWash` live in
+  `ui/style/control.rs` (re-exported, so no call site changed), the tooltip view moved
+  from `usage/tooltip.rs` to `ui/tooltip.rs` because a shared element was living under a
+  page, and `scripts/check_ui_layers.py` now fails the build if `ui/` imports a surface
+  or re-derives the backdrop-blur marker outside `ui/style/surface.rs`. Rendering is
+  unchanged.
 - **Settings → Providers & models is a list, not a card grid.** The three-column grid
   squeezed each provider card to ~200px, so facts, buttons and model lists clipped on
   ordinary window sizes. Providers are now rows on the same grouped boards the other
@@ -168,6 +224,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeats the list, and a provider pi reports nothing for shows no list at all (#131).
 
 ### Fixed
+
+- **Subagents detail sections no longer collapse.** The detail pane's scroll
+  body had no definite width, so each board shrank to its content and the
+  delegation-limit labels ran under their steppers.
+
+- **Sidebar previews of skill prompts:** a session started with `/skill:name` showed
+  the raw `<skill name="…" location="/Users/…">` wrapper as its preview (and as its
+  title until pi named it). It now reads `/skill:name` plus what you typed, the same
+  form the transcript shows. The "Show N more" / "Show less" rows now draw the
+  keyboard focus ring they were already asking for.
+- **Providers page:** every provider row's details line painted as a bare "…"; it
+  reads in full again. Sign-in buttons on unconnected providers are secondary
+  buttons instead of a column of filled ones.
+- Tests no longer write fixture session bindings into the real `~/.orbit-pi`
+  account store, and two test fixtures no longer collide when tests run in parallel.
 
 - **The Explorer no longer slides off the window as files open.** The Files,
   Git, Usage and Worktrees pages could not shrink below their content's width,

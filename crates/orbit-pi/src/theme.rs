@@ -300,6 +300,25 @@ impl ThemeId {
 /// arm's length without turning the wallpaper into a flat wash.
 pub const GLASS_BLUR: f32 = 12.;
 
+/// How far a floating layer (menu, popover, tooltip, toast, modal) frosts the
+/// workbench behind it when no wallpaper is set, in logical points. The
+/// backdrop is the app's own text, not a photograph, and twelve points still
+/// leaves letterforms legible through the glass; twenty-four turns them into
+/// colour.
+pub const FLOATING_GLASS_BLUR: f32 = 24.;
+
+/// The floor for a floating layer's own fill alpha over that frost. Each
+/// palette's actual tint is the lowest alpha at or above this at which its
+/// text keeps the card targets over both a black and a white backdrop
+/// ([`Theme::floating_glass_alpha`]), so a palette whose ink allows it shows
+/// more of the blurred workbench and one whose ink does not stays readable.
+pub const FLOATING_GLASS_MIN_ALPHA: f32 = 0.55;
+
+/// WCAG targets a frosted floating layer keeps for its text, whatever is
+/// behind it: the same body / secondary targets wallpaper cards use.
+const FLOATING_GLASS_PRIMARY_CONTRAST: f32 = 4.5;
+const FLOATING_GLASS_SECONDARY_CONTRAST: f32 = 3.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceTreatment {
     /// A processed wallpaper is behind the UI.
@@ -1597,6 +1616,78 @@ impl Theme {
         (self.wallpaper.active && self.wallpaper.glass).then_some(GLASS_BLUR)
     }
 
+    /// The blur a *floating* layer (menu, popover, tooltip, toast, modal)
+    /// frosts its backdrop with. Structural panes and the composer keep
+    /// [`Self::glass_sigma`]'s wallpaper-only rule.
+    ///
+    /// Over a wallpaper the wallpaper contract decides, so the Glass panes
+    /// setting still turns every frost off. With no wallpaper, floating layers
+    /// frost the workbench beneath them in dark palettes on a renderer with a
+    /// backdrop pass, unless the OS asks for reduced transparency or increased
+    /// contrast. Light palettes keep their opaque card: a pale tint over a
+    /// blurred workbench cannot hold contrast the way a dark one does.
+    pub fn floating_glass_sigma(self) -> Option<f32> {
+        self.floating_glass_sigma_with(os_reduce_transparency())
+    }
+
+    /// [`Self::floating_glass_sigma`] with the OS preference passed in, so the
+    /// rule is testable without the process-wide cache.
+    pub fn floating_glass_sigma_with(self, reduce_transparency: bool) -> Option<f32> {
+        if self.wallpaper.active {
+            return self.glass_sigma();
+        }
+        (self.mode == ThemeMode::Dark && gpui::backdrop_blur_supported() && !reduce_transparency)
+            .then_some(FLOATING_GLASS_BLUR)
+    }
+
+    /// The alpha a frosted floating layer paints `base` at over the workbench:
+    /// the lowest value from [`FLOATING_GLASS_MIN_ALPHA`] up at which
+    /// `text_primary` and `text_secondary` keep their targets over both a
+    /// black and a white backdrop, so no blurred content behind the glass can
+    /// make its text unreadable. Computed from the live colours rather than
+    /// stored, so an accent or palette override can never leave it stale.
+    pub fn floating_glass_alpha(self, base: Hsla) -> f32 {
+        use crate::wallpaper::contrast_ratio;
+        let rgb = |color: Hsla| {
+            let color = gpui::Rgba::from(color);
+            [color.r, color.g, color.b]
+        };
+        let (surface, primary, secondary) =
+            (rgb(base), rgb(self.text_primary), rgb(self.text_secondary));
+        let holds = |alpha: f32| {
+            [[0.0_f32; 3], [1.0_f32; 3]].iter().all(|backdrop| {
+                let composite: [f32; 3] =
+                    std::array::from_fn(|i| backdrop[i] + (surface[i] - backdrop[i]) * alpha);
+                contrast_ratio(primary, composite) >= FLOATING_GLASS_PRIMARY_CONTRAST
+                    && contrast_ratio(secondary, composite) >= FLOATING_GLASS_SECONDARY_CONTRAST
+            })
+        };
+        // Whole hundredths: the result is stable and cheap (at most 45 steps).
+        let floor = (FLOATING_GLASS_MIN_ALPHA * 100.).round() as u32;
+        (floor..=100)
+            .map(|step| step as f32 / 100.)
+            .find(|alpha| holds(*alpha))
+            .unwrap_or(1.)
+    }
+
+    /// The fill of a floating layer. Over a wallpaper this is the
+    /// contrast-adjusted [`Self::card_fill`]; frosting the workbench it is
+    /// `base` at [`Self::floating_glass_alpha`]; otherwise exactly `base`.
+    pub fn floating_fill(self, base: Hsla) -> Hsla {
+        self.floating_fill_with(base, os_reduce_transparency())
+    }
+
+    /// [`Self::floating_fill`] with the OS preference passed in.
+    pub fn floating_fill_with(self, base: Hsla, reduce_transparency: bool) -> Hsla {
+        if self.wallpaper.active {
+            self.card_fill(base)
+        } else if self.floating_glass_sigma_with(reduce_transparency).is_some() {
+            base.opacity(self.floating_glass_alpha(base))
+        } else {
+            base
+        }
+    }
+
     /// What the page behind the transcript reads as: the palette canvas, or —
     /// over a wallpaper — that canvas composited with the picture.
     ///
@@ -1815,7 +1906,7 @@ fn persist_path() -> PathBuf {
 
 /// Install the persisted appearance (System by default) and font preferences.
 pub fn init(cx: &mut App) {
-    refresh_os_reduce_motion();
+    refresh_os_display_prefs();
     crate::wallpaper::init();
     let prefs = AppearancePrefs::load();
     cx.set_global(prefs);
@@ -1879,6 +1970,25 @@ pub fn refresh_os_reduce_motion() {
 
 pub fn os_reduce_motion() -> bool {
     OS_REDUCE_MOTION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The OS Reduce Transparency / Increase Contrast preference, cached like
+/// [`OS_REDUCE_MOTION`] and refreshed with it.
+static OS_REDUCE_TRANSPARENCY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Re-read both OS display preferences that change how surfaces paint.
+/// Called at launch and whenever a window becomes active.
+pub fn refresh_os_display_prefs() {
+    refresh_os_reduce_motion();
+    OS_REDUCE_TRANSPARENCY.store(
+        crate::platform::os_reduce_transparency(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn os_reduce_transparency() -> bool {
+    OS_REDUCE_TRANSPARENCY.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Set the cached OS preference directly. Tests only: the real value comes
@@ -2947,6 +3057,93 @@ mod tests {
             ..treatment
         };
         assert_eq!(theme.with_wallpaper(off).glass_sigma(), None);
+    }
+
+    #[test]
+    fn floating_glass_frosts_dark_palettes_without_a_wallpaper() {
+        let supported = gpui::backdrop_blur_supported();
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let base = theme.surface_elevated;
+            let expect = (theme.mode == ThemeMode::Dark && supported).then_some(FLOATING_GLASS_BLUR);
+            assert_eq!(theme.floating_glass_sigma_with(false), expect, "{id:?}");
+            assert_eq!(theme.glass_sigma(), None, "{id:?}: panes stay wallpaper-only");
+            let fill = theme.floating_fill_with(base, false);
+            if expect.is_some() {
+                assert_eq!(fill, base.opacity(theme.floating_glass_alpha(base)), "{id:?}");
+            } else {
+                assert_eq!(fill, base, "{id:?}: light palettes keep the opaque card");
+            }
+
+            // Reduce Transparency / Increase Contrast restores the solid card.
+            assert_eq!(theme.floating_glass_sigma_with(true), None, "{id:?}");
+            assert_eq!(theme.floating_fill_with(base, true), base, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn floating_glass_over_a_wallpaper_follows_the_wallpaper_contract() {
+        let theme = Theme::dark();
+        let base = theme.surface_elevated;
+        let glass = SurfaceTreatment {
+            active: true,
+            glass: true,
+            card_alpha: 0.6,
+            ..SurfaceTreatment::OPAQUE
+        };
+        let frosted = theme.with_wallpaper(glass);
+        assert_eq!(frosted.floating_glass_sigma_with(false), Some(GLASS_BLUR));
+        assert_eq!(frosted.floating_fill_with(base, false), base.opacity(0.6));
+
+        // The Glass panes setting still turns floating frost off.
+        let off = theme.with_wallpaper(SurfaceTreatment {
+            glass: false,
+            ..glass
+        });
+        assert_eq!(off.floating_glass_sigma_with(false), None);
+        assert_eq!(off.floating_fill_with(base, false), base.opacity(0.6));
+    }
+
+    #[test]
+    fn floating_glass_keeps_text_contrast_over_any_backdrop() {
+        use crate::wallpaper::contrast_ratio;
+        let rgb = |c: Hsla| {
+            let c = gpui::Rgba::from(c);
+            [c.r, c.g, c.b]
+        };
+        // The blurred workbench can be anything from black to a white image;
+        // the tint alone has to hold the card's text targets over both, and it
+        // must be the lowest such tint (one step lower fails, unless floored).
+        let passes = |theme: Theme, surface: [f32; 3], a: f32| {
+            [[0., 0., 0.], [1., 1., 1.]].iter().all(|backdrop: &[f32; 3]| {
+                let composite: [f32; 3] =
+                    std::array::from_fn(|i| backdrop[i] + (surface[i] - backdrop[i]) * a);
+                contrast_ratio(rgb(theme.text_primary), composite) >= 4.5
+                    && contrast_ratio(rgb(theme.text_secondary), composite) >= 3.0
+            })
+        };
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            if theme.mode != ThemeMode::Dark {
+                continue;
+            }
+            let surface = rgb(theme.surface_elevated);
+            let alpha = theme.floating_glass_alpha(theme.surface_elevated);
+            assert!(
+                (FLOATING_GLASS_MIN_ALPHA..=1.).contains(&alpha),
+                "{id:?}: {alpha}"
+            );
+            assert!(passes(theme, surface, alpha), "{id:?}: {alpha} loses contrast");
+            if alpha > FLOATING_GLASS_MIN_ALPHA + 0.005 {
+                assert!(
+                    !passes(theme, surface, alpha - 0.01),
+                    "{id:?}: {alpha} is not the lowest passing tint"
+                );
+            }
+        }
+        // Onyx's ink allows real glass; the measured minimum is 0.62.
+        let onyx = Theme::for_id(ThemeId::OrbitOnyx);
+        assert!(onyx.floating_glass_alpha(onyx.surface_elevated) < 0.7);
     }
 
     #[test]

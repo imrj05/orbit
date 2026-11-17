@@ -662,6 +662,13 @@ fn compact_skill_prompt(name: &str, trailing: &str) -> String {
     }
 }
 
+/// A stored prompt as a person reads it: an injected skill document reduced
+/// to [`compact_skill_prompt`], or `None` when the text is not one. Shared with
+/// the sidebar's session preview so both surfaces name the skill the same way.
+pub(crate) fn readable_skill_prompt(text: &str) -> Option<String> {
+    injected_skill(text).map(|(name, trailing)| compact_skill_prompt(&name, &trailing))
+}
+
 /// Whether a pi message value is that injected skill document.
 fn injected_skill_message(value: &Value) -> bool {
     let value = value.get("message").unwrap_or(value);

@@ -224,6 +224,7 @@ fn missing_parked_session_stays_parked_and_shows_unavailable(cx: &mut gpui::Test
         let stamp = app.mcp.fingerprint_for(Some(&session.cwd));
         app.park(session.path.clone(), ParkedSession {
             client,
+            accounts: app.provider_accounts.selection(),
             transcript: Transcript::new(),
             busy: true,
             added: 0,
@@ -284,6 +285,7 @@ fn shortcut_switch_to_a_warm_session_keeps_the_running_process(cx: &mut gpui::Te
             app.park(
                 target_path.clone(),
                 ParkedSession {
+                    accounts: app.provider_accounts.selection(),
                     client: parked_target,
                     transcript: Transcript::new(),
                     busy: false,
@@ -370,6 +372,7 @@ exec cat >/dev/null
             app.park(
                 target_path.clone(),
                 ParkedSession {
+                    accounts: app.provider_accounts.selection(),
                     client: parked_target,
                     transcript: Transcript::new(),
                     busy: false,
@@ -525,6 +528,7 @@ fn cross_workspace_switch_back_resumes_the_running_session(cx: &mut gpui::TestAp
             app.park(
                 target_path.clone(),
                 ParkedSession {
+                    accounts: app.provider_accounts.selection(),
                     client: parked_target,
                     transcript: Transcript::new(),
                     busy: false,
@@ -605,6 +609,7 @@ fn queued_messages_survive_a_switch_away_and_back(cx: &mut gpui::TestAppContext)
             app.park(
                 target_path.clone(),
                 ParkedSession {
+                    accounts: app.provider_accounts.selection(),
                     client: parked_target,
                     transcript: Transcript::new(),
                     busy: false,
@@ -684,6 +689,7 @@ exec cat >/dev/null
             app.park(
                 target_path.clone(),
                 ParkedSession {
+                    accounts: app.provider_accounts.selection(),
                     client: parked_target,
                     transcript: Transcript::new(),
                     busy: false,

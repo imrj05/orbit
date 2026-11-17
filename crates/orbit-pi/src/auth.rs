@@ -23,7 +23,7 @@
 //! account label, and the *kind* of credential (`oauth` / `api_key`). Access
 //! and refresh tokens are never parsed, stored, or rendered.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use orbit_rpc::{AuthErrorCode, AuthEvent, AuthProvider};
@@ -104,6 +104,16 @@ impl LoginPhase {
     }
 }
 
+/// Display-only OAuth prompt metadata. The answer belongs only to the UI input
+/// until it is sent once to pi; it is never retained in this reducer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginPrompt {
+    pub request_id: String,
+    pub kind: String,
+    pub message: String,
+    pub placeholder: Option<String>,
+}
+
 /// One in-flight (or recently finished) login session.
 #[derive(Debug, Clone)]
 pub struct LoginSession {
@@ -115,6 +125,9 @@ pub struct LoginSession {
     pub url: Option<String>,
     /// Device-code challenge, once known.
     pub device_code: Option<DeviceCode>,
+    /// One outstanding text/manual authorization-code request.
+    pub prompt: Option<LoginPrompt>,
+    seen_prompts: HashSet<String>,
     /// Optional progress note from pi.
     pub message: Option<String>,
     /// Structured failure.
@@ -221,6 +234,8 @@ impl AuthManager {
             phase: LoginPhase::Connecting,
             url: None,
             device_code: None,
+            prompt: None,
+            seen_prompts: HashSet::new(),
             message: None,
             error: None,
             deadline: Some(Instant::now() + self.ttls.login),
@@ -240,9 +255,30 @@ impl AuthManager {
         }
         let id = session.id.clone();
         session.phase = LoginPhase::Cancelled;
+        session.prompt = None;
         session.deadline = None;
         session.finished_at = Some(Instant::now());
         Some(id)
+    }
+
+    /// Consume only the current correlated request, once. No answer is stored.
+    pub fn take_prompt(&mut self, session_id: &str, provider: &str, request_id: &str) -> bool {
+        let Some(session) = self.login.as_mut() else {
+            return false;
+        };
+        if session.phase.is_terminal()
+            || session.id != session_id
+            || session.provider != provider
+            || request_id.is_empty()
+            || session
+                .prompt
+                .as_ref()
+                .is_none_or(|prompt| prompt.request_id != request_id)
+        {
+            return false;
+        }
+        session.prompt = None;
+        true
     }
 
     /// Dismiss a finished login card without touching pi.
@@ -342,24 +378,36 @@ impl AuthManager {
         data: Option<&serde_json::Value>,
         error: Option<&str>,
     ) {
+        if self
+            .login
+            .as_ref()
+            .is_none_or(|session| session.phase.is_terminal())
+        {
+            return;
+        }
         if !success {
             let message = error.unwrap_or(&tr!("auth.login_failed")).to_string();
             if let Some(session) = self.login.as_mut() {
                 session.phase = LoginPhase::Error;
+                session.prompt = None;
                 session.deadline = None;
                 session.finished_at = Some(Instant::now());
                 session.error = Some((classify_error(&message), message));
             }
             return;
         }
-        // pi may confirm with the session id; adopt it if ours differs so
-        // subsequent events still correlate.
+        // The client owns the id. An acknowledgement from a retired login
+        // must not retarget the current flow to a stale server session.
         if let Some(server_id) = data
             .and_then(|data| data.get("sessionId"))
             .and_then(serde_json::Value::as_str)
         {
-            if let Some(session) = self.login.as_mut() {
-                session.id = server_id.to_string();
+            if self
+                .login
+                .as_ref()
+                .is_none_or(|session| session.id != server_id)
+            {
+                return;
             }
         }
         if let Some(session) = self.login.as_mut() {
@@ -399,12 +447,109 @@ impl AuthManager {
     /// Apply one `auth.*` event. Returns effects to perform.
     pub fn on_event(&mut self, event: AuthEvent) -> Vec<AuthEffect> {
         let mut effects = Vec::new();
-        match event {
+        let correlation = match &event {
             AuthEvent::LoginStarted {
                 session_id,
                 provider,
+                ..
+            }
+            | AuthEvent::LoginPrompt {
+                session_id,
+                provider,
+                ..
+            }
+            | AuthEvent::LoginPromptClosed {
+                session_id,
+                provider,
+                ..
+            }
+            | AuthEvent::LoginUrl {
+                session_id,
+                provider,
+                ..
+            }
+            | AuthEvent::DeviceCode {
+                session_id,
+                provider,
+                ..
+            }
+            | AuthEvent::LoginWaiting {
+                session_id,
+                provider,
+                ..
+            }
+            | AuthEvent::LoginSucceeded {
+                session_id,
+                provider,
+                ..
+            }
+            | AuthEvent::LoginFailed {
+                session_id,
+                provider,
+                ..
+            }
+            | AuthEvent::LoginCancelled {
+                session_id,
+                provider,
+                ..
+            } => Some((session_id, provider)),
+            _ => None,
+        };
+        if let Some((id, provider)) = correlation {
+            if id.is_empty()
+                || provider.is_empty()
+                || self.login.as_ref().is_none_or(|session| {
+                    session.id != *id
+                        || session.provider != *provider
+                        || session.phase.is_terminal()
+                })
+            {
+                return effects;
+            }
+        }
+        match event {
+            AuthEvent::LoginPrompt {
+                session_id,
+                request_id,
+                kind,
+                message,
+                placeholder,
+                ..
+            } => {
+                if request_id.is_empty() || !matches!(kind.as_str(), "text" | "manual_code") {
+                    return effects;
+                }
+                if let Some(session) = self.session_mut(&session_id) {
+                    if session.seen_prompts.insert(request_id.clone()) {
+                        session.prompt = Some(LoginPrompt {
+                            request_id,
+                            kind,
+                            message,
+                            placeholder,
+                        });
+                    }
+                }
+            }
+            AuthEvent::LoginPromptClosed {
+                session_id,
+                request_id,
+                ..
+            } => {
+                if let Some(session) = self.session_mut(&session_id) {
+                    if session
+                        .prompt
+                        .as_ref()
+                        .is_some_and(|prompt| prompt.request_id == request_id)
+                    {
+                        session.prompt = None;
+                    }
+                }
+            }
+            AuthEvent::LoginStarted {
+                session_id,
                 method,
                 expires_at,
+                ..
             } => {
                 let deadline = self.deadline(expires_at);
                 if let Some(session) = self.session_mut(&session_id) {
@@ -413,20 +558,6 @@ impl AuthManager {
                         session.phase = awaiting_phase(&session.method);
                     }
                     session.deadline = Some(deadline);
-                } else {
-                    // Started event raced ahead of our bookkeeping; adopt it.
-                    self.login = Some(LoginSession {
-                        id: session_id,
-                        provider,
-                        phase: awaiting_phase(&method),
-                        method,
-                        url: None,
-                        device_code: None,
-                        message: None,
-                        error: None,
-                        deadline: Some(deadline),
-                        finished_at: None,
-                    });
                 }
             }
             AuthEvent::LoginUrl {
@@ -531,6 +662,7 @@ impl AuthManager {
             if !session.phase.is_terminal() {
                 self.recovering = Some(session.provider.clone());
                 session.phase = LoginPhase::Cancelled;
+                session.prompt = None;
                 session.deadline = None;
                 session.finished_at = Some(Instant::now());
                 session.message = Some(tr!("auth.interrupted_by_restart"));
@@ -571,6 +703,7 @@ impl AuthManager {
         }
         if session.deadline.is_some_and(|deadline| now >= deadline) {
             session.phase = LoginPhase::Error;
+            session.prompt = None;
             session.deadline = None;
             session.finished_at = Some(now);
             session.error = Some((AuthErrorCode::Timeout, tr!("auth.sign_in_timed_out")));
@@ -620,6 +753,7 @@ impl AuthManager {
     ) {
         if let Some(session) = self.session_mut(session_id) {
             session.phase = phase;
+            session.prompt = None;
             session.deadline = None;
             session.finished_at = Some(Instant::now());
             session.error = error;
@@ -707,6 +841,116 @@ mod tests {
                  "methods":[{"id":"device_code","label":"Device code"}]}
             ]
         })
+    }
+
+    fn prompt(id: &str, request: &str, provider: &str) -> AuthEvent {
+        AuthEvent::LoginPrompt {
+            session_id: id.into(),
+            provider: provider.into(),
+            request_id: request.into(),
+            kind: "manual_code".into(),
+            message: "Paste code".into(),
+            placeholder: None,
+        }
+    }
+
+    #[test]
+    fn prompt_requires_matching_ids_and_is_single_use() {
+        let mut auth = AuthManager::new();
+        let id = auth.start_login("anthropic", "browser");
+        for event in [
+            prompt("", "request", "anthropic"),
+            prompt("stale", "request", "anthropic"),
+            prompt(&id, "", "anthropic"),
+            prompt(&id, "request", "other"),
+        ] {
+            auth.on_event(event);
+            assert!(auth.login().unwrap().prompt.is_none());
+        }
+        auth.on_event(prompt(&id, "request", "anthropic"));
+        assert!(auth.login().unwrap().prompt.is_some());
+        assert!(!auth.take_prompt(&id, "other", "request"));
+        assert!(!auth.take_prompt(&id, "anthropic", "wrong"));
+        assert!(auth.take_prompt(&id, "anthropic", "request"));
+        assert!(!auth.take_prompt(&id, "anthropic", "request"));
+        auth.on_event(prompt(&id, "request", "anthropic"));
+        assert!(
+            auth.login().unwrap().prompt.is_none(),
+            "replayed request stays retired"
+        );
+        auth.on_event(prompt(&id, "next", "anthropic"));
+        auth.on_event(AuthEvent::LoginPromptClosed {
+            session_id: id.clone(),
+            provider: "anthropic".into(),
+            request_id: "request".into(),
+        });
+        assert_eq!(
+            auth.login().unwrap().prompt.as_ref().unwrap().request_id,
+            "next"
+        );
+        auth.on_event(AuthEvent::LoginPromptClosed {
+            session_id: id,
+            provider: "anthropic".into(),
+            request_id: "next".into(),
+        });
+        assert!(auth.login().unwrap().prompt.is_none());
+    }
+
+    #[test]
+    fn all_terminal_paths_retire_prompts_and_ignore_late_events() {
+        for outcome in ["success", "error", "cancel", "disconnect", "timeout"] {
+            let mut auth = AuthManager::new();
+            let id = auth.start_login("anthropic", "browser");
+            auth.on_event(prompt(&id, "request", "anthropic"));
+            match outcome {
+                "success" => {
+                    auth.on_event(AuthEvent::LoginSucceeded {
+                        session_id: id.clone(),
+                        provider: "anthropic".into(),
+                        method: None,
+                        credential: None,
+                        expires_at: None,
+                    });
+                }
+                "error" => auth.on_login_response(false, None, Some("failed")),
+                "cancel" => {
+                    auth.cancel_login();
+                }
+                "disconnect" => auth.on_disconnect(),
+                _ => {
+                    auth.poll(Instant::now() + DEFAULT_LOGIN_TTL);
+                }
+            }
+            assert!(auth.login().unwrap().prompt.is_none(), "{outcome}");
+            assert!(!auth.take_prompt(&id, "anthropic", "request"));
+            assert!(auth
+                .on_event(AuthEvent::LoginUrl {
+                    session_id: id.clone(),
+                    provider: "anthropic".into(),
+                    url: "https://example.invalid".into()
+                })
+                .is_empty());
+            auth.on_event(prompt(&id, "late", "anthropic"));
+            assert!(auth.login().unwrap().prompt.is_none());
+        }
+    }
+
+    #[test]
+    fn stale_login_success_cannot_authenticate_another_account() {
+        let mut auth = AuthManager::new();
+        let old = auth.start_login("anthropic", "browser");
+        let current = auth.start_login("anthropic", "browser");
+        assert!(auth
+            .on_event(AuthEvent::LoginSucceeded {
+                session_id: old,
+                provider: "anthropic".into(),
+                method: None,
+                credential: None,
+                expires_at: None
+            })
+            .is_empty());
+        assert!(auth.status("anthropic").is_none());
+        assert_eq!(auth.login().unwrap().id, current);
     }
 
     #[test]
@@ -875,13 +1119,13 @@ mod tests {
     }
 
     #[test]
-    fn login_response_adopts_server_session_id() {
+    fn login_response_rejects_a_different_session_id() {
         let mut auth = AuthManager::new();
-        auth.start_login("anthropic", "browser");
+        let id = auth.start_login("anthropic", "browser");
         auth.on_login_response(true, Some(&json!({"sessionId":"server-1"})), None);
-        assert_eq!(auth.login().unwrap().id, "server-1");
-        assert_eq!(auth.login().unwrap().phase, LoginPhase::AwaitingBrowser);
-        // Events with the server id still correlate.
+        assert_eq!(auth.login().unwrap().id, id);
+        assert_eq!(auth.login().unwrap().phase, LoginPhase::Connecting);
+        // Events from that stale server flow are ignored, too.
         auth.on_event(AuthEvent::LoginSucceeded {
             session_id: "server-1".into(),
             provider: "anthropic".into(),
@@ -889,7 +1133,7 @@ mod tests {
             credential: None,
             expires_at: None,
         });
-        assert_eq!(auth.login().unwrap().phase, LoginPhase::Succeeded);
+        assert_eq!(auth.login().unwrap().phase, LoginPhase::Connecting);
     }
 
     #[test]
@@ -989,17 +1233,15 @@ mod tests {
     }
 
     #[test]
-    fn event_racing_ahead_of_bookkeeping_is_adopted() {
+    fn unsolicited_started_event_is_ignored() {
         let mut auth = AuthManager::new();
-        // No start_login call: the event creates the session.
+        // No local start_login: never resurrect a stale login from the stream.
         auth.on_event(AuthEvent::LoginStarted {
             session_id: "server-2".into(),
             provider: "anthropic".into(),
             method: "browser".into(),
             expires_at: None,
         });
-        let session = auth.login().unwrap();
-        assert_eq!(session.id, "server-2");
-        assert_eq!(session.phase, LoginPhase::AwaitingBrowser);
+        assert!(auth.login().is_none());
     }
 }

@@ -34,6 +34,7 @@ fn rows_for(
         &None,
         &HashSet::new(),
         review,
+        &HashMap::new(),
     )
     .iter()
     .filter_map(|row| match row {

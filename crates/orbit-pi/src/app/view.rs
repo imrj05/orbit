@@ -9,9 +9,11 @@ use gpui::StyledText;
 
 use crate::theme::tokens::{
     button, context_menu, input, looping, panel, picker, popover, ButtonSize, DynamicSpacing,
-    IconSize, Radius, StyledExt, TextSize,
+    IconSize, Radius, TextSize, BORDER_WIDTH,
 };
-use crate::usage::tooltip::Tooltip;
+use crate::ui::button::navigation_icon_button;
+use crate::ui::style::surface::SurfaceExt;
+use crate::ui::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
 use crate::workspace_mark::{self, WorkspaceMark};
 
@@ -297,6 +299,24 @@ impl Render for OrbitApp {
         if old != side_rows.len() {
             self.sidebar_list.splice(0..old, side_rows.len());
         }
+        // A row drag (issue #143): the state is cleared the moment the mouse
+        // is up, so an insertion line can never outlive the drag that painted
+        // it — including a release outside every drop target, which dispatches
+        // no drop at all.
+        if !cx.has_active_drag() {
+            if self.project_drag.is_some() {
+                self.project_drag = None;
+            }
+            if self.session_drag.is_some() {
+                self.session_drag = None;
+            }
+        }
+        let project_drag: Rc<Option<ProjectDragState>> = Rc::new(self.project_drag.clone());
+        let session_drag: Rc<Option<SessionDragState>> = Rc::new(self.session_drag.clone());
+        // Session rows are rearranged in the grouped list only: a flat list
+        // and a search result set order by recency, and a row there has no
+        // project block to sit in.
+        let sessions_reorderable = self.sessions_reorderable();
         let sessions_data = Rc::new(sidebar_sessions);
         let active_path = Rc::new(self.current_session_path.clone());
         let session_menu = Rc::new(self.session_menu.clone());
@@ -361,6 +381,9 @@ impl Render for OrbitApp {
                     &session_statuses,
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
+                    // The overlay is a second paint of a header that already
+                    // has a drop target: it never starts or accepts one.
+                    &SidebarDragPaint::idle(),
                     sidebar_cursor == Some(sticky.ix),
                     self.session_card.as_deref(),
                     keyboard_card,
@@ -704,9 +727,7 @@ impl Render for OrbitApp {
                     // The rail is the one structural pane that frosts: the
                     // wallpaper stays sharp beside it, so the image reads as
                     // something the rail is laid over rather than painted on.
-                    .when_some(theme.glass_sigma(), |panel, sigma| {
-                        panel.border_color(gpui::backdrop_blur_marker(sigma))
-                    })
+                    .frosted_pane(&theme)
                     .child(
                         div()
                             .id("sidebar")
@@ -816,14 +837,24 @@ impl Render for OrbitApp {
                                     .flex()
                                     .flex_col()
                                     // Section label stays visible in every grouping.
+                                    // A quiet eyebrow: small semibold muted
+                                    // label, then a hairline to the edge, so
+                                    // the section reads as a heading without a
+                                    // box. The left inset matches a project
+                                    // header's chevron column.
                                     .child(
-                                        div().px(px(14.)).pb(px(2.)).flex().items_center().child(
+                                        div()
+                                            .px(DynamicSpacing::Base16.px(&theme))
+                                            .pt(DynamicSpacing::Base04.px(&theme))
+                                            .flex()
+                                            .items_center()
+                                            .gap(DynamicSpacing::Base08.px(&theme))
+                                            .child(
                                             div()
-                                                .flex_1()
                                                 .min_w_0()
                                                 .truncate()
-                                                .text_size(TextSize::Small.px(&theme))
-                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_size(TextSize::XSmall.px(&theme))
+                                                .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(theme.text_muted)
                                                 .child(match self.sidebar_group_by {
                                                     SidebarGroupBy::OneList => {
@@ -836,6 +867,13 @@ impl Render for OrbitApp {
                                                         tr!("sidebar.projects")
                                                     }
                                                 }),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(DynamicSpacing::Base16.px(&theme))
+                                                .h(BORDER_WIDTH)
+                                                .bg(theme.border_subtle),
                                         ),
                                     )
                                     .child(if side_rows.is_empty() {
@@ -904,6 +942,16 @@ impl Render for OrbitApp {
                                                                     &session_statuses,
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
+                                                                    &SidebarDragPaint {
+                                                                        project: project_drag
+                                                                            .as_ref()
+                                                                            .as_ref(),
+                                                                        session: session_drag
+                                                                            .as_ref()
+                                                                            .as_ref(),
+                                                                        interactive: true,
+                                                                        sessions: sessions_reorderable,
+                                                                    },
                                                                     sidebar_cursor == Some(ix),
                                                                     this.read(cx)
                                                                         .session_card
@@ -1739,6 +1787,27 @@ impl Render for OrbitApp {
                         .update(cx, |panel, cx| panel.set_height(height, cx));
                 },
             ))
+            // A project header is being dragged across the sidebar: resolve
+            // the landing group from the list's measured row bounds. Root-level
+            // so a move between headers keeps tracking wherever the pointer is.
+            .on_drag_move(cx.listener(
+                |app: &mut Self,
+                 event: &DragMoveEvent<ProjectDrag>,
+                 _: &mut Window,
+                 cx: &mut Context<Self>| {
+                    app.on_project_drag_move(event, cx);
+                },
+            ))
+            // The same for a session row, whose landing row must be in the
+            // session's own project group.
+            .on_drag_move(cx.listener(
+                |app: &mut Self,
+                 event: &DragMoveEvent<SessionDrag>,
+                 _: &mut Window,
+                 cx: &mut Context<Self>| {
+                    app.on_session_drag_move(event, cx);
+                },
+            ))
             .on_action(cx.listener(Self::on_submit))
             .on_action(cx.listener(Self::on_steer))
             .on_action(cx.listener(Self::on_send_alternate))
@@ -1771,6 +1840,8 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_sidebar_end))
             .on_action(cx.listener(Self::on_sidebar_confirm))
             .on_action(cx.listener(Self::on_sidebar_close))
+            .on_action(cx.listener(Self::on_sidebar_move_row_up))
+            .on_action(cx.listener(Self::on_sidebar_move_row_down))
             .on_action(cx.listener(Self::on_toggle_command_palette))
             // ⌘⌥P starts or stops a frame-time capture (debug builds bind the
             // chord; the body compiles away in release). Registered at the root
@@ -4298,17 +4369,13 @@ impl OrbitApp {
         // Git — opens (or leaves) the Git page (⌘⇧G). Lives in the footer,
         // ahead of Usage, because it is a workbench destination, not a
         // readout; the top bar keeps it in the "…" overflow.
-        let git = icon_button_frame(div().id("sidebar-git"), &theme, ButtonSize::Medium)
+        let git = navigation_icon_button(
+            div().id("sidebar-git"),
+            &theme,
+            ButtonSize::Medium,
+            self.git_open,
+        )
             .tip(commands::tooltip(CommandId::OpenGit, false))
-            .when(self.git_open, |btn| btn.bg(theme.surface_active))
-            .cursor_pointer()
-            .hover_state_open(&theme, self.git_open)
-            .when(self.git_open, |btn| {
-                btn.pressed_state(&theme, PressedRamp::Selected)
-            })
-            .when(!self.git_open, |btn| {
-                btn.pressed_state(&theme, PressedRamp::Wash)
-            })
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_git_nav_click))
             .child(icon(
                 "icons/github.svg",
@@ -4320,17 +4387,13 @@ impl OrbitApp {
                 },
             ));
         // Usage — opens (or leaves) the Usage page (⌘U).
-        let usage = icon_button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Medium)
+        let usage = navigation_icon_button(
+            div().id("sidebar-usage"),
+            &theme,
+            ButtonSize::Medium,
+            self.usage_open,
+        )
             .tip(commands::tooltip(CommandId::ToggleUsage, false))
-            .when(self.usage_open, |btn| btn.bg(theme.surface_active))
-            .cursor_pointer()
-            .hover_state_open(&theme, self.usage_open)
-            .when(self.usage_open, |btn| {
-                btn.pressed_state(&theme, PressedRamp::Selected)
-            })
-            .when(!self.usage_open, |btn| {
-                btn.pressed_state(&theme, PressedRamp::Wash)
-            })
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_usage_nav_click))
             .child(icon(
                 "icons/chart-analysis.svg",
@@ -4342,17 +4405,13 @@ impl OrbitApp {
                 },
             ));
         // Settings — toggles the Settings surface (⌘,).
-        let settings = icon_button_frame(div().id("settings"), &theme, ButtonSize::Medium)
+        let settings = navigation_icon_button(
+            div().id("settings"),
+            &theme,
+            ButtonSize::Medium,
+            self.settings_open,
+        )
             .tip(commands::tooltip(CommandId::OpenSettings, false))
-            .when(self.settings_open, |btn| btn.bg(theme.surface_active))
-            .cursor_pointer()
-            .hover_state_open(&theme, self.settings_open)
-            .when(self.settings_open, |btn| {
-                btn.pressed_state(&theme, PressedRamp::Selected)
-            })
-            .when(!self.settings_open, |btn| {
-                btn.pressed_state(&theme, PressedRamp::Wash)
-            })
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_gear_click))
             .child(icon(
                 "icons/settings.svg",

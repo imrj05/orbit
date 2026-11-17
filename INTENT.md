@@ -436,6 +436,41 @@ with a password method listed, a masked dialog asks, and the probe reruns with
 ssh process's environment. Memory only, keyed by ssh account, dropped when
 refused.
 
+### D21 — Multiple accounts per provider: every account is its own provider
+
+**Choice (revised):** an extra account is an *alias provider*. Its metadata
+(name, provider, alias) lives in `~/.orbit-pi/accounts.json`; the bundled
+`contrib/orbit-accounts-extension/` registers, at pi startup, a copy of the
+built-in provider (`builtinProviders()` from pi-ai) under the alias id
+`<provider>~<slug>` and the name `<Provider> · <name>`. pi keys credentials by
+provider id, so each account signs in (browser, device code, pasted code or API
+key, through the ordinary `auth.*` flow), refreshes and is stored separately in
+pi's own `~/.pi/agent/auth.json`. The Default account is the built-in provider
+itself. Every account is live in every session at once: their models sit side by
+side in the model picker, and nothing is selected per session.
+
+**Rationale:** the first version routed one account per provider per session
+through a pi patch (`contrib/pi-auth-profiles/`), so two accounts of one provider
+could never be used in the same session and switching restarted pi. A complete
+`Provider` registered by an extension carries the base provider's OAuth login,
+refresh and streaming unchanged (verified against pi 1.5.2: `auth.list` lists the
+alias with `browser` and `device_code`, `--list-models` lists its models, and a
+request dispatches with the alias's own credential). No patch, no copied token,
+no restart on use.
+
+**Consequence:** adding, renaming or removing an account restarts pi (it
+registers providers at startup) — at once when idle, otherwise through the
+"Restart pi" banner. Removing an account signs it out (its `auth.json` entry is
+deleted). The alias slug is fixed at creation; a rename changes only the name.
+Built-in providers only: a `models.json` custom provider can be duplicated by
+hand. Remote sessions use the host's own providers. Version-1 stores
+(`provider-accounts.json` + per-profile `auth.json`) migrate on load: each
+credential is *moved* under its alias (never overwriting a live entry), the old
+folders are deleted, the per-session bindings are dropped, and the old file is
+left as an empty version-1 store so an older Orbit build still starts. The
+per-session routing plumbing remains in the spawn path but always carries an
+empty selection; removing it is a follow-up.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -511,6 +546,16 @@ sits beside the count. The row's **Models**/**Configure** dialog edits the ids, 
 and key (the text field is the bulk-paste path; **Fetch models** adds the endpoint's ids to
 it) and does not repeat the list.
 
+Provider **accounts** (D21) ship as an **Accounts** panel in each provider's row
+(add, rename, remove, and each account's sign-in state) and as one provider row per
+account right after its provider, where that account signs in and manages its
+models. All accounts are live in every session at once and appear in the model
+picker as `<Provider> · <name>`. Covered by the account-store tests (aliases,
+migration, sign-out on remove), the rendered Providers-page test, the bundled
+extension tests and `contrib/orbit-accounts-extension` `node --test`. Not yet:
+a manual GUI pass on the panel, accounts of `models.json` custom providers, and
+removing the retired per-session routing plumbing.
+
 Subagents (D18) ship the delegation tool, agent discovery, the three run modes, the caps, the
 mode/ceiling pre-flight, child cost reporting and the delegation card (per-child rows with the
 current step, the run's usage and mode, a blocked/refused banner, and — expanded — the child's real
@@ -542,6 +587,19 @@ The Report a bug draft generator has a searchable model selector. It defaults to
 Review and the Git page re-read a diff when a change or manual refresh arrives during an in-flight load; failures are surfaced rather than silently leaving an old snapshot. Bug reports with screenshots fall back to the browser and open the saved screenshot folder when `gh` rejects an upload before issue creation, including its repository-write-access preflight.
 
 Where space permits, the Review toolbar shows the changed-file total beside the ±stats and previous / next file arrows with the reader's place among them (`12/187`). On narrower panes the total is shown in the navigator instead, and the navigator also folds away when space is tight. The arrows and the `n` / `p` shortcuts use the same step, measured from the file at the top of the diff rather than a tree selection scrolled away from, and both go inert at the first and last file.
+
+Floating glass without a wallpaper: in dark palettes on macOS, every floating
+layer built on `elevation_2` / `elevation_3` (menus, pickers, popovers,
+tooltips, toasts, modals, the jump-to-latest button) frosts the workbench
+behind it through the vendored backdrop pass at `FLOATING_GLASS_BLUR` (24 pt)
+under a tint of `surface_elevated` at `Theme::floating_glass_alpha`: the lowest alpha
+from `FLOATING_GLASS_MIN_ALPHA` (0.55) up at which the palette's primary and
+secondary text keep their WCAG targets over both a black and a white backdrop
+(0.62 for Onyx, up to 0.82 for Flexoki), computed from the live colours. `Theme::floating_glass_sigma` is the one rule: over a wallpaper it
+defers to `glass_sigma` (so Glass panes still turns it off); light palettes,
+renderers without the pass, and macOS Reduce Transparency / Increase Contrast
+(read with Reduce Motion at launch and on window activation) keep the opaque
+card. Structural panes and the composer still frost only over a wallpaper.
 
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
@@ -585,6 +643,35 @@ because it averages output tokens over the whole request (prefill plus decode).
 The navigation rail's user-turn index is likewise cached in `Transcript` and
 rebuilt only when the message list changes, and debug builds log one local
 `[orbit:perf]` line per settle (window, cache, prompt, output, duration, rate).
+
+Workspace groups can be reordered (issue #143). Dragging a project header
+carries a chip with the project's name, paints an insertion line on the header a
+release would use (targets come from the list's own measured row bounds, so a
+scrolled or virtualized list resolves correctly), and writes the new order on
+the drop; the header menu's **Move up** / **Move down** rows (listed disabled at
+an edge, with the reason) and ⌥↑/⌥↓ while the sidebar has keyboard focus run the
+same `move_project_group`. A move is always applied to the order the sidebar is
+showing — that displayed order is pinned into `workspaces.json` first, so a drag
+can never contradict what the user saw — and the first move pins
+`workspace_sort` to Manual (with a toast) rather than being silently re-sorted
+away. `sidebar_sort_tests` covers the reorder algebra, the displayed-order pin
+and the edge no-op; the pointer drag itself has not yet been checked in the GUI
+by hand.
+
+Sessions inside a project group can be rearranged the same way, as long as the
+sidebar is showing the grouped list. A session row carries its own drag (a chip
+with the session title, an insertion line on the landing row) and only accepts a
+drop from its own project — a session never leaves its folder. `⌥↑`/`⌥↓` and the
+row menu's **Move up** / **Move down** run the same `move_session`, which pins
+that group's current display order into `session_order` (one ordered path list
+per project label, `~/.orbit-pi/session-order.json`) and persists it. Ordering is
+then: pinned sessions, then sessions nobody has arranged (recency — a task
+created after the group was arranged still appears at the top), then the arranged
+block. Flat, Recent and search lists keep pure recency and show no session move
+affordance. `session_order`'s store tests, `sidebar_sort_tests` (the rank sort,
+the reorder algebra, a persisted move, a refused cross-project move) and
+`sidebar_drag_tests` (the insert line paints only on the landing row) cover it;
+the drag gesture is unverified in the GUI.
 
 The sidebar keeps the title, prompt preview, status/age, branch/divergence,
 provider/model marks, and pin/archive indicators. Flat mode and search name each

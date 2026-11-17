@@ -5,28 +5,18 @@ use crate::motion::Hover;
 use crate::platform::WindowCommand;
 use crate::theme::tokens::{
     self, button, context_menu, input, list, list_item, looping, panel, picker, popover,
-    BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, InteractionState, Motion, Radius,
-    StyledExt, TextSize,
+    BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Motion, Radius, StyledExt, TextSize,
 };
-use crate::usage::tooltip::Tooltip;
 use gpui::{Font, FontFeatures, FontStyle, InteractiveElement, ObjectFit};
 
-/// Attach Orbit's native tooltip to any interactive element.
-///
-/// The send / stop button set the register: a localized label, usually with the
-/// keyboard shortcut appended (e.g. `Send (↵)`). This keeps every icon-only
-/// button's hover affordance one line at the call site instead of repeating the
-/// `Tooltip::new` closure.
-pub(crate) trait TipExt: InteractiveElement {
-    fn tip(mut self, label: impl Into<SharedString>) -> Self {
-        let label = label.into();
-        self.interactivity()
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into());
-        self
-    }
-}
+// The interaction-state traits live in `ui::style::control`; re-exported so
+// `crate::app::{ControlExt, …}` and `helpers::{…}` keep resolving while
+// call sites migrate (docs/plans/ui-component-layer.md, phase 1a).
+pub(crate) use crate::ui::button::{button_frame, icon_button_frame};
+pub(crate) use crate::ui::style::control::{
+    AccentWash, ControlExt, PressedRamp, StatefulControlExt, TipExt,
+};
 
-impl<T: InteractiveElement> TipExt for T {}
 
 /// A compact keyboard key, suitable for an inline shortcut hint.
 pub(crate) fn kbd_key(label: impl Into<SharedString>, theme: &Theme) -> AnyElement {
@@ -109,280 +99,6 @@ pub(crate) fn kbd_shortcut(chord: &str, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The interaction-state contract, applied to an element.
-///
-/// Every interactive surface answers the same six states, and the colours come
-/// from [`InteractionState`] rather than from the call site. Phase 2 of the
-/// UI/UX Modernization epic routes existing call sites through this trait, so a
-/// surface that wants a hover no longer names `surface_hover` itself.
-///
-/// ```ignore
-/// button_frame(div().id("save"), &theme, ButtonSize::Default)
-///     .hover_state(&theme)
-///     .child(label)
-/// ```
-pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
-    /// Hover: the contract's fill under primary ink. Replaces
-    /// `.hover(|s| s.bg(theme.surface_hover))` and its `raised` twins.
-    fn hover_state(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
-        let ink = InteractionState::Hover.control_ink(theme);
-        self.hover(move |style| style.bg(fill).text_color(ink))
-    }
-
-    /// Hover for a control that floats over a translucent surface or the
-    /// wallpaper (header chips, in-scroller affordances, glass trays). The
-    /// wash is ink at low alpha — `overlay_strong` — so what is behind the
-    /// control stays visible; `surface_hover` would paint an opaque slab.
-    fn hover_on_glass(self, theme: &Theme) -> Self {
-        let wash = InteractionState::Glass.glass_fill(theme);
-        self.hover(move |style| style.bg(wash))
-    }
-
-    /// Hover for a field or track: the frame steps to `border_strong` and the
-    /// fill does not change. Used where the control is defined by its outline
-    /// — text fields, sliders, and segmented tracks.
-    fn hover_border(self, theme: &Theme) -> Self {
-        let edge = InteractionState::Hover
-            .border(theme)
-            .unwrap_or(theme.border_strong);
-        self.hover(move |style| style.border_color(edge))
-    }
-
-    /// Hover for a primary action: the fill steps to `action_hover`, the step
-    /// the `action` role exists for.
-    fn hover_action(self, theme: &Theme) -> Self {
-        let fill = theme.action_hover;
-        self.hover(move |style| style.bg(fill))
-    }
-
-    /// Hover for a destructive control: the fill steps to `error_hover`.
-    fn hover_danger(self, theme: &Theme) -> Self {
-        let fill = theme.error_hover;
-        self.hover(move |style| style.bg(fill))
-    }
-
-    /// Hover for a destructive control that is quiet at rest: an error-tinted
-    /// border and wash, with the error ink appearing only under the pointer.
-    fn hover_danger_soft(self, theme: &Theme) -> Self {
-        let border = theme.error.opacity(0.6);
-        let fill = theme.error.opacity(0.08);
-        let ink = theme.error;
-        self.hover(move |style| style.border_color(border).bg(fill).text_color(ink))
-    }
-
-    /// Hover for an accent-filled control: the fill steps to `accent_hover`.
-    fn hover_accent(self, theme: &Theme) -> Self {
-        let fill = theme.accent_hover;
-        self.hover(move |style| style.bg(fill))
-    }
-
-    /// Hover for a control that is defined by its outline: the wash plus the
-    /// strong hairline, no ink change.
-    fn hover_bordered(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
-        let edge = theme.border_strong;
-        self.hover(move |style| style.bg(fill).border_color(edge))
-    }
-
-    /// `hover_bordered`, and the ink lifts to primary as well.
-    fn hover_bordered_ink(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
-        let edge = theme.border_strong;
-        let ink = theme.text_primary;
-        self.hover(move |style| style.bg(fill).border_color(edge).text_color(ink))
-    }
-
-    /// A wash that keeps secondary ink — a row whose label must not brighten
-    /// just because the pointer crossed it.
-    fn hover_quiet(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
-        let ink = theme.text_secondary;
-        self.hover(move |style| style.bg(fill).text_color(ink))
-    }
-
-    /// Ink only: a control with no fill of its own brightens to primary.
-    fn hover_ink(self, theme: &Theme) -> Self {
-        let ink = theme.text_primary;
-        self.hover(move |style| style.text_color(ink))
-    }
-
-    /// Ink only, stepping *down* to secondary: used where the resting state is
-    /// primary and the pointer should quiet it.
-    fn hover_ink_quiet(self, theme: &Theme) -> Self {
-        let ink = theme.text_secondary;
-        self.hover(move |style| style.text_color(ink))
-    }
-
-    /// Ink only, to the accent's readable role (a link brightening).
-    fn hover_ink_accent(self, theme: &Theme) -> Self {
-        let ink = theme.accent_text;
-        self.hover(move |style| style.text_color(ink))
-    }
-
-    /// The translucent ink wash for a surface that is itself translucent.
-    fn hover_overlay(self, theme: &Theme) -> Self {
-        let wash = theme.overlay;
-        self.hover(move |style| style.bg(wash))
-    }
-
-    /// The stronger translucent wash, with primary ink.
-    fn hover_overlay_strong(self, theme: &Theme) -> Self {
-        let wash = theme.overlay_strong;
-        let ink = theme.text_primary;
-        self.hover(move |style| style.bg(wash).text_color(ink))
-    }
-
-    /// The hover a control takes while its surface is already open: it stays
-    /// on the selected step, because a second wash would read as a new state.
-    fn hover_state_open(self, theme: &Theme, open: bool) -> Self {
-        let fill = if open {
-            InteractionState::Pressed
-                .fill(theme)
-                .expect("Pressed fills")
-        } else {
-            InteractionState::Hover.fill(theme).expect("Hover fills")
-        };
-        self.hover(move |style| style.bg(fill))
-    }
-
-    /// An accent-tinted wash. The hue is always the accent; the call site names
-    /// how strong, never which colour.
-    fn hover_accent_wash(self, theme: &Theme, wash: AccentWash) -> Self {
-        let fill = theme.accent.opacity(wash.alpha());
-        self.hover(move |style| style.bg(fill))
-    }
-
-    /// A hairline that strengthens under the pointer (dividers, tracks).
-    fn hover_divider(self, theme: &Theme) -> Self {
-        let edge = theme.border_strong;
-        self.hover(move |style| style.bg(edge))
-    }
-
-    /// A row wash whose ink steps to the accent's readable role — a link row.
-    fn hover_accent_ink(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
-        let ink = theme.accent_text;
-        self.hover(move |style| style.bg(fill).text_color(ink))
-    }
-
-    /// An inverse fill: the ink colour as a background, for a small sample or
-    /// swatch that previews the foreground it would paint.
-    fn hover_inverse(self, theme: &Theme) -> Self {
-        let fill = theme.text_primary;
-        self.hover(move |style| style.bg(fill))
-    }
-
-    /// A dim rather than a colour change: image thumbs and previews.
-    fn hover_dimmed(self) -> Self {
-        self.hover(|style| style.opacity(0.9))
-    }
-
-    /// Focus: the 1px ring, drawn from the token, on every focusable control.
-    /// A no-op on an element that cannot take focus.
-    fn focus_state(self, theme: &Theme) -> Self {
-        let ring = InteractionState::Focused
-            .border(theme)
-            .expect("Focused draws the ring");
-        self.focus(move |style| style.border_1().border_color(ring))
-    }
-}
-
-impl<T: InteractiveElement + Styled> ControlExt for T {}
-
-/// The fill a control takes while the pointer is down.
-///
-/// A ghost or neutral control deepens its wash ([`PressedRamp::Wash`]).
-/// A filled control steps its own role instead: `surface_active` would paint a
-/// grey wash over a primary, accent or danger fill and change what the button
-/// means while it is being clicked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PressedRamp {
-    /// `surface_active` — the contract's pressed fill.
-    Wash,
-    /// `surface_hover` — for a control that is already sitting on
-    /// `surface_active` because it is selected or its surface is open. The
-    /// ramp has no deeper step, so the press steps back to the hover wash:
-    /// the movement is the feedback, and the control still reads as held.
-    Selected,
-    /// `action_pressed` — a primary button.
-    Action,
-    /// `accent_pressed` — an accent-filled control.
-    Accent,
-    /// `error_hover` — a destructive control.
-    Danger,
-}
-
-impl PressedRamp {
-    fn fill(self, theme: &Theme) -> Hsla {
-        match self {
-            Self::Wash => InteractionState::Pressed
-                .fill(theme)
-                .expect("Pressed fills"),
-            Self::Selected => InteractionState::Hover.fill(theme).expect("Hover fills"),
-            Self::Action => theme.action_pressed,
-            Self::Accent => theme.accent_pressed,
-            Self::Danger => theme.error_hover,
-        }
-    }
-}
-
-/// The three strengths an accent-tinted hover may use. Named so a call site
-/// says how strong, not which colour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AccentWash {
-    /// A quiet tint over a large surface.
-    Faint,
-    /// The default: ask/approve actions.
-    Soft,
-    /// A deliberate highlight, e.g. a drag handle under the pointer.
-    Strong,
-}
-
-impl AccentWash {
-    fn alpha(self) -> f32 {
-        match self {
-            Self::Faint => 0.20,
-            Self::Soft => 0.26,
-            Self::Strong => 0.40,
-        }
-    }
-}
-
-/// The states GPUI only tracks on a keyed element.
-///
-/// Press and pointer affordances live on `StatefulInteractiveElement`, so this
-/// half of the contract is a separate trait; a plain `div()` gets the hover and
-/// focus halves, a `div().id(…)` gets all four.
-pub(crate) trait StatefulControlExt:
-    gpui::StatefulInteractiveElement + Styled + Sized
-{
-    /// Pressed: the control's own ramp, never a colour picked at the call site.
-    fn pressed_state(self, theme: &Theme, ramp: PressedRamp) -> Self {
-        let fill = ramp.fill(theme);
-        self.active(move |style| style.bg(fill))
-    }
-
-    /// Disabled: a state, not an opacity. The disabled fill, ink and quiet
-    /// frame, plus a non-interactive pointer. Callers drop their handlers — a
-    /// control that looks disabled must not still activate.
-    fn disabled_state(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Disabled
-            .fill(theme)
-            .expect("Disabled fills");
-        let border = InteractionState::Disabled
-            .border(theme)
-            .expect("Disabled keeps its frame");
-        let ink = InteractionState::Disabled.control_ink(theme);
-        self.cursor_not_allowed()
-            .bg(fill)
-            .text_color(ink)
-            .border_1()
-            .border_color(border)
-    }
-}
-
-impl<T: gpui::StatefulInteractiveElement + Styled> StatefulControlExt for T {}
 
 /// Turn a wire command name into a short human label, e.g. `set_model` →
 /// `Set model failed`.
@@ -1043,32 +759,6 @@ pub(crate) fn picker_row_height(theme: &Theme) -> gpui::Pixels {
     picker::two_line_entry_height(theme)
 }
 
-/// A labeled button's frame, Zed's `ButtonLike`: the size's height and
-/// horizontal padding, Base04 between icon and label, [`button::radius`],
-/// and a one-line label at 1× line height (Zed's `UiLabel`) so it sits
-/// inside even a 22px button. The label size follows [`button::label_size`]
-/// and an icon inside it takes [`ButtonSize::icon_size`], so every button's
-/// glyph matches its frame. Callers keep colors, border, hover, press, and
-/// click handling.
-pub(crate) fn button_frame<E: Styled + gpui::InteractiveElement>(
-    el: E,
-    theme: &Theme,
-    size: ButtonSize,
-) -> E {
-    el.flex_none()
-        .h(size.height(theme))
-        .px(size.padding_x(theme))
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(button::gap(theme))
-        .rounded(button::radius(size).px(theme))
-        .whitespace_nowrap()
-        .text_size(button::label_size(size).px(theme))
-        .line_height(relative(1.))
-        .focus_state(theme)
-}
-
 /// Where a segment sits inside a segmented control (a grouped row of
 /// [`button_frame`]s sharing one control outline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1306,24 +996,6 @@ impl RenderOnce for Switch {
 /// How far a switch's knob travels: the track, less its padding and the knob.
 fn switch_travel(theme: &Theme) -> Pixels {
     px(36.) - DynamicSpacing::Base02.px(theme) * 2.0 - px(14.)
-}
-
-/// An icon-only button's frame, Zed's `IconButton`: a square as tall as its
-/// [`ButtonSize`], [`button::radius`], the icon centered at
-/// [`ButtonSize::icon_size`]. Callers keep colors, hover, press, tooltip, and
-/// click handling.
-pub(crate) fn icon_button_frame<E: Styled + gpui::InteractiveElement>(
-    el: E,
-    theme: &Theme,
-    size: ButtonSize,
-) -> E {
-    el.flex_none()
-        .size(size.height(theme))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(button::radius(size).px(theme))
-        .focus_state(theme)
 }
 
 /// A text field's box, Zed's `InputField`: at least 32px tall, `px_2`
@@ -2062,6 +1734,9 @@ pub(crate) fn file_badge(path: &str, theme: Theme) -> AnyElement {
 /// one, otherwise the surface's existing neutral (`fallback`). Resolved per
 /// theme like [`file_badge`], so a mark stays legible on both canvases.
 pub(crate) fn provider_mark_color(provider: &str, theme: &Theme, fallback: Hsla) -> Hsla {
+    let provider = crate::provider_accounts::split_alias(provider)
+        .map(|(base, _)| base)
+        .unwrap_or(provider);
     match crate::providers::provider_brand(provider) {
         Some((dark, light)) => {
             let hex = if theme.mode == ThemeMode::Dark {

@@ -8,7 +8,7 @@ use crate::quota::{canonical_provider, is_five_hour_window, note_should_render, 
 use crate::theme::tokens::{
     panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
-use crate::usage::tooltip::Tooltip;
+use crate::ui::tooltip::Tooltip;
 use gpui::{Div, Stateful};
 
 /// A workspace-relative `/`-separated path for the Files toolbar. Falls back
@@ -99,7 +99,11 @@ impl OrbitApp {
     /// it; a dead process must be replaced by a fresh spawn instead of
     /// sending the command into a stdin nobody reads (issue #30).
     pub(super) fn can_reuse_session(&self) -> bool {
-        !self.is_running() && self.runtime_is_live()
+        !self.is_running()
+            && !self.account_clone_pending
+            && self.runtime_is_live()
+            && self.remote.is_none()
+            && self.provider_accounts.uses_defaults()
     }
 
     pub(super) fn submit(&mut self, text: String, cx: &mut Context<Self>) {
@@ -749,6 +753,7 @@ impl OrbitApp {
     /// leaving it active would let the incoming `adopt_client` overwrite — and
     /// kill — a live run on the next switch (issue #46).
     pub(super) fn park_active_session(&mut self) {
+        self.account_clone_pending = false;
         // A remote session is not in the sidebar (pi keeps its file on the
         // host), so a parked remote process could never be resumed: stop it
         // and say so rather than leave it running out of reach.
@@ -792,6 +797,7 @@ impl OrbitApp {
         let widgets = std::mem::take(&mut self.extension_widgets);
         let parked = ParkedSession {
             client,
+            accounts: self.provider_accounts.selection(),
             transcript,
             busy,
             execution,
@@ -1330,7 +1336,15 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
-        self.send(CommandBody::CloneSession, "clone");
+        if self.account_clone_pending {
+            return;
+        }
+        if self.send(CommandBody::CloneSession, "clone") {
+            self.account_clone_pending = true;
+            // The process is moving to a new file. If navigation wins the
+            // reply race, park it as pending rather than under its source.
+            self.current_session_path = None;
+        }
         cx.notify();
     }
 
@@ -1378,6 +1392,11 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
+        if self.account_switching {
+            self.toast_warning(tr!("accounts.switch_in_progress"));
+            cx.notify();
+            return;
+        }
         // Custom terminal surfaces cannot run offscreen; native blocking
         // requests are parked with their session and restored on return.
         self.cancel_custom_surfaces(cx);
@@ -1420,7 +1439,8 @@ impl OrbitApp {
         // A new task from ⌘N is local: remote tasks start from a host row in
         // the folder picker.
         self.remote = None;
-        match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
+        let spawned = self.spawn_pi(&cwd, true);
+        match spawned {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(Some(&cwd));
@@ -1434,7 +1454,7 @@ impl OrbitApp {
                 let message = tr!("runtime.pi_spawn_failed", error = err);
                 self.client = None;
                 self.runtime.error = Some(message.clone());
-                self.set_status(message);
+                self.set_error_from("account_profiles", message);
             }
         }
         self.input.read(cx).focus(window);
@@ -1555,6 +1575,11 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
+        if self.account_switching {
+            self.toast_warning(tr!("accounts.switch_in_progress"));
+            cx.notify();
+            return;
+        }
         self.pending_session_rename = None;
         self.session_rename_ready = false;
         // Opening a session means viewing the chat: leave whichever full-page
@@ -1570,6 +1595,28 @@ impl OrbitApp {
         if self.current_session_path.as_ref() == Some(&session.path) {
             return;
         }
+        // Resolve and freeze the target binding before touching the outgoing
+        // process. A missing/corrupt account cannot silently open on Default.
+        let accounts = match self.provider_accounts.selection_for_session(&session.path) {
+            Ok(accounts) => accounts,
+            Err(error) => {
+                self.set_error_from("account_profiles", error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if self
+            .lives
+            .get(&session.path)
+            .is_some_and(|parked| parked.accounts != accounts)
+        {
+            self.set_error_from(
+                "account_profiles",
+                "Session account selection disagrees with its parked process",
+            );
+            cx.notify();
+            return;
+        }
         self.cancel_new_task_settle();
         // Native dialogs and approvals stay pending with their own session.
         self.cancel_custom_surfaces(cx);
@@ -1577,6 +1624,14 @@ impl OrbitApp {
         // Its unsent composer text/attachments go with it, keyed to the file.
         self.save_composer_draft(cx);
         self.park_active_session();
+        if let Err(error) = self.provider_accounts.activate_session(&session.path) {
+            self.set_error_from("account_profiles", error.to_string());
+            cx.notify();
+            return;
+        }
+        self.auth = AuthManager::new();
+        self.quota = QuotaManager::new();
+        self.provider_auth.clear();
         self.busy = false;
         self.added = 0;
         self.removed = 0;
@@ -1712,17 +1767,7 @@ impl OrbitApp {
             // workspace and point it at the session file. Every listed
             // session is a local file, so it runs locally.
             self.remote = None;
-            let secret_env = self.mcp.secret_env();
-            let spawned = self
-                .extensions
-                .spawn(&session.cwd, false, &secret_env)
-                .or_else(|_| {
-                    self.extensions.spawn(
-                        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                        false,
-                        &secret_env,
-                    )
-                });
+            let spawned = self.spawn_pi(&session.cwd, false);
             match spawned {
                 Ok(client) => {
                     self.adopt_client(client);
@@ -1744,7 +1789,7 @@ impl OrbitApp {
                     let message = tr!("runtime.pi_spawn_failed", error = err);
                     self.client = None;
                     self.runtime.error = Some(message.clone());
-                    self.set_status(message);
+                    self.set_error_from("account_profiles", message);
                 }
             }
         }
@@ -3491,7 +3536,7 @@ impl OrbitApp {
 
     /// An inspector row: glyph, primary label, and a muted trailing value
     /// that truncates first so the label stays readable.
-    fn details_row(
+    pub(super) fn details_row(
         id: &'static str,
         glyph: &'static str,
         label: String,

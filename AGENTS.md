@@ -94,6 +94,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/pickers.rs    model, command-palette, branch, and new-task workspace pickers
   src/app/composer_ops.rs autocomplete, attachments, "+" add-menu, model/thinking chips
   src/app/sidebar.rs    sidebar rows + session/workspace row menus; project-list prefs
+                        and reordering (header and session-row drag, menu Move
+                        up/down, ⌥↑/⌥↓)
   src/app/settings.rs   Settings surface: General/Runtime/Agent/Skills/Subagents/Permissions/Plugins/Models/Appearance/Providers/About (+ provider CRUD, plugin install, model list)
   src/app/permissions_ui.rs  Settings → Permissions: baseline select, scope chips (every session /
                         main only / one subagent), one row per tool family with Inherit·Allow·Ask·Deny,
@@ -169,8 +171,19 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/terminal.rs       bottom terminal panel (⌘J): tabbed shells (one PTY per tab, background tabs keep
                         running) with each tab's login-shell profile mark; alacritty_terminal VT grid,
                         GPUI canvas render, keys/selection/paste
+  src/ui/               the shared UI layer: `ui/style/` holds the zero-cost style
+                        seams (control states, surface/material), `ui/tooltip.rs` the
+                        shared tooltip view. `ui/*` may use theme/motion/i18n/gpui and
+                        must NOT import a surface (`scripts/check_ui_layers.py`).
+                        Every element gets one owner here; see docs/plans/ui-component-layer.md
   src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_1/2/3, component metrics) resolved through the Theme; see INTENT.md D11
   src/providers.rs      provider catalog + models.json / auth.json read/write for Settings → Providers (provider metadata introspected from pi-ai; curated table is the fallback)
+  src/provider_accounts.rs  extra provider accounts: ~/.orbit-pi/accounts.json (name, provider,
+                        `<provider>~<slug>` alias), v1 migration, the alias label registry
+  src/app/provider_accounts.rs  Accounts panel (add/rename/remove, sign-in state), account rows,
+                        Add/Rename modal, restart pi on change
+  src/app/auth_prompt.rs  transient OAuth text/authorization-code field and profile API-key save
+  docs/provider-accounts.md  accounts as alias providers: storage, extension, migration, limits
   src/quota.rs          account quota/balance/spend reducer over the `quota.*` RPC and the bridge's session entries (no secrets, no I/O)
   src/access.rs         access mode (Supervised / Auto-accept edits / Full access): persistence to `~/.orbit-pi/access.json`, which the guard extension reads
   src/permissions.rs    per-command / per-agent permission rules: tool families, scope, glob matching,
@@ -200,7 +213,11 @@ crates/orbit-rpc/       pi CLI process + JSONL protocol
   tests/auth_fake_pi.rs scripted-server coverage of the auth.* round trip
   tests/quota_fake_pi.rs scripted-server coverage of the quota.list round trip + `--extension` forwarding
 contrib/pi-auth-rpc/    apply.mjs: inject auth.* into an installed pi build
-                        (browser OAuth until pi ships the server upstream)
+                        (browser OAuth until pi ships the server upstream; also auth.respond
+                        for pasted codes and auth.set_api_key through pi's locked writer)
+contrib/pi-auth-profiles/  apply.mjs + routing.js: marker-delimited pi 1.5.2 patch routing
+                        AuthStorage per provider to a canonical profile auth.json
+                        (ORBIT_AUTH_PROFILE_ROUTES); --check is read-only
 contrib/pi-quota-rpc/    apply.mjs + quota-handler.js: inject quota.list into an
                         installed pi build (per-provider usage adapters)
                         quota-handler.test.mjs: node --test coverage of the
@@ -242,6 +259,12 @@ contrib/orbit-workflow-extension/  Orbit's bundled pi extension (loaded with
                         Reads the per-session mode from `~/.orbit-pi/workflow.json`
                         fresh on every hook; policy.js is the pure decision
                         table and both files are `node --test` covered
+contrib/orbit-accounts-extension/  Orbit's bundled pi extension (loaded with
+                        `pi --extension`): registers every extra account in
+                        `~/.orbit-pi/accounts.json` as a copy of its built-in
+                        provider under `<provider>~<slug>`, so all accounts
+                        sign in separately and are live in one session.
+                        aliases.js is the pure helper; `node --test` covered
 contrib/orbit-subagents-extension/  Orbit's bundled pi extension (loaded with
                         `pi --extension`): registers the `subagent` tool, which
                         runs one child `pi --mode json -p --no-session` per
@@ -397,6 +420,7 @@ python3 scripts/check_i18n.py         # key + placeholder guard
 python3 scripts/check_states.py       # interaction states must come from the contract
 python3 scripts/check_motion.py       # animations must use a motion primitive
 python3 scripts/check_keyboard.py     # every key binding lands in a declared context
+python3 scripts/check_ui_layers.py    # ui/ imports no surface; material resolved once
 python3 scripts/read-perf.py          # frame-time captures from a debug build (⌘⌥P)
 ```
 
@@ -582,18 +606,20 @@ These compiled and ran against the pinned version. When in doubt, check
 | `enter` / `escape` / `up` / `down` | Run / close / move | `AddMenu` (composer "+" menu; registered after Picker) |
 | `enter` / `escape` / `up` / `down` | Select / close / move | `AccessMenu` (composer access-mode picker) |
 | `enter` / `escape` / `up` / `down` | Confirm / deny / move | `Approval` (inline access-guard bar) |
+| `alt-up` / `alt-down` | Move the row under the cursor in the sidebar — a project group, or a session inside its project (the pointer twin is dragging a header or a session row) | `Sidebar` |
 
 ## Pi CLI RPC protocol (official spec)
 
 - Start: `pi --mode rpc [--provider …] [--model …] [--name …]` — see `packages/coding-agent/docs/rpc.md` in the pi repo.
 - **Framing is strict JSONL, LF only.** Split on `\n`; strip a trailing `\r`; never use a reader that splits on `U+2028/U+2029`. `PiClient` uses `read_until(b'\n')`.
-- **Typed in `CommandBody` today:** `prompt` (with `images` + `streamingBehavior`), `abort`, `clear_queue`, `steer`/`follow_up` (with `images`), `set_steering_mode`/`set_follow_up_mode`, `compact`, `set_auto_compaction`/`set_auto_retry`/`abort_retry`, `set_session_name`, `new_session`, `switch_session`, `get_state`, `get_messages`, `get_available_models`, `set_model`, `cycle_model`, `get_available_thinking_levels`, `set_thinking_level`, `cycle_thinking_level`, `get_commands`, `get_session_stats`, `get_fork_messages`, `fork`, `clone`, `auth.list`, `auth.status`, `auth.login`, `auth.logout`, `auth.cancel`, plus `Raw(Value)` for anything else.
+- **Typed in `CommandBody` today:** `prompt` (with `images` + `streamingBehavior`), `abort`, `clear_queue`, `steer`/`follow_up` (with `images`), `set_steering_mode`/`set_follow_up_mode`, `compact`, `set_auto_compaction`/`set_auto_retry`/`abort_retry`, `set_session_name`, `new_session`, `switch_session`, `get_state`, `get_messages`, `get_available_models`, `set_model`, `cycle_model`, `get_available_thinking_levels`, `set_thinking_level`, `cycle_thinking_level`, `get_commands`, `get_session_stats`, `get_fork_messages`, `fork`, `clone`, `auth.list`, `auth.status`, `auth.login`, `auth.logout`, `auth.cancel`, `auth.respond`, `auth.set_api_key`, plus `Raw(Value)` for anything else.
 D
-- **Used by the UI today:** `prompt`/`follow_up` (text + images), `abort`, `clear_queue`, `set_follow_up_mode`, `compact`, `set_auto_compaction`/`set_auto_retry`/`abort_retry`, `set_session_name`, `new_session`, `switch_session`, `get_state`, `get_messages`, `get_entries` (bridge quota snapshots, incremental `since` cursor), `get_available_models`, `set_model`, `get_available_thinking_levels`, `set_thinking_level`, `get_session_stats`, and the `auth.*` family when the running pi advertises it (falls back to file/Terminal login otherwise). `SessionState` reads `steeringMode`/`followUpMode`/`autoCompactionEnabled`/`sessionName`/`isCompacting`/`pendingMessageCount` from `get_state`; `PendingQueue` mirrors `queue_update`. `steer` is sent by the composer's steer controls; `clone` by ⌘P, and `get_fork_messages` + `fork` by the rewind picker (`rewind.rs` pairs pi's entry ids with transcript rows). `set_steering_mode`, `cycle_model`, and `cycle_thinking_level` remain typed but unwired.
+- **Used by the UI today:** `prompt`/`follow_up` (text + images), `abort`, `clear_queue`, `set_follow_up_mode`, `compact`, `set_auto_compaction`/`set_auto_retry`/`abort_retry`, `set_session_name`, `new_session`, `switch_session`, `get_state`, `get_messages`, `get_entries` (bridge quota snapshots, incremental `since` cursor), `get_available_models`, `set_model`, `get_available_thinking_levels`, `set_thinking_level`, `get_session_stats`, and the `auth.*` family when the running pi advertises it (falls back to file/Terminal login otherwise; a selected account profile never uses that fallback because Terminal login writes Default). `SessionState` reads `steeringMode`/`followUpMode`/`autoCompactionEnabled`/`sessionName`/`isCompacting`/`pendingMessageCount` from `get_state`; `PendingQueue` mirrors `queue_update`. `steer` is sent by the composer's steer controls; `clone` by ⌘P, and `get_fork_messages` + `fork` by the rewind picker (`rewind.rs` pairs pi's entry ids with transcript rows). `set_steering_mode`, `cycle_model`, and `cycle_thinking_level` remain typed but unwired.
 - **Not typed / not wired yet:** `get_tree`, `bash`/`abort_bash`, `export_html`, `get_last_assistant_text`, and `new_session.parentSession`.
 - **Error handling:** a `response` with `success: false` carries an `error` string. The app never swallows it: `on_command_failure` surfaces it in a dismissible error banner (chat and settings) and re-reads `get_state` to reconcile optimistic UI after `set_model`/thinking/rename failures. A `parse` command, `extension_error` events, failed compaction (`compaction_end.errorMessage`), exhausted `auto_retry_end`, and `send` write failures all route to the same banner. A successful retry of the same command clears its banner (`clear_error_from`): the banner records the source that raised it — the wire command, `parse`, or `agent_error` for a failed assistant message — and a success retires it by comparing that source, never the banner's translated text, so the clear survives a language change and works for send failures whose text carries no command label. A `prompt` is not always a turn: when pi hands it to an extension command it answers `disposition: "handled"` and starts no run, so the composer unwinds the optimistic live row on that answer alone (`started`/`queued` keep it). A *cancel* is never routed to the banner: `request_abort` (Esc) records `abort_requested`, so the `auto_retry_end { success: false, finalError: "Retry cancelled" }` pi answers a stopped retry with is read as the user's own choice, not as a failed retry. **Provider/LLM failures are not responses at all**: pi sets `stopReason: "error"` + `errorMessage` on the final assistant message and emits it via `message_start`/`message_end` (see pi-agent-core `agent-loop.js`). `transcript::message_error` extracts it; the app raises `Agent error: …` and `transcript_view` renders the same text as a red card inline, so a failed turn is never an empty row.
 - Events → stdout JSON lines: `agent_start/end/settled`, `turn_start/end`, `message_start/update/end` (`assistantMessageEvent`: `text_delta`, `thinking_delta`, `toolcall_start/delta/end`), `tool_execution_*`, `bash_execution_update`, `queue_update`, `compaction_*`, `auto_retry_*`, `extension_ui_request`, `extension_error`, typed `auth.*` (`Event::Auth`), plus `Unknown` for forward-compat.
 - **Provider authentication:** `auth.*` is a first-class RPC namespace. The client reducer is `orbit-pi/src/auth.rs`; the wire types are in `orbit-rpc/src/types.rs`; the server contract (which pi must implement by reusing its provider OAuth + `auth.json`) is `crates/orbit-rpc/docs/auth-rpc.md`. Tokens never cross RPC or GPUI state. **Stock pi 0.85.1 has no server side** — without it Orbit falls back to `pi /login` in Terminal. To get browser OAuth on an installed pi now, run `node contrib/pi-auth-rpc/apply.mjs` (idempotent; `--revert` restores the backup) and restart the agent. `auth_fake_pi.rs` covers the round trip against a scripted server.
+- **Provider accounts:** more than one credential per provider, all usable at once. Each extra account is an alias provider (`<provider>~<slug>`) registered by the bundled `contrib/orbit-accounts-extension/` from `~/.orbit-pi/accounts.json`; pi keys credentials by provider id, so each alias signs in through the ordinary `auth.*` flow and is stored in pi's own `auth.json`. Nothing is selected per session; the old per-session routing (`ORBIT_AUTH_PROFILE_ROUTES`, `contrib/pi-auth-profiles/`) always carries an empty selection now. See `crates/orbit-pi/docs/provider-accounts.md` (D21).
 - **Provider quota:** `quota.list` is the account-usage sibling of `auth.*`. The client reducer is `orbit-pi/src/quota.rs`; the wire types (`QuotaReport`/`QuotaWindow`/`QuotaBalance`/`QuotaKind`) are in `orbit-rpc/src/types.rs`; the server contract is `crates/orbit-rpc/docs/quota-rpc.md`. pi resolves the credential, verifies the provider origin, rejects redirects, and returns only normalized percentages/counts/resets/amounts — no token, key, or account id. Coverage follows `@narumitw/pi-usage`'s verified reference: Anthropic, ChatGPT Codex, GitHub Copilot, Kimi, MiniMax, Z.AI, OpenCode Go, OpenRouter, Vercel AI Gateway, DeepSeek, Moonshot, xAI, Fireworks, Baseten. Google/Gemini is registered explicitly as `unsupported` (no account-quota API — AI Studio-only). **Ollama Cloud** has a real adapter for both billing generations: the current monthly-credit model via `GET https://ollama.com/api/usage` plus `GET https://ollama.com/api/balance` (included and purchased balances, the latter additive so a balance outage never blanks the meters) with a user-supplied cloud API key, and the legacy 5-hour/weekly model via the authenticated `ollama.com/settings` page parsed behind an isolated `OllamaCloudParser`; that page needs a session cookie, which Orbit no longer collects in the app (a hand-written `ollama_cloud_session` entry in `auth.json` is still read). Credentials are explicit (`auth.json`, 0600; type `api_key`), entered in Settings → Providers → Ollama; the local `models.json` placeholder is never sent to ollama.com and browser cookies are never auto-extracted. Every other provider reports `unsupported`. Reports are per-provider cached 60 s (these endpoints rate-limit). **The default path needs no patch:** `bundled_extensions.rs` materializes the bundled `contrib/orbit-quota-extension/` under `~/.orbit-pi/quota-extension/` and every session process is spawned with `pi --extension <index.js>`; the extension fetches through pi's `ctx.modelRegistry`, appends one `orbit:quota` custom entry **only when the snapshot changes** (never in LLM context), and the app polls `get_entries` with a per-session `since` cursor (60 s, plus `agent_settled`, throttled by `QUOTA_ENTRY_POLL_INTERVAL`). Entry ids are per-session: the cursor resets on a `sessionId` change, a dead cursor is dropped and re-read, and bridge data never flips `QuotaSupport` (so a patched pi is still probed). `node contrib/pi-quota-rpc/apply.mjs` remains available for the `quota.list` server side; `quota_fake_pi.rs` covers the round trip and `--extension` forwarding, and `contrib/orbit-quota-extension/*.test.mjs` (run `node --test`) covers the bridge end to end offline, and `contrib/pi-quota-rpc/quota-handler.test.mjs` covers the patch adapters.
 - **User interaction:** `extension_ui_request` (`select`/`confirm`/`input`/`editor`; also fire-and-forget `notify`/`setStatus`/`setWidget`/`setTitle`) on stdout; answer with `extension_ui_response` on stdin. `dialog.rs` + `app/dialogs.rs` render the dialog methods as a blocking modal card and reply (`cancelled` on Escape/scrim). `notify` renders as an in-app toast, `setStatus` surfaces on the status bar, and `set_editor_text` seeds the composer; `setWidget`/`setTitle` are terminal chrome and ignored. `ask_user_question`'s multi-select arrives as an `input` of comma-separated option numbers (pi's RPC fallback), so it is selectable too.
 - Envelopes parse **loosely**; unknown shapes flow through as raw JSON so protocol additions don't crash the client.

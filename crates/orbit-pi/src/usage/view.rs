@@ -32,6 +32,7 @@
 //!
 //! Sections: Summary · Usage over time · Breakdown · Records · Daily activity.
 
+use crate::ui::style::surface::SurfaceExt;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -61,7 +62,7 @@ use super::table::{
     cell_shell, data_table, empty_cell, status_badge, text_cell, two_line_cell, Column,
     FailureSort, SortState, TableHandlers, TableKind, FILL_SLACK, HEADER_H, ROW_H,
 };
-use super::tooltip::Tooltip;
+use crate::ui::tooltip::Tooltip;
 use crate::app::{
     button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
     icon_dyn, picker_entry, picker_search_frame, picker_surface, press, provider_mark_color,
@@ -72,7 +73,7 @@ use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
-    Motion, Radius, StyledExt, TextSize,
+    Motion, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::transcript_view::activity_icon;

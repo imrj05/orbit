@@ -1208,6 +1208,10 @@ pub(crate) fn thinking_icon(level: &str, theme: &Theme) -> (&'static str, gpui::
 /// user-defined providers (custom `models.json` entries) fall back to a
 /// neutral cloud glyph.
 pub(crate) fn provider_icon(provider: &str) -> SharedString {
+    // An extra account wears its provider's mark.
+    let provider = crate::provider_accounts::split_alias(provider)
+        .map(|(base, _)| base)
+        .unwrap_or(provider);
     // Provider id → the id whose mark it shares. The leading dot on
     // `.manifest` is pi's catalog-index filename, not a real provider id.
     const ALIASES: &[(&str, &str)] = &[("ollama-cloud", "ollama"), (".manifest", "manifest")];

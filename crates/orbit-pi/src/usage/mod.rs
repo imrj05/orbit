@@ -30,7 +30,6 @@ pub mod model;
 pub mod page;
 pub mod sparkline;
 pub mod table;
-pub mod tooltip;
 pub mod view;
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ use crate::app::{
 };
 use crate::theme::tokens::{ButtonSize, Radius, StyledExt};
 use crate::theme::Theme;
+use crate::ui::style::surface::SurfaceExt;
 
 const LIST_OVERDRAW: f32 = 400.0;
 
@@ -386,7 +387,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
             button
                 .relative()
                 .elevation_2_borderless(&theme)
-                .frosted_card(&theme, theme.border_strong, Radius::Full.px(&theme))
+                .frosted_floating_card(&theme, theme.border_strong, Radius::Full.px(&theme))
                 .rounded_full()
                 .tip(tr!("message_scroller.jump_to_latest"))
                 .cursor_pointer()

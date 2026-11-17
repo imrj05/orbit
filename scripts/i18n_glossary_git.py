@@ -2,6 +2,7 @@
 
 GLOSSARY = {
     "zh-CN": {
+        "No workspace is available for this task.": "此任务没有可用的工作区。",
         "Git": "Git",
         "detached": "游离 HEAD",
         "Changes": "更改",
@@ -72,6 +73,7 @@ GLOSSARY = {
         "git not available: %{error}": "git 不可用：%{error}",
     },
     "ja": {
+        "No workspace is available for this task.": "このタスクに利用可能なワークスペースがありません。",
         "Git": "Git",
         "detached": "detached",
         "Changes": "変更",
@@ -142,6 +144,7 @@ GLOSSARY = {
         "git not available: %{error}": "git を利用できません: %{error}",
     },
     "ko": {
+        "No workspace is available for this task.": "이 작업에 사용할 수 있는 워크스페이스가 없습니다.",
         "Git": "Git",
         "detached": "detached",
         "Changes": "변경 사항",
@@ -212,6 +215,7 @@ GLOSSARY = {
         "git not available: %{error}": "git 사용 불가: %{error}",
     },
     "es": {
+        "No workspace is available for this task.": "No hay un espacio de trabajo disponible para esta tarea.",
         "Git": "Git",
         "detached": "detached",
         "Changes": "Cambios",
@@ -282,6 +286,7 @@ GLOSSARY = {
         "git not available: %{error}": "git no disponible: %{error}",
     },
     "fr": {
+        "No workspace is available for this task.": "Aucun espace de travail disponible pour cette tâche.",
         "Git": "Git",
         "detached": "détaché",
         "Changes": "Modifications",
@@ -352,6 +357,7 @@ GLOSSARY = {
         "git not available: %{error}": "git indisponible : %{error}",
     },
     "de": {
+        "No workspace is available for this task.": "Für diese Aufgabe ist kein Arbeitsbereich verfügbar.",
         "Git": "Git",
         "detached": "detached",
         "Changes": "Änderungen",
@@ -422,6 +428,7 @@ GLOSSARY = {
         "git not available: %{error}": "git nicht verfügbar: %{error}",
     },
     "pt-BR": {
+        "No workspace is available for this task.": "Nenhum espaço de trabalho disponível para esta tarefa.",
         "Git": "Git",
         "detached": "detached",
         "Changes": "Alterações",
@@ -492,6 +499,7 @@ GLOSSARY = {
         "git not available: %{error}": "git indisponível: %{error}",
     },
     "ru": {
+        "No workspace is available for this task.": "Для этой задачи нет доступной рабочей области.",
         "Git": "Git",
         "detached": "detached",
         "Changes": "Изменения",
@@ -562,6 +570,7 @@ GLOSSARY = {
         "git not available: %{error}": "git недоступен: %{error}",
     },
     "it": {
+        "No workspace is available for this task.": "Nessun workspace disponibile per questa attività.",
         "Git": "Git",
         "detached": "detached",
         "Changes": "Modifiche",

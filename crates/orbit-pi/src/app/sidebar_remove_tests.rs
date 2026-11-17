@@ -25,6 +25,7 @@ fn rows_for(workspaces: &[PathBuf]) -> Vec<SideRow> {
         &None,
         &HashSet::new(),
         &HashSet::new(),
+        &HashMap::new(),
     )
 }
 
@@ -134,6 +135,8 @@ fn archiving_a_workspace_archives_only_its_sessions(cx: &mut gpui::TestAppContex
                 at: None,
                 picker: false,
                 confirm_delete: false,
+                can_move_up: false,
+                can_move_down: true,
             });
             app.on_workspace_archive_sessions(cx);
 

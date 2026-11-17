@@ -16,7 +16,7 @@ use crate::git::RefKind;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::Theme;
-use crate::usage::tooltip::Tooltip;
+use crate::ui::tooltip::Tooltip;
 
 /// The color for a `git status` porcelain badge byte.
 pub fn status_color(badge: char, theme: Theme) -> Hsla {

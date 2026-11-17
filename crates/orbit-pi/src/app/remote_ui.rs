@@ -42,10 +42,13 @@ impl OrbitApp {
     /// restart path (Start, reconnect, MCP apply, forced-stop respawn) goes
     /// through here so a remote session never quietly comes back local.
     pub(super) fn spawn_pi(
-        &self,
+        &mut self,
         workspace: &Path,
         apply_default: bool,
     ) -> anyhow::Result<orbit_rpc::PiClient> {
+        if self.account_switching {
+            anyhow::bail!("Wait for the account switch to finish");
+        }
         match &self.remote {
             Some(host) => {
                 let secret = self.remote_secret(host);
@@ -55,9 +58,18 @@ impl OrbitApp {
                     self.remote_launch_workflow().as_wire(),
                 )
             }
-            None => self
-                .extensions
-                .spawn(workspace, apply_default, &self.mcp.secret_env()),
+            None => {
+                if apply_default && self.current_session_path.is_none() {
+                    self.provider_accounts.begin_session()?;
+                }
+                let routes = self.provider_accounts.routes()?;
+                self.extensions.spawn_with_accounts(
+                    workspace,
+                    apply_default,
+                    &self.mcp.secret_env(),
+                    &routes,
+                )
+            }
         }
     }
 

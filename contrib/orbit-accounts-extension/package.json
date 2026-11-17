@@ -1,0 +1,11 @@
+{
+  "name": "orbit-accounts-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Orbit's provider accounts: a pi extension loaded with --extension that registers every extra account as its own provider, so all accounts are live in one session.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}

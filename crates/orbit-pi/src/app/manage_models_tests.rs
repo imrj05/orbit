@@ -321,3 +321,59 @@ fn provider_rows_fit_a_narrow_settings_column(cx: &mut gpui::TestAppContext) {
     assert!(right(configure) <= right(row), "actions stay in the row");
     assert!(right(chip) <= right(row), "models stay in the row");
 }
+
+/// Every extra account is its own provider row, right after its provider, and
+/// its models sit in the catalog beside the Default account's — all live at
+/// once. The provider's own row lists its accounts with Rename / Remove.
+#[gpui::test]
+fn extra_accounts_are_their_own_rows_beside_their_provider(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let window = cx.add_empty_window();
+    let app = window.update(|_, cx| {
+        let app = test_app_in(cx);
+        app.update(cx, |app, _| {
+            app.available_models.push(ModelEntry {
+                id: "anthropic-model".into(),
+                name: "anthropic model".into(),
+                provider: "anthropic~work".into(),
+                context_window: None,
+                thinking_levels: Vec::new(),
+            });
+            app.account_profile_map.insert(
+                "anthropic".into(),
+                vec![crate::provider_accounts::AccountProfile {
+                    id: "account-work".into(),
+                    label: "Work".into(),
+                    alias: "anthropic~work".into(),
+                    credential: Some(crate::provider_accounts::CredentialKind::OAuth),
+                }],
+            );
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Providers;
+            app.provider_models_open.insert("anthropic".into(), true);
+        });
+        app
+    });
+    let _ = window.draw(
+        gpui::point(gpui::px(0.), gpui::px(0.)),
+        gpui::size(gpui::px(1200.), gpui::px(3200.)),
+        |_, _| app.clone(),
+    );
+    let base = window.debug_bounds("provider-row-anthropic").unwrap();
+    let account = window
+        .debug_bounds("provider-row-anthropic~work")
+        .expect("the account has its own provider row");
+    assert!(account.origin.y > base.origin.y, "the account follows its provider");
+    assert!(window.debug_bounds("provider-accounts-anthropic").is_some());
+    assert!(window.debug_bounds("provider-account-account-work").is_some());
+    assert!(window
+        .debug_bounds("provider-account-rename-account-work")
+        .is_some());
+    assert!(window
+        .debug_bounds("provider-account-remove-account-work")
+        .is_some());
+    assert!(
+        window.debug_bounds("provider-accounts-anthropic~work").is_none(),
+        "an account row has no accounts panel of its own"
+    );
+}

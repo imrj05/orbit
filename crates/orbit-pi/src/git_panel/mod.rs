@@ -1,13 +1,16 @@
-//! The **Git page** — a full main-area surface (like Settings) with three tabs
-//! and a commit bar.
+//! The **Git page** — a full main-area surface (like Settings): six tabs and
+//! a commit bar.
 //!
 //! - **Changes**: staged/unstaged file lists with per-file stage, unstage, and
 //!   discard; the commit bar combines the branch, a conventional-commit input,
 //!   a one-shot generate button, and Commit / Commit and push / Push.
-//! - **History**: the current branch's commit log with refs, author, and
-//!   relative time.
-//! - **Graph**: every local branch drawn as a lane graph over the same commit
-//!   metadata, laid out by [`crate::git::layout_graph`].
+//! - **History**: the commit log with refs, author, and relative time, plus
+//!   all-branches / author / file filters; a row expands to its commit files.
+//! - **Graph**: the same commits drawn as a lane graph over the shared row
+//!   design, laid out by [`crate::git::layout_graph`], with an all-refs toggle.
+//! - **Stashes**: the repository's stash list.
+//! - **Issues** and **Pulls**: the `gh`-backed GitHub lists — present only
+//!   when the `gh` CLI is installed — with filters, detail, and commenting.
 //!
 //! All Git I/O runs on the background executor; the page paints cached state
 //! and is owned by [`crate::app::OrbitApp`].
@@ -46,7 +49,7 @@ use crate::theme::tokens::{
     StyledExt, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
-use crate::usage::tooltip::Tooltip;
+use crate::ui::tooltip::Tooltip;
 
 mod failure;
 pub(crate) mod widgets;
@@ -872,7 +875,7 @@ impl GitPanel {
             return;
         };
         let Some(workspace) = self.workspace.clone() else {
-            self.set_status("No workspace is available for this task.");
+            self.set_status(tr!("git_panel.status_no_workspace"));
             cx.notify();
             return;
         };
@@ -2502,9 +2505,10 @@ impl GitPanel {
     fn list_len(&self) -> usize {
         match self.tab {
             GitTab::History => self.history.len(),
+            GitTab::Graph => self.graph.len(),
             GitTab::Issues => self.issues.len(),
             GitTab::Pulls => self.pulls.len(),
-            GitTab::Changes | GitTab::Graph | GitTab::Stashes => 0,
+            GitTab::Changes | GitTab::Stashes => 0,
         }
     }
 
@@ -2515,6 +2519,10 @@ impl GitPanel {
                 let hash = self.selected_commit.as_deref()?;
                 self.history.iter().position(|commit| commit.hash == hash)
             }
+            GitTab::Graph => {
+                let hash = self.selected_commit.as_deref()?;
+                self.graph.iter().position(|row| row.commit.hash == hash)
+            }
             GitTab::Issues => {
                 let number = self.selected_issue?;
                 self.issues.iter().position(|issue| issue.number == number)
@@ -2523,7 +2531,7 @@ impl GitPanel {
                 let number = self.selected_pr?;
                 self.pulls.iter().position(|pull| pull.number == number)
             }
-            GitTab::Changes | GitTab::Graph | GitTab::Stashes => None,
+            GitTab::Changes | GitTab::Stashes => None,
         }
     }
 
@@ -2563,6 +2571,10 @@ impl GitPanel {
                 let hash = self.history[ix].hash.clone();
                 self.toggle_commit(hash, cx);
             }
+            GitTab::Graph => {
+                let hash = self.graph[ix].commit.hash.clone();
+                self.toggle_commit(hash, cx);
+            }
             GitTab::Issues => {
                 let number = self.issues[ix].number;
                 self.open_issue(number, cx);
@@ -2571,14 +2583,17 @@ impl GitPanel {
                 let number = self.pulls[ix].number;
                 self.open_pull(number, cx);
             }
-            GitTab::Changes | GitTab::Graph | GitTab::Stashes => {}
+            GitTab::Changes | GitTab::Stashes => {}
         }
     }
 
     /// The list's focus handle when the active tab has a keyboard list, so a
     /// tab shortcut can land on it.
     pub fn list_focus_handle(&self) -> Option<FocusHandle> {
-        matches!(self.tab, GitTab::History | GitTab::Issues | GitTab::Pulls)
+        matches!(
+            self.tab,
+            GitTab::History | GitTab::Graph | GitTab::Issues | GitTab::Pulls
+        )
             .then(|| self.list_focus.clone())
     }
 
@@ -5509,11 +5524,14 @@ impl GitPanel {
                 Some(&tr!("git_panel.commits_across_branches")),
             ));
         } else {
-            let mut list = div()
+            let mut list = self
+                .keyboard_list(div().id("git-graph-scroll"), cx)
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .py(DynamicSpacing::Base06.px(&theme));
-            let total = self.graph.len();
             for (ix, row) in self.graph.iter().enumerate() {
                 let url = self
                     .remote_web
@@ -5524,6 +5542,7 @@ impl GitPanel {
                     row,
                     url.as_deref(),
                     selected,
+                    self.list_cursor_at(ix),
                     theme,
                     cx.listener({
                         let hash = row.commit.hash.clone();
@@ -5556,23 +5575,15 @@ impl GitPanel {
                         }
                     }
                 }
-                if ix + 1 < total {
-                    list = list.child(commit_separator(theme));
-                }
+                // No separator between Graph rows: the lane gutter spans each
+                // row's full height, so touching rows keep lanes drawn.
             }
             list = list.child(load_more(
                 theme,
                 self.graph_loading,
                 cx.listener(|this, _: &ClickEvent, _, cx| this.refresh_graph(cx)),
             ));
-            body = body.child(
-                div()
-                    .id("git-graph-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(list),
-            );
+            body = body.child(list);
         }
         div()
             .flex_1()
@@ -9904,28 +9915,131 @@ const GRAPH_STROKE: f32 = 2.;
 const GRAPH_NODE_RADIUS: f32 = 4.5;
 const GRAPH_ROW_HEIGHT: f32 = 38.;
 
-/// One row in the Graph list: the lane drawing on the left, then the same
-/// subject, refs, author meta, and short hash as a History row.
-fn graph_row(
-    row: &git::GraphRow,
+/// The commit fields a list row shows. History's [`git::CommitEntry`] and
+/// Graph's [`git::GraphCommit`] carry the same display data (plus their own
+/// extras); one trait lets the shared row builder serve both lists.
+trait RowCommit {
+    fn short(&self) -> &str;
+    fn subject(&self) -> &str;
+    fn author(&self) -> &str;
+    fn author_email(&self) -> &str;
+    fn relative(&self) -> &str;
+    fn refs(&self) -> &[git::RefLabel];
+}
+
+impl RowCommit for git::CommitEntry {
+    fn short(&self) -> &str {
+        &self.short
+    }
+    fn subject(&self) -> &str {
+        &self.subject
+    }
+    fn author(&self) -> &str {
+        &self.author
+    }
+    fn author_email(&self) -> &str {
+        &self.author_email
+    }
+    fn relative(&self) -> &str {
+        &self.relative
+    }
+    fn refs(&self) -> &[git::RefLabel] {
+        &self.refs
+    }
+}
+
+impl RowCommit for git::GraphCommit {
+    fn short(&self) -> &str {
+        &self.short
+    }
+    fn subject(&self) -> &str {
+        &self.subject
+    }
+    fn author(&self) -> &str {
+        &self.author
+    }
+    fn author_email(&self) -> &str {
+        &self.author_email
+    }
+    fn relative(&self) -> &str {
+        &self.relative
+    }
+    fn refs(&self) -> &[git::RefLabel] {
+        &self.refs
+    }
+}
+
+/// The shared body of a commit row: the refs + subject line, the author meta
+/// line, and the trailing short hash, forge link, and expand caret. History
+/// and Graph wrap this with their own leading element (marker disc or lane
+/// gutter) and content padding, so one builder keeps the two lists identical
+/// where they show the same data. `id_prefix` namespaces the row and hover ids.
+#[allow(clippy::too_many_arguments)]
+fn commit_row_core(
+    id_prefix: &str,
+    commit: &impl RowCommit,
+    leading: AnyElement,
     url: Option<&str>,
     selected: bool,
+    cursor: bool,
+    content_padding: Pixels,
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    on_author: Option<impl Fn(String, &mut Window, &mut gpui::App) + 'static>,
 ) -> AnyElement {
-    let commit = &row.commit;
+    let row_name = format!("{}-{}", id_prefix, commit.short());
 
+    // Line 1: ref badges, then the subject as the row's primary line.
+    let subject_line = div()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .min_w_0()
+        .children(
+            commit
+                .refs()
+                .iter()
+                .map(|label| ref_badge(&label.name, label.kind, theme)),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(TextSize::Default.px(&theme))
+                .text_color(theme.text_primary)
+                .child(commit.subject().to_string()),
+        );
+
+    // Line 2: avatar, author, dot, relative time — at metadata size. In
+    // History the author filters the list to their commits.
+    let author_name = commit.author().to_string();
+    let author_cell = match on_author {
+        Some(on_author) => {
+            let clicked = author_name.clone();
+            div()
+                .id(gpui::ElementId::Name(
+                    format!("{}-author-{}", id_prefix, commit.short()).into(),
+                ))
+                .cursor_pointer()
+                .hover_ink_accent(&theme)
+                .on_click(move |_, window, cx: &mut gpui::App| {
+                    cx.stop_propagation();
+                    on_author(clicked.clone(), window, cx);
+                })
+                .child(author_name)
+                .into_any_element()
+        }
+        None => div().child(author_name).into_any_element(),
+    };
     let meta = div()
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base06.px(&theme))
         .text_size(TextSize::Small.px(&theme))
-        .child(author_avatar(&commit.author, &commit.author_email, theme))
-        .child(
-            div()
-                .text_color(theme.text_secondary)
-                .child(commit.author.clone()),
-        )
+        .child(author_avatar(commit.author(), commit.author_email(), theme))
+        .child(author_cell)
         .child(
             div()
                 .size(px(3.))
@@ -9935,72 +10049,31 @@ fn graph_row(
         .child(
             div()
                 .text_color(theme.text_muted)
-                .child(commit.relative.clone()),
+                .child(commit.relative().to_string()),
         );
 
-    let mut element = div()
-        .id(gpui::ElementId::Name(
-            format!("git-graph-{}", commit.short).into(),
-        ))
-        .group("git-row")
-        .mx(DynamicSpacing::Base12.px(&theme))
-        .px(DynamicSpacing::Base08.px(&theme))
-        .py(DynamicSpacing::Base06.px(&theme))
-        .rounded(Radius::Medium.px(&theme))
+    // Trailing: the short hash, the forge link (revealed on row hover — its
+    // tooltip and stop-propagation keep it a separate affordance), the caret.
+    let mut trailing = div()
+        .flex_none()
         .flex()
         .items_center()
-        .gap(DynamicSpacing::Base08.px(&theme))
-        .cursor_pointer()
-        .on_click(listener)
-        .child(graph_gutter(row, theme))
+        .gap(DynamicSpacing::Base04.px(&theme))
         .child(
             div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base03.px(&theme))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .min_w_0()
-                        .children(
-                            commit
-                                .refs
-                                .iter()
-                                .map(|label| ref_badge(&label.name, label.kind, theme)),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_primary)
-                                .child(commit.subject.clone()),
-                        ),
-                )
-                .child(meta),
-        )
-        .child(
-            div()
-                .flex_none()
                 .font_family(theme::code_font_family())
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_muted)
-                .child(commit.short.clone()),
+                .child(commit.short().to_string()),
         );
     if let Some(url) = url.map(str::to_string) {
-        element = element.child(
+        trailing = trailing.child(
             div()
                 .flex_none()
                 .opacity(0.)
                 .group_hover("git-row", |s| s.opacity(1.))
                 .child(row_button(
-                    "git-graph-open",
+                    &format!("{}-open", id_prefix),
                     "icons/arrow-up-right.svg",
                     "git_panel.open_on_github",
                     theme,
@@ -10008,7 +10081,7 @@ fn graph_row(
                 )),
         );
     }
-    let element = element.child(icon(
+    trailing = trailing.child(icon(
         if selected {
             "icons/arrow-down.svg"
         } else {
@@ -10017,14 +10090,63 @@ fn graph_row(
         IconSize::XSmall.px(&theme),
         theme.text_muted,
     ));
+
+    let element = div()
+        .id(gpui::ElementId::Name(row_name.clone().into()))
+        .group("git-row")
+        .mx(DynamicSpacing::Base12.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .rounded(Radius::Medium.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .cursor_pointer()
+        .on_click(listener)
+        .child(leading)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base03.px(&theme))
+                .pt(content_padding)
+                .pb(content_padding)
+                .child(subject_line)
+                .child(meta),
+        )
+        .child(trailing);
     crate::motion::hover(
         element,
-        format!("git-graph-{}", commit.short),
+        row_name,
         &theme,
-        Hover::over(
-            selected.then_some(theme.surface_selected),
-            theme.hover_wash(),
-        ),
+        Hover::over(row_rest(selected, cursor, theme), theme.hover_wash()),
+    )
+}
+
+/// One row in the Graph list: the lane drawing on the left, then the shared
+/// commit body. The gutter's fixed height defines the row's height and the
+/// rows carry no vertical padding or separator, so lanes meet cleanly from
+/// one row to the next.
+fn graph_row(
+    row: &git::GraphRow,
+    url: Option<&str>,
+    selected: bool,
+    cursor: bool,
+    theme: Theme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    commit_row_core(
+        "git-graph",
+        &row.commit,
+        graph_gutter(row, theme),
+        url,
+        selected,
+        cursor,
+        px(0.),
+        theme,
+        listener,
+        None::<fn(String, &mut Window, &mut gpui::App)>,
     )
 }
 
@@ -10128,6 +10250,9 @@ fn row_rest(selected: bool, cursor: bool, theme: Theme) -> Option<Hsla> {
 /// One row in the History list: an author monogram, the subject with its ref
 /// badges, an author · relative-time meta line, and the short hash with an
 /// external-link mark when the commit can be opened on the remote.
+/// One row in the History list: the leading marker, then the shared commit
+/// body — refs and subject over an author · relative-time meta line — with
+/// the short hash and a forge link that reveals on hover.
 fn commit_row(
     commit: &CommitEntry,
     url: Option<&str>,
@@ -10137,126 +10262,17 @@ fn commit_row(
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
     on_author: impl Fn(String, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    let author = commit.author.clone();
-    let meta = div()
-        .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base06.px(&theme))
-        .text_size(TextSize::Small.px(&theme))
-        .child(author_avatar(&commit.author, &commit.author_email, theme))
-        .child({
-            // Clicking the author filters History to their commits.
-            let author_for_click = author.clone();
-            div()
-                .id(gpui::ElementId::Name(
-                    format!("git-commit-author-{}", commit.short).into(),
-                ))
-                .text_color(theme.text_secondary)
-                .cursor_pointer()
-                .hover_ink_accent(&theme)
-                .on_click(move |_, window, cx: &mut gpui::App| {
-                    cx.stop_propagation();
-                    on_author(author_for_click.clone(), window, cx);
-                })
-                .child(author.clone())
-        })
-        .child(
-            div()
-                .size(px(3.))
-                .rounded_full()
-                .bg(theme.text_muted.opacity(0.7)),
-        )
-        .child(
-            div()
-                .text_color(theme.text_muted)
-                .child(commit.relative.clone()),
-        );
-
-    let mut row = div()
-        .id(gpui::ElementId::Name(
-            format!("git-commit-{}", commit.short).into(),
-        ))
-        .mx(DynamicSpacing::Base12.px(&theme))
-        .px(DynamicSpacing::Base08.px(&theme))
-        .py(DynamicSpacing::Base08.px(&theme))
-        .rounded(Radius::Medium.px(&theme))
-        .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base08.px(&theme))
-        .cursor_pointer()
-        .on_click(listener)
-        .child(history_marker(theme))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base03.px(&theme))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .min_w_0()
-                        .children(
-                            commit
-                                .refs
-                                .iter()
-                                .map(|label| ref_badge(&label.name, label.kind, theme)),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_primary)
-                                .child(commit.subject.clone()),
-                        ),
-                )
-                .child(meta),
-        )
-        .child(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base04.px(&theme))
-                .child(
-                    div()
-                        .font_family(theme::code_font_family())
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_muted)
-                        .child(commit.short.clone()),
-                ),
-        );
-    // Opening the commit on the forge is a separate affordance from expanding
-    // its detail, so it gets its own button that stops propagation.
-    if let Some(url) = url.map(str::to_string) {
-        row = row.child(row_button(
-            "git-commit-open",
-            "icons/arrow-up-right.svg",
-            "git_panel.open_on_github",
-            theme,
-            move |_, _, cx| cx.open_url(&url),
-        ));
-    }
-    let row = row.child(icon(
-        if selected {
-            "icons/arrow-down.svg"
-        } else {
-            "icons/arrow-right.svg"
-        },
-        IconSize::XSmall.px(&theme),
-        theme.text_muted,
-    ));
-    crate::motion::hover(
-        row,
-        format!("git-commit-{}", commit.short),
-        &theme,
-        Hover::over(row_rest(selected, cursor, theme), theme.hover_wash()),
+    commit_row_core(
+        "git-commit",
+        commit,
+        history_marker(theme),
+        url,
+        selected,
+        cursor,
+        DynamicSpacing::Base06.px(&theme),
+        theme,
+        listener,
+        Some(on_author),
     )
 }
 

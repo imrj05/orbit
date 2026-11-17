@@ -1058,18 +1058,6 @@ fn drop_shadow(offset_y: f32, blur: f32, alpha: f32) -> BoxShadow {
 /// the blur request. [`Theme::glass_sigma`] decides; below it is `None` and
 /// nothing changes.
 pub trait StyledExt: Styled + ParentElement + Sized {
-    /// Preserve a card's hairline and layout while its border channel requests frost.
-    /// The fill and radius are chosen by the caller, including the non-glass fallback.
-    fn frosted_card(self, theme: &Theme, border: Hsla, radius: Pixels) -> Self {
-        let el = self.border_1();
-        if let Some(sigma) = theme.glass_sigma() {
-            el.border_color(gpui::backdrop_blur_marker(sigma))
-                .child(frosted_edge(border, radius))
-        } else {
-            el.border_color(border)
-        }
-    }
-
     /// Title bar, panels, tab bar.
     fn elevation_1(self, theme: &Theme) -> Self {
         elevated(self, theme, ElevationIndex::Surface, true)
@@ -1250,18 +1238,27 @@ fn elevated<E: Styled + ParentElement>(
     bordered: bool,
 ) -> E {
     let radius = panel::RADIUS.px(theme);
-    let el = el
-        .bg(theme.card_fill(ElevationIndex::ElevatedSurface.bg(theme)))
-        .rounded(radius)
-        .shadow(index.shadow(theme));
     // Only floating layers frost. Title bars, panels and tab bars are
     // structural chrome and keep their opaque fill: the workbench has to stay
-    // readable over any picture.
-    let frost = match index {
-        ElevationIndex::ElevatedSurface | ElevationIndex::ModalSurface => theme.glass_sigma(),
+    // readable over any picture. Floating layers frost over a wallpaper and,
+    // in dark palettes, over the workbench itself (`floating_glass_sigma`).
+    let floating = match index {
+        ElevationIndex::ElevatedSurface | ElevationIndex::ModalSurface => true,
         ElevationIndex::Background | ElevationIndex::Surface | ElevationIndex::EditorSurface => {
-            None
+            false
         }
+    };
+    let base = ElevationIndex::ElevatedSurface.bg(theme);
+    let fill = if floating {
+        theme.floating_fill(base)
+    } else {
+        theme.card_fill(base)
+    };
+    let el = el.bg(fill).rounded(radius).shadow(index.shadow(theme));
+    let frost = if floating {
+        theme.floating_glass_sigma()
+    } else {
+        None
     };
     if let Some(sigma) = frost {
         let el = el.border_color(gpui::backdrop_blur_marker(sigma));

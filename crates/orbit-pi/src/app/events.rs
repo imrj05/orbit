@@ -821,7 +821,13 @@ impl OrbitApp {
                     success,
                     data,
                     ..
-                } if path.is_none() && *success => {
+                } if path.is_none() => {
+                    if !*success {
+                        if matches!(command.as_str(), "clone" | "new_session") {
+                            let _ = parked.client.send(CommandBody::GetState);
+                        }
+                        continue;
+                    }
                     let file = data
                         .as_ref()
                         .and_then(|data| data.get("sessionFile"))
@@ -1128,6 +1134,7 @@ impl OrbitApp {
             // `clone` duplicates the session and moves the process onto the
             // copy. Adopt the new file/id when pi reports them, then reload.
             "clone" => {
+                self.account_clone_pending = false;
                 self.execution = SessionExecution::default();
                 self.transcript.clear();
                 self.current_title = None;
@@ -1413,6 +1420,9 @@ impl OrbitApp {
                 // is pushed once `get_state` reports the new id (see
                 // `apply_default_model`).
                 self.default_model_armed = true;
+                if let Some(file) = data.get("sessionFile").and_then(Value::as_str) {
+                    self.adopt_session_file(PathBuf::from(file));
+                }
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
             }

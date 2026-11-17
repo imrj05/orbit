@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 
-use gpui::{point, Hsla, Pixels};
+use gpui::{point, Div, Hsla, Pixels};
 use std::{cell::Cell, rc::Rc};
 
 use crate::motion::Hover;
@@ -9,8 +9,50 @@ use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
     context_menu, input, list_item, looping, picker, popover, tooltip, BufferLineHeight,
-    ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
+    ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
+
+/// How far a grouped session row sits in from its project header: the
+/// header's hairline, its leading inset and the chevron column, plus the gap
+/// after it — so a session card's left edge lines up under the project mark
+/// and the list reads as project → sessions.
+fn session_indent(theme: &Theme) -> Pixels {
+    BORDER_WIDTH
+        + DynamicSpacing::Base06.px(theme)
+        + IconSize::XSmall.px(theme)
+        + DynamicSpacing::Base06.px(theme)
+}
+
+/// Horizontal centre of the header chevron, where the tree guide under an
+/// expanded project runs.
+fn tree_guide_x(theme: &Theme) -> Pixels {
+    BORDER_WIDTH + DynamicSpacing::Base06.px(theme) + IconSize::XSmall.px(theme) / 2.
+}
+
+/// The project's tree guide, a 1px rule down the chevron column.
+fn tree_guide(theme: &Theme) -> Div {
+    div()
+        .debug_selector(|| "sidebar-tree-guide".into())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(tree_guide_x(theme))
+        .w(BORDER_WIDTH)
+        .bg(theme.border_subtle)
+}
+
+/// Seat a row that belongs to a project group (a "show more/less" row) at the
+/// session indent, on the group's tree guide.
+fn nested_group_row(row: impl IntoElement, theme: &Theme) -> AnyElement {
+    div()
+        .relative()
+        .w_full()
+        .py(DynamicSpacing::Base02.px(theme))
+        .pl(session_indent(theme))
+        .child(tree_guide(theme))
+        .child(row)
+        .into_any_element()
+}
 use crate::workspace_mark::{self, WorkspaceMark};
 
 /// Whether a workspace group is collapsed in the sidebar. The active
@@ -160,9 +202,20 @@ pub(crate) fn build_sidebar_rows(
     // the mark is that the result is still unread, and a collapse that hides
     // it turns the mark back into a search (issue #83).
     review_paths: &HashSet<PathBuf>,
+    // Sessions inside a project group the user arranged by hand: path → place
+    // in that group (`session_order`). Empty keeps plain recency, which is
+    // what every group starts as.
+    session_ranks: &HashMap<PathBuf, usize>,
 ) -> Vec<SideRow> {
     let mut side_rows: Vec<SideRow> = Vec::new();
-    for (label, cwd, ixs) in sidebar_groups(sessions, workspaces, sort, added_at, pinned) {
+    for (label, cwd, ixs) in sidebar_groups(
+        sessions,
+        workspaces,
+        sort,
+        added_at,
+        pinned,
+        session_ranks,
+    ) {
         emit_workspace_group(
             &mut side_rows,
             sessions,
@@ -194,6 +247,25 @@ fn session_lead_rank(path: &Path, pinned: &HashSet<PathBuf>) -> u8 {
     }
 }
 
+/// A session's place inside its project group: pinned first, then the sessions
+/// nobody has arranged yet in recency order, then the group's arranged block in
+/// the order the user put it in.
+///
+/// A session missing from the arranged list is one created after the group was
+/// arranged (or a group nobody reordered): it keeps its recency slot *above*
+/// the block, so new work is still the first row under its header. The sort is
+/// stable, so all the "not arranged" ties keep the store's newest-first order.
+fn session_row_key(
+    path: &Path,
+    pinned: &HashSet<PathBuf>,
+    session_ranks: &HashMap<PathBuf, usize>,
+) -> (u8, u8, usize) {
+    match session_ranks.get(path) {
+        Some(rank) => (session_lead_rank(path, pinned), 1, *rank),
+        None => (session_lead_rank(path, pinned), 0, 0),
+    }
+}
+
 /// One group per listed project, in the order the user added them — an
 /// empty project still gets a header (and its `+`) so a task can start
 /// there. Groups are keyed by label, so two paths with the same basename
@@ -206,6 +278,7 @@ fn sidebar_groups(
     sort: WorkspaceSort,
     added_at: &HashMap<PathBuf, SystemTime>,
     pinned: &HashSet<PathBuf>,
+    session_ranks: &HashMap<PathBuf, usize>,
 ) -> Vec<(String, PathBuf, Vec<usize>)> {
     let mut groups: Vec<(String, PathBuf, Vec<usize>)> = Vec::new();
     for ws in workspaces {
@@ -224,14 +297,15 @@ fn sidebar_groups(
     // Order the groups for the active sort mode before any rows are laid out;
     // a group's own session order is independent (pinned-first, then recency).
     sort_workspace_groups(&mut groups, sessions, sort, added_at);
-    // Pins rise to the top of their project group. Recency order is preserved
-    // for everything else (the sort is stable). Doing this here rather than
-    // in `load_sessions` keeps an Orbit-owned preference out of the pi-store
-    // scan — and means a pin can never be hidden by the per-group truncation
-    // below. The open session and a live run stay where their last message
-    // put them.
+    // Pins rise to the top of their project group, and a group the user
+    // arranged by hand keeps that order (see [`session_row_key`]). Recency is
+    // preserved for everything else (the sort is stable). Doing this here
+    // rather than in `load_sessions` keeps an Orbit-owned preference out of
+    // the pi-store scan — and means a pin can never be hidden by the
+    // per-group truncation below. The open session and a live run stay where
+    // their last message put them.
     for (_, _, ixs) in groups.iter_mut() {
-        ixs.sort_by_key(|&ix| session_lead_rank(&sessions[ix].path, pinned));
+        ixs.sort_by_key(|&ix| session_row_key(&sessions[ix].path, pinned, session_ranks));
     }
     groups
 }
@@ -540,6 +614,103 @@ fn group_updated(ixs: &[usize], sessions: &[SessionInfo]) -> Option<SystemTime> 
     ixs.iter().map(|&ix| sessions[ix].modified).max()
 }
 
+// ── project-group ordering (issue #143) ───────────────────────────────────
+
+/// Rewrite the project list so its groups appear in `labels` order, keeping
+/// every folder that shares a label together and in its stored order. A label
+/// the list does not know is ignored; a project the labels miss keeps its
+/// place at the end, so a stale order can never drop a project.
+///
+/// This is the step that turns "what the sidebar is showing right now" into a
+/// stored order: a drag (or Move up/down) is applied to the displayed order,
+/// not to whatever insertion order happened to be on disk.
+pub(crate) fn order_workspaces_by_labels(workspaces: &[PathBuf], labels: &[String]) -> Vec<PathBuf> {
+    let label_of = |path: &PathBuf| crate::sessions::workspace_label(path);
+    let mut ordered: Vec<PathBuf> = Vec::with_capacity(workspaces.len());
+    for label in labels {
+        ordered.extend(
+            workspaces
+                .iter()
+                .filter(|path| label_of(path) == *label)
+                .cloned(),
+        );
+    }
+    ordered.extend(
+        workspaces
+            .iter()
+            .filter(|path| !labels.contains(&label_of(path)))
+            .cloned(),
+    );
+    ordered
+}
+
+/// Move the `moving` project group so it lands before (or after) the `target`
+/// group, returning the new project list. Groups are the unit the sidebar
+/// shows: two folders with the same basename share one header, so they travel
+/// together and keep their relative order.
+///
+/// An unknown label, or moving a group onto itself, returns the list unchanged
+/// — the caller compares and skips the write.
+pub(crate) fn reorder_workspaces(
+    workspaces: &[PathBuf],
+    moving: &str,
+    target: &str,
+    after: bool,
+) -> Vec<PathBuf> {
+    if moving == target {
+        return workspaces.to_vec();
+    }
+    let mut labels: Vec<String> = Vec::new();
+    for path in workspaces {
+        let label = crate::sessions::workspace_label(path);
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    let (Some(from), Some(_)) = (
+        labels.iter().position(|label| label == moving),
+        labels.iter().position(|label| label == target),
+    ) else {
+        return workspaces.to_vec();
+    };
+    labels.remove(from);
+    let Some(to) = labels.iter().position(|label| label == target) else {
+        return workspaces.to_vec();
+    };
+    // Inserting *before* the target is the target's own index; *after* is one
+    // past it.
+    labels.insert(if after { to + 1 } else { to }, moving.to_string());
+    order_workspaces_by_labels(workspaces, &labels)
+}
+
+/// Move `moving` before (or after) `target` in a session list, returning the
+/// new order. An unknown path, or moving a row onto itself, returns the list
+/// unchanged — the caller compares and skips the write.
+pub(crate) fn reorder_session_paths(
+    paths: &[PathBuf],
+    moving: &Path,
+    target: &Path,
+    after: bool,
+) -> Vec<PathBuf> {
+    if moving == target {
+        return paths.to_vec();
+    }
+    let (Some(from), Some(_)) = (
+        paths.iter().position(|path| path == moving),
+        paths.iter().position(|path| path == target),
+    ) else {
+        return paths.to_vec();
+    };
+    let mut next = paths.to_vec();
+    let moved = next.remove(from);
+    let Some(to) = next.iter().position(|path| path == target) else {
+        return paths.to_vec();
+    };
+    // Inserting *before* the target is its own index; *after* is one past it.
+    next.insert(if after { to + 1 } else { to }, moved);
+    next
+}
+
 /// The scrolled-to workspace's header pinned over the session list, plus how
 /// far the next group's header has pushed it up.
 pub(crate) struct StickyHeader {
@@ -841,13 +1012,21 @@ fn project_icon(
         None => theme.accent_text,
         key => workspace_mark::tint_color(theme, key),
     };
-    // Keep the frame fixed while giving the mark more room inside it.
-    let inner_size = size.px(theme) + DynamicSpacing::Base04.px(theme);
+    // Every project mark is the same tile: one size, one radius, one hairline.
+    // A glyph sits centred on the tonal fill; a logo fills the tile edge to
+    // edge (clipped to its corners) so an app icon and a folder glyph carry
+    // the same visual weight in the list instead of a dark square beside a
+    // thin outline.
+    let tile = size.px(theme) + DynamicSpacing::Base08.px(theme);
+    let radius = Radius::Small.px(theme);
     let frame = div()
         .flex_none()
-        .size(size.px(theme) + DynamicSpacing::Base08.px(theme))
-        .rounded(Radius::Small.px(theme))
+        .size(tile)
+        .rounded(radius)
+        .overflow_hidden()
         .bg(theme.surface_elevated)
+        .border_1()
+        .border_color(theme.border_subtle)
         .flex()
         .items_center()
         .justify_center();
@@ -859,15 +1038,18 @@ fn project_icon(
         if let Some(logo) = logo {
             return frame
                 .child(
+                    // Inside the hairline; `Contain` so a wide wordmark is
+                    // letterboxed on the tile rather than cropped.
                     img(ImageSource::Image(logo.clone()))
                         .flex_none()
-                        .size(inner_size)
-                        .rounded(Radius::XSmall.px(theme))
+                        .size(tile - BORDER_WIDTH * 2.)
+                        .rounded(radius - BORDER_WIDTH)
                         .object_fit(ObjectFit::Contain),
                 )
                 .into_any_element();
         }
     }
+    let inner_size = size.px(theme);
     let path = status_icon
         .cloned()
         .unwrap_or_else(|| workspace_mark::icon_path(mark.icon.as_deref()));
@@ -1067,6 +1249,80 @@ fn session_card(hover: &SessionTooltip, theme: &Theme) -> impl IntoElement {
         })
 }
 
+/// What the sidebar's reordering contributes to one row's paint: the drags in
+/// flight (for the insertion line and the in-flight dim), and whether this
+/// paint may start one. The sticky header overlay paints a header a second time
+/// and passes `interactive: false`, so a release can never be resolved against
+/// the overlay's copy of the geometry.
+pub(crate) struct SidebarDragPaint<'a> {
+    /// A project group is being dragged.
+    pub project: Option<&'a ProjectDragState>,
+    /// A session row is being dragged.
+    pub session: Option<&'a SessionDragState>,
+    /// This paint may start and accept a drag.
+    pub interactive: bool,
+    /// Session rows can be rearranged here: the grouped list, where a row
+    /// belongs to a project header. Flat, Recent and search lists keep
+    /// recency order and offer no session drag.
+    pub sessions: bool,
+}
+
+impl SidebarDragPaint<'_> {
+    /// Nothing is being dragged and this paint cannot start one.
+    pub(crate) fn idle() -> Self {
+        Self {
+            project: None,
+            session: None,
+            interactive: false,
+            sessions: false,
+        }
+    }
+}
+
+/// The chip that follows the pointer while a project group is dragged. It
+/// carries the group's own name, so the thing being moved is never in doubt —
+/// a bare outline would make the user guess which header is in flight.
+struct ProjectDragGhost {
+    label: String,
+}
+
+impl Render for ProjectDragGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        drag_ghost(self.label.clone(), cx)
+    }
+}
+
+/// The chip that follows the pointer while a session row is dragged. The
+/// title is what the row is identified by, so it is what travels.
+struct SessionDragGhost {
+    title: String,
+}
+
+impl Render for SessionDragGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        drag_ghost(self.title.clone(), cx)
+    }
+}
+
+/// Shared chip behind both drag ghosts: one line of the row's own name on the
+/// raised surface, so what is in flight is never in doubt.
+fn drag_ghost(text: String, cx: &mut App) -> AnyElement {
+    let theme = *theme::get(cx);
+    div()
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base04.px(&theme))
+        .rounded(list_item::RADIUS.px(&theme))
+        .bg(theme.surface_elevated)
+        .border_1()
+        .border_color(theme.border_subtle)
+        .opacity(0.92)
+        .text_size(TextSize::Small.px(&theme))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_primary)
+        .child(text)
+        .into_any_element()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_side_row(
     rows: &Rc<Vec<SideRow>>,
@@ -1108,6 +1364,11 @@ pub(crate) fn render_side_row(
     session_statuses: &Rc<HashMap<PathBuf, SessionStatus>>,
     session_menu: Option<&SessionMenu>,
     workspace_menu: Option<&WorkspaceMenu>,
+    // Row drag & drop (issue #143): the drags in flight, and whether this
+    // paint may start or accept one. The sticky header overlay paints the same
+    // header a second time, so it must not — two drop targets for one header
+    // would let a release land on the wrong group.
+    drag: &SidebarDragPaint,
     // Whether this row is the keyboard cursor (see `OrbitApp::sidebar_cursor`).
     // Painted with a focused surface, distinct from hover and selection.
     cursor: bool,
@@ -1134,6 +1395,18 @@ pub(crate) fn render_side_row(
             let mark = marks.get(cwd).cloned().unwrap_or_default();
             let workspace_logo = logos.get(cwd);
             let workspace_icon = workspace_icons.get(cwd);
+            // Project reorder (issue #143): dim the header that is in flight,
+            // and draw the insertion line on the header the drop would use.
+            let project_dragging = drag
+                .project
+                .is_some_and(|state| state.dragging == label);
+            let project_insertion = drag
+                .project
+                .and_then(|state| state.target.as_ref())
+                .filter(|target| target.label == label)
+                .map(|target| target.after);
+            let drag_label = label.clone();
+            let this_drop = this.clone();
             // Outer shell: inter-group spacing only — horizontal inset comes
             // from the list's `px_2`, so the hover pill lines up with the
             // session rows' (inside the same container) and the chevron lands
@@ -1158,6 +1431,7 @@ pub(crate) fn render_side_row(
                         .pl(DynamicSpacing::Base06.px(&theme))
                         .pr(DynamicSpacing::Base08.px(&theme))
                         .rounded(list_item::RADIUS.px(&theme))
+                        .relative()
                         .flex()
                         .items_center()
                         .gap(DynamicSpacing::Base06.px(&theme))
@@ -1165,6 +1439,51 @@ pub(crate) fn render_side_row(
                         .border_1()
                         .border_color(theme.border.opacity(0.))
                         .when(cursor, |s| s.border_color(theme.focus_ring))
+                        // A header is a drag handle for its project group. The
+                        // press still collapses the group: GPUI starts a drag
+                        // only past its movement threshold, and a drag cancels
+                        // the pending click, so a click and a drag never both
+                        // fire.
+                        .when(drag.interactive, |header| {
+                            let ghost_label = drag_label.clone();
+                            let this_drop = this_drop.clone();
+                            header
+                                .on_drag(
+                                    ProjectDrag {
+                                        label: drag_label.clone(),
+                                    },
+                                    move |_: &ProjectDrag, _, _, cx| {
+                                        let label = ghost_label.clone();
+                                        cx.new(|_| ProjectDragGhost { label })
+                                    },
+                                )
+                                .on_drop::<ProjectDrag>(
+                                    move |drag: &ProjectDrag, _window, cx| {
+                                        let drag = drag.clone();
+                                        this_drop.update(cx, |app, cx| {
+                                            app.on_project_drop(&drag, cx)
+                                        });
+                                    },
+                                )
+                                // A session drag released on a header is not a
+                                // click: it must not collapse the group.
+                                .on_drop::<SessionDrag>(|_: &SessionDrag, _, _| {})
+                        })
+                        .when(project_dragging, |header| header.opacity(0.45))
+                        .when_some(project_insertion, |header, after| {
+                            header.child(
+                                div()
+                                    .debug_selector(|| "sidebar-project-drop-line".into())
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .h(px(2.))
+                                    .rounded_full()
+                                    .bg(theme.accent)
+                                    .when(after, |line| line.bottom(px(-1.)))
+                                    .when(!after, |line| line.top(px(-1.))),
+                            )
+                        })
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             let label = label_for_click.clone();
                             this_toggle.update(cx, |app, cx| {
@@ -1187,14 +1506,18 @@ pub(crate) fn render_side_row(
                             let this = this.clone();
                             move |event: &MouseDownEvent, window, cx| {
                                 cx.stop_propagation();
-                                let menu = WorkspaceMenu {
-                                    label: label.clone(),
-                                    cwd: cwd.clone(),
-                                    at: Some(event.position),
-                                    picker: false,
-                                    confirm_delete: false,
-                                };
                                 this.update(cx, |app, cx| {
+                                    let (can_move_up, can_move_down) =
+                                        app.project_move_flags(&label);
+                                    let menu = WorkspaceMenu {
+                                        label: label.clone(),
+                                        cwd: cwd.clone(),
+                                        at: Some(event.position),
+                                        picker: false,
+                                        confirm_delete: false,
+                                        can_move_up,
+                                        can_move_down,
+                                    };
                                     app.open_workspace_menu_at(menu, window, cx);
                                 });
                             }
@@ -1212,7 +1535,7 @@ pub(crate) fn render_side_row(
                             &mark,
                             workspace_logo,
                             workspace_icon,
-                            IconSize::Medium,
+                            IconSize::Small,
                             &theme,
                         ))
                         .child(
@@ -1272,22 +1595,22 @@ pub(crate) fn render_side_row(
                             Hover::wash(&theme),
                         ))
                         // Session count, pinned to the header's right edge.
-                        // A small tonal counter, subordinate to the name. A project with
-                        // nothing in it says so by having no rows under it;
-                        // a `0` here would only be a number doing no work.
+                        // Bare muted figures, right-aligned in a fixed slot:
+                        // metadata, not a control, so it carries no fill that
+                        // would compete with the name or read as a button. A
+                        // project with nothing in it says so by having no rows
+                        // under it; a `0` here would only be a number doing no
+                        // work.
                         .when(*count > 0, |header| {
                             header.child(
                                 div()
+                                    .debug_selector(|| "sidebar-project-count".into())
                                     .flex_none()
                                     .min_w(ButtonSize::Compact.height(&theme))
-                                    .px(DynamicSpacing::Base04.px(&theme))
-                                    .py(DynamicSpacing::Base02.px(&theme))
-                                    .rounded(Radius::Small.px(&theme))
-                                    .bg(theme.surface_elevated)
-                                    .text_center()
+                                    .flex()
+                                    .justify_end()
                                     .text_size(TextSize::XSmall.px(&theme))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.text_secondary)
+                                    .text_color(theme.text_muted)
                                     .child(format!("{count}")),
                             )
                         }),
@@ -1344,13 +1667,22 @@ pub(crate) fn render_side_row(
             let mut row = div()
                 .id(ElementId::Name(format!("sidebar-show-more-{label}").into()))
                 .w_full()
-                .h(px(26.))
-                .pl(px(22.))
+                .h(ButtonSize::Medium.height(&theme))
+                .pl(DynamicSpacing::Base08.px(&theme))
                 .pr(DynamicSpacing::Base04.px(&theme))
                 .flex()
                 .items_center()
                 .rounded(list_item::RADIUS.px(&theme))
+                // Reserve the hairline so the keyboard ring never shifts text.
+                .border_1()
+                .border_color(theme.border.opacity(0.))
                 .when(cursor, |s| s.border_color(theme.focus_ring))
+                // A drag released on this row must not expand the group too:
+                // the release is not a click (issue #143).
+                .when(drag.interactive, |row| {
+                    row.on_drop::<SessionDrag>(|_: &SessionDrag, _, _| {})
+                        .on_drop::<ProjectDrag>(|_: &ProjectDrag, _, _| {})
+                })
                 .child(more);
             if can_collapse {
                 row = row.child(crate::motion::hover(
@@ -1376,29 +1708,40 @@ pub(crate) fn render_side_row(
                     Hover::wash(&theme),
                 ));
             }
-            crate::motion::hover(
-                row,
-                format!("sidebar-show-more-{label}"),
+            nested_group_row(
+                crate::motion::hover(
+                    row,
+                    format!("sidebar-show-more-{label}"),
+                    &theme,
+                    Hover::over(cursor.then_some(theme.surface_hover), theme.surface_hover),
+                ),
                 &theme,
-                Hover::over(cursor.then_some(theme.surface_hover), theme.surface_hover),
             )
         }
         SideRow::ShowLess { label } => {
             let this = this.clone();
             let label_for_click = label.clone();
-            crate::motion::hover(
+            nested_group_row(crate::motion::hover(
                 div()
                     .id(ElementId::Name(format!("sidebar-show-less-{label}").into()))
                     .w_full()
-                    .h(px(26.))
-                    .pl(px(22.))
+                    .h(ButtonSize::Medium.height(&theme))
+                    .pl(DynamicSpacing::Base08.px(&theme))
                     .pr(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .rounded(list_item::RADIUS.px(&theme))
                     .cursor_pointer()
+                    .border_1()
+                    .border_color(theme.border.opacity(0.))
                     .when(cursor, |s| s.border_color(theme.focus_ring))
+                    // Same as the "show more" row: a released drag is not a
+                    // click and must not collapse the group.
+                    .when(drag.interactive, |row| {
+                        row.on_drop::<SessionDrag>(|_: &SessionDrag, _, _| {})
+                            .on_drop::<ProjectDrag>(|_: &ProjectDrag, _, _| {})
+                    })
                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                         let label = label_for_click.clone();
                         this.update(cx, |app, cx| {
@@ -1420,7 +1763,7 @@ pub(crate) fn render_side_row(
                 format!("sidebar-show-less-{label}"),
                 &theme,
                 Hover::over(cursor.then_some(theme.surface_hover), theme.surface_hover),
-            )
+            ), &theme)
         }
         SideRow::Session(ix) => {
             let session = sessions_data[*ix].clone();
@@ -1451,6 +1794,19 @@ pub(crate) fn render_side_row(
             let this_for_row = this.clone();
             let this_for_menu = this.clone();
             let menu = session_menu.filter(|m| m.path == session.path);
+            // Session reorder (issue #143): dim the row in flight and draw the
+            // insertion line on the row the drop would use. Only the grouped
+            // list offers this — see `SidebarDragPaint::sessions`.
+            let session_dragging = drag
+                .session
+                .is_some_and(|state| state.dragging == session.path);
+            let session_insertion = drag
+                .session
+                .and_then(|state| state.target.as_ref())
+                .filter(|target| target.path == session.path)
+                .map(|target| target.after);
+            let drag_path = session.path.clone();
+            let drag_title = session.title.clone();
             // Sessions with a live pi process (running or warm) must not be
             // deleted — the process would recreate the file mid-run.
             let deletable = !active && !running && !live_paths.contains(&session.path);
@@ -1467,11 +1823,65 @@ pub(crate) fn render_side_row(
             // handler; the inner card holds the background/hover so the gap
             // between cards stays clear. Padding (not margin) is used because
             // the list measures each item's border-box — margins are dropped.
+            // Under a project header (grouped list) the row steps in by the
+            // chevron column and a 1px guide runs down that column, so the
+            // sessions read as the header's children. Flat lists stay flush.
+            let nested = !show_workspace
+                && rows[..row_ix]
+                    .iter()
+                    .rev()
+                    .any(|row| matches!(row, SideRow::Workspace { .. }));
             let mut row = div()
                 .id(ElementId::NamedInteger("side-session".into(), *ix as u64))
+                .relative()
                 .w_full()
                 .py(DynamicSpacing::Base02.px(&theme))
+                .when(nested, |row| {
+                    row.pl(session_indent(&theme)).child(tree_guide(&theme))
+                })
                 .cursor_pointer()
+                // A row is a drag handle for itself. A plain click still opens
+                // the session: GPUI starts a drag only past its movement
+                // threshold, and a drag cancels the pending click.
+                .when(drag.interactive && drag.sessions, |row| {
+                    let ghost_title = drag_title.clone();
+                    let this_drop = this.clone();
+                    row.on_drag(
+                        SessionDrag {
+                            path: drag_path.clone(),
+                            title: drag_title.clone(),
+                        },
+                        move |_: &SessionDrag, _, _, cx| {
+                            let title = ghost_title.clone();
+                            cx.new(|_| SessionDragGhost { title })
+                        },
+                    )
+                    .on_drop::<SessionDrag>(move |drag: &SessionDrag, _window, cx| {
+                        let drag = drag.clone();
+                        this_drop.update(cx, |app, cx| app.on_session_drop(&drag, cx));
+                    })
+                })
+                // Another kind of drag released here must not open the session
+                // either: a project header can be dropped anywhere in the list
+                // and the release is not a click.
+                .when(drag.interactive, |row| {
+                    row.on_drop::<ProjectDrag>(|_: &ProjectDrag, _, _| {})
+                })
+                .when(session_dragging, |row| row.opacity(0.45))
+                .when_some(session_insertion, |row, after| {
+                    row.child(
+                        div()
+                            .debug_selector(|| "sidebar-session-drop-line".into())
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .h(px(2.))
+                            .rounded_full()
+                            .bg(theme.accent)
+                            .when(after, |line| line.bottom(px(0.)))
+                            .when(!after, |line| line.top(px(0.))),
+                    )
+                })
                 .on_hover({
                     let path = session.path.clone();
                     let this = this.clone();
@@ -1500,17 +1910,19 @@ pub(crate) fn render_side_row(
                     move |event: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
                         this.update(cx, |app, cx| {
-                            app.open_session_menu_at(
-                                SessionMenu {
-                                    path: session.path.clone(),
-                                    title: session.title.clone(),
-                                    deletable,
-                                    confirm_delete: false,
-                                    at: Some(event.position),
-                                },
-                                window,
-                                cx,
-                            );
+                            let (can_move_up, can_move_down) =
+                                app.session_move_flags(&session.path);
+                            let menu = SessionMenu {
+                                path: session.path.clone(),
+                                title: session.title.clone(),
+                                deletable,
+                                confirm_delete: false,
+                                at: Some(event.position),
+                                reorderable: app.sessions_reorderable(),
+                                can_move_up,
+                                can_move_down,
+                            };
+                            app.open_session_menu_at(menu, window, cx);
                         });
                     }
                 })
@@ -1650,7 +2062,9 @@ pub(crate) fn render_side_row(
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .gap(DynamicSpacing::Base04.px(&theme))
+                    // Title and preview are one unit: a tight inner gap, the
+                    // row's own inset doing the separating between sessions.
+                    .gap(DynamicSpacing::Base02.px(&theme))
                     // Keep session indicators beside the title.
                     .child(
                         div()
@@ -1680,9 +2094,12 @@ pub(crate) fn render_side_row(
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
+                                    .debug_selector(|| "session-preview".into())
                                     .text_size(TextSize::Small.px(&theme))
                                     .line_height(BufferLineHeight::Standard.relative())
-                                    .text_color(theme.text_secondary)
+                                    // Muted, like the age: the title is the
+                                    // row's one primary line.
+                                    .text_color(meta_ink)
                                     .tip(message.clone())
                                     .child(message),
                             ),
@@ -1984,6 +2401,29 @@ pub(crate) fn session_menu_popup(
             .flex_col()
             .py(picker::list_padding_y(&theme))
             .gap(DynamicSpacing::Base01.px(&theme))
+            // Session order first: the pointer equivalent of dragging the row
+            // inside its project (#143). An edge with nowhere to go is listed
+            // disabled and says why; a list that cannot be rearranged (flat,
+            // Recent, search) leaves these rows out entirely.
+            .when(menu.reorderable, |list| {
+                list.child(session_move_row(
+                    "menu-move-up",
+                    true,
+                    menu.can_move_up,
+                    menu,
+                    theme,
+                    this.clone(),
+                ))
+                .child(session_move_row(
+                    "menu-move-down",
+                    false,
+                    menu.can_move_down,
+                    menu,
+                    theme,
+                    this.clone(),
+                ))
+                .child(context_menu_separator(&theme))
+            })
             .child(crate::motion::hover(
                 picker_entry(div().id("menu-rename"), &theme)
                     .h(picker::entry_height(&theme))
@@ -2164,14 +2604,19 @@ pub(crate) fn workspace_menu_button(
     .pressed_state(&theme, PressedRamp::Wash)
     .on_mouse_up(MouseButton::Left, move |_, window, cx| {
         cx.stop_propagation();
-        let menu = WorkspaceMenu {
-            label: label_for_click.clone(),
-            cwd: cwd_for_click.clone(),
-            at: None,
-            picker: false,
-            confirm_delete: false,
-        };
-        this.update(cx, |app, cx| app.toggle_workspace_menu(menu, window, cx));
+        this.update(cx, |app, cx| {
+            let (can_move_up, can_move_down) = app.project_move_flags(&label_for_click);
+            let menu = WorkspaceMenu {
+                label: label_for_click.clone(),
+                cwd: cwd_for_click.clone(),
+                at: None,
+                picker: false,
+                confirm_delete: false,
+                can_move_up,
+                can_move_down,
+            };
+            app.toggle_workspace_menu(menu, window, cx);
+        });
     })
     .child(icon(
         "icons/more.svg",
@@ -2270,6 +2715,95 @@ where
         &theme,
         Hover::fill(theme.error.opacity(0.12), theme.error.opacity(0.18)),
     )
+}
+
+/// One Move up / Move down row of a sidebar menu: the same row the drag
+/// performs. Enabled it runs the reorder; at the top or bottom of its list it
+/// is painted disabled with the reason, and carries no handler.
+#[allow(clippy::too_many_arguments)]
+fn move_menu_row<C, L>(
+    id: &'static str,
+    up: bool,
+    enabled: bool,
+    label: L,
+    reason: impl Into<SharedString>,
+    theme: Theme,
+    this: Entity<OrbitApp>,
+    on_click: C,
+) -> AnyElement
+where
+    C: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
+    L: Into<SharedString>,
+{
+    let icon_path = if up {
+        "icons/arrow-up.svg"
+    } else {
+        "icons/arrow-down.svg"
+    };
+    if !enabled {
+        return menu_item_unavailable(id, icon_path, label, reason.into().to_string(), theme);
+    }
+    workspace_menu_item(id, icon_path, label, theme, this, on_click).into_any_element()
+}
+
+/// Move up / Move down for a project group's row menu.
+fn workspace_move_row(
+    id: &'static str,
+    up: bool,
+    enabled: bool,
+    menu: &WorkspaceMenu,
+    theme: Theme,
+    this: Entity<OrbitApp>,
+) -> AnyElement {
+    let (label, reason) = if up {
+        (
+            tr!("sidebar.move_up"),
+            tr!("sidebar.move_project_up_blocked"),
+        )
+    } else {
+        (
+            tr!("sidebar.move_down"),
+            tr!("sidebar.move_project_down_blocked"),
+        )
+    };
+    let menu_label = menu.label.clone();
+    move_menu_row(
+        id,
+        up,
+        enabled,
+        label,
+        reason,
+        theme,
+        this,
+        move |app, cx| app.on_workspace_move_project(&menu_label, up, cx),
+    )
+}
+
+/// Move up / Move down for a session row's menu. A session moves inside its
+/// project group, so this is the same reorder the row drag performs.
+fn session_move_row(
+    id: &'static str,
+    up: bool,
+    enabled: bool,
+    menu: &SessionMenu,
+    theme: Theme,
+    this: Entity<OrbitApp>,
+) -> AnyElement {
+    let (label, reason) = if up {
+        (
+            tr!("sidebar.move_up"),
+            tr!("sidebar.move_session_up_blocked"),
+        )
+    } else {
+        (
+            tr!("sidebar.move_down"),
+            tr!("sidebar.move_session_down_blocked"),
+        )
+    };
+    let path = menu.path.clone();
+    move_menu_row(id, up, enabled, label, reason, theme, this, move |app, cx| {
+        app.on_session_move(&path, up, cx)
+    })
 }
 
 /// The **Delete project & files** confirmation: the folder that would go, then
@@ -2395,6 +2929,26 @@ pub(crate) fn workspace_menu_popup(
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base01.px(&theme))
+            // Project order first: the pointer equivalent of dragging the
+            // header (issue #143). An edge with nowhere to go is listed
+            // disabled and says why, so the row never silently does nothing.
+            .child(workspace_move_row(
+                "wm-move-up",
+                true,
+                menu.can_move_up,
+                menu,
+                theme,
+                this.clone(),
+            ))
+            .child(workspace_move_row(
+                "wm-move-down",
+                false,
+                menu.can_move_down,
+                menu,
+                theme,
+                this.clone(),
+            ))
+            .child(context_menu_separator(&theme))
             .child(workspace_menu_item(
                 "wm-copy-path",
                 "icons/copy.svg",
@@ -3968,6 +4522,27 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// Move the menu's session one place up (`up`) or down inside its project,
+    /// then close the menu. Same path as ⌥↑/⌥↓ and a row drag.
+    pub(super) fn on_session_move(&mut self, path: &Path, up: bool, cx: &mut Context<Self>) {
+        self.session_menu = None;
+        self.nudge_session(path, if up { -1 } else { 1 }, cx);
+        cx.notify();
+    }
+
+    /// Move the menu's project group one place up (`up`) or down, then close
+    /// the menu. Same path as ⌥↑/⌥↓ and the drag drop.
+    pub(super) fn on_workspace_move_project(
+        &mut self,
+        label: &str,
+        up: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_menu = None;
+        self.nudge_project_group(label, if up { -1 } else { 1 }, cx);
+        cx.notify();
+    }
+
     pub(super) fn on_workspace_copy_path(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = &self.workspace_menu {
             cx.write_to_clipboard(ClipboardItem::new_string(
@@ -4139,6 +4714,9 @@ impl OrbitApp {
         // A marked session is unread news; collapsing a group must not hide it
         // (issue #83). The flat list has no collapse, so it needs no set.
         let reviewed: HashSet<PathBuf> = self.awaiting_review.keys().cloned().collect();
+        // Arranged session order, read once per build (a snapshot of a small
+        // Orbit-owned store; never pi's files).
+        let session_ranks: HashMap<PathBuf, usize> = crate::session_order::ranks();
         match self.sidebar_group_by {
             // A search result set is one flat list: the query already decided
             // what is visible, and a group header per single match is noise.
@@ -4164,6 +4742,7 @@ impl OrbitApp {
                 &self.current_session_path,
                 &running,
                 &reviewed,
+                &session_ranks,
             ),
         }
     }
@@ -4184,6 +4763,367 @@ impl OrbitApp {
         let sessions = self.sidebar_sessions_filtered();
         let pinned: HashSet<PathBuf> = crate::pins::all().paths();
         self.sidebar_rows(&sessions, &pinned)
+    }
+
+    // ── project reorder: drag & drop, menu, keyboard (issue #143) ──────
+
+    /// The project groups in the order the sidebar currently shows them. A
+    /// move is expressed against this order — never against the stored list —
+    /// so a drag or Move up/down always does what the screen showed, whatever
+    /// sort mode produced that order.
+    pub(super) fn project_group_order(&self) -> Vec<String> {
+        let sessions = self.sidebar_sessions_filtered();
+        sidebar_groups(
+            &sessions,
+            &self.workspaces,
+            self.workspace_sort,
+            &self.workspace_added_at,
+            &crate::pins::all().paths(),
+            &crate::session_order::ranks(),
+        )
+        .into_iter()
+        .map(|(label, _, _)| label)
+        .collect()
+    }
+
+    /// Whether the project group has a neighbour above / below in the
+    /// displayed order — the menu's Move up / Move down enabled state.
+    pub(super) fn project_move_flags(&self, label: &str) -> (bool, bool) {
+        let order = self.project_group_order();
+        match order.iter().position(|candidate| candidate == label) {
+            Some(ix) => (ix > 0, ix + 1 < order.len()),
+            None => (false, false),
+        }
+    }
+
+    /// Drag tracking for project groups: resolve which header the pointer is
+    /// over from the list's own measured row bounds, and which edge of it.
+    /// Nothing is stored on disk here — the order only changes on a drop.
+    pub(super) fn on_project_drag_move(
+        &mut self,
+        event: &DragMoveEvent<ProjectDrag>,
+        cx: &mut Context<Self>,
+    ) {
+        let moving = event.drag(cx).label.clone();
+        let pointer = event.event.position;
+        let target = self
+            .sidebar_rows_for_nav()
+            .iter()
+            .enumerate()
+            .find_map(|(ix, row)| match row {
+                // The group being dragged is not its own target, and neither
+                // is any row inside a group: a project header is the entry.
+                SideRow::Workspace { label, .. } if *label != moving => self
+                    .sidebar_list
+                    .bounds_for_item(ix)
+                    .filter(|bounds| bounds.contains(&pointer))
+                    .map(|bounds| ProjectDropTarget {
+                        label: label.clone(),
+                        after: pointer.y > bounds.origin.y + bounds.size.height / 2.,
+                    }),
+                _ => None,
+            });
+        let next = Some(ProjectDragState {
+            dragging: moving,
+            target,
+        });
+        if self.project_drag != next {
+            self.project_drag = next;
+            cx.notify();
+        }
+    }
+
+    /// A project header was released. The landing spot was decided while the
+    /// pointer moved; a release with no target (over a session row, or outside
+    /// the list) changes nothing.
+    pub(super) fn on_project_drop(&mut self, drag: &ProjectDrag, cx: &mut Context<Self>) {
+        let target = self
+            .project_drag
+            .take()
+            .filter(|state| state.dragging == drag.label)
+            .and_then(|state| state.target);
+        match target {
+            Some(target) => self.move_project_group(&drag.label, &target.label, target.after, cx),
+            None => cx.notify(),
+        }
+    }
+
+    /// Move a project group before (or after) another one, and persist the
+    /// order. This is the one place the sidebar's project order is written:
+    /// drag, the header menu and ⌥↑/⌥↓ all land here.
+    ///
+    /// A manual order only reads back when the sidebar sorts by it, so the
+    /// first move pins the sort to Manual — otherwise the reorder would be
+    /// silently re-sorted away and look like a no-op.
+    pub(super) fn move_project_group(
+        &mut self,
+        moving: &str,
+        target: &str,
+        after: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Pin the displayed order first: from here on the stored list is what
+        // the user is looking at, with the move applied.
+        let base = order_workspaces_by_labels(&self.workspaces, &self.project_group_order());
+        let next = reorder_workspaces(&base, moving, target, after);
+        // The displayed order is the reference: a move that would not change
+        // what the user sees changes nothing at all — no write, and no sort
+        // switch for a drop that lands where the group already was.
+        if next == base {
+            cx.notify();
+            return;
+        }
+        self.workspaces = next;
+        if self.workspace_sort != WorkspaceSort::Manual {
+            self.workspace_sort = WorkspaceSort::Manual;
+            self.toast_info(tr!("sidebar.project_order_manual"));
+        }
+        self.persist_workspace_prefs();
+        cx.notify();
+    }
+
+    // ── session order inside a project group (#143) ────────────────────
+
+    /// One project group's sessions in the order the sidebar shows them —
+    /// pinned first, then the unarranged ones by recency, then the arranged
+    /// block. `sessions` is the list to read (the unfiltered snapshot when the
+    /// caller wants hidden rows to keep their place).
+    fn group_session_order(&self, label: &str, sessions: &[SessionInfo]) -> Vec<PathBuf> {
+        sidebar_groups(
+            sessions,
+            &self.workspaces,
+            self.workspace_sort,
+            &self.workspace_added_at,
+            &crate::pins::all().paths(),
+            &crate::session_order::ranks(),
+        )
+        .into_iter()
+        .find(|(group, _, _)| group == label)
+        .map(|(_, _, ixs)| ixs.into_iter().map(|ix| sessions[ix].path.clone()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Whether session rows can be rearranged where the sidebar is: the
+    /// grouped list, where every row sits in a project block. A flat, Recent
+    /// or search list orders by recency and offers no session drag or move.
+    pub(super) fn sessions_reorderable(&self) -> bool {
+        self.sidebar_group_by == SidebarGroupBy::Workspace && self.sidebar_query.is_empty()
+    }
+
+    /// Whether the session row has a neighbour above / below inside its
+    /// project group — the row menu's Move up / Move down enabled state.
+    pub(super) fn session_move_flags(&self, path: &Path) -> (bool, bool) {
+        if !self.sessions_reorderable() {
+            return (false, false);
+        }
+        let sessions = self.sidebar_sessions();
+        let Some(session) = sessions.iter().find(|session| session.path == path) else {
+            return (false, false);
+        };
+        let label = sessions::workspace_label(&session.cwd);
+        let order = self.group_session_order(&label, &sessions);
+        match order.iter().position(|candidate| candidate == path) {
+            Some(ix) => (ix > 0, ix + 1 < order.len()),
+            None => (false, false),
+        }
+    }
+
+    /// Drag tracking for session rows. The landing row is resolved from the
+    /// list's measured row bounds; a row in another project is not a target,
+    /// because a session never leaves its folder.
+    pub(super) fn on_session_drag_move(
+        &mut self,
+        event: &DragMoveEvent<SessionDrag>,
+        cx: &mut Context<Self>,
+    ) {
+        let drag = event.drag(cx).clone();
+        let pointer = event.event.position;
+        let sessions = self.sidebar_sessions_filtered();
+        let rows = self.sidebar_rows(&sessions, &crate::pins::all().paths());
+        let label = sessions
+            .iter()
+            .find(|session| session.path == drag.path)
+            .map(|session| sessions::workspace_label(&session.cwd));
+        let target = label.as_deref().and_then(|label| {
+            rows.iter().enumerate().find_map(|(ix, row)| {
+                let SideRow::Session(session_ix) = row else {
+                    return None;
+                };
+                let session = sessions.get(*session_ix)?;
+                if session.path == drag.path
+                    || sessions::workspace_label(&session.cwd) != label
+                {
+                    return None;
+                }
+                self.sidebar_list
+                    .bounds_for_item(ix)
+                    .filter(|bounds| bounds.contains(&pointer))
+                    .map(|bounds| SessionDropTarget {
+                        path: session.path.clone(),
+                        after: pointer.y > bounds.origin.y + bounds.size.height / 2.,
+                    })
+            })
+        });
+        let next = Some(SessionDragState {
+            dragging: drag.path,
+            target,
+        });
+        if self.session_drag != next {
+            self.session_drag = next;
+            cx.notify();
+        }
+    }
+
+    /// A session row was released. The landing row was decided while the
+    /// pointer moved; a release with no target changes nothing.
+    pub(super) fn on_session_drop(&mut self, drag: &SessionDrag, cx: &mut Context<Self>) {
+        let target = self
+            .session_drag
+            .take()
+            .filter(|state| state.dragging == drag.path)
+            .and_then(|state| state.target);
+        match target {
+            Some(target) => self.move_session(&drag.path, &target.path, target.after, cx),
+            None => cx.notify(),
+        }
+    }
+
+    /// Move a session before (or after) another one in the same project, then
+    /// persist that group's order. This is the one place the sidebar's session
+    /// order is written: a drag, the row menu and ⌥↑/⌥↓ all land here.
+    ///
+    /// The group's *current* display order is what gets rewritten, so the
+    /// result matches what the user saw — pins keep leading and the arranged
+    /// block keeps the rest. Sessions the sidebar is not showing (archived, or
+    /// pushed past the "Show more" cap) keep their place in the stored order.
+    pub(super) fn move_session(
+        &mut self,
+        moving: &Path,
+        target: &Path,
+        after: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Read the unfiltered snapshot: a move made while the archived filter
+        // hides rows must not drop those rows out of the arranged order.
+        let sessions = self.sidebar_sessions();
+        let Some(moving_session) = sessions.iter().find(|session| session.path == moving) else {
+            return;
+        };
+        let label = sessions::workspace_label(&moving_session.cwd);
+        let target_label = sessions
+            .iter()
+            .find(|session| session.path == target)
+            .map(|session| sessions::workspace_label(&session.cwd));
+        // A session belongs to its folder: never reorder across projects.
+        if target_label.as_deref() != Some(label.as_str()) {
+            return;
+        }
+        let order = self.group_session_order(&label, &sessions);
+        let next = reorder_session_paths(&order, moving, target, after);
+        if next == order {
+            cx.notify();
+            return;
+        }
+        crate::session_order::set_group(&label, next);
+        cx.notify();
+    }
+
+    /// Move a session one place up (`delta < 0`) or down inside its project.
+    pub(super) fn nudge_session(&mut self, moving: &Path, delta: isize, cx: &mut Context<Self>) {
+        let sessions = self.sidebar_sessions();
+        let Some(session) = sessions.iter().find(|session| session.path == moving) else {
+            return;
+        };
+        let label = sessions::workspace_label(&session.cwd);
+        let order = self.group_session_order(&label, &sessions);
+        let Some(ix) = order.iter().position(|candidate| candidate == moving) else {
+            return;
+        };
+        let Some(neighbour) = ix
+            .checked_add_signed(delta)
+            .and_then(|ix| order.get(ix))
+            .cloned()
+        else {
+            return;
+        };
+        self.move_session(moving, &neighbour, delta > 0, cx);
+    }
+
+    /// Move a project group one place up (`delta < 0`) or down in the
+    /// displayed order. Used by the header menu and the keyboard shortcut.
+    pub(super) fn nudge_project_group(
+        &mut self,
+        moving: &str,
+        delta: isize,
+        cx: &mut Context<Self>,
+    ) {
+        let order = self.project_group_order();
+        let Some(ix) = order.iter().position(|label| label == moving) else {
+            return;
+        };
+        let Some(neighbour) = ix.checked_add_signed(delta).and_then(|ix| order.get(ix)) else {
+            return;
+        };
+        let target = neighbour.clone();
+        self.move_project_group(moving, &target, delta > 0, cx);
+    }
+
+    /// ⌥↑ / ⌥↓: move the row the keyboard cursor is on — a project header
+    /// moves its project group, a session row moves that session inside its
+    /// group. The moved row keeps the cursor afterwards, so the same chord can
+    /// be pressed again to keep carrying it.
+    pub(super) fn move_cursor_row(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(cursor) = self.sidebar_cursor else {
+            return;
+        };
+        let rows = self.sidebar_rows_for_nav();
+        enum Moved {
+            Project(String),
+            Session(PathBuf),
+        }
+        let moved = match rows.get(cursor) {
+            Some(SideRow::Workspace { label, .. }) => Moved::Project(label.clone()),
+            Some(SideRow::Session(ix)) => {
+                // A flat or search list has no project block to move a row
+                // inside of; recency owns that order.
+                if !self.sessions_reorderable() {
+                    return;
+                }
+                let sessions = self.sidebar_sessions_filtered();
+                match sessions.get(*ix) {
+                    Some(session) => Moved::Session(session.path.clone()),
+                    None => return,
+                }
+            }
+            // Overflow rows carry no order of their own.
+            _ => return,
+        };
+        match &moved {
+            Moved::Project(label) => self.nudge_project_group(label, delta, cx),
+            Moved::Session(path) => self.nudge_session(path, delta, cx),
+        }
+        // The rows were rebuilt around the moved entry: keep the cursor on it,
+        // not on whatever row now happens to hold its old index.
+        let rows = self.sidebar_rows_for_nav();
+        let sessions = self.sidebar_sessions_filtered();
+        let moved_row = match &moved {
+            Moved::Project(label) => rows.iter().position(
+                |row| matches!(row, SideRow::Workspace { label: candidate, .. } if candidate == label),
+            ),
+            Moved::Session(path) => sessions
+                .iter()
+                .position(|session| &session.path == path)
+                .and_then(|session_ix| {
+                    rows.iter().position(
+                        |row| matches!(row, SideRow::Session(ix) if *ix == session_ix),
+                    )
+                }),
+        };
+        if let Some(ix) = moved_row {
+            self.sidebar_cursor = Some(ix);
+            self.sidebar_list.scroll_to_reveal_item(ix);
+            cx.notify();
+        }
     }
 
     /// Row index of the open session in `rows`, when it is visible.
@@ -4479,6 +5419,27 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// ⌥↑: move the cursor's row (a project group, or a session inside its
+    /// group) one place up in the sidebar.
+    pub(super) fn on_sidebar_move_row_up(
+        &mut self,
+        _: &crate::SidebarMoveRowUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_cursor_row(-1, cx);
+    }
+
+    /// ⌥↓: move the cursor's row one place down in the sidebar.
+    pub(super) fn on_sidebar_move_row_down(
+        &mut self,
+        _: &crate::SidebarMoveRowDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_cursor_row(1, cx);
+    }
+
     /// The command palette's Delete Session: reveal the sidebar on the active
     /// session's row and arm the same confirmation the row menu shows, so the
     /// destructive step still needs an explicit confirm.
@@ -4509,12 +5470,16 @@ impl OrbitApp {
         if let Some(ix) = self.sidebar_cursor {
             self.sidebar_list.scroll_to_reveal_item(ix);
         }
+        let (can_move_up, can_move_down) = self.session_move_flags(&session.path);
         self.session_menu = Some(SessionMenu {
             path: session.path.clone(),
             title: session.title,
             deletable: !self.lives.contains_key(&session.path),
             confirm_delete: true,
             at: None,
+            reorderable: self.sessions_reorderable(),
+            can_move_up,
+            can_move_down,
         });
         window.focus(&self.sidebar_focus);
         cx.notify();
@@ -4602,6 +5567,7 @@ mod tests {
                 &statuses,
                 None,
                 None,
+                &SidebarDragPaint::idle(),
                 false,
                 None,
                 false,
@@ -4691,8 +5657,8 @@ mod tests {
 
         let theme = Theme::for_id(crate::theme::ThemeId::OrbitAzure);
         cx.update(|cx| cx.set_global(theme));
-        let cx = cx.add_empty_window();
-        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        let app = cx.update(|cx| cx.new(OrbitApp::new));
+        let test_cx = cx;
         let session = SessionInfo {
             path: "/tmp/project/row.jsonl".into(),
             id: "grouped".into(),
@@ -4706,6 +5672,9 @@ mod tests {
             (Some(PathBuf::from("/elsewhere/project")), true),
             (None, true),
         ] {
+            // A window per case: debug bounds from an earlier draw would
+            // otherwise answer for an element this draw no longer paints.
+            let cx = test_cx.add_empty_window();
             let probe = cx.update(|_, cx| {
                 cx.new(|_| SessionRowProbe {
                     app: app.clone(),
@@ -4727,6 +5696,24 @@ mod tests {
                 location,
                 "header={header:?}"
             );
+            // A grouped row nests under its project: it steps in by the
+            // chevron column and sits on the group's tree guide. A flat row
+            // stays flush with no guide.
+            let card = cx
+                .debug_bounds("session-row-card")
+                .expect("session row card");
+            let guide = cx.debug_bounds("sidebar-tree-guide");
+            if header.is_some() {
+                let guide = guide.expect("grouped rows draw the tree guide");
+                assert!(
+                    (card.origin.x - session_indent(&theme)).abs() <= px(0.51),
+                    "grouped card starts at the session indent: {card:?}"
+                );
+                assert!(guide.origin.x < card.origin.x, "guide runs left of the card");
+            } else {
+                assert!(guide.is_none(), "flat rows draw no tree guide");
+                assert!(card.origin.x.abs() <= px(0.51), "flat card is flush: {card:?}");
+            }
             if !location {
                 let row = cx
                     .debug_bounds("session-row-card")

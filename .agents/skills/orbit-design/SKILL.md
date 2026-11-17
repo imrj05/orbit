@@ -284,7 +284,15 @@ shipped tokens or instructions to add abstractions prematurely:
 ## Apple-inspired materials: opt-in exploration only
 
 Opaque chrome is the default; the wallpaper-glass chat composer is an explicit
-exception, not a whole-app glassmorphism interface. If the user asks for material exploration, first present the
+exception, not a whole-app glassmorphism interface. The one shipped `floating`
+material: in dark palettes, layers built on `elevation_2` / `elevation_3` frost
+the workbench behind them even with no wallpaper (`Theme::floating_glass_sigma`,
+`FLOATING_GLASS_BLUR`, and a per-palette tint from `floating_glass_alpha`: the
+lowest alpha above `FLOATING_GLASS_MIN_ALPHA` that keeps text contrast over
+black and white backdrops). Light palettes, unsupported renderers and the OS Reduce
+Transparency / Increase Contrast preferences keep the opaque card. Do not give a
+floating surface its own blur value or override its fill after the elevation
+helper; structural panes, transcript cards and the composer stay wallpaper-only. If the user asks for material exploration, first present the
 tradeoff and obtain approval before changing that contract or the default.
 
 A possible **experimental** material system could have semantic roles such as

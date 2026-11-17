@@ -5,9 +5,10 @@ use crate::motion::Hover;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
     button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
-    DynamicSpacing, HeadlineSize, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
 use crate::theme::MotionPreference;
+use crate::ui::style::surface::SurfaceExt;
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
 
 // Font registration completes at startup, before settings can render. Cache the
@@ -850,6 +851,8 @@ impl OrbitApp {
             .children(self.remote_host_editor_layer(theme, this.clone(), cx))
             // ── a host's Add API key dialog ──
             .children(self.remote_key_layer(theme, this.clone(), cx))
+            // ── a provider's Add-account modal ──
+            .children(self.account_editor_layer(theme, this.clone(), cx))
             .children(self.provider_key_layer(theme, this, cx))
     }
 
@@ -2374,9 +2377,21 @@ impl OrbitApp {
                 3
             }
         };
+        // An account sits beside its provider: same group, then provider
+        // name, then the provider before its accounts.
+        let base_name = |view: &ProviderView| -> String {
+            match crate::provider_accounts::split_alias(&view.id) {
+                Some((base, _)) => providers::provider_display_name(base).to_lowercase(),
+                None => view.name.to_lowercase(),
+            }
+        };
+        let is_account =
+            |view: &ProviderView| crate::provider_accounts::split_alias(&view.id).is_some();
         views.sort_by(|a, b| {
             rank(a)
                 .cmp(&rank(b))
+                .then_with(|| base_name(a).cmp(&base_name(b)))
+                .then_with(|| is_account(a).cmp(&is_account(b)))
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
 
@@ -2606,14 +2621,7 @@ impl OrbitApp {
         // custom endpoints pi has already loaded).
         for model in &self.available_models {
             if !views.iter().any(|view| view.id == model.provider) {
-                views.push(self.provider_view_for(
-                    &model.provider,
-                    None,
-                    false,
-                    true,
-                    &[],
-                    "",
-                ));
+                views.push(self.provider_view_for(&model.provider, None, false, true, &[], ""));
             }
         }
         // models.json providers pi hasn't loaded yet.
@@ -2636,6 +2644,9 @@ impl OrbitApp {
                 ));
             }
         }
+        // Extra accounts pi has not reported yet still get a row to sign in on.
+        let accounts = self.account_views(&views);
+        views.extend(accounts);
         views
     }
 
@@ -2775,9 +2786,21 @@ impl OrbitApp {
                 div()
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_secondary)
-                    .child(detail),
+                    .child(
+                        session
+                            .prompt
+                            .as_ref()
+                            .map(|prompt| prompt.message.clone())
+                            .unwrap_or(detail),
+                    ),
             );
 
+        if let Some(prompt) = &session.prompt {
+            body = body.child(super::auth_prompt::AuthPromptView {
+                app: this.clone(),
+                request_id: prompt.request_id.clone(),
+            });
+        }
         if let Some(device) = &session.device_code {
             body = body.child(
                 div()
@@ -3212,6 +3235,15 @@ impl OrbitApp {
         // One quiet line: id, catalog size (when no model count states it),
         // how it is signed in, and where it points.
         let mut facts: Vec<String> = vec![view.id.clone()];
+        // A provider with extra accounts says how many; each is its own row.
+        let accounts = self
+            .account_profile_map
+            .get(&view.id)
+            .map(Vec::len)
+            .unwrap_or(0);
+        if accounts > 0 && self.remote.is_none() {
+            facts.push(tr!("accounts.n_more", count = accounts));
+        }
         if models.is_empty() {
             if !view.active && view.catalog_count > 0 {
                 facts.push(tr!("settings.n_in_catalog", count = view.catalog_count));
@@ -3252,8 +3284,11 @@ impl OrbitApp {
             facts.push(providers::localize_note(view.note));
         }
 
-        // `w_full` on every link down to the facts line: a truncated line
-        // needs a definite width, or it shrinks to its ellipsis.
+        // gpui 0.2.2 caches a truncated text's first measurement for the
+        // frame. As a block in a column, that first pass hands the text a
+        // zero width (the column's flex basis), so the whole line painted as a
+        // bare "…". Inside a flex row the text is first measured at its full
+        // width, like the name above it; the line then clips at the column.
         let identity = div()
             .flex_1()
             .min_w_0()
@@ -3276,7 +3311,8 @@ impl OrbitApp {
                                 let id = view.id.clone();
                                 move || format!("provider-facts-{id}")
                             })
-                            .w_full()
+                            // A row, not a block: see the note above.
+                            .flex()
                             .min_w_0()
                             .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_muted)
@@ -3295,13 +3331,11 @@ impl OrbitApp {
         } else {
             None
         };
-        let style = |primary: bool| {
-            if primary {
-                ProviderButtonStyle::Primary
-            } else {
-                ProviderButtonStyle::Ghost
-            }
-        };
+        // Every way to connect is a secondary button: the page lists dozens
+        // of unconnected providers, and a filled button on each one made the
+        // list a wall of calls to action. `lead` still decides which method
+        // is lifted into the row head.
+        let style = |_lead: bool| ProviderButtonStyle::Ghost;
         let edit_key = |primary: bool| {
             let update = view.credential_kind() == Some("api_key");
             self.provider_button(
@@ -3497,15 +3531,13 @@ impl OrbitApp {
                     .child(tr!("settings.n_models", count = models.len())),
             );
         }
-        trailing = trailing
-            .children(cta)
-            .child(disclosure_chevron(
-                format!("provider-row-chevron-{}", view.id),
-                open,
-                IconSize::Small.px(&theme),
-                theme.text_muted,
-                &theme,
-            ));
+        trailing = trailing.children(cta).child(disclosure_chevron(
+            format!("provider-row-chevron-{}", view.id),
+            open,
+            IconSize::Small.px(&theme),
+            theme.text_muted,
+            &theme,
+        ));
 
         let head_id = format!("provider-models-toggle-{}", view.id);
         let head = div()
@@ -3540,6 +3572,7 @@ impl OrbitApp {
             + ButtonSize::Large.height(&theme)
             + DynamicSpacing::Base04.px(&theme)
             + DynamicSpacing::Base12.px(&theme);
+        let accounts_section = self.provider_accounts_section(view, theme, this.clone());
         let panel = open.then(|| {
             div()
                 .w_full()
@@ -3549,6 +3582,7 @@ impl OrbitApp {
                 .flex()
                 .flex_col()
                 .gap(DynamicSpacing::Base12.px(&theme))
+                .children(accounts_section)
                 .when(!bar.is_empty(), |panel| {
                     panel.child(
                         div()
@@ -3626,7 +3660,9 @@ impl OrbitApp {
                     .map(|model| self.provider_model_chip(model, &hidden, theme, this.clone())),
             );
         let scroll = div()
-            .id(ElementId::Name(format!("provider-models-scroll-{provider}").into()))
+            .id(ElementId::Name(
+                format!("provider-models-scroll-{provider}").into(),
+            ))
             .debug_selector({
                 let provider = provider.to_string();
                 move || format!("provider-models-scroll-{provider}")
@@ -3821,6 +3857,31 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: ProviderAction,
     ) -> AnyElement {
+        self.provider_button_sized(
+            id,
+            label,
+            style,
+            ButtonSize::Medium,
+            theme,
+            this,
+            action,
+        )
+    }
+
+    /// [`Self::provider_button`] at a caller-chosen frame height. A modal
+    /// footer whose Cancel is `Large` uses this for its primary action, so the
+    /// two buttons share one baseline and one height.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn provider_button_sized(
+        &self,
+        id: String,
+        label: &str,
+        style: ProviderButtonStyle,
+        size: ButtonSize,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        action: ProviderAction,
+    ) -> AnyElement {
         let action_id = id.clone();
         let icon_path = Self::provider_action_icon(&action);
         let mut button = button_frame(
@@ -3828,7 +3889,7 @@ impl OrbitApp {
                 .id(ElementId::Name(id.into()))
                 .debug_selector(move || format!("provider-action-{action_id}")),
             &theme,
-            ButtonSize::Medium,
+            size,
         )
         .group(BUTTON_GROUP)
         .cursor_pointer()
@@ -3883,6 +3944,12 @@ impl OrbitApp {
             ProviderAction::AuthCancel => Some("icons/x.svg"),
             ProviderAction::AuthDismiss => Some("icons/check.svg"),
             ProviderAction::EditKey { .. } => Some("icons/at-sign.svg"),
+            ProviderAction::AddAccount { .. } => Some("icons/plus.svg"),
+            ProviderAction::RenameAccount { .. } => Some("icons/pencil.svg"),
+            ProviderAction::RemoveAccount { .. } | ProviderAction::ConfirmRemoveAccount { .. } => {
+                Some("icons/trash.svg")
+            }
+            ProviderAction::CancelRemoveAccount => None,
             ProviderAction::ShowUsage { .. } => Some("icons/usage-total.svg"),
             ProviderAction::SignOut { .. } => Some("icons/stop.svg"),
             ProviderAction::Configure { .. } => Some("icons/settings.svg"),
@@ -3890,7 +3957,9 @@ impl OrbitApp {
                 Some("icons/trash.svg")
             }
             ProviderAction::Restart => Some("icons/refresh.svg"),
-            ProviderAction::CancelRemove | ProviderAction::SaveKey => None,
+            ProviderAction::CancelRemove
+            | ProviderAction::SaveKey
+            | ProviderAction::SaveAccount => None,
         }
     }
 
@@ -3931,6 +4000,24 @@ impl OrbitApp {
                 oauth,
                 note,
             } => self.provider_key_open(id, name, oauth, note, window, cx),
+            ProviderAction::AddAccount { id, name } => {
+                self.account_editor_open(id, name, None, window, cx)
+            }
+            ProviderAction::RenameAccount {
+                provider,
+                name,
+                id,
+                label,
+            } => self.account_editor_open(provider, name, Some((id, label)), window, cx),
+            ProviderAction::RemoveAccount { id } => {
+                self.account_remove_confirm = Some(id);
+                cx.notify();
+            }
+            ProviderAction::ConfirmRemoveAccount { id } => self.account_remove(id, cx),
+            ProviderAction::CancelRemoveAccount => {
+                self.account_remove_confirm = None;
+                cx.notify();
+            }
             ProviderAction::SignOut { id } => self.provider_sign_out(id, cx),
             ProviderAction::ShowUsage { id } => {
                 self.provider_usage_open = Some(id);
@@ -3947,6 +4034,7 @@ impl OrbitApp {
                 cx.notify();
             }
             ProviderAction::SaveKey => self.provider_key_save(window, cx),
+            ProviderAction::SaveAccount => self.account_save(window, cx),
             ProviderAction::Restart => self.provider_apply_credentials(cx),
         }
     }
@@ -4189,10 +4277,11 @@ impl OrbitApp {
                     .text_color(theme.text_secondary)
                     .child(tr!("settings.cancel")),
             );
-        let save = self.provider_button(
+        let save = self.provider_button_sized(
             "provider-key-save".into(),
             &tr!("settings.save_key"),
             ProviderButtonStyle::Primary,
+            ButtonSize::Large,
             theme,
             this.clone(),
             ProviderAction::SaveKey,
@@ -8645,6 +8734,7 @@ impl OrbitApp {
         self.settings_open = false;
         self.provider_editor = None;
         self.provider_key_editor = None;
+        self.account_editor = None;
         self.sync_terminal_active(cx);
         cx.notify();
     }
@@ -8689,6 +8779,7 @@ impl OrbitApp {
         self.provider_remove_confirm = None;
         self.provider_editor = None;
         self.provider_key_editor = None;
+        self.account_editor = None;
         self.plugin_remove_confirm = None;
         // The MCP add/edit modal belongs to the MCP page; leaving the page
         // discards it like the provider editors above.
@@ -8885,9 +8976,13 @@ impl OrbitApp {
     /// credential load) where the result gates the next step.
     pub(super) fn reload_custom_providers(&mut self, cx: &mut Context<Self>) {
         let custom = providers::read_custom();
-        let auth = providers::read_auth();
+        let auth = super::auth_prompt::overlay_account_auth(
+            providers::read_auth(),
+            self.selected_auth_paths(),
+        );
         self.apply_provider_reads(custom, auth);
         self.ensure_provider_metadata(cx);
+        self.refresh_account_map();
         cx.notify();
     }
 
@@ -8898,13 +8993,25 @@ impl OrbitApp {
         // Idempotent, already off-thread; kick it now so a first visit still
         // has metadata as soon as it arrives.
         self.ensure_provider_metadata(cx);
+        let selection = self.provider_accounts.selection();
+        let paths = self.selected_auth_paths();
         cx.spawn(async move |this, cx| {
             let (custom, auth) = cx
                 .background_executor()
-                .spawn(async { (providers::read_custom(), providers::read_auth()) })
+                .spawn(async move {
+                    (
+                        providers::read_custom(),
+                        super::auth_prompt::overlay_account_auth(providers::read_auth(), paths),
+                    )
+                })
                 .await;
             let _ = this.update(cx, |app, cx| {
+                // A slow read from the previous account must never repaint the new one.
+                if app.provider_accounts.selection() != selection {
+                    return;
+                }
                 app.apply_provider_reads(custom, auth);
+                app.refresh_account_map();
                 cx.notify();
             });
         })
@@ -8963,6 +9070,11 @@ impl OrbitApp {
     /// `auth.json` only at startup, so this is the "use it" step. Resumes the
     /// active session on the fresh process when one exists.
     pub(super) fn provider_apply_credentials(&mut self, cx: &mut Context<Self>) {
+        if self.account_switching {
+            self.toast_warning(tr!("accounts.switch_in_progress"));
+            cx.notify();
+            return;
+        }
         // A fork owns the process until its reply lands; restarting now would
         // lose the branch and the answer that moves Orbit onto it.
         if self.rewind_transition_pending(cx) {
@@ -9047,6 +9159,31 @@ impl OrbitApp {
         let id = editor.provider_id.clone();
         let name = editor.provider_name.clone();
         let key = editor.key.read(cx).text();
+        if let Err(error) = self.account_auth_path(&id) {
+            if let Some(editor) = self.provider_key_editor.as_mut() {
+                editor.error = Some(error.to_string());
+            }
+            cx.notify();
+            return;
+        }
+        if self.selected_account_id(&id).is_some() {
+            if self.auth.support() != AuthSupport::Supported || self.client.is_none() {
+                if let Some(editor) = self.provider_key_editor.as_mut() {
+                    editor.error = Some(tr!("accounts.rpc_required"));
+                }
+                cx.notify();
+                return;
+            }
+            if key.trim().is_empty() {
+                if let Some(editor) = self.provider_key_editor.as_mut() {
+                    editor.error = Some(tr!("providers.api_key_required"));
+                }
+                cx.notify();
+                return;
+            }
+            self.save_profile_api_key(id, name, key, cx);
+            return;
+        }
         let result = providers::write_api_key(&id, &key);
         match result {
             Ok(()) => {
@@ -9072,6 +9209,12 @@ impl OrbitApp {
         name: String,
         cx: &mut Context<Self>,
     ) {
+        // A Terminal `pi /login` would write Default, not the selected profile.
+        if self.selected_account_id(&id).is_some() {
+            self.toast_warning(tr!("accounts.rpc_required"));
+            cx.notify();
+            return;
+        }
         // The id reaches a shell script; only builtin ids are ever passed, but
         // validate anyway so a hand-edited file can never inject a command.
         if !id
@@ -9106,8 +9249,24 @@ impl OrbitApp {
     /// removes it live; otherwise fall back to dropping the auth.json entry
     /// (env credentials are outside Orbit's reach and left alone).
     pub(super) fn provider_sign_out(&mut self, id: String, cx: &mut Context<Self>) {
+        if let Err(error) = self.account_auth_path(&id) {
+            self.provider_auth_error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        if self.selected_account_id(&id).is_some()
+            && (self.auth.support() != AuthSupport::Supported || self.client.is_none())
+        {
+            // Never delete Default as a fallback for a selected profile.
+            self.provider_auth_error = Some(tr!("accounts.rpc_required"));
+            cx.notify();
+            return;
+        }
+        if self.selected_account_id(&id).is_some() {
+            self.sign_out_profile(id, cx);
+            return;
+        }
         if self.auth.support() == AuthSupport::Supported {
-            self.auth.on_logout_response(true, &id);
             self.send(
                 CommandBody::AuthLogout {
                     provider: id.clone(),
@@ -9307,6 +9466,7 @@ impl OrbitApp {
     ) {
         let closed = self.provider_editor.take().is_some()
             | self.provider_key_editor.take().is_some()
+            | self.account_editor.take().is_some()
             | self.provider_usage_open.take().is_some();
         if closed {
             cx.notify();
@@ -9321,6 +9481,8 @@ impl OrbitApp {
     ) {
         if self.provider_key_editor.is_some() {
             self.provider_key_save(window, cx);
+        } else if self.account_editor.is_some() {
+            self.account_save(window, cx);
         } else {
             self.provider_save(window, cx);
         }
@@ -9335,6 +9497,7 @@ impl OrbitApp {
     ) {
         let closed = self.provider_editor.take().is_some()
             | self.provider_key_editor.take().is_some()
+            | self.account_editor.take().is_some()
             | self.provider_usage_open.take().is_some();
         if closed {
             cx.notify();

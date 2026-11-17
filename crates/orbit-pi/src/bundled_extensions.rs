@@ -20,7 +20,11 @@
 //!   returns only its report and cost. Every session spawn also exports the
 //!   installed entry points as `ORBIT_BUNDLED_EXTENSIONS`, which the subagent
 //!   tool forwards with `--extension` so a child inherits the guardrails.
-//!
+//! - **accounts** (`contrib/orbit-accounts-extension/`) — registers every
+//!   extra provider account as its own provider (`<provider>~<slug>`), so all
+//!   accounts are signed in separately and live in one session at once (see
+//!   [`crate::provider_accounts`]). Forwarded to subagents with the
+//!   guardrails, so a child can run an account's model too.
 //!
 //! Nothing is installed and no settings file is touched: each extension is
 //! materialized under `~/.orbit-pi/` and rewritten only when its contents
@@ -94,6 +98,9 @@ const REMOTE_EXTENSIONS: [RemoteExtension<'static>; 1] = [RemoteExtension {
     dir: "remote-workflow",
     files: &REMOTE_WORKFLOW_FILES,
 }];
+const ACCOUNTS_INDEX_JS: &str = include_str!("../../../contrib/orbit-accounts-extension/index.js");
+const ACCOUNTS_ALIASES_JS: &str =
+    include_str!("../../../contrib/orbit-accounts-extension/aliases.js");
 const SUBAGENTS_INDEX_JS: &str =
     include_str!("../../../contrib/orbit-subagents-extension/index.js");
 const SUBAGENTS_AGENTS_JS: &str =
@@ -136,6 +143,9 @@ pub(crate) struct BundledExtensions {
     /// The subagent extension's `index.js`; `None` when it could not be
     /// written (the `subagent` tool is then absent, not broken).
     subagents: Option<PathBuf>,
+    /// The accounts extension's `index.js`; `None` when it could not be
+    /// written (only the Default account of each provider is then available).
+    accounts: Option<PathBuf>,
 }
 
 impl BundledExtensions {
@@ -149,6 +159,7 @@ impl BundledExtensions {
             suggestions: install_suggestions_extension(),
             workflow: install_workflow_extension(),
             subagents: install_subagents_extension(),
+            accounts: install_accounts_extension(),
         }
     }
 
@@ -171,13 +182,14 @@ impl BundledExtensions {
     /// environment. Handed to each session as `ORBIT_BUNDLED_EXTENSIONS` so the
     /// subagent tool can forward them to a child (D-E).
     ///
-    /// Only the guard and the workflow extension: a child needs the parent's
-    /// permissions and its Plan/Build/Ask scope, and nothing else. Forwarding
+    /// Only the guard, the workflow extension and the accounts extension: a
+    /// child needs the parent's permissions, its Plan/Build/Ask scope, and the
+    /// account providers its model may come from, and nothing else. Forwarding
     /// the quota, title and suggestions bridges would make every delegation
     /// fetch provider quota or spend a model call on a session title the user
     /// never sees.
     pub(crate) fn guardrails_json(&self) -> Option<String> {
-        let guardrails: Vec<PathBuf> = [&self.guard, &self.workflow]
+        let guardrails: Vec<PathBuf> = [&self.guard, &self.workflow, &self.accounts]
             .into_iter()
             .flatten()
             .cloned()
@@ -202,11 +214,28 @@ impl BundledExtensions {
         apply_default: bool,
         env: &[(String, String)],
     ) -> anyhow::Result<PiClient> {
+        let routes = crate::provider_accounts::ProviderAccounts::load().routes()?;
+        self.spawn_with_accounts(workspace, apply_default, env, &routes)
+    }
+
+    /// Spawn using an explicit per-session credential route snapshot. An
+    /// empty object also overrides any routes inherited by the Orbit process.
+    pub(crate) fn spawn_with_accounts(
+        &self,
+        workspace: &Path,
+        apply_default: bool,
+        env: &[(String, String)],
+        routes: &str,
+    ) -> anyhow::Result<PiClient> {
         // A `pi update` can restore the pristine RPC bundle while Orbit is
         // running; re-check before every spawn so a session switch or Runtime
         // restart still gets custom UI, quota, and auth. The unchanged fast
         // path is a stat, so this costs nothing in the common case.
         crate::rpc_patches::apply_on_launch();
+        if routes != "{}" {
+            crate::rpc_patches::ensure_auth_profile_routing(routes, false)
+                .map_err(anyhow::Error::msg)?;
+        }
         let args = if apply_default {
             SessionDefault::load().cli_args()
         } else {
@@ -216,8 +245,10 @@ impl BundledExtensions {
         let bundled = self.guardrails_json();
         let mut env_refs: Vec<(&str, &str)> = env
             .iter()
+            .filter(|(key, _)| key != "ORBIT_AUTH_PROFILE_ROUTES")
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
+        env_refs.push(("ORBIT_AUTH_PROFILE_ROUTES", routes));
         // A child session does not inherit extensions implicitly: the subagent
         // tool reads this list and passes each path on as `--extension`.
         if let Some(bundled) = bundled.as_deref() {
@@ -261,7 +292,12 @@ impl BundledExtensions {
             .as_deref()
             .zip(password)
             .map(|(askpass, secret)| orbit_rpc::remote::SshPassword { askpass, secret });
-        let env = [("ORBIT_WORKFLOW_MODE", workflow)];
+        // Remote profiles are unsupported; never forward local auth paths,
+        // even when an ssh SendEnv rule would otherwise inherit them.
+        let env = [
+            ("ORBIT_WORKFLOW_MODE", workflow),
+            ("ORBIT_AUTH_PROFILE_ROUTES", "{}"),
+        ];
         let launch = RemoteLaunch {
             guard: &REMOTE_GUARD_FILES,
             extensions: &REMOTE_EXTENSIONS,
@@ -279,6 +315,7 @@ impl BundledExtensions {
             &self.suggestions,
             &self.workflow,
             &self.subagents,
+            &self.accounts,
         ]
         .into_iter()
         .flatten()
@@ -318,6 +355,14 @@ fn install_guard() -> Option<PathBuf> {
         &home_dir()?,
         "guard-extension",
         &[("index.js", GUARD_INDEX_JS), ("policy.js", GUARD_POLICY_JS)],
+    )
+}
+
+fn install_accounts_extension() -> Option<PathBuf> {
+    install_extension(
+        &home_dir()?,
+        "accounts-extension",
+        &[("index.js", ACCOUNTS_INDEX_JS), ("aliases.js", ACCOUNTS_ALIASES_JS)],
     )
 }
 
@@ -384,8 +429,11 @@ mod tests {
     use super::*;
 
     fn scratch_dir() -> PathBuf {
+        // Parallel tests: a counter keeps two dirs made in one nanosecond apart.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let unique = format!(
-            "orbit-extensions-test-{}-{}",
+            "orbit-extensions-test-{}-{n}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -458,6 +506,24 @@ mod tests {
         assert!(SUBAGENTS_RUN_JS.contains("\"--mode\", \"json\""));
         assert!(SUBAGENTS_RUN_JS.contains("--no-session"));
         assert!(SUBAGENTS_RUN_JS.contains("--append-system-prompt"));
+    }
+
+    #[test]
+    fn accounts_extension_ships_its_entry_and_helpers() {
+        assert!(ACCOUNTS_INDEX_JS.contains("./aliases.js"));
+        assert!(ACCOUNTS_INDEX_JS.contains("builtinProviders"));
+        assert!(ACCOUNTS_INDEX_JS.contains("accounts.json"));
+        assert!(ACCOUNTS_ALIASES_JS.contains("export function aliasProvider"));
+        let dir = scratch_dir();
+        let entry = install_extension(
+            &dir,
+            "accounts-extension",
+            &[("index.js", ACCOUNTS_INDEX_JS), ("aliases.js", ACCOUNTS_ALIASES_JS)],
+        )
+        .expect("accounts extension installs");
+        assert!(entry.ends_with("accounts-extension/index.js"));
+        assert!(entry.with_file_name("aliases.js").exists());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
