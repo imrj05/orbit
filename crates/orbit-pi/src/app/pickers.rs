@@ -96,6 +96,18 @@ impl OrbitApp {
         // The verbs are the machine list: one row per remote host, then the
         // row that adds a folder as a project.
         let mut actions = Self::remote_actions(&remote_hosts);
+        // With a server to go to and a project here, offer to put the project
+        // there (git clone on the host, plus its .env files).
+        if !remote_hosts.is_empty() && self.current_workspace.is_some() {
+            actions.push(PickerAction {
+                id: "add-to-server",
+                icon: "icons/cloud-upload.svg",
+                label: tr!("server_clone.picker_row"),
+                hint: Some(tr!("server_clone.picker_hint")),
+                group_start: false,
+                mono: false,
+            });
+        }
         actions.push(PickerAction {
             id: "new-project",
             icon: "icons/folder-plus.svg",
@@ -155,6 +167,7 @@ impl OrbitApp {
                         }
                         cx.notify();
                     }
+                    "add-to-server" => app.open_server_clone(None, window, cx),
                     // A folder added as a project, without a pi process: the
                     // project's own "+" is where a task starts (#131).
                     _ => app.new_project(window, cx),
@@ -286,6 +299,13 @@ impl OrbitApp {
         match self.spawn_pi(&workspace, true) {
             Ok(client) => {
                 self.adopt_client(client);
+                // A local spawn starts on the default model through its argv;
+                // a host may not have that provider, so a remote session gets
+                // it over RPC once the host's own catalog confirms it (see
+                // `apply_default_model`, which skips a model the host lacks).
+                if self.remote.is_some() {
+                    self.default_model_armed = true;
+                }
                 self.mcp_stamp = self.mcp.fingerprint_for(self.current_workspace.as_deref());
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();

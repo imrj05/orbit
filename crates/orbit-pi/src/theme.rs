@@ -308,7 +308,7 @@ pub struct SurfaceTreatment {
     pub full_window: bool,
     /// Requested image-layer opacity, 0..=1.
     pub image_opacity: f32,
-    /// Effective alpha of the black overlay between the image and the UI, 0..=1.
+    /// Legacy overlay alpha; always zero for wallpaper treatments.
     pub dim: f32,
     /// Effective alpha for cards, menus, and dialogs.
     pub card_alpha: f32,
@@ -1598,7 +1598,7 @@ impl Theme {
     }
 
     /// What the page behind the transcript reads as: the palette canvas, or —
-    /// over a wallpaper — that canvas composited with the dimmed picture.
+    /// over a wallpaper — that canvas composited with the picture.
     ///
     /// Edge fades end here. A fade has to hide the content it covers, so it
     /// cannot be translucent; ending it on `background` printed a band of bare

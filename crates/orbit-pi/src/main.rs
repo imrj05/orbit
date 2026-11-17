@@ -107,6 +107,7 @@ mod review;
 mod rewind;
 mod rewind_picker;
 mod rpc_patches;
+mod server_clone;
 mod session_defaults;
 mod session_retention;
 mod sessions;

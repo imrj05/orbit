@@ -421,8 +421,14 @@ forbids, so those surfaces say so instead.
 comes back local; ⌘N, a folder pick and a listed session are local by
 construction. A remote session is not parked: its file lives on the host, so a
 parked process could never be resumed, and it is stopped with a toast instead.
-Not yet: Plan/Build/Ask, quota, auto-title and subagents on the host (only the
-guard is installed), sidebar listing and resume of remote sessions, MCP secrets
+The workflow extension ships with the guard (`RemoteLaunch.extensions`): the
+mode starts as `ORBIT_WORKFLOW_MODE` and later changes are written into the
+host's own store over ssh, because the extension reads that file, not this
+Mac's. Projects reach a host by `git clone` there, never by uploading the
+working tree (t3code's model): only pushed history travels, the host needs its
+own git access, and the ignored files a clone cannot bring are copied one by
+one on stdin into the clone. Not yet: quota, auto-title and subagents on the host (they read state
+Orbit keeps locally), sidebar listing and resume of remote sessions, MCP secrets
 forwarding, password logins on Windows, and trusting a new host key in-app.
 Passwords follow t3code: keys first in `BatchMode`; on `Permission denied`
 with a password method listed, a masked dialog asks, and the probe reruns with
@@ -464,8 +470,13 @@ the user's own login shell and pi's install folders,
 host rows in the new-task folder picker (the host config lives in Settings →
 Remote hosts, reachable from the "Work in" menu), the host named on the folder chip and the
 status bar, the unavailable state on Files / Git / Worktrees, Explorer and Review
-closed with a toast, `@` mentions off, and the guard installed and the mode
-pinned to Supervised on every launch. Covered by `orbit-rpc`'s fake-ssh transport
+closed with a toast, `@` mentions off, file attachments refused with the reason,
+**Add a project to a server** (clone on the host with its own git, then the
+ticked ignored files over ssh stdin; a host entry saved for the clone), the
+guard and the workflow extension installed and the mode pinned to
+Supervised on every launch (the access chip shows that and stays locked), the
+Plan / Build / Ask mode synced to the host's store, and the default model
+applied over RPC when the host's catalog has it. Covered by `orbit-rpc`'s fake-ssh transport
 test, `remote_hosts`' store tests (surgical writes, unique names, alias
 discovery) and the app's `remote_ui_tests`; not yet exercised against a real VPS
 or in the GUI by hand.
@@ -484,12 +495,21 @@ project, and a folder a live task still works in, and its cases are covered in
 `sidebar_remove_tests`. **New project…** (command palette, and a row in the
 new-task folder picker) adds a folder to the sidebar with no pi session
 (`OrbitApp::new_project` → `add_workspace`). Settings → Providers & models renders
-connected and unconnected providers as the same three-column grid with no model
-lists, and a provider's models move into its editor: after **Fetch models** the
-ids are click-to-select chips writing the same newline list the bulk-paste field
-holds (`providers::toggle_model_id`), pi-reported models carry their context
-window and the picker-visibility eye, and Hide all / Show all sits beside the
-count.
+connected and unconnected providers as rows on two grouped boards (the shared
+`settings_group` surface, not a card grid). A row's head is one line — brand mark, name,
+status, one truncated facts line, and on the right only the model count, the first
+sign-in action while the provider is not connected, and a disclosure chevron. Clicking the
+head opens the row's panel: every other action on a full-width wrapping bar (provider
+buttons stop propagation so they never toggle the row), the sign-in progress card, and
+the provider's models as a two-column, height-bounded list of click-to-select chips. The
+panel opens by default for the session model's provider, whenever the search or Favorites
+filter narrows the list, while a sign-in runs and while a removal is confirmed; a hand
+toggle is kept per provider in `provider_models_open`. A selected chip means
+the composer's picker offers that model, a click writes the hide-list
+(`hidden_models`), the context window shows where pi reports one, and Hide all / Show all
+sits beside the count. The row's **Models**/**Configure** dialog edits the ids, endpoint
+and key (the text field is the bulk-paste path; **Fetch models** adds the endpoint's ids to
+it) and does not repeat the list.
 
 Subagents (D18) ship the delegation tool, agent discovery, the three run modes, the caps, the
 mode/ceiling pre-flight, child cost reporting and the delegation card (per-child rows with the

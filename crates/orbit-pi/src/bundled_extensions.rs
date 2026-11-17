@@ -30,7 +30,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use orbit_rpc::remote::{RemoteFile, RemoteTarget};
+use orbit_rpc::remote::{RemoteExtension, RemoteFile, RemoteLaunch, RemoteTarget};
 use orbit_rpc::PiClient;
 
 use crate::session_defaults::SessionDefault;
@@ -66,6 +66,34 @@ const TITLE_HELPERS_JS: &str = include_str!("../../../contrib/orbit-title-extens
 const WORKFLOW_INDEX_JS: &str = include_str!("../../../contrib/orbit-workflow-extension/index.js");
 const WORKFLOW_POLICY_JS: &str =
     include_str!("../../../contrib/orbit-workflow-extension/policy.js");
+const WORKFLOW_PACKAGE_JSON: &str =
+    include_str!("../../../contrib/orbit-workflow-extension/package.json");
+
+/// The workflow extension as it is written onto a remote host, so the
+/// Plan / Build / Ask chip scopes a remote session the way it does a local
+/// one. `package.json` ships for the same reason as the guard's.
+const REMOTE_WORKFLOW_FILES: [RemoteFile<'static>; 3] = [
+    RemoteFile {
+        name: "index.js",
+        contents: WORKFLOW_INDEX_JS,
+    },
+    RemoteFile {
+        name: "policy.js",
+        contents: WORKFLOW_POLICY_JS,
+    },
+    RemoteFile {
+        name: "package.json",
+        contents: WORKFLOW_PACKAGE_JSON,
+    },
+];
+
+/// The extensions a remote session loads besides the guard. Only the
+/// workflow scope: the title, quota and subagent extensions read and write
+/// state Orbit keeps on this Mac, so they stay local for now.
+const REMOTE_EXTENSIONS: [RemoteExtension<'static>; 1] = [RemoteExtension {
+    dir: "remote-workflow",
+    files: &REMOTE_WORKFLOW_FILES,
+}];
 const SUBAGENTS_INDEX_JS: &str =
     include_str!("../../../contrib/orbit-subagents-extension/index.js");
 const SUBAGENTS_AGENTS_JS: &str =
@@ -205,8 +233,10 @@ impl BundledExtensions {
     }
 
     /// Spawn an agent-only pi session on a remote host over SSH. The launch
-    /// script installs the access guard on the host and pins its mode to
-    /// supervised before it execs pi (see `orbit_rpc::remote`).
+    /// script installs the access guard and the workflow extension on the
+    /// host and pins its access mode to supervised before it execs pi (see
+    /// `orbit_rpc::remote`). `workflow` (a wire id) is the mode the session
+    /// starts in, until Orbit records one in the host's store.
     ///
     /// Fails closed: when the guard could not be materialized locally, the
     /// bundled copy is suspect too, so no remote session starts unguarded.
@@ -214,6 +244,7 @@ impl BundledExtensions {
         &self,
         target: &RemoteTarget,
         password: Option<&str>,
+        workflow: &str,
     ) -> anyhow::Result<PiClient> {
         if self.guard.is_none() {
             anyhow::bail!(
@@ -230,7 +261,13 @@ impl BundledExtensions {
             .as_deref()
             .zip(password)
             .map(|(askpass, secret)| orbit_rpc::remote::SshPassword { askpass, secret });
-        PiClient::spawn_remote_with_bin("ssh", target, &REMOTE_GUARD_FILES, password)
+        let env = [("ORBIT_WORKFLOW_MODE", workflow)];
+        let launch = RemoteLaunch {
+            guard: &REMOTE_GUARD_FILES,
+            extensions: &REMOTE_EXTENSIONS,
+            env: &env,
+        };
+        PiClient::spawn_remote_with_bin("ssh", target, &launch, password)
     }
 
     /// The installed bundled extension entry points, in load order.
@@ -483,5 +520,34 @@ mod tests {
         assert!(entry.ends_with("title-extension/index.js"));
         assert!(entry.with_file_name("title.js").exists());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The launch script travels as one argument of the remote login shell's
+    /// `-c`, and Linux caps a single argument at 128 KiB (`MAX_ARG_STRLEN`).
+    /// Keep the shipped guard and workflow extension well under it.
+    #[test]
+    fn the_remote_launch_fits_in_one_shell_argument() {
+        let target = RemoteTarget {
+            host: "vps".into(),
+            port: None,
+            dir: "/srv/app".into(),
+        };
+        let env = [("ORBIT_WORKFLOW_MODE", "plan")];
+        let script = orbit_rpc::remote::launch_script(
+            &target,
+            &RemoteLaunch {
+                guard: &REMOTE_GUARD_FILES,
+                extensions: &REMOTE_EXTENSIONS,
+                env: &env,
+            },
+        )
+        .expect("the shipped files are valid heredocs");
+        assert!(
+            script.len() < 96 * 1024,
+            "launch script is {} bytes",
+            script.len()
+        );
+        assert!(script.contains("remote-workflow/index.js"));
+        assert!(WORKFLOW_PACKAGE_JSON.contains("\"type\": \"module\""));
     }
 }

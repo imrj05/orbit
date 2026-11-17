@@ -5,6 +5,10 @@ Split out so this feature's copy stays in one reviewable place.
 
 GLOSSARY = {
     "zh-CN": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "%{host} 上的会话在更改前总会询问。访问模式只作用于本机。",
+        "Supervised on %{host}: remote sessions always ask before changes": "在 %{host} 上为监督模式：远程会话在更改前总会询问",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "智能体在 %{host} 上运行时无法附加文件。图片仍可使用，或粘贴文件的文本。",
+        "%{mode} did not reach %{host}: %{error}": "%{mode} 未能应用到 %{host}：%{error}",
         "New task on %{host}": "在 %{host} 上新建任务",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json：已跳过 %{count} 个条目（%{reason}）",
         "Not available while the agent runs on %{host}": "智能体在 %{host} 上运行时不可用",
@@ -14,6 +18,10 @@ GLOSSARY = {
         "on %{host}": "在 %{host}",
     },
     "ja": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "%{host} 上のセッションは変更前に必ず確認します。アクセスモードはこの Mac にのみ適用されます。",
+        "Supervised on %{host}: remote sessions always ask before changes": "%{host} では監視モード：リモートセッションは変更前に必ず確認します",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "エージェントが %{host} で実行中はファイルを添付できません。画像は使えます。またはファイルのテキストを貼り付けてください。",
+        "%{mode} did not reach %{host}: %{error}": "%{mode} を %{host} に反映できませんでした: %{error}",
         "New task on %{host}": "%{host} で新しいタスク",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json: %{count} 件のエントリをスキップしました（%{reason}）",
         "Not available while the agent runs on %{host}": "エージェントが %{host} で実行中は利用できません",
@@ -23,6 +31,10 @@ GLOSSARY = {
         "on %{host}": "%{host} 上",
     },
     "ko": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "%{host}의 세션은 변경 전에 항상 확인합니다. 액세스 모드는 이 Mac에만 적용됩니다.",
+        "Supervised on %{host}: remote sessions always ask before changes": "%{host}에서 감독 모드: 원격 세션은 변경 전에 항상 확인합니다",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "에이전트가 %{host}에서 실행되는 동안에는 파일을 첨부할 수 없습니다. 이미지는 사용할 수 있으며, 파일의 텍스트를 붙여넣어도 됩니다.",
+        "%{mode} did not reach %{host}: %{error}": "%{mode}을(를) %{host}에 적용하지 못했습니다: %{error}",
         "New task on %{host}": "%{host}에서 새 작업",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json: 항목 %{count}개를 건너뜀(%{reason})",
         "Not available while the agent runs on %{host}": "에이전트가 %{host}에서 실행되는 동안 사용할 수 없음",
@@ -32,6 +44,10 @@ GLOSSARY = {
         "on %{host}": "%{host}에서",
     },
     "es": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "Las sesiones en %{host} siempre preguntan antes de hacer cambios. Los modos de acceso se aplican a este Mac.",
+        "Supervised on %{host}: remote sessions always ask before changes": "Supervisado en %{host}: las sesiones remotas siempre preguntan antes de hacer cambios",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "No se pueden adjuntar archivos mientras el agente se ejecuta en %{host}. Las imágenes siguen funcionando, o pega el texto del archivo.",
+        "%{mode} did not reach %{host}: %{error}": "%{mode} no llegó a %{host}: %{error}",
         "New task on %{host}": "Nueva tarea en %{host}",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json: se omitieron %{count} entradas (%{reason})",
         "Not available while the agent runs on %{host}": "No disponible mientras el agente se ejecuta en %{host}",
@@ -41,6 +57,10 @@ GLOSSARY = {
         "on %{host}": "en %{host}",
     },
     "fr": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "Les sessions sur %{host} demandent toujours avant toute modification. Les modes d'accès s'appliquent à ce Mac.",
+        "Supervised on %{host}: remote sessions always ask before changes": "Supervisé sur %{host} : les sessions distantes demandent toujours avant toute modification",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "Impossible de joindre des fichiers pendant que l'agent s'exécute sur %{host}. Les images fonctionnent toujours, ou collez le texte du fichier.",
+        "%{mode} did not reach %{host}: %{error}": "%{mode} n'a pas atteint %{host} : %{error}",
         "New task on %{host}": "Nouvelle tâche sur %{host}",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json : %{count} entrées ignorées (%{reason})",
         "Not available while the agent runs on %{host}": "Indisponible tant que l'agent s'exécute sur %{host}",
@@ -50,6 +70,10 @@ GLOSSARY = {
         "on %{host}": "sur %{host}",
     },
     "de": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "Sitzungen auf %{host} fragen vor Änderungen immer nach. Die Zugriffsmodi gelten für diesen Mac.",
+        "Supervised on %{host}: remote sessions always ask before changes": "Beaufsichtigt auf %{host}: Remote-Sitzungen fragen vor Änderungen immer nach",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "Dateien können nicht angehängt werden, solange der Agent auf %{host} läuft. Bilder funktionieren weiterhin, oder füge den Text der Datei ein.",
+        "%{mode} did not reach %{host}: %{error}": "%{mode} hat %{host} nicht erreicht: %{error}",
         "New task on %{host}": "Neue Aufgabe auf %{host}",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json: %{count} Einträge übersprungen (%{reason})",
         "Not available while the agent runs on %{host}": "Nicht verfügbar, solange der Agent auf %{host} läuft",
@@ -59,6 +83,10 @@ GLOSSARY = {
         "on %{host}": "auf %{host}",
     },
     "pt-BR": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "As sessões em %{host} sempre perguntam antes de fazer alterações. Os modos de acesso valem para este Mac.",
+        "Supervised on %{host}: remote sessions always ask before changes": "Supervisionado em %{host}: sessões remotas sempre perguntam antes de fazer alterações",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "Não é possível anexar arquivos enquanto o agente roda em %{host}. Imagens continuam funcionando, ou cole o texto do arquivo.",
+        "%{mode} did not reach %{host}: %{error}": "%{mode} não chegou a %{host}: %{error}",
         "New task on %{host}": "Nova tarefa em %{host}",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json: %{count} entradas ignoradas (%{reason})",
         "Not available while the agent runs on %{host}": "Indisponível enquanto o agente roda em %{host}",
@@ -68,6 +96,10 @@ GLOSSARY = {
         "on %{host}": "em %{host}",
     },
     "ru": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "Сеансы на %{host} всегда спрашивают перед изменениями. Режимы доступа действуют на этом Mac.",
+        "Supervised on %{host}: remote sessions always ask before changes": "Под контролем на %{host}: удалённые сеансы всегда спрашивают перед изменениями",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "Нельзя прикреплять файлы, пока агент работает на %{host}. Изображения по-прежнему работают, или вставьте текст файла.",
+        "%{mode} did not reach %{host}: %{error}": "Режим %{mode} не применён на %{host}: %{error}",
         "New task on %{host}": "Новая задача на %{host}",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json: пропущено записей: %{count} (%{reason})",
         "Not available while the agent runs on %{host}": "Недоступно, пока агент работает на %{host}",
@@ -77,6 +109,10 @@ GLOSSARY = {
         "on %{host}": "на %{host}",
     },
     "it": {
+        "Sessions on %{host} always ask before changes. The access modes apply to this Mac.": "Le sessioni su %{host} chiedono sempre prima di apportare modifiche. Le modalità di accesso valgono per questo Mac.",
+        "Supervised on %{host}: remote sessions always ask before changes": "Supervisionato su %{host}: le sessioni remote chiedono sempre prima di apportare modifiche",
+        "Files can't be attached while the agent runs on %{host}. Images still work, or paste the file's text.": "Non è possibile allegare file mentre l'agente è in esecuzione su %{host}. Le immagini funzionano comunque, oppure incolla il testo del file.",
+        "%{mode} did not reach %{host}: %{error}": "%{mode} non ha raggiunto %{host}: %{error}",
         "New task on %{host}": "Nuova attività su %{host}",
         "remote-hosts.json: %{count} entries skipped (%{reason})": "remote-hosts.json: %{count} voci saltate (%{reason})",
         "Not available while the agent runs on %{host}": "Non disponibile mentre l'agente è in esecuzione su %{host}",

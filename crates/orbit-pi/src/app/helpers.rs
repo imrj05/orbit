@@ -1742,13 +1742,16 @@ fn caption_button(
 /// unaffected.
 pub(crate) fn window_drag_region(el: gpui::Div) -> gpui::Div {
     #[cfg(target_os = "macos")]
-    let el = el.on_mouse_down(MouseButton::Left, |event: &gpui::MouseDownEvent, window, _| {
-        // The second press of a double-click carries the count; a drag starts
-        // on the first, so this never fires for one.
-        if event.click_count == 2 {
-            window.titlebar_double_click();
-        }
-    });
+    let el = el.on_mouse_down(
+        MouseButton::Left,
+        |event: &gpui::MouseDownEvent, window, _| {
+            // The second press of a double-click carries the count; a drag starts
+            // on the first, so this never fires for one.
+            if event.click_count == 2 {
+                window.titlebar_double_click();
+            }
+        },
+    );
     #[cfg(windows)]
     {
         el.on_mouse_down(MouseButton::Left, |_, window, _| {

@@ -1256,6 +1256,10 @@ pub struct OrbitApp {
     /// Providers & models page: show favorited models only (the second
     /// filter next to the search field).
     models_favorites_only: bool,
+    /// Providers & models page: a provider row's model list the user opened or
+    /// closed by hand. A provider with no entry follows the page's default
+    /// (open for the active provider and while a filter narrows its models).
+    provider_models_open: HashMap<String, bool>,
     /// True while the Providers & models page's "Update model list" runs pi's
     /// catalog refresh and reloads the agent.
     models_refreshing: bool,
@@ -1414,6 +1418,8 @@ pub struct OrbitApp {
     remote_provider_expanded: std::collections::HashSet<String>,
     /// The Add API key dialog for a host, while open.
     remote_key_editor: Option<remote_providers_ui::RemoteKeyEditor>,
+    /// The "Add to a server" dialog, while open (`server_clone_ui.rs`).
+    server_clone: Option<server_clone_ui::ServerCloneDialog>,
     remote_host_checks: std::collections::HashMap<String, remote_hosts_ui::HostCheck>,
     /// SSH passwords entered this run, keyed by ssh account
     /// (`RemoteHost::account_key`). Memory only: never written, dropped the
@@ -1685,6 +1691,13 @@ impl OrbitApp {
     /// prompt needs the mention once, and a duplicate chip would only look
     /// like a mistake to remove.
     fn push_file(&mut self, file: AttachedFile, cx: &mut Context<Self>) {
+        // A file rides as a path the agent opens itself, and a remote agent
+        // cannot open this Mac's paths: refuse it here instead of sending a
+        // mention that points nowhere on the host.
+        if self.refuse_files_for_remote(1) {
+            cx.notify();
+            return;
+        }
         if self.files.iter().any(|queued| queued.path == file.path) {
             cx.notify();
             return;
@@ -2643,6 +2656,7 @@ impl OrbitApp {
             provider_filter: provider_filter.clone(),
             _provider_filter_sub: provider_filter_sub,
             models_favorites_only: false,
+            provider_models_open: HashMap::new(),
             models_refreshing: false,
             skills: Vec::new(),
             subagents: Vec::new(),
@@ -2694,6 +2708,7 @@ impl OrbitApp {
             remote_model_lists: std::collections::HashMap::new(),
             remote_provider_expanded: std::collections::HashSet::new(),
             remote_key_editor: None,
+            server_clone: None,
             remote_host_checks: std::collections::HashMap::new(),
             remote_host_secrets: std::collections::HashMap::new(),
             remote_password_prompt: None,
@@ -4094,8 +4109,6 @@ struct ProviderView {
     has_api_key: bool,
     base_url: String,
     api: String,
-    /// pi ships this provider (vs. a models.json-only custom endpoint).
-    builtin: bool,
     /// `/login <id>` offers a subscription/OAuth flow.
     oauth: bool,
     /// Storing an API key in auth.json works for this provider.
@@ -4324,6 +4337,7 @@ mod plugin_update_ui;
 mod remote_hosts_ui;
 mod remote_providers_ui;
 mod remote_ui;
+mod server_clone_ui;
 mod ssh_auth_ui;
 use remote_ui::{remote_host_for_action, remote_unavailable, TaskPlace};
 mod retention_ui;
@@ -4398,6 +4412,8 @@ mod search_tests;
 mod send_control_tests;
 #[cfg(test)]
 mod send_progress_tests;
+#[cfg(test)]
+mod server_clone_ui_tests;
 #[cfg(test)]
 mod session_default_apply_tests;
 #[cfg(test)]

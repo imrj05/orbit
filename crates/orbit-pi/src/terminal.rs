@@ -1746,9 +1746,7 @@ impl TerminalPanel {
                 button_frame(div().id("terminal-back"), &theme, ButtonSize::Medium)
                     .cursor_pointer(),
             )
-            .on_click(
-                cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.toggle_full_width(cx)),
-            )
+            .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.toggle_full_width(cx)))
             .child(icon(
                 "icons/arrow-left.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
@@ -3040,7 +3038,10 @@ mod tests {
         cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
 
         let panel = panel_with_tabs(cx, 1, std::env::temp_dir());
-        assert!(!cx.update(|_, cx| panel.read(cx).is_full_width()), "docked by default");
+        assert!(
+            !cx.update(|_, cx| panel.read(cx).is_full_width()),
+            "docked by default"
+        );
         cx.update(|_, cx| panel.update(cx, |panel, cx| panel.toggle_full_width(cx)));
         assert!(cx.update(|_, cx| panel.read(cx).is_full_width()));
         cx.update(|_, cx| panel.update(cx, |panel, cx| panel.toggle_full_width(cx)));

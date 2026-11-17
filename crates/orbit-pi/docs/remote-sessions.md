@@ -78,12 +78,26 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
 The script, in order:
 
 1. writes the access guard (`index.js`, `policy.js`, `package.json`) to
-   `~/.orbit-pi/remote-guard/` with quoted heredocs;
+   `~/.orbit-pi/remote-guard/` and the workflow extension (same three files)
+   to `~/.orbit-pi/remote-workflow/`, with quoted heredocs;
 2. writes `{"mode":"supervised"}` to `~/.orbit-pi/access.json` on the host;
 3. `cd`s into `dir` (exit 66 if missing);
 4. refuses to continue without the guard (exit 78);
 5. checks `pi` is on the login shell's PATH (exit 127);
-6. `exec`s `pi --mode rpc --approve --extension ~/.orbit-pi/remote-guard/index.js`.
+6. `exec`s `env ORBIT_WORKFLOW_MODE=<mode> pi --mode rpc --approve --extension
+   ~/.orbit-pi/remote-guard/index.js --extension ~/.orbit-pi/remote-workflow/index.js`.
+
+The whole script is one argument of the remote shell's `-c`, which Linux caps
+at 128 KiB; a test keeps the shipped files under 96 KiB.
+
+**Workflow mode on the host.** `ORBIT_WORKFLOW_MODE` covers the session until
+the host's store has its id: the New Task choice, the live mode on a respawn,
+otherwise Build. Changing the chip mid-session writes the session's entry into
+the host's `~/.orbit-pi/workflow.json` over a short ssh of its own
+(`orbit_rpc::remote::set_workflow_mode_script`, run by the host's Node, merged
+through a temp file and a rename); the extension reads it on its next hook. A
+failed write raises a toast naming the host, so the chip never claims a mode
+the host did not get.
 
 ## Safety
 
@@ -187,6 +201,47 @@ on the script; any other shell gets `sh -l`.
   (Settings steps aside so it is in view; Windows uses the system terminal).
 - The This Mac view always acts on this Mac.
 
+## Add a project to a server
+
+After t3code's "Add to another machine". Nothing of the working tree is
+uploaded: the server clones the project with **its own git**, and Orbit copies
+only the ignored files the user ticks.
+
+- **Where:** the new-task folder picker's **Add this project to a server…**
+  (when a host exists and a project is open) and a host card's ⋯ →
+  **Add a project from this Mac…** (that host picked).
+- **The dialog** (`app/server_clone_ui.rs`) reads the project off the UI
+  thread (`server_clone::inspect`): the repository root, `origin` with any
+  `user:token@` stripped (it would otherwise land on the server's command line
+  and `.git/config`), and `git ls-files --others --ignored --exclude-standard
+  --directory` — folders git ignores whole (`node_modules/`) are one skipped
+  entry. It shows the clone URL with an SSH / HTTPS switch, the server, the
+  folder (`~/<repo>` by default; `~/…` or absolute), and the ignored files with
+  `.env`, `.env.*`, `.envrc` and `.dev.vars` ticked. Files over 1 MB are listed
+  but cannot be ticked; at most 200 are listed.
+- **Connect:** the Remote hosts check (`AuthThen::AddToServer`) against `/` —
+  the password prompt, host-key, wrong-user and pi-missing explanations are
+  that flow's own. pi must be on the server: its Node writes the files.
+- **Clone** (`orbit_rpc::remote::clone_script`): `GIT_TERMINAL_PROMPT=0 git
+  clone -- <url> <dest>` with stdin closed, so nothing waits on a prompt. A
+  checkout of the same URL already there is reused; a non-empty folder is
+  refused. Git's errors stay on **stdout** as `detail` lines with exit 0,
+  because the ssh runner reads stderr for the *server's* login problems and a
+  clone's "Permission denied (publickey)" is about the git host. They are
+  explained as: git missing, host key of the git host not yet trusted, key
+  refused, HTTPS login needed, repository not found.
+- **Copy** (`copy_files_script`): one ssh run, the files as base64 JSON on
+  **stdin**; the host's Node writes each 0600 through a temp file and a
+  rename. A path that is absolute, has `..`, or reaches outside the clone
+  through a symlinked folder is refused; a symlink at the file's own name is
+  replaced, never written through. Files that did not copy are listed in a
+  toast.
+- **Then:** a host entry for the new folder is saved (`<project> on <host>`,
+  reused when one already points there) and a session starts in it — in the
+  workspace's own subfolder when the project was opened below its root.
+
+Only pushed commits reach the server; uncommitted work stays on this Mac.
+
 ## In the app
 
 - **Start:** the new-task folder picker lists one row per host, then **Add a
@@ -221,12 +276,12 @@ behind it is not installed on the host (only the access guard is).
 | Settings → Providers & models, per machine | a **Machine** selector (This Mac / each enabled host); a host's view is read from its own `pi --list-models` over ssh (`orbit_rpc::remote::list_models_script`) — connected providers, model counts and each model's context / thinking / images; credentials never leave the host | **Done** | — |
 | Settings → Providers sign-in | `pi /login` over `ssh -t` on the host during a remote session (`orbit_rpc::remote::login_script` + `interactive_ssh_command`); **Restart pi** then reattaches to the host's session file | **Fixed** | — |
 | Settings → Providers API keys, custom providers | This Mac view: local `auth.json`, `models.json`. Host view: **Add API key** (pick a key-based provider, paste the key or **Use this Mac's key**; written into the host's `auth.json` by its own Node, the key on ssh stdin only — `orbit_rpc::remote::set_api_key_script`), and **Sign in** (pi's `/login` over `ssh -t` in a tab of Orbit's own terminal panel, for subscriptions) | **Done**; custom `models.json` providers on a host are edited on the host | Edit a host's `models.json` over ssh |
-| Default session model | local `session-defaults.json`, passed as spawn args | Not applied to remote spawns | Pass `--provider/--model` when the host has that provider |
-| File attachments (non-image) | folded into `@<local path>` | **Broken**: path does not exist on the host | Refuse with a reason, or upload over ssh |
+| Default session model | local `session-defaults.json`; a remote start arms the RPC push (`apply_default_model`), checked against the **host's** catalog | **Fixed**: applied when the host has that model, skipped silently when it does not | — |
+| File attachments (non-image) | folded into `@<local path>` | **Refused** with a toast (`push_file`, and again at send for a tray filled earlier); images still work | Upload over ssh |
 | `@` file mentions | local index | Off (correct) | Remote index over ssh |
-| Access mode chip | local `access.json` | Host pinned to Supervised; chip shows the local mode | Show "Supervised (remote)" and lock it, or write the host's file |
+| Access mode chip | local `access.json` | **Fixed**: shows Supervised with a tooltip naming the host; the menu stays shut and says why | — |
 | Settings → Permissions rules | local `access-rules.json` | Not applied (guard reads the host's file) | Sync the rules file to the host at launch |
-| Plan / Build / Ask chip | workflow extension | **Missing** on the host: chip has no effect | Install the workflow extension with the guard |
+| Plan / Build / Ask chip | workflow extension, installed on the host with the guard | **Fixed**: starts in the chosen mode; changes are written to the host's `workflow.json` | — |
 | Auto-title | title extension | **Missing**: remote sessions stay untitled | Install with the guard |
 | Subagents (tool, Settings page) | subagents extension, local agent files | **Missing** | Install extension; agent files are the host's |
 | Quota / usage meters | quota extension + `get_entries` | **Missing**: no quota for remote sessions | Install the quota extension |
@@ -243,8 +298,11 @@ behind it is not installed on the host (only the access guard is).
 - Remote file, Git and Review views (the panels are off, not remote-aware).
 - Sidebar listing and resume: pi writes session files on the host, so remote
   sessions are not in the local `~/.pi/agent/sessions` list.
-- The workflow, quota, title and subagent extensions are not installed on the
-  host, so Plan/Build/Ask does not apply to remote sessions yet.
+- The quota, title and subagent extensions are not installed on the host, so
+  remote sessions have no usage meters, no auto-title and no `subagent` tool.
+- Non-image file attachments are refused rather than uploaded.
+- Add to a server has no file search (t3code's dialog has one) and does not
+  forward this Mac's git credentials: the server needs its own access.
 - MCP secrets are not forwarded.
 - Password logins on Windows (the askpass helper is POSIX sh); keys work there.
 - Trusting a new host key from the app: it is verified in a terminal.

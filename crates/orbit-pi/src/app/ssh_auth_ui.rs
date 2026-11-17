@@ -40,6 +40,8 @@ pub(crate) enum AuthThen {
     StartTask,
     /// Settings → Providers & models listing this host's providers.
     ProviderList(String),
+    /// The "Add to a server" dialog (this opening of it) before its clone.
+    AddToServer(u64),
 }
 
 /// Where an install was started, and so where its result and the check
@@ -235,6 +237,8 @@ impl OrbitApp {
             AuthThen::StartTask => {
                 self.set_status(tr!("remote.connecting", host = host.name.clone()));
             }
+            // The dialog's own button says it is connecting.
+            AuthThen::AddToServer(_) => {}
         }
         cx.notify();
         let secret = self.remote_secret(&host);
@@ -262,6 +266,7 @@ impl OrbitApp {
             AuthThen::RowTest(name) => self.remote_host_checks.contains_key(name),
             AuthThen::StartTask => true,
             AuthThen::ProviderList(name) => self.remote_model_lists.contains_key(name),
+            AuthThen::AddToServer(generation) => self.server_clone_waiting(*generation),
         }
     }
 
@@ -349,6 +354,10 @@ impl OrbitApp {
                         self.remote_model_lists
                             .insert(name.clone(), RemoteModels::PiMissing);
                     }
+                    AuthThen::AddToServer(generation) => self.server_clone_failed(
+                        *generation,
+                        tr!("remote_hosts.pi_missing_with_command", command = command),
+                    ),
                 }
                 cx.notify();
             }
@@ -379,6 +388,7 @@ impl OrbitApp {
             }
             // A listing finishes in `finish_remote_model_list`, never here.
             AuthThen::ProviderList(_) => {}
+            AuthThen::AddToServer(generation) => self.server_clone_connected(generation, cx),
         }
         cx.notify();
     }
@@ -410,6 +420,7 @@ impl OrbitApp {
                 self.remote_model_lists
                     .insert(name.clone(), RemoteModels::Failed(message));
             }
+            AuthThen::AddToServer(generation) => self.server_clone_failed(*generation, message),
         }
         cx.notify();
     }
@@ -433,6 +444,7 @@ impl OrbitApp {
                 self.remote_model_lists
                     .insert(name.clone(), RemoteModels::Failed(message));
             }
+            AuthThen::AddToServer(generation) => self.server_clone_failed(*generation, message),
         }
         cx.notify();
     }

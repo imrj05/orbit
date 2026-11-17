@@ -49,13 +49,87 @@ impl OrbitApp {
         match &self.remote {
             Some(host) => {
                 let secret = self.remote_secret(host);
-                self.extensions
-                    .spawn_remote(&host.target()?, secret.as_deref())
+                self.extensions.spawn_remote(
+                    &host.target()?,
+                    secret.as_deref(),
+                    self.remote_launch_workflow().as_wire(),
+                )
             }
             None => self
                 .extensions
                 .spawn(workspace, apply_default, &self.mcp.secret_env()),
         }
+    }
+
+    /// The workflow mode a remote pi starts in. The host's store has no entry
+    /// for a session it has not started yet, so the launch carries the mode
+    /// as `ORBIT_WORKFLOW_MODE` (the extension's fallback for exactly that
+    /// moment): a New Task choice, the live mode when an existing session is
+    /// respawned, otherwise Build like any new local session.
+    pub(super) fn remote_launch_workflow(&self) -> WorkflowMode {
+        self.workflow_pending
+            .unwrap_or(if self.session_id.is_some() {
+                self.workflow_mode
+            } else {
+                WorkflowMode::default()
+            })
+    }
+
+    /// Mirror a workflow change into the host's `~/.orbit-pi/workflow.json`,
+    /// which the workflow extension there reads on every hook. Runs over a
+    /// short ssh of its own, off the UI thread; a failure says the mode did
+    /// not reach the host rather than letting the chip claim it did.
+    pub(super) fn sync_remote_workflow(
+        &mut self,
+        session_id: String,
+        mode: WorkflowMode,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.remote.clone() else {
+            return;
+        };
+        let secret = self.remote_secret(&host);
+        cx.spawn(async move |this, cx| {
+            let host_name = host.name.clone();
+            let host_for_text = host.clone();
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::remote_hosts::set_workflow_mode(
+                        &host,
+                        secret.as_deref(),
+                        &session_id,
+                        mode.as_wire(),
+                    )
+                })
+                .await;
+            if let Err(failure) = outcome {
+                let _ = this.update(cx, |app, cx| {
+                    app.toast_warning(tr!(
+                        "remote.workflow_sync_failed",
+                        mode = mode.label(),
+                        host = host_name,
+                        error = super::remote_providers_ui::failure_text(failure, &host_for_text)
+                    ));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Refuse `count` file attachments while the session is remote, with the
+    /// reason. Returns whether the caller should stop. Images are unaffected:
+    /// they travel inside the prompt itself.
+    pub(super) fn refuse_files_for_remote(&mut self, count: usize) -> bool {
+        if count == 0 {
+            return false;
+        }
+        let Some(host) = self.remote_host_name().map(str::to_owned) else {
+            return false;
+        };
+        self.toast_warning(tr!("remote.files_unavailable", host = host));
+        true
     }
 
     /// The remote host's name while the active session runs there.

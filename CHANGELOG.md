@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Add a project to a server.** Like t3code's "Add to another machine": the new-task
+  folder picker's **Add this project to a server…** (or a host card's **Add a project from
+  this Mac…**) clones the project's `origin` with git **on the server** — SSH or HTTPS, any
+  token in the URL stripped — into a folder you choose (`~/<repo>` by default), then copies
+  the ignored files you tick (`.env`, `.env.*`, `.envrc`, `.dev.vars` ticked by default; up
+  to 1 MB each) over ssh's stdin, written 0600 and kept inside the clone. Clone failures are
+  explained (git missing, git host key not trusted, key refused, HTTPS login needed), a
+  host entry is saved for the new folder, and a session starts there.
+- **Remote sessions now respect Plan / Build / Ask, the default model and the access mode.**
+  The workflow extension is installed on the host beside the access guard, the session
+  starts in the chosen mode (`ORBIT_WORKFLOW_MODE`), and a mid-session change is written
+  to the host's `~/.orbit-pi/workflow.json` over ssh — a failed write says so. A new remote
+  task applies the default model through RPC when the host's own catalog has it. The
+  access chip shows Supervised while remote (what the host is pinned to) and its menu
+  stays shut with the reason. Non-image file attachments are refused with a toast instead
+  of sending a path that does not exist on the host.
 - **Run the agent on a VPS over SSH.** Settings → Remote hosts manages the machines,
   after t3code's environment panel: **Add host** opens a form for the SSH host or
   `~/.ssh/config` alias (your aliases are offered as suggestions), an optional user and
@@ -71,6 +87,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Settings → Providers & models is a list, not a card grid.** The three-column grid
+  squeezed each provider card to ~200px, so facts, buttons and model lists clipped on
+  ordinary window sizes. Providers are now rows on the same grouped boards the other
+  settings pages use (Connected / Not connected, with counts). A row is one calm line —
+  brand mark, name and status over a line of facts, and on the right only the model
+  count, a **Sign in** / **Add API key** call to action while the provider is not
+  connected, and a chevron. Clicking the row opens its panel: every action (each sign-in
+  method, Models/Configure, Usage, Disconnect, Remove) on a full-width bar that wraps
+  inside the row, then the provider's models as a two-column, height-bounded list of
+  click-to-show chips. The panel opens on its own for the provider of the session's
+  model, while a search or the Favorites filter narrows the list, and while a sign-in
+  runs. Search and the page's buttons share one row, and the active-model selector sits
+  on the shared board.
+
 - **The Git page (GitHub) button moved from the top bar's "…" overflow menu to
   the left sidebar's footer**, ahead of the Usage button, where it sits as a
   workbench destination (⌘⇧G unchanged). The top bar keeps only live-state
@@ -125,14 +155,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picker reads `~/.orbit-pi/remote-hosts.json` when it opens, so a running session
   can move to a host without going back to the new-task page; the connection check,
   password prompt and guarded launch are the same path the picker uses.
-- **Providers & models is one grid, and models live in their provider's editor.**
+- **Providers & models: one grid, with each provider's models on its own card.**
   Connected and unconnected providers are the same three-column cards, so a connected
-  provider is no taller than a disconnected one and a long catalog no longer buries the
-  page. A provider's models are in its **Configure** editor instead: after **Fetch
-  models** the fetched ids render as click-to-select chips (✓ when the field lists one),
-  the text field stays as the bulk-paste path, each model pi reports carries its context
-  window and the eye that decides whether the composer's picker offers it, and **Hide
-  all / Show all** sits beside the count (#131).
+  provider is no taller than a disconnected one, and every provider that pi reports
+  models for lists them **on its card** as click-to-select chips: a chip is selected when
+  the composer's picker offers that model, one click hides or shows it, each shows its
+  context window, and **Hide all / Show all** sits beside the count. Choosing never
+  deletes anything — the provider's catalog (pi's, or `models.json`) is untouched, so a
+  model the provider adds later still arrives. The card's **Models**/**Configure** button
+  still opens the ids, endpoint and key editor (ids stay editable there as the bulk-paste
+  path, and after **Fetch models** the fetched ids are added to them); it no longer
+  repeats the list, and a provider pi reports nothing for shows no list at all (#131).
 
 ### Fixed
 

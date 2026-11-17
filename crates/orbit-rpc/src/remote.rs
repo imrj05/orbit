@@ -135,6 +135,32 @@ pub struct RemoteFile<'a> {
     pub contents: &'a str,
 }
 
+/// An extension the launch script installs beside the guard, in
+/// `~/.orbit-pi/<dir>` on the host, and loads with `--extension`. Unlike the
+/// guard it is not a safety boundary: it adds behavior (the workflow scope),
+/// so a session never refuses to start over one.
+#[derive(Debug, Clone, Copy)]
+pub struct RemoteExtension<'a> {
+    /// A plain directory name under `~/.orbit-pi` (`remote-workflow`).
+    pub dir: &'a str,
+    /// Its files; one must be `index.js`, the entry point.
+    pub files: &'a [RemoteFile<'a>],
+}
+
+/// Everything a remote session launch carries besides the target.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RemoteLaunch<'a> {
+    /// The access guard, written into [`REMOTE_GUARD_DIR`]. Required: the
+    /// script refuses to start pi without it.
+    pub guard: &'a [RemoteFile<'a>],
+    /// More extensions, each in its own directory.
+    pub extensions: &'a [RemoteExtension<'a>],
+    /// Environment for pi (`ORBIT_WORKFLOW_MODE`). Names must be plain
+    /// `[A-Z_][A-Z0-9_]*`; values are shell-quoted. Never a secret: the
+    /// script travels on the ssh command line.
+    pub env: &'a [(&'a str, &'a str)],
+}
+
 impl RemoteTarget {
     /// Reject anything that could change the meaning of the ssh command line
     /// or the remote script. Values are also shell-quoted; this is the second
@@ -321,32 +347,40 @@ pub fn interactive_ssh_command(target: &RemoteTarget, script: &str) -> Result<St
         .join(" "))
 }
 
-/// Build the POSIX script that installs the guard, pins the access mode and
-/// execs `pi --mode rpc`. The guard files are written with quoted heredocs, so
-/// their contents are never interpreted by the shell.
+/// Build the POSIX script that installs the guard (and any other extensions),
+/// pins the access mode and execs `pi --mode rpc`. Files are written with
+/// quoted heredocs, so their contents are never interpreted by the shell.
 ///
-/// Fails if a file's contents would end the heredoc early.
-pub fn launch_script(target: &RemoteTarget, guard: &[RemoteFile<'_>]) -> Result<String> {
+/// Fails if a file's contents would end the heredoc early, or a name, a
+/// directory or an environment variable is not plain.
+pub fn launch_script(target: &RemoteTarget, launch: &RemoteLaunch<'_>) -> Result<String> {
     target.validate()?;
-    let delimiter = "ORBIT_GUARD_EOF";
     let mut script = String::from("set -eu\n");
     script.push_str(&format!("G=\"$HOME/{REMOTE_GUARD_DIR}\"\n"));
     script.push_str("mkdir -p \"$G\" \"$HOME/.orbit-pi\"\n");
-    for file in guard {
-        if !is_plain_file_name(file.name) {
-            bail!("guard file name `{}` is not a plain name", file.name);
-        }
-        if file.contents.lines().any(|line| line == delimiter) {
+    write_files(&mut script, "$G", launch.guard)?;
+    let mut extension_args = String::new();
+    for extension in launch.extensions {
+        if !is_plain_file_name(extension.dir) || extension.dir == "remote-guard" {
             bail!(
-                "guard file `{}` collides with the heredoc delimiter",
-                file.name
+                "extension directory `{}` is not a plain name",
+                extension.dir
             );
         }
-        script.push_str(&format!(
-            "cat > \"$G/{name}\" <<'{delimiter}'\n{contents}\n{delimiter}\n",
-            name = file.name,
-            contents = file.contents.trim_end_matches('\n'),
-        ));
+        if !extension.files.iter().any(|file| file.name == "index.js") {
+            bail!("extension `{}` has no index.js", extension.dir);
+        }
+        let dir = format!("$HOME/.orbit-pi/{}", extension.dir);
+        script.push_str(&format!("mkdir -p \"{dir}\"\n"));
+        write_files(&mut script, &dir, extension.files)?;
+        extension_args.push_str(&format!(" --extension \"{dir}/index.js\""));
+    }
+    let mut env = String::new();
+    for (name, value) in launch.env {
+        if !is_env_name(name) {
+            bail!("environment variable `{name}` is not a plain name");
+        }
+        env.push_str(&format!(" {name}={}", shell_quote(value)));
     }
     // Orbit owns `~/.orbit-pi` on the host. The guard reads this file fresh on
     // every tool call; pinning it keeps a remote session supervised no matter
@@ -361,10 +395,41 @@ pub fn launch_script(target: &RemoteTarget, guard: &[RemoteFile<'_>]) -> Result<
         "[ -f \"$G/index.js\" ] || {{ echo 'orbit: access guard missing on host; refusing to start pi' >&2; exit {GUARD_MISSING_EXIT}; }}\n"
     ));
     script.push_str(&locate_pi());
-    script.push_str(
-        "exec env PI_SKIP_VERSION_CHECK=1 \"$PI\" --mode rpc --approve --extension \"$G/index.js\"\n",
-    );
+    script.push_str(&format!(
+        "exec env PI_SKIP_VERSION_CHECK=1{env} \"$PI\" --mode rpc --approve --extension \"$G/index.js\"{extension_args}\n",
+    ));
     Ok(script)
+}
+
+/// Append one quoted heredoc per file, writing it into the shell directory
+/// expression `dir` (already quoted where it expands).
+fn write_files(script: &mut String, dir: &str, files: &[RemoteFile<'_>]) -> Result<()> {
+    let delimiter = "ORBIT_GUARD_EOF";
+    for file in files {
+        if !is_plain_file_name(file.name) {
+            bail!("guard file name `{}` is not a plain name", file.name);
+        }
+        if file.contents.lines().any(|line| line == delimiter) {
+            bail!(
+                "guard file `{}` collides with the heredoc delimiter",
+                file.name
+            );
+        }
+        script.push_str(&format!(
+            "cat > \"{dir}/{name}\" <<'{delimiter}'\n{contents}\n{delimiter}\n",
+            name = file.name,
+            contents = file.contents.trim_end_matches('\n'),
+        ));
+    }
+    Ok(())
+}
+
+fn is_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// A read-only check that a host can run a remote session: ssh connects, the
@@ -571,6 +636,212 @@ exec node -e {js} "$agent/auth.json" {provider}
     ))
 }
 
+/// The JavaScript [`set_workflow_mode_script`] runs with the host's Node:
+/// merge `{<session id>: <mode>}` into `~/.orbit-pi/workflow.json`, the map
+/// the workflow extension reads on every hook, through a temp file and a
+/// rename. A file it cannot parse is replaced: Orbit owns it, and every
+/// session's mode is also recorded in its own session file.
+/// No single quotes: it travels inside a single-quoted shell word.
+const SET_WORKFLOW_JS: &str = r#"const fs = require("fs");
+const [file, id, mode] = process.argv.slice(1);
+let root = {};
+try {
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) root = parsed;
+} catch (error) {}
+root[id] = mode;
+const temp = file + ".orbit-" + process.pid;
+fs.writeFileSync(temp, JSON.stringify(root) + "\n");
+fs.renameSync(temp, file);
+console.log("orbit: saved");
+"#;
+
+/// What [`set_workflow_mode_script`] prints before anything else.
+pub const WORKFLOW_STARTED: &str = "orbit-workflow: started";
+
+/// Record `mode` (a workflow wire id: `plan`, `build`, `ask`) for the pi
+/// session `session_id` in the host's `~/.orbit-pi/workflow.json`, so the
+/// workflow extension a remote session loads applies it from its next hook.
+/// Runs with the Node that runs the host's pi.
+pub fn set_workflow_mode_script(session_id: &str, mode: &str) -> Result<String> {
+    let plain = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !plain(session_id) {
+        bail!("session id `{session_id}` is not a plain id");
+    }
+    if !plain(mode) {
+        bail!("workflow mode `{mode}` is not a plain id");
+    }
+    Ok(format!(
+        r#"set -eu
+printf '%s\n' '{WORKFLOW_STARTED}'
+{node}mkdir -p "$HOME/.orbit-pi"
+exec node -e {js} "$HOME/.orbit-pi/workflow.json" {id} {mode}
+"#,
+        node = node_on_path(),
+        js = shell_quote(SET_WORKFLOW_JS),
+        id = shell_quote(session_id),
+        mode = shell_quote(mode),
+    ))
+}
+
+/// Put the Node that runs the host's pi on `PATH`: pi's own directory (an
+/// npm or nvm install keeps `node` beside it), then the Node.js Orbit's
+/// installer unpacks. Exits 69 when there is none.
+fn node_on_path() -> String {
+    format!(
+        r#"{locate}node_bin="${{XDG_DATA_HOME:-$HOME/.local/share}}/pi-node/current/bin"
+if [ -x "$node_bin/node" ]; then PATH="$node_bin:$PATH"; export PATH; fi
+command -v node >/dev/null 2>&1 || {{ echo 'orbit: Node.js is not available on this server' >&2; exit 69; }}
+"#,
+        locate = locate_pi()
+    )
+}
+
+/// What [`clone_script`] prints first; every later line starts with
+/// [`CLONE_PREFIX`].
+pub const CLONE_STARTED: &str = "orbit-clone: started";
+/// The prefix of every [`clone_script`] result line: `done <path>`,
+/// `existing <path>`, `failed <kind>` (`git-missing`, `not-empty`, `parent`,
+/// `hostkey`, `publickey`, `login`, `not-found`, `other`) and `detail <line>`.
+pub const CLONE_PREFIX: &str = "orbit-clone: ";
+
+/// Whether `dest` names a folder the clone may create: `~/…` or absolute,
+/// one line, and no `..` segment.
+pub fn is_clone_destination(dest: &str) -> bool {
+    let rest = match dest.strip_prefix("~/") {
+        Some(rest) => rest,
+        None if dest.starts_with('/') => dest,
+        None => return false,
+    };
+    !rest.trim_matches('/').is_empty()
+        && !dest.chars().any(|c| c == '\n' || c == '\r' || c == '\0')
+        && !dest.split('/').any(|segment| segment == "..")
+}
+
+/// Clone `url` into `dest` on the host with the host's own `git` and its own
+/// credentials. Git's errors stay on **stdout** as `detail` lines and the
+/// script exits 0 for them: the ssh runner reads stderr for the *server's*
+/// login problems, and a clone's "Permission denied (publickey)" is about the
+/// git host, not this one. A checkout of the same `url` already at `dest` is
+/// reused, so a retry after a failed file copy does not clone twice.
+pub fn clone_script(url: &str, dest: &str) -> Result<String> {
+    let url = url.trim();
+    if url.is_empty()
+        || url.starts_with('-')
+        || url.len() > 2048
+        || url.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        bail!("`{url}` is not a repository URL");
+    }
+    if !is_clone_destination(dest) {
+        bail!("`{dest}` is not a folder under ~ or an absolute path");
+    }
+    let dest = match dest.strip_prefix("~/") {
+        Some(rest) => format!("\"$HOME\"/{}", shell_quote(rest.trim_end_matches('/'))),
+        None => shell_quote(dest.trim_end_matches('/')),
+    };
+    Ok(format!(
+        r#"set -u
+printf '%s\n' '{CLONE_STARTED}'
+url={url}
+dest={dest}
+say() {{ printf '{CLONE_PREFIX}%s\n' "$1"; }}
+fail() {{ say "failed $1"; exit 0; }}
+command -v git >/dev/null 2>&1 || fail git-missing
+if [ -d "$dest/.git" ] && [ "$(git -C "$dest" remote get-url origin 2>/dev/null)" = "$url" ]; then
+  cd "$dest" && say "existing $(pwd -P)"
+  exit 0
+fi
+if [ -e "$dest" ] && [ -n "$(ls -A "$dest" 2>/dev/null)" ]; then fail not-empty; fi
+mkdir -p "$(dirname "$dest")" 2>/dev/null || fail parent
+if err=$(GIT_TERMINAL_PROMPT=0 git clone --quiet -- "$url" "$dest" 2>&1 </dev/null); then
+  cd "$dest" && say "done $(pwd -P)"
+  exit 0
+fi
+case "$err" in
+  *"Host key verification failed"*) kind=hostkey ;;
+  *"Permission denied (publickey"*) kind=publickey ;;
+  *"could not read Username"*|*"could not read Password"*|*"terminal prompts disabled"*|*"Authentication failed"*) kind=login ;;
+  *"not found"*|*"does not exist"*) kind=not-found ;;
+  *) kind=other ;;
+esac
+printf '%s\n' "$err" | tail -n 3 | while IFS= read -r line; do say "detail $line"; done
+fail "$kind"
+"#,
+        url = shell_quote(url),
+    ))
+}
+
+/// The JavaScript [`copy_files_script`] runs with the host's Node: read a
+/// JSON list of `{path, data}` (base64) from stdin and write each file under
+/// the project, 0600, through a temp file and a rename. A path that is
+/// absolute, has a `..` segment, or reaches outside the project through a
+/// symlinked folder is refused; the rename replaces a symlink at the file's
+/// own name instead of writing through it.
+/// No single quotes: it travels inside a single-quoted shell word.
+const COPY_FILES_JS: &str = r#"const fs = require("fs");
+const path = require("path");
+const root = fs.realpathSync(process.argv[1]);
+const inside = (dir) => dir === root || dir.startsWith(root + path.sep);
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  let files;
+  try { files = JSON.parse(input); } catch (error) {
+    console.log("orbit-copy: failed \tthe file list did not arrive intact");
+    return;
+  }
+  for (const file of files) {
+    const rel = String((file && file.path) || "");
+    try {
+      if (!rel || path.isAbsolute(rel) || rel.includes("\0") || rel.split(/[\\/]/).includes("..")) {
+        throw new Error("not a path inside the project");
+      }
+      const dir = path.dirname(path.join(root, rel));
+      let existing = dir;
+      while (!fs.existsSync(existing)) existing = path.dirname(existing);
+      if (!inside(fs.realpathSync(existing))) throw new Error("its folder leads outside the project");
+      fs.mkdirSync(dir, { recursive: true });
+      const parent = fs.realpathSync(dir);
+      if (!inside(parent)) throw new Error("its folder leads outside the project");
+      const name = path.basename(rel);
+      const temp = path.join(parent, ".orbit-copy-" + process.pid + "-" + name);
+      fs.writeFileSync(temp, Buffer.from(String(file.data || ""), "base64"), { mode: 0o600 });
+      fs.renameSync(temp, path.join(parent, name));
+      console.log("orbit-copy: wrote " + rel);
+    } catch (error) {
+      console.log("orbit-copy: failed " + rel + "\t" + ((error && error.message) || String(error)));
+    }
+  }
+});
+"#;
+
+/// What [`copy_files_script`] prints first.
+pub const COPY_STARTED: &str = "orbit-copy: started";
+
+/// Write files sent on **stdin** (see [`COPY_FILES_JS`]) into the project at
+/// `dest`, an absolute path on the host (what [`clone_script`] reported).
+/// The contents never appear on a command line. Prints `orbit-copy: wrote
+/// <path>` or `orbit-copy: failed <path>\t<reason>` per file.
+pub fn copy_files_script(dest: &str) -> Result<String> {
+    if !dest.starts_with('/') || dest.chars().any(|c| c == '\n' || c == '\r' || c == '\0') {
+        bail!("`{dest}` is not an absolute path");
+    }
+    Ok(format!(
+        "set -eu\nprintf '%s\\n' '{COPY_STARTED}'\n{node}exec node -e {js} {dest}\n",
+        node = node_on_path(),
+        js = shell_quote(COPY_FILES_JS),
+        dest = shell_quote(dest),
+    ))
+}
+
 fn is_plain_file_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -692,10 +963,13 @@ mod tests {
     fn launch_script_refuses_to_start_without_guard_and_pins_mode() {
         let script = launch_script(
             &target("/srv/app"),
-            &[RemoteFile {
-                name: "index.js",
-                contents: "export default 1;",
-            }],
+            &RemoteLaunch {
+                guard: &[RemoteFile {
+                    name: "index.js",
+                    contents: "export default 1;",
+                }],
+                ..RemoteLaunch::default()
+            },
         )
         .expect("script");
         let guard_check = script.find("access guard missing").expect("guard check");
@@ -1035,21 +1309,440 @@ mod tests {
 
     #[test]
     fn launch_script_rejects_unsafe_guard_files() {
-        assert!(launch_script(
-            &target("/a"),
-            &[RemoteFile {
-                name: "../x.js",
-                contents: ""
-            }]
-        )
+        let guard = |file: RemoteFile<'static>| {
+            launch_script(
+                &target("/a"),
+                &RemoteLaunch {
+                    guard: &[file],
+                    ..RemoteLaunch::default()
+                },
+            )
+        };
+        assert!(guard(RemoteFile {
+            name: "../x.js",
+            contents: ""
+        })
         .is_err());
-        assert!(launch_script(
-            &target("/a"),
-            &[RemoteFile {
-                name: "x.js",
-                contents: "a\nORBIT_GUARD_EOF\nb"
-            }]
-        )
+        assert!(guard(RemoteFile {
+            name: "x.js",
+            contents: "a\nORBIT_GUARD_EOF\nb"
+        })
         .is_err());
+    }
+
+    const ENTRY: [RemoteFile<'static>; 1] = [RemoteFile {
+        name: "index.js",
+        contents: "export default 1;",
+    }];
+
+    #[test]
+    fn launch_script_installs_and_loads_extra_extensions_with_env() {
+        let script = launch_script(
+            &target("/srv/app"),
+            &RemoteLaunch {
+                guard: &ENTRY,
+                extensions: &[RemoteExtension {
+                    dir: "remote-workflow",
+                    files: &ENTRY,
+                }],
+                env: &[("ORBIT_WORKFLOW_MODE", "plan's")],
+            },
+        )
+        .expect("script");
+        assert!(script.contains("mkdir -p \"$HOME/.orbit-pi/remote-workflow\""));
+        assert!(script
+            .contains("cat > \"$HOME/.orbit-pi/remote-workflow/index.js\" <<'ORBIT_GUARD_EOF'"));
+        let exec = script.lines().last().expect("exec line");
+        assert!(exec.starts_with(
+            "exec env PI_SKIP_VERSION_CHECK=1 ORBIT_WORKFLOW_MODE='plan'\\''s' \"$PI\""
+        ));
+        assert!(exec.ends_with(
+            "--extension \"$G/index.js\" --extension \"$HOME/.orbit-pi/remote-workflow/index.js\""
+        ));
+    }
+
+    #[test]
+    fn launch_script_rejects_unsafe_extensions_and_env() {
+        let launch = |extensions: &[RemoteExtension<'_>], env: &[(&str, &str)]| {
+            launch_script(
+                &target("/a"),
+                &RemoteLaunch {
+                    guard: &ENTRY,
+                    extensions,
+                    env,
+                },
+            )
+        };
+        let ext = |dir| RemoteExtension { dir, files: &ENTRY };
+        assert!(launch(&[ext("../x")], &[]).is_err());
+        assert!(
+            launch(&[ext("remote-guard")], &[]).is_err(),
+            "never over the guard"
+        );
+        assert!(
+            launch(
+                &[RemoteExtension {
+                    dir: "remote-x",
+                    files: &[RemoteFile {
+                        name: "other.js",
+                        contents: ""
+                    }]
+                }],
+                &[]
+            )
+            .is_err(),
+            "an entry point is required"
+        );
+        assert!(launch(&[], &[("PATH=x; rm", "v")]).is_err());
+        assert!(launch(&[], &[("lower", "v")]).is_err());
+        assert!(launch(&[ext("remote-x")], &[("ORBIT_X", "$(rm -rf ~)")]).is_ok());
+    }
+
+    #[test]
+    fn the_workflow_script_takes_plain_ids_only() {
+        let script = set_workflow_mode_script("0198-abc_d.e", "plan").expect("plain");
+        assert!(script.contains("'0198-abc_d.e' 'plan'"));
+        assert!(script.contains("exec node -e "));
+        assert!(
+            !SET_WORKFLOW_JS.contains('\''),
+            "the JS travels in single quotes"
+        );
+        assert!(set_workflow_mode_script("a b", "plan").is_err());
+        assert!(set_workflow_mode_script("id", "plan; rm").is_err());
+        assert!(set_workflow_mode_script("", "plan").is_err());
+    }
+
+    /// Run the workflow script against a sandboxed home with this machine's
+    /// Node and a fake `pi`: it merges into the map and replaces a broken one.
+    #[cfg(unix)]
+    #[test]
+    fn the_workflow_script_merges_into_workflow_json() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return; // no Node on this machine: covered by the shape test above
+        }
+        let home = std::env::temp_dir().join(format!("orbit-workflow-{}", std::process::id()));
+        let bin = home.join(".pi/agent/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("pi"), "#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("pi"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let store = home.join(".orbit-pi/workflow.json");
+        let run = |id: &str, mode: &str| {
+            // Keep this machine's node reachable, but not a system pi.
+            let node = std::process::Command::new("sh")
+                .args(["-c", "command -v node"])
+                .output()
+                .unwrap();
+            let node_dir = std::path::Path::new(String::from_utf8_lossy(&node.stdout).trim())
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(set_workflow_mode_script(id, mode).unwrap())
+                .env("HOME", &home)
+                .env("PATH", format!("{}:/usr/bin:/bin", node_dir.display()))
+                .output()
+                .unwrap()
+        };
+        let read = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap()
+        };
+        let first = run("s1", "plan");
+        assert!(
+            first.status.success(),
+            "{}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert!(String::from_utf8_lossy(&first.stdout).starts_with(WORKFLOW_STARTED));
+        assert!(run("s2", "ask").status.success());
+        assert_eq!(read(), serde_json::json!({"s1": "plan", "s2": "ask"}));
+        std::fs::write(&store, "not json").unwrap();
+        assert!(run("s3", "build").status.success());
+        assert_eq!(read(), serde_json::json!({"s3": "build"}));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A sandbox home with a stub `pi` where the installer puts it, and a
+    /// `PATH` that reaches this machine's `node` and `git` but not a system
+    /// `pi`. `None` when this machine has no Node.
+    #[cfg(unix)]
+    fn script_sandbox(tag: &str) -> Option<(std::path::PathBuf, String)> {
+        use std::os::unix::fs::PermissionsExt;
+        let node = std::process::Command::new("sh")
+            .args(["-c", "command -v node"])
+            .output()
+            .ok()?;
+        let node = String::from_utf8_lossy(&node.stdout).trim().to_string();
+        if node.is_empty() {
+            return None;
+        }
+        let home = std::env::temp_dir().join(format!(
+            "orbit-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bin = home.join(".pi/agent/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("pi"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join("pi"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let node_dir = std::path::Path::new(&node)
+            .parent()
+            .unwrap()
+            .display()
+            .to_string();
+        Some((home, format!("{node_dir}:/usr/bin:/bin")))
+    }
+
+    #[cfg(unix)]
+    fn run_in(
+        home: &std::path::Path,
+        path: &str,
+        script: &str,
+        input: Option<&str>,
+    ) -> std::process::Output {
+        use std::io::Write;
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .env("HOME", home)
+            .env("PATH", path)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        if let Some(input) = input {
+            stdin.write_all(input.as_bytes()).unwrap();
+        }
+        drop(stdin);
+        child.wait_with_output().unwrap()
+    }
+
+    #[test]
+    fn clone_destinations_are_home_relative_or_absolute() {
+        assert!(is_clone_destination("~/code/app"));
+        assert!(is_clone_destination("/srv/app"));
+        assert!(!is_clone_destination("~/"));
+        assert!(!is_clone_destination("/"));
+        assert!(!is_clone_destination("code/app"));
+        assert!(!is_clone_destination("~/a/../../etc"));
+        assert!(!is_clone_destination("~/a\nb"));
+        assert!(clone_script("--upload-pack=x", "~/a").is_err());
+        assert!(clone_script("https://h/r.git x", "~/a").is_err());
+        assert!(clone_script("https://h/r.git", "a").is_err());
+        let script = clone_script("git@github.com:o/r.git", "~/code/it's").unwrap();
+        assert!(
+            script.contains("dest=\"$HOME\"/'code/it'\\''s'"),
+            "{script}"
+        );
+        assert!(script.contains("git clone --quiet -- \"$url\" \"$dest\""));
+        assert!(
+            !COPY_FILES_JS.contains('\''),
+            "the JS travels in single quotes"
+        );
+        assert!(copy_files_script("relative").is_err());
+    }
+
+    /// Clone a real local repository into a sandbox home: done, then reused,
+    /// then refused over a different folder's contents; a bad URL reports
+    /// git's own words as `detail` lines and still exits 0.
+    #[cfg(unix)]
+    #[test]
+    fn the_clone_script_clones_reuses_and_explains() {
+        let Some((home, path)) = script_sandbox("clone") else {
+            return;
+        };
+        let git = |args: &[&str], dir: &std::path::Path| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("HOME", &home)
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?}");
+        };
+        let origin = home.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&["init", "-q"], &origin);
+        std::fs::write(origin.join("README"), "hi\n").unwrap();
+        git(&["add", "README"], &origin);
+        git(
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "init",
+            ],
+            &origin,
+        );
+        let url = origin.display().to_string();
+
+        let lines = |out: &std::process::Output| String::from_utf8_lossy(&out.stdout).into_owned();
+        let first = run_in(
+            &home,
+            &path,
+            &clone_script(&url, "~/code/app").unwrap(),
+            None,
+        );
+        assert!(first.status.success());
+        let real = std::fs::canonicalize(home.join("code/app")).unwrap();
+        assert!(
+            lines(&first).contains(&format!("{CLONE_PREFIX}done {}", real.display())),
+            "{}{}",
+            lines(&first),
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert!(home.join("code/app/README").exists());
+
+        let again = run_in(
+            &home,
+            &path,
+            &clone_script(&url, "~/code/app").unwrap(),
+            None,
+        );
+        assert!(lines(&again).contains(&format!("{CLONE_PREFIX}existing {}", real.display())));
+
+        std::fs::create_dir_all(home.join("busy")).unwrap();
+        std::fs::write(home.join("busy/file"), "x").unwrap();
+        let busy = run_in(&home, &path, &clone_script(&url, "~/busy").unwrap(), None);
+        assert!(lines(&busy).contains(&format!("{CLONE_PREFIX}failed not-empty")));
+
+        let missing = home.join("no-such-repo").display().to_string();
+        let bad = run_in(
+            &home,
+            &path,
+            &clone_script(&missing, "~/other").unwrap(),
+            None,
+        );
+        assert!(
+            bad.status.success(),
+            "git's failure is reported, not exited with"
+        );
+        assert!(lines(&bad).contains(&format!("{CLONE_PREFIX}failed ")));
+        assert!(lines(&bad).contains(&format!("{CLONE_PREFIX}detail ")));
+        assert!(
+            bad.stderr.is_empty(),
+            "nothing for the ssh runner to misread"
+        );
+        assert!(
+            !home.join("other").exists(),
+            "a failed clone leaves no folder"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Copy files into a project with this machine's Node: nested folders are
+    /// created, files are 0600, and paths that escape — `..`, absolute, or a
+    /// folder symlinked outside — are refused one by one.
+    #[cfg(unix)]
+    #[test]
+    fn the_copy_script_writes_inside_the_project_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some((home, path)) = script_sandbox("copy") else {
+            return;
+        };
+        let project = home.join("project");
+        let outside = home.join("outside");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("linked")).unwrap();
+        std::os::unix::fs::symlink(outside.join("target"), project.join(".envrc")).unwrap();
+        let b64 = |text: &str| {
+            use std::fmt::Write;
+            // Tiny base64 encoder: the crate has no base64 dependency.
+            const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let bytes = text.as_bytes();
+            let mut out = String::new();
+            for chunk in bytes.chunks(3) {
+                let n = (chunk[0] as u32) << 16
+                    | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+                    | *chunk.get(2).unwrap_or(&0) as u32;
+                for i in 0..4 {
+                    if i <= chunk.len() {
+                        let _ = out.write_char(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+                    } else {
+                        out.push('=');
+                    }
+                }
+            }
+            out
+        };
+        let input = serde_json::json!([
+            {"path": ".env", "data": b64("KEY=1\n")},
+            {"path": "apps/web/.env.local", "data": b64("WEB=2\n")},
+            {"path": ".envrc", "data": b64("use nix\n")},
+            {"path": "../escape", "data": b64("x")},
+            {"path": "/etc/passwd", "data": b64("x")},
+            {"path": "linked/.env", "data": b64("x")},
+        ])
+        .to_string();
+        let real = std::fs::canonicalize(&project).unwrap();
+        let out = run_in(
+            &home,
+            &path,
+            &copy_files_script(&real.display().to_string()).unwrap(),
+            Some(&input),
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.starts_with(COPY_STARTED));
+        for wrote in [".env", "apps/web/.env.local", ".envrc"] {
+            assert!(
+                stdout.contains(&format!("orbit-copy: wrote {wrote}\n")),
+                "{stdout}"
+            );
+        }
+        for refused in ["../escape", "/etc/passwd", "linked/.env"] {
+            assert!(
+                stdout.contains(&format!("orbit-copy: failed {refused}\t")),
+                "{stdout}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(project.join(".env")).unwrap(),
+            "KEY=1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("apps/web/.env.local")).unwrap(),
+            "WEB=2\n"
+        );
+        let mode = std::fs::metadata(project.join(".env"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(
+            !std::fs::symlink_metadata(project.join(".envrc"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "a symlink at the file's name is replaced, not written through"
+        );
+        assert!(!outside.join("target").exists());
+        assert!(!outside.join(".env").exists());
+        assert!(!home.join("escape").exists());
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

@@ -236,6 +236,12 @@ impl OrbitApp {
         let text = Self::fold_pasted_texts(text.trim(), &self.pasted_texts);
         // Files are folded as `@path` mentions, so a message may be nothing
         // but attachments.
+        // A tray filled before the session went remote (a parked draft) is
+        // held back the same way `push_file` refuses new files.
+        if self.refuse_files_for_remote(self.files.len()) {
+            cx.notify();
+            return;
+        }
         let files = std::mem::take(&mut self.files);
         let text = Self::fold_attached_files(&text, &files, self.current_workspace.as_deref());
         if text.trim().is_empty() {

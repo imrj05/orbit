@@ -311,17 +311,18 @@ impl PiClient {
     }
 
     /// Spawn a remote pi over SSH (see [`crate::remote`]). `ssh_bin` is the ssh
-    /// executable; `target` and `guard` are checked and rendered into the
-    /// launch script, which installs the guard before it execs pi. With a
+    /// executable; `target` and `launch` are checked and rendered into the
+    /// launch script, which installs the guard (and any other extensions)
+    /// before it execs pi. With a
     /// `password`, ssh may answer one password prompt through the askpass
     /// helper; without one it never asks (keys and the agent only).
     pub fn spawn_remote_with_bin(
         ssh_bin: &str,
         target: &crate::remote::RemoteTarget,
-        guard: &[crate::remote::RemoteFile<'_>],
+        launch: &crate::remote::RemoteLaunch<'_>,
         password: Option<crate::remote::SshPassword<'_>>,
     ) -> Result<Self> {
-        let script = crate::remote::launch_script(target, guard)?;
+        let script = crate::remote::launch_script(target, launch)?;
         let args = crate::remote::ssh_args(target, &script, password.is_some());
         let mut command = std::process::Command::new(ssh_bin);
         command

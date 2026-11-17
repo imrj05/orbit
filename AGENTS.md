@@ -115,8 +115,12 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         modal with `~/.ssh/config` alias suggestions, and the background Test connection
   src/app/remote_providers_ui.rs  Providers & models per machine: the Machine selector, a host's
                         signed-in providers from its own `pi --list-models`, Sign in / Refresh on the host
+  src/app/server_clone_ui.rs  "Add to a server": the dialog (server, folder, SSH/HTTPS, ignored files
+                        to copy) and the connect → clone → copy → save host → start session flow
   src/app/ssh_auth_ui.rs  SSH password logins: keys first, then the masked password dialog and the
                         askpass retry; passwords in memory only, keyed by ssh account
+  src/server_clone.rs   the local half of "Add to a server": origin (credentials stripped) and
+                        ignored files via git, SSH↔HTTPS URLs, the copy payload, host-output parsing
   src/remote_hosts.rs   `~/.orbit-pi/remote-hosts.json`: lenient host list, validated ssh targets,
                         surgical upsert/remove, `~/.ssh/config` alias discovery, the read-only probe
   docs/remote-sessions.md  agent-only SSH sessions: launch script, safety, what is off while remote
@@ -186,7 +190,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
 crates/orbit-rpc/       pi CLI process + JSONL protocol
   src/client.rs         spawn, writer/reader/stderr threads, kill-on-drop
   src/types.rs          CommandBody / Event (permissive serde) + auth.* / quota.* wire types
-  src/remote.rs         ssh target validation, ssh argv, and the guarded remote launch script
+  src/remote.rs         ssh target validation, ssh argv, the guarded remote launch script (guard +
+                        workflow extension), and the short host scripts (probe, install, key, mode, clone, copy)
   tests/remote_fake_ssh.rs  fake-ssh round trip: guard installed, mode pinned, RPC over ssh stdio
   docs/auth-rpc.md      provider-auth RPC server contract (secrets never cross it)
   docs/quota-rpc.md     provider-quota RPC server contract (normalized, non-secret)

@@ -444,7 +444,10 @@ fn many_open_files_keep_the_explorer_inside_the_window(cx: &mut gpui::TestAppCon
         .debug_bounds("project-panel")
         .expect("the Explorer is on screen");
     let width = cx.update(|_, cx| app.read(cx).project_panel.read(cx).width());
-    assert_eq!(panel.size.width, width, "the dock keeps its width: {panel:?}");
+    assert_eq!(
+        panel.size.width, width,
+        "the dock keeps its width: {panel:?}"
+    );
     assert!(
         panel.origin.x + panel.size.width <= viewport.width + px(0.5),
         "the dock ends at the window's right edge, not past it: {panel:?} in {viewport:?}"

@@ -1640,6 +1640,9 @@ impl Render for OrbitApp {
             .children(self.worktree_dialog_layer(theme, cx.entity(), cx))
             // ── SSH password — asked when a remote host refuses every key;
             // above Settings (the Remote hosts form) and the New Task page.
+            // ── Add to a server — the clone dialog; under the password prompt
+            // its connection check may raise.
+            .children(self.server_clone_layer(theme, cx.entity(), cx))
             .children(self.remote_password_layer(theme, cx.entity(), cx))
             // ── update modal — the search, changelog, and install decision,
             // opened by the download control and Check for Updates. Below the
@@ -2079,8 +2082,20 @@ impl OrbitApp {
         // The rule reads the mode only, never the open menu: a chip that grew a
         // label on click would shove the workflow chip sideways under the
         // pointer, and the open picker already names the active mode.
-        let label = self.access_mode.label();
-        let terse = self.access_mode == AccessMode::default();
+        // A remote host runs Supervised whatever this Mac's mode is (its
+        // launch script pins it), so the chip shows that and says why.
+        let remote = self.remote_host_name().map(str::to_owned);
+        let mode = if remote.is_some() {
+            AccessMode::Supervised
+        } else {
+            self.access_mode
+        };
+        let label = mode.label();
+        let terse = mode == AccessMode::default();
+        let tip = match &remote {
+            Some(host) => tr!("remote.access_chip_tip", host = host.clone()),
+            None => label.clone(),
+        };
         div()
             .flex()
             .flex_col()
@@ -2095,13 +2110,13 @@ impl OrbitApp {
                     })
                     // The label already names the mode when it is visible; the
                     // tooltip is only the terse (icon-only) chip's label.
-                    .when(terse, |chip| chip.tip(label.clone()))
+                    .when(terse, |chip| chip.tip(tip))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(Self::on_access_trigger_click),
                     )
                     .child(icon(
-                        self.access_mode.icon(),
+                        mode.icon(),
                         ButtonSize::Default.icon_size().px(&theme),
                         theme.text_muted,
                     ))
@@ -3732,6 +3747,12 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap_4()
+            // Hero wallpaper can be bright: protect the status ink locally
+            // rather than dimming the whole image.
+            .when(
+                folder_row_owns_location && theme.wallpaper.active && !theme.wallpaper.full_window,
+                |row| row.bg(theme.background),
+            )
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
             .children(remote_chip)

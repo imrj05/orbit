@@ -92,6 +92,101 @@ fn file_mentions_are_off_for_a_remote_session(cx: &mut gpui::TestAppContext) {
     });
 }
 
+fn attached(name: &str) -> AttachedFile {
+    AttachedFile {
+        path: PathBuf::from("/Users/me/project").join(name),
+        name: name.into(),
+        size: 12,
+    }
+}
+
+/// A file rides as a local path the remote agent cannot open: it is refused
+/// on the way into the tray, and a tray filled before the session went
+/// remote is held back at send instead of sending dead mentions.
+#[gpui::test]
+fn file_attachments_are_refused_for_a_remote_session(cx: &mut gpui::TestAppContext) {
+    let refused = |app: &OrbitApp| {
+        let expected = tr!("remote.files_unavailable", host = "vps");
+        app.toasts
+            .items()
+            .iter()
+            .any(|toast| toast.title == expected)
+    };
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.push_file(attached("local.txt"), cx);
+            assert_eq!(app.files.len(), 1, "a local session takes files");
+            assert!(!refused(app));
+
+            app.remote = Some(host("vps"));
+            app.push_file(attached("notes.md"), cx);
+            assert_eq!(
+                app.files.len(),
+                1,
+                "the remote session refused the new file"
+            );
+            assert!(refused(app), "and said why");
+        });
+    });
+
+    // A tray filled before the session went remote is held at send.
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.files.push(attached("local.txt"));
+            app.remote = Some(host("vps"));
+            app.submit_as("read this".into(), SendMode::FollowUp, cx);
+            assert_eq!(app.files.len(), 1, "the file stays in the tray");
+            assert!(refused(app), "the send was refused with the reason");
+        });
+    });
+}
+
+/// The host is pinned to Supervised whatever this Mac's mode is, so the
+/// menu that would change this Mac's mode stays shut while remote.
+#[gpui::test]
+fn the_access_menu_stays_shut_for_a_remote_session(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.remote = Some(host("vps"));
+            app.toggle_access_menu(window, cx);
+            assert!(!app.access_menu_open, "remote: no mode menu");
+
+            app.remote = None;
+            app.toggle_access_menu(window, cx);
+            assert!(app.access_menu_open, "local: the menu opens");
+        });
+    });
+}
+
+/// A remote pi starts in the New Task choice, keeps the live mode when an
+/// existing session respawns, and otherwise starts in Build.
+#[gpui::test]
+fn a_remote_launch_carries_the_right_workflow_mode(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            app.remote = Some(host("vps"));
+            app.session_id = None;
+            app.workflow_pending = None;
+            app.workflow_mode = WorkflowMode::Plan;
+            assert_eq!(
+                app.remote_launch_workflow(),
+                WorkflowMode::Build,
+                "a new session never inherits the last session's mode"
+            );
+            app.workflow_pending = Some(WorkflowMode::Ask);
+            assert_eq!(app.remote_launch_workflow(), WorkflowMode::Ask);
+            app.workflow_pending = None;
+            app.session_id = Some("remote-1".into());
+            assert_eq!(app.remote_launch_workflow(), WorkflowMode::Plan);
+        });
+    });
+}
+
 #[test]
 fn remote_rows_open_their_own_group_and_set_locations_in_mono() {
     let with_hosts = OrbitApp::remote_actions(&[host("a"), host("b")]);

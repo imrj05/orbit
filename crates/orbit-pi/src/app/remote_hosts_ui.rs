@@ -1254,6 +1254,7 @@ fn remote_host_menu(name: &str, theme: Theme, this: Entity<OrbitApp>) -> AnyElem
         crate::motion::hover(row, id, &theme, crate::motion::Hover::wash(&theme))
     };
     let (test, edit, remove) = (name.to_string(), name.to_string(), name.to_string());
+    let clone_to = name.to_string();
     let body = div()
         .py(crate::theme::tokens::picker::list_padding_y(&theme))
         .flex()
@@ -1271,6 +1272,15 @@ fn remote_host_menu(name: &str, theme: Theme, this: Entity<OrbitApp>) -> AnyElem
             tr!("remote_hosts.edit"),
             this.clone(),
             Box::new(move |app, window, cx| app.remote_host_edit(&edit, window, cx)),
+        ))
+        .child(entry(
+            format!("remote-host-menu-clone-{name}"),
+            "icons/cloud-upload.svg",
+            tr!("server_clone.menu_item"),
+            this.clone(),
+            Box::new(move |app, window, cx| {
+                app.open_server_clone(Some(clone_to.clone()), window, cx)
+            }),
         ))
         .child(context_menu_separator(&theme))
         .child(entry(

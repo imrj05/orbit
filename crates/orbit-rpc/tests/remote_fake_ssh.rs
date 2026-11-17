@@ -12,7 +12,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use orbit_rpc::remote::{RemoteFile, RemoteTarget, SshPassword, ASKPASS_SCRIPT};
+use orbit_rpc::remote::{
+    RemoteExtension, RemoteFile, RemoteLaunch, RemoteTarget, SshPassword, ASKPASS_SCRIPT,
+};
 use orbit_rpc::{CommandBody, Event, PiClient};
 
 /// Runs the remote script the way sshd would hand it to the login shell, but
@@ -48,6 +50,7 @@ exec sh -c "$5"
 const FAKE_PI: &str = r#"#!/bin/sh
 # Records its argv, then answers RPC commands with the command id echoed back.
 printf '%s\n' "$*" > "__HOME__/pi-argv"
+printf '%s\n' "${ORBIT_WORKFLOW_MODE:-<unset>}" > "__HOME__/pi-workflow-env"
 emit() { printf '%s\n' "$1" | sed "s/^{/{\"id\":\"$id\",/"; }
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -119,10 +122,21 @@ fn remote_session_installs_guard_pins_mode_and_speaks_rpc() {
         name: "index.js",
         contents: "export default function activate() {}",
     }];
+    let workflow = [RemoteFile {
+        name: "index.js",
+        contents: "export default function workflow() {}",
+    }];
     let client = PiClient::spawn_remote_with_bin(
         sandbox.ssh().to_str().expect("utf-8"),
         &target,
-        &guard,
+        &RemoteLaunch {
+            guard: &guard,
+            extensions: &[RemoteExtension {
+                dir: "remote-workflow",
+                files: &workflow,
+            }],
+            env: &[("ORBIT_WORKFLOW_MODE", "plan")],
+        },
         None,
     )
     .expect("spawn remote");
@@ -149,6 +163,15 @@ fn remote_session_installs_guard_pins_mode_and_speaks_rpc() {
         "argv: {argv}"
     );
     assert!(argv.contains("remote-guard/index.js"), "argv: {argv}");
+    assert!(
+        argv.ends_with("remote-workflow/index.js\n"),
+        "the extra extension loads after the guard: {argv}"
+    );
+    let workflow = fs::read_to_string(sandbox.home().join(".orbit-pi/remote-workflow/index.js"))
+        .expect("workflow extension installed on host");
+    assert_eq!(workflow.trim_end(), "export default function workflow() {}");
+    let env = fs::read_to_string(sandbox.home().join("pi-workflow-env")).expect("env seen");
+    assert_eq!(env.trim(), "plan");
 }
 
 #[test]
@@ -163,10 +186,13 @@ fn missing_pi_on_host_never_answers_rpc() {
     let client = PiClient::spawn_remote_with_bin(
         sandbox.ssh().to_str().expect("utf-8"),
         &target,
-        &[RemoteFile {
-            name: "index.js",
-            contents: "x",
-        }],
+        &RemoteLaunch {
+            guard: &[RemoteFile {
+                name: "index.js",
+                contents: "x",
+            }],
+            ..RemoteLaunch::default()
+        },
         None,
     )
     .expect("spawn ssh");
@@ -191,10 +217,13 @@ fn a_password_reaches_ssh_only_through_the_askpass_helper() {
     let client = PiClient::spawn_remote_with_bin(
         sandbox.ssh().to_str().expect("utf-8"),
         &target,
-        &[RemoteFile {
-            name: "index.js",
-            contents: "export default function activate() {}",
-        }],
+        &RemoteLaunch {
+            guard: &[RemoteFile {
+                name: "index.js",
+                contents: "export default function activate() {}",
+            }],
+            ..RemoteLaunch::default()
+        },
         Some(SshPassword {
             askpass: &askpass,
             secret: "s3cret 'with quotes'",
@@ -228,10 +257,13 @@ fn no_password_means_batch_mode() {
     let client = PiClient::spawn_remote_with_bin(
         sandbox.ssh().to_str().expect("utf-8"),
         &target,
-        &[RemoteFile {
-            name: "index.js",
-            contents: "x",
-        }],
+        &RemoteLaunch {
+            guard: &[RemoteFile {
+                name: "index.js",
+                contents: "x",
+            }],
+            ..RemoteLaunch::default()
+        },
         None,
     )
     .expect("spawn remote");

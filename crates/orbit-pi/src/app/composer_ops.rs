@@ -1226,6 +1226,13 @@ impl OrbitApp {
             self.close_access_menu(window, cx);
             return;
         }
+        // A remote host is pinned to Supervised by its launch script; the
+        // modes here describe this Mac, so the menu stays shut.
+        if let Some(host) = self.remote_host_name().map(str::to_owned) {
+            self.toast_info(tr!("remote.access_locked", host = host));
+            cx.notify();
+            return;
+        }
         // Mutually exclusive with the other composer popovers.
         self.model_selector = None;
         self.context_popup = ContextPopup::None;
@@ -1434,7 +1441,10 @@ impl OrbitApp {
         self.workflow_mode = mode;
         self.clear_follow_up_suggestions();
         match self.session_id.clone() {
-            Some(id) => crate::workflow::persist_for(&id, mode),
+            Some(id) => {
+                crate::workflow::persist_for(&id, mode);
+                self.sync_remote_workflow(id, mode, cx);
+            }
             None => self.workflow_pending = Some(mode),
         }
         if self.extensions.workflow().is_none() {

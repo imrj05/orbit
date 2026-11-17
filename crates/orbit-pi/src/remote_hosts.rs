@@ -567,6 +567,70 @@ pub fn set_api_key(
     .map(|_| ())
 }
 
+/// Record `mode` for the pi session `session_id` in `host`'s workflow store
+/// (see [`orbit_rpc::remote::set_workflow_mode_script`]). Blocking: call it
+/// off the UI thread.
+pub fn set_workflow_mode(
+    host: &RemoteHost,
+    password: Option<&str>,
+    session_id: &str,
+    mode: &str,
+) -> std::result::Result<(), ProbeFailure> {
+    let other = |err: anyhow::Error| ProbeFailure::Other(format!("{err:#}"));
+    let target = host.target().map_err(other)?;
+    let script = orbit_rpc::remote::set_workflow_mode_script(session_id, mode).map_err(other)?;
+    run_script(
+        &target,
+        &script,
+        password,
+        orbit_rpc::remote::WORKFLOW_STARTED,
+    )
+    .map(|_| ())
+}
+
+/// Clone `url` into `dest` (`~/…` or absolute) on `host` with the host's own
+/// git (see [`orbit_rpc::remote::clone_script`]). Returns the script's stdout
+/// for [`crate::server_clone::parse_clone`]; git's own failures are in it, so
+/// an `Err` is always about reaching the host. Blocking.
+pub fn clone_project(
+    host: &RemoteHost,
+    password: Option<&str>,
+    url: &str,
+    dest: &str,
+) -> std::result::Result<String, ProbeFailure> {
+    let other = |err: anyhow::Error| ProbeFailure::Other(format!("{err:#}"));
+    let target = host.target().map_err(other)?;
+    let script = orbit_rpc::remote::clone_script(url, dest).map_err(other)?;
+    run_script_output(
+        &target,
+        &script,
+        password,
+        orbit_rpc::remote::CLONE_STARTED,
+        None,
+    )
+}
+
+/// Write the files in `payload` (see [`crate::server_clone::copy_payload`])
+/// into `dest` on `host`; the contents travel on ssh's stdin only. Returns the
+/// script's stdout for [`crate::server_clone::parse_copy`]. Blocking.
+pub fn copy_files(
+    host: &RemoteHost,
+    password: Option<&str>,
+    dest: &str,
+    payload: &str,
+) -> std::result::Result<String, ProbeFailure> {
+    let other = |err: anyhow::Error| ProbeFailure::Other(format!("{err:#}"));
+    let target = host.target().map_err(other)?;
+    let script = orbit_rpc::remote::copy_files_script(dest).map_err(other)?;
+    run_script_output(
+        &target,
+        &script,
+        password,
+        orbit_rpc::remote::COPY_STARTED,
+        Some(payload),
+    )
+}
+
 /// The models `host`'s pi can use (see
 /// [`orbit_rpc::remote::list_models_script`]), which is also the list of
 /// providers signed in there. Blocking: call it off the UI thread.

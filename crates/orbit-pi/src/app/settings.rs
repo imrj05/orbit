@@ -74,7 +74,6 @@ const SLIDER_ROW_H: f32 = 24.;
 enum WallpaperSlider {
     ImageOpacity,
     Blur,
-    Dim,
     CardOpacity,
     EffectIntensity,
     EffectScale,
@@ -85,7 +84,6 @@ impl WallpaperSlider {
         match self {
             Self::ImageOpacity => crate::wallpaper::IMAGE_OPACITY_RANGE,
             Self::Blur => crate::wallpaper::BLUR_RANGE,
-            Self::Dim => crate::wallpaper::DIM_RANGE,
             Self::CardOpacity => crate::wallpaper::CARD_OPACITY_RANGE,
             Self::EffectIntensity => crate::wallpaper::EFFECT_INTENSITY_RANGE,
             Self::EffectScale => crate::wallpaper::EFFECT_SCALE_RANGE,
@@ -96,7 +94,6 @@ impl WallpaperSlider {
         match self {
             Self::ImageOpacity => settings.image_opacity,
             Self::Blur => settings.blur,
-            Self::Dim => settings.dim,
             Self::CardOpacity => settings.card_opacity,
             Self::EffectIntensity => settings.effect_intensity,
             Self::EffectScale => settings.effect_scale,
@@ -107,7 +104,6 @@ impl WallpaperSlider {
         match self {
             Self::ImageOpacity => settings.image_opacity = value,
             Self::Blur => settings.blur = value,
-            Self::Dim => settings.dim = value,
             Self::CardOpacity => settings.card_opacity = value,
             Self::EffectIntensity => settings.effect_intensity = value,
             Self::EffectScale => {
@@ -131,11 +127,6 @@ impl WallpaperSlider {
                 "wallpaper-blur-slider",
                 "wallpaper-blur-fill",
                 "wallpaper-blur-knob",
-            ),
-            Self::Dim => (
-                "wallpaper-dim-slider",
-                "wallpaper-dim-fill",
-                "wallpaper-dim-knob",
             ),
             Self::CardOpacity => (
                 "wallpaper-card-slider",
@@ -1457,21 +1448,18 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let control = self.active_model_select(theme, this, cx);
-        div()
-            .w_full()
-            .rounded(panel::RADIUS.px(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_elevated)
-            .overflow_hidden()
-            .child(self.setting_row(
+        // The shared settings board (no `overflow_hidden`: the select's popup
+        // anchors inside the row and must escape it).
+        self.settings_group(
+            theme,
+            vec![self.setting_row(
                 theme,
                 &tr!("settings.active_model"),
                 Some(&tr!("settings.active_model_description")),
                 None,
                 Some(control),
-            ))
-            .into_any_element()
+            )],
+        )
     }
 
     /// The active-model selector: a dropdown over the reported catalog that
@@ -1604,25 +1592,25 @@ impl OrbitApp {
 
     /// A section label on the Providers & models page, with its count.
     fn provider_section_label(&self, label: String, count: usize, theme: Theme) -> AnyElement {
+        // The same label register as `settings_section`, with the group's
+        // count trailing in muted ink.
         div()
             .w_full()
-            .pt(DynamicSpacing::Base08.px(&theme))
-            .pb(DynamicSpacing::Base04.px(&theme))
-            .border_b_1()
-            .border_color(theme.border)
+            .px(DynamicSpacing::Base04.px(&theme))
             .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
+            .items_baseline()
+            .gap(DynamicSpacing::Base06.px(&theme))
             .child(
                 div()
-                    .text_size(TextSize::Small.px(&theme))
+                    .text_size(TextSize::Default.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary)
+                    .text_color(theme.text_primary)
                     .child(label),
             )
             .child(
                 div()
                     .text_size(TextSize::Small.px(&theme))
+                    .font(crate::usage::view::num_font())
                     .text_color(theme.text_muted)
                     .child(count.to_string()),
             )
@@ -2268,45 +2256,56 @@ impl OrbitApp {
             Hover::over(Some(theme.action), theme.action_hover),
         );
 
-        let toolbar = div()
+        // Search and the page's actions share one row; on a narrow window
+        // the buttons wrap under the field instead of clipping.
+        let controls = div()
             .w_full()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
+            .child(div().flex_1().min_w(px(240.)).child(search))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(format!(
-                        "{} · {}",
-                        tr!(
-                            "settings.providers_active_connected",
-                            all = all.len(),
-                            active = active,
-                            connected = connected
-                        ),
-                        model_count_label(
-                            self.available_models.len(),
-                            shown_models,
-                            favorite_count,
-                            filtered
-                        )
-                    )),
-            )
-            .child(self.models_favorites_button(theme, this.clone()))
-            .child(self.models_update_button(theme, this.clone()))
-            .child(refresh_button)
-            .child(add_button);
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(self.models_favorites_button(theme, this.clone()))
+                    .child(self.models_update_button(theme, this.clone()))
+                    .child(refresh_button)
+                    .child(add_button),
+            );
+
+        let summary = div()
+            .w_full()
+            .px(DynamicSpacing::Base04.px(&theme))
+            .truncate()
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_muted)
+            .child(format!(
+                "{} · {}",
+                tr!(
+                    "settings.providers_active_connected",
+                    all = all.len(),
+                    active = active,
+                    connected = connected
+                ),
+                model_count_label(
+                    self.available_models.len(),
+                    shown_models,
+                    favorite_count,
+                    filtered
+                )
+            ));
 
         div()
             .w_full()
             .flex()
             .flex_col()
-            .gap(DynamicSpacing::Base12.px(&theme))
-            .child(search)
-            .child(toolbar)
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(controls)
+            .child(summary)
             .into_any_element()
     }
 
@@ -2484,47 +2483,20 @@ impl OrbitApp {
             ));
         }
 
-        // ── grid ──
+        // ── providers ──
         if views.is_empty() {
-            rows.push(
-                div()
-                    .w_full()
-                    .bg(theme.surface_secondary)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(panel::RADIUS.px(&theme))
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base40.px(&theme))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .child(icon(
-                        "icons/search.svg",
-                        IconSize::Custom(26. / 16.).px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(
-                        div()
-                            .text_size(TextSize::Default.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(tr!("settings.no_providers_match")),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(tr!("settings.try_a_different_search")),
-                    )
-                    .into_any_element(),
-            );
+            rows.push(self.empty_resource_card(
+                theme,
+                "icons/search.svg",
+                &tr!("settings.no_providers_match"),
+                &tr!("settings.try_a_different_search"),
+            ));
         } else {
-            // The current selection leads, then one grid for the providers in
-            // use and another for the rest (#131). Both sections use the same
-            // 3-column cards: a connected provider is not a taller object than
-            // an unconnected one, and its models live in its own editor rather
-            // than under the card, where a long catalog buried the page.
+            // The current selection leads, then one board for the providers
+            // in use and another for the rest (#131). Each provider is a row
+            // on the board — the grouped-surface pattern every settings page
+            // uses — and its models open beneath it, so the page reads as one
+            // list instead of a wall of uneven cards.
             if !self.available_models.is_empty() {
                 rows.push(self.active_model_row(theme, this.clone(), cx));
             }
@@ -2538,18 +2510,28 @@ impl OrbitApp {
                 if group.is_empty() {
                     continue;
                 }
-                rows.push(self.provider_section_label(label, group.len(), theme));
-                let cards: Vec<AnyElement> = group
-                    .iter()
-                    .map(|view| self.provider_card(view, theme, this.clone()))
+                let count = group.len();
+                let board: Vec<AnyElement> = group
+                    .into_iter()
+                    .map(|view| {
+                        let models = models_of(view);
+                        // A filter narrowed this provider's list when the
+                        // favorites filter is on, or the search matched its
+                        // models rather than the provider itself.
+                        let narrowed =
+                            favorites_only || (!needle.is_empty() && !provider_hit(view));
+                        self.provider_row(view, &models, narrowed, theme, this.clone())
+                    })
                     .collect();
                 rows.push(
                     div()
                         .w_full()
-                        .grid()
-                        .grid_cols(3)
-                        .gap(DynamicSpacing::Base12.px(&theme))
-                        .children(cards)
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .child(self.provider_section_label(label, count, theme))
+                        .child(self.settings_group(theme, board))
                         .into_any_element(),
                 );
             }
@@ -2586,7 +2568,6 @@ impl OrbitApp {
                     provider.api_key,
                     &provider.env_vars,
                     providers::provider_note(&provider.id),
-                    true,
                 ));
             }
         } else {
@@ -2603,7 +2584,6 @@ impl OrbitApp {
                     builtin.api_key,
                     &env_vars,
                     builtin.note,
-                    true,
                 ));
             }
         }
@@ -2619,7 +2599,6 @@ impl OrbitApp {
                     true,
                     &[],
                     providers::provider_note(id),
-                    true,
                 ));
             }
         }
@@ -2634,14 +2613,13 @@ impl OrbitApp {
                     true,
                     &[],
                     "",
-                    false,
                 ));
             }
         }
         // models.json providers pi hasn't loaded yet.
         for provider in &self.custom_providers {
             if !views.iter().any(|view| view.id == provider.id) {
-                views.push(self.provider_view_for(&provider.id, None, false, true, &[], "", false));
+                views.push(self.provider_view_for(&provider.id, None, false, true, &[], ""));
             }
         }
         // Providers the running pi advertises through `auth.list` but no other
@@ -2655,7 +2633,6 @@ impl OrbitApp {
                     capability.supports_api_key(),
                     &[],
                     providers::provider_note(&capability.id),
-                    true,
                 ));
             }
         }
@@ -2672,7 +2649,6 @@ impl OrbitApp {
         api_key: bool,
         env_names: &[String],
         note: &'static str,
-        builtin: bool,
     ) -> ProviderView {
         let custom = self
             .custom_providers
@@ -2712,7 +2688,6 @@ impl OrbitApp {
             api: custom
                 .map(|provider| provider.api.clone())
                 .unwrap_or_default(),
-            builtin,
             oauth,
             api_key,
             env_names: env_names.to_vec(),
@@ -3116,20 +3091,29 @@ impl OrbitApp {
         Some(body.into_any_element())
     }
 
-    /// One large provider card: huge brand mark, status, auth facts, actions.
-    pub(super) fn provider_card(
+    /// One provider as a row on its group's board.
+    ///
+    /// The head is one calm line: brand mark, name and status over a single
+    /// line of facts, and on the right only the model count, the one action
+    /// that connects an unconnected provider, and the disclosure chevron.
+    /// Everything else — every sign-in method, the editor, usage, disconnect,
+    /// remove — lives in the panel that opens beneath the head, where a
+    /// full-width action bar can wrap without spilling over the next row,
+    /// followed by the provider's models.
+    ///
+    /// `models` is what this page shows for the provider (already narrowed by
+    /// the search and the favorites filter); `narrowed` says a filter did the
+    /// narrowing, which opens the panel so the match is visible.
+    pub(super) fn provider_row(
         &self,
         view: &ProviderView,
+        models: &[&ModelEntry],
+        narrowed: bool,
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
         let confirming = self.provider_remove_confirm.as_deref() == Some(view.id.as_str());
-        let update_key_label = tr!("settings.update_key");
-        let add_key_label = tr!("settings.add_api_key");
-        let reconnect_label = tr!("settings.reconnect");
-        let sign_in_label = tr!("settings.sign_in");
-        // The card no longer renders quota inline: usage opens in a popup so a
-        // connected card stays compact (see `provider_usage_layer`).
+        // Usage opens in a popup (see `provider_usage_layer`).
         let has_usage = view.quota.as_ref().is_some_and(|report| {
             report.has_data() || report.error.is_some() || report.note.is_some()
         });
@@ -3153,24 +3137,32 @@ impl OrbitApp {
         } else {
             (tr!("status.not_configured"), theme.text_muted)
         };
+        let lit = view.active || view.connected();
+        let connected = view.auth.is_some()
+            || view
+                .live_status
+                .as_ref()
+                .is_some_and(|status| status.authenticated);
+        let auth_section = self.provider_auth_section(view, theme, this.clone());
 
+        // ── identity: mark, name, status, facts ──
         let tile = div()
-            .size(px(52.))
+            .size(ButtonSize::Large.height(&theme) + DynamicSpacing::Base04.px(&theme))
             .flex_none()
-            .rounded(panel::RADIUS.px(&theme))
+            .rounded(Radius::Large.px(&theme))
             .bg(theme.surface_elevated)
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.border_subtle)
             .flex()
             .items_center()
             .justify_center()
             .child(icon_dyn(
                 provider_icon(&view.id),
-                IconSize::Custom(30. / 16.).px(&theme),
+                IconSize::Medium.px(&theme) + DynamicSpacing::Base04.px(&theme),
                 provider_mark_color(
                     &view.id,
                     &theme,
-                    if view.active || view.connected() {
+                    if lit {
                         theme.text_primary
                     } else {
                         theme.text_secondary
@@ -3178,331 +3170,283 @@ impl OrbitApp {
                 ),
             ));
 
-        let status_pill = div()
-            .h(ButtonSize::Default.height(&theme))
-            .px(DynamicSpacing::Base08.px(&theme))
-            .rounded_full()
+        // The status reads as a word; the dot only reinforces it.
+        let status = div()
             .flex_none()
             .flex()
             .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .bg(status_color.opacity(0.12))
+            .gap(DynamicSpacing::Base04.px(&theme))
             .child(div().size(px(6.)).rounded_full().bg(status_color))
             .child(
                 div()
                     .text_size(TextSize::Small.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(status_color)
+                    .text_color(theme.text_secondary)
                     .child(status_label),
             );
 
-        let header = div()
+        let mut title = div()
+            .w_full()
+            .min_w_0()
             .flex()
-            .items_start()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(
+                div()
+                    .min_w_0()
+                    .text_size(TextSize::Default.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .truncate()
+                    .child(view.name.clone()),
+            )
+            .child(status);
+        if view.custom {
+            title = title.child(self.provider_badge(
+                &tr!("settings.provider_custom"),
+                theme.accent_text,
+                theme.accent.opacity(0.12),
+                theme,
+            ));
+        }
+
+        // One quiet line: id, catalog size (when no model count states it),
+        // how it is signed in, and where it points.
+        let mut facts: Vec<String> = vec![view.id.clone()];
+        if models.is_empty() {
+            if !view.active && view.catalog_count > 0 {
+                facts.push(tr!("settings.n_in_catalog", count = view.catalog_count));
+            } else if view.model_count > 0 {
+                facts.push(tr!("settings.n_models", count = view.model_count));
+            }
+        }
+        if let Some(kind) = view.credential_kind() {
+            facts.push(match kind {
+                "oauth" => tr!("settings.cred_oauth"),
+                "api_key" => tr!("settings.cred_api_key"),
+                other => other.to_string(),
+            });
+            if let Some(status) = &view.live_status {
+                if let Some(account) = &status.account {
+                    facts.push(account.clone());
+                }
+                if let Some(expires_at) = status.expires_at {
+                    facts.push(tr!(
+                        "settings.expires_at",
+                        time = format_epoch_ms(expires_at)
+                    ));
+                }
+            }
+        } else if let Some(env_var) = &view.env_var {
+            facts.push(tr!("settings.via_env_var", env_var = env_var));
+        }
+        if view.has_api_key {
+            facts.push(tr!("settings.models_json_key"));
+        }
+        if !view.base_url.is_empty() {
+            facts.push(if view.api.is_empty() {
+                view.base_url.clone()
+            } else {
+                format!("{} · {}", view.base_url, view.api)
+            });
+        } else if !view.note.is_empty() {
+            facts.push(providers::localize_note(view.note));
+        }
+
+        // `w_full` on every link down to the facts line: a truncated line
+        // needs a definite width, or it shrinks to its ellipsis.
+        let identity = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
             .gap(DynamicSpacing::Base12.px(&theme))
             .child(tile)
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
+                    .w_full()
                     .flex()
                     .flex_col()
-                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .child(title)
                     .child(
                         div()
-                            .text_size(TextSize::Default.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .truncate()
-                            .child(view.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme::code_font_family())
-                            .text_size(theme.code_px(10.5))
+                            .debug_selector({
+                                let id = view.id.clone();
+                                move || format!("provider-facts-{id}")
+                            })
+                            .w_full()
+                            .min_w_0()
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_muted)
                             .truncate()
-                            .child(view.id.clone()),
+                            .child(facts.join(" · ")),
                     ),
             );
 
-        // Status and source badges share a row under the name so the name
-        // column keeps the card's full width (a right-aligned pill in the
-        // header squeezes it on narrow columns).
-        let mut badges = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .child(status_pill);
-        if view.oauth {
-            badges = badges.child(self.provider_badge(
-                "OAuth",
-                theme.accent_text,
-                theme.accent.opacity(0.12),
-                theme,
-            ));
-        }
-        if view.api_key {
-            badges = badges.child(self.provider_badge(
-                &tr!("settings.api_key"),
-                theme.text_muted,
-                theme.overlay_strong,
-                theme,
-            ));
-        }
-        badges = badges.child(self.provider_badge(
-            if view.custom {
-                "Custom"
-            } else if view.builtin {
-                "Built-in"
-            } else {
-                "Provider"
-            },
-            if view.custom {
-                theme.accent_text
-            } else {
-                theme.text_muted
-            },
-            if view.custom {
-                theme.accent.opacity(0.12)
-            } else {
-                theme.overlay_strong
-            },
-            theme,
-        ));
-
-        // Active providers show what pi is serving; unconfigured built-ins show
-        // their full built-in catalog size (pi's RPC never reports those).
-        let count_label = if !view.active && view.catalog_count > 0 {
-            tr!("settings.n_in_catalog", count = view.catalog_count)
+        // ── actions ──
+        // Methods come from pi's `auth.list` capability discovery — the UI
+        // never hardcodes provider ids or assumes a login flow. Sign-in
+        // actions are collected first so the head can lift the first one out
+        // as the row's call to action while the provider is not connected.
+        let capability = if self.auth.support() == AuthSupport::Supported {
+            self.auth.provider(&view.id)
         } else {
-            tr!("settings.n_models", count = view.model_count)
+            None
         };
-        let mut facts = div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .text_size(TextSize::Small.px(&theme))
-            .text_color(theme.text_muted)
-            .child(count_label);
-        if let Some(kind) = view.credential_kind() {
-            facts = facts
-                .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
-                .child(match kind {
-                    "oauth" => tr!("settings.cred_oauth"),
-                    "api_key" => tr!("settings.cred_api_key"),
-                    other => other.to_string(),
-                });
-            if let Some(status) = &view.live_status {
-                if let Some(account) = &status.account {
-                    facts = facts
-                        .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
-                        .child(account.clone());
-                }
-                if let Some(expires_at) = status.expires_at {
-                    facts = facts
-                        .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
-                        .child(tr!(
-                            "settings.expires_at",
-                            time = format_epoch_ms(expires_at)
-                        ));
+        let style = |primary: bool| {
+            if primary {
+                ProviderButtonStyle::Primary
+            } else {
+                ProviderButtonStyle::Ghost
+            }
+        };
+        let edit_key = |primary: bool| {
+            let update = view.credential_kind() == Some("api_key");
+            self.provider_button(
+                format!("provider-key-{}", view.id),
+                &if update {
+                    tr!("settings.update_key")
+                } else {
+                    tr!("settings.add_api_key")
+                },
+                style(primary),
+                theme,
+                this.clone(),
+                ProviderAction::EditKey {
+                    id: view.id.clone(),
+                    name: view.name.clone(),
+                    oauth: view.oauth,
+                    note: view.note,
+                },
+            )
+        };
+        let mut sign_in: Vec<AnyElement> = Vec::new();
+        let mut no_methods = false;
+        if let Some(capability) = capability {
+            // A subscription sign-in leads; the API key follows it.
+            let mut methods: Vec<_> = capability.methods.iter().collect();
+            methods.sort_by_key(|method| method.id == "api_key");
+            for method in methods {
+                let primary = !connected && sign_in.is_empty();
+                if method.id == "api_key" {
+                    sign_in.push(edit_key(primary));
+                } else {
+                    let label = method_label(&method.id, &method.label, view.connected());
+                    sign_in.push(self.provider_button(
+                        format!("provider-auth-{}-{}", method.id, view.id),
+                        &label,
+                        style(primary),
+                        theme,
+                        this.clone(),
+                        ProviderAction::AuthStart {
+                            id: view.id.clone(),
+                            name: view.name.clone(),
+                            method: method.id.clone(),
+                        },
+                    ));
                 }
             }
-        } else if let Some(env_var) = &view.env_var {
-            facts = facts
-                .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
-                .child(tr!("settings.via_env_var", env_var = env_var));
-        }
-        if view.has_api_key {
-            facts = facts
-                .child(div().size(px(3.)).rounded_full().bg(theme.text_muted))
-                .child(tr!("settings.models_json_key"));
-        }
-
-        let endpoint = if view.base_url.is_empty() {
-            if view.note.is_empty() {
-                tr!("settings.pi_default_endpoint")
-            } else {
-                providers::localize_note(view.note)
-            }
-        } else if view.api.is_empty() {
-            view.base_url.clone()
+            no_methods = capability.methods.is_empty();
         } else {
-            format!("{} · {}", view.base_url, view.api)
-        };
-        let base_url = div()
-            .truncate()
-            .font_family(theme::code_font_family())
-            .text_size(theme.code_px(10.5))
-            .text_color(theme.text_muted)
-            .child(endpoint);
-
-        let actions: AnyElement = if confirming {
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.error)
-                        .child(tr!("settings.remove_this_provider")),
-                )
-                .child(self.provider_button(
-                    format!("provider-remove-confirm-{}", view.id),
-                    &tr!("settings.remove"),
-                    ProviderButtonStyle::Danger,
-                    theme,
-                    this.clone(),
-                    ProviderAction::ConfirmRemove {
-                        id: view.id.clone(),
-                    },
-                ))
-                .child(self.provider_button(
-                    format!("provider-remove-cancel-{}", view.id),
-                    &tr!("git_panel.cancel"),
-                    ProviderButtonStyle::Ghost,
-                    theme,
-                    this.clone(),
-                    ProviderAction::CancelRemove,
-                ))
-                .into_any_element()
-        } else if let Some(section) = self.provider_auth_section(view, theme, this.clone()) {
-            section
-        } else {
-            // Methods come from pi's `auth.list` capability discovery — the
-            // UI never hardcodes provider ids or assumes a login flow.
-            let capability = if self.auth.support() == AuthSupport::Supported {
-                self.auth.provider(&view.id)
-            } else {
-                None
-            };
-            let mut primary = div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(DynamicSpacing::Base08.px(&theme));
-            if let Some(capability) = capability {
-                for method in &capability.methods {
-                    if method.id == "api_key" {
-                        let update = view.credential_kind() == Some("api_key");
-                        primary = primary.child(self.provider_button(
-                            format!("provider-key-{}", view.id),
-                            if update {
-                                &update_key_label
-                            } else {
-                                &add_key_label
-                            },
-                            ProviderButtonStyle::Ghost,
-                            theme,
-                            this.clone(),
-                            ProviderAction::EditKey {
-                                id: view.id.clone(),
-                                name: view.name.clone(),
-                                oauth: view.oauth,
-                                note: view.note,
-                            },
-                        ));
+            // File-based fallback for a pi without the auth RPC.
+            if view.oauth {
+                let reconnect = view.credential_kind() == Some("oauth");
+                sign_in.push(self.provider_button(
+                    format!("provider-signin-{}", view.id),
+                    &if reconnect {
+                        tr!("settings.reconnect")
                     } else {
-                        let label = method_label(&method.id, &method.label, view.connected());
-                        primary = primary.child(self.provider_button(
-                            format!("provider-auth-{}-{}", method.id, view.id),
-                            &label,
-                            ProviderButtonStyle::Primary,
-                            theme,
-                            this.clone(),
-                            ProviderAction::AuthStart {
-                                id: view.id.clone(),
-                                name: view.name.clone(),
-                                method: method.id.clone(),
-                            },
-                        ));
-                    }
-                }
-                if capability.methods.is_empty() {
-                    primary = primary.child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(tr!("settings.no_sign_in_methods_available")),
-                    );
-                }
-            } else {
-                // File-based fallback for a pi without the auth RPC.
-                if view.oauth {
-                    let reconnect = view.credential_kind() == Some("oauth");
-                    primary = primary.child(self.provider_button(
-                        format!("provider-signin-{}", view.id),
-                        if reconnect {
-                            &reconnect_label
-                        } else {
-                            &sign_in_label
-                        },
-                        ProviderButtonStyle::Primary,
-                        theme,
-                        this.clone(),
-                        ProviderAction::SignIn {
-                            id: view.id.clone(),
-                            name: view.name.clone(),
-                        },
-                    ));
-                }
-                if view.api_key {
-                    let update = view.credential_kind() == Some("api_key");
-                    primary = primary.child(self.provider_button(
-                        format!("provider-key-{}", view.id),
-                        if update {
-                            &update_key_label
-                        } else {
-                            &add_key_label
-                        },
-                        if view.oauth && !view.connected() {
-                            ProviderButtonStyle::Ghost
-                        } else {
-                            ProviderButtonStyle::Primary
-                        },
-                        theme,
-                        this.clone(),
-                        ProviderAction::EditKey {
-                            id: view.id.clone(),
-                            name: view.name.clone(),
-                            oauth: view.oauth,
-                            note: view.note,
-                        },
-                    ));
-                }
+                        tr!("settings.sign_in")
+                    },
+                    style(!connected),
+                    theme,
+                    this.clone(),
+                    ProviderAction::SignIn {
+                        id: view.id.clone(),
+                        name: view.name.clone(),
+                    },
+                ));
             }
-            let connected = view.auth.is_some()
-                || view
-                    .live_status
-                    .as_ref()
-                    .is_some_and(|status| status.authenticated);
-            // Secondary actions: Configure/Remove only exist when there is a
-            // models.json entry to edit; Sign out only when a credential is
-            // stored. Built-ins with neither show just the auth button.
-            let mut secondary = div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(DynamicSpacing::Base06.px(&theme));
-            if view.custom {
-                secondary = secondary.child(self.provider_button(
-                    format!("provider-configure-{}", view.id),
-                    &tr!("settings.configure"),
+            if view.api_key {
+                sign_in.push(edit_key(!connected && sign_in.is_empty()));
+            }
+        }
+        // The head's call to action: the first way to connect, only while
+        // nothing is connected, no sign-in is running and no removal is asked.
+        let cta = (!connected && !confirming && auth_section.is_none() && !sign_in.is_empty())
+            .then(|| sign_in.remove(0));
+
+        let mut bar: Vec<AnyElement> = Vec::new();
+        if confirming {
+            bar.push(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.error)
+                    .child(tr!("settings.remove_this_provider"))
+                    .into_any_element(),
+            );
+            bar.push(self.provider_button(
+                format!("provider-remove-confirm-{}", view.id),
+                &tr!("settings.remove"),
+                ProviderButtonStyle::Danger,
+                theme,
+                this.clone(),
+                ProviderAction::ConfirmRemove {
+                    id: view.id.clone(),
+                },
+            ));
+            bar.push(self.provider_button(
+                format!("provider-remove-cancel-{}", view.id),
+                &tr!("git_panel.cancel"),
+                ProviderButtonStyle::Ghost,
+                theme,
+                this.clone(),
+                ProviderAction::CancelRemove,
+            ));
+        } else if auth_section.is_none() {
+            // Every provider keeps the way into its editor — a built-in with
+            // no models.json entry included (#131). "Configure" promises an
+            // override; "Models" promises the ids/endpoint list.
+            bar.push(self.provider_button(
+                format!("provider-configure-{}", view.id),
+                &if view.custom {
+                    tr!("settings.configure")
+                } else {
+                    tr!("settings.models")
+                },
+                ProviderButtonStyle::Ghost,
+                theme,
+                this.clone(),
+                ProviderAction::Configure {
+                    id: view.id.clone(),
+                },
+            ));
+            if has_usage {
+                bar.push(self.provider_button(
+                    format!("provider-usage-{}", view.id),
+                    &tr!("session.usage"),
                     ProviderButtonStyle::Ghost,
                     theme,
                     this.clone(),
-                    ProviderAction::Configure {
+                    ProviderAction::ShowUsage {
                         id: view.id.clone(),
                     },
                 ));
             }
+            bar.extend(sign_in);
+            if no_methods {
+                bar.push(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!("settings.no_sign_in_methods_available"))
+                        .into_any_element(),
+                );
+            }
             if connected {
-                secondary = secondary.child(self.provider_button(
+                bar.push(self.provider_button(
                     format!("provider-signout-{}", view.id),
                     &tr!("settings.disconnect"),
                     ProviderButtonStyle::Ghost,
@@ -3514,7 +3458,7 @@ impl OrbitApp {
                 ));
             }
             if view.custom {
-                secondary = secondary.child(self.provider_button(
+                bar.push(self.provider_button(
                     format!("provider-remove-{}", view.id),
                     &tr!("settings.remove"),
                     ProviderButtonStyle::Danger,
@@ -3525,54 +3469,318 @@ impl OrbitApp {
                     },
                 ));
             }
-            if has_usage {
-                secondary = secondary.child(self.provider_button(
-                    format!("provider-usage-{}", view.id),
-                    &tr!("session.usage"),
-                    ProviderButtonStyle::Ghost,
-                    theme,
-                    this.clone(),
-                    ProviderAction::ShowUsage {
-                        id: view.id.clone(),
-                    },
-                ));
-            }
-            let mut actions = div()
+        }
+
+        // ── head ──
+        // Open by default for the provider the session's model comes from
+        // (`view.active` only means pi serves models for it, which is true of
+        // every provider with a list here), while a filter narrowed the list,
+        // while a sign-in runs, and while a removal waits for its answer.
+        let open = self
+            .provider_models_open
+            .get(&view.id)
+            .copied()
+            .unwrap_or(narrowed || view.id == self.model_provider)
+            || auth_section.is_some()
+            || confirming;
+
+        let mut trailing = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base12.px(&theme));
+        if !models.is_empty() {
+            trailing = trailing.child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!("settings.n_models", count = models.len())),
+            );
+        }
+        trailing = trailing
+            .children(cta)
+            .child(disclosure_chevron(
+                format!("provider-row-chevron-{}", view.id),
+                open,
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+                &theme,
+            ));
+
+        let head_id = format!("provider-models-toggle-{}", view.id);
+        let head = div()
+            .id(ElementId::Name(head_id.clone().into()))
+            .debug_selector(move || head_id.clone())
+            .w_full()
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base16.px(&theme))
+            .cursor_pointer()
+            .tip(if open {
+                tr!("settings.hide_provider_details")
+            } else {
+                tr!("settings.show_provider_details")
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let this = this.clone();
+                let id = view.id.clone();
+                move |_, _, cx| {
+                    let id = id.clone();
+                    this.update(cx, |app, cx| app.toggle_provider_models(id, open, cx));
+                }
+            })
+            .child(identity)
+            .child(trailing);
+
+        // ── panel ──
+        // Indented to the text column, so the panel reads as the row's own.
+        let indent = DynamicSpacing::Base16.px(&theme)
+            + ButtonSize::Large.height(&theme)
+            + DynamicSpacing::Base04.px(&theme)
+            + DynamicSpacing::Base12.px(&theme);
+        let panel = open.then(|| {
+            div()
                 .w_full()
+                .pl(indent)
+                .pr(DynamicSpacing::Base16.px(&theme))
+                .pb(DynamicSpacing::Base16.px(&theme))
                 .flex()
                 .flex_col()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(primary);
-            if view.custom || connected || has_usage {
-                actions = actions.child(secondary);
-            }
-            actions.into_any_element()
-        };
+                .gap(DynamicSpacing::Base12.px(&theme))
+                .when(!bar.is_empty(), |panel| {
+                    panel.child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(DynamicSpacing::Base06.px(&theme))
+                            .children(bar),
+                    )
+                })
+                .children(auth_section)
+                .when(!models.is_empty(), |panel| {
+                    panel.child(self.provider_model_list(&view.id, models, theme, this.clone()))
+                })
+        });
 
         div()
             .debug_selector({
                 let id = view.id.clone();
-                move || format!("provider-card-{id}")
+                move || format!("provider-row-{id}")
             })
             .w_full()
             .min_w_0()
-            .bg(theme.surface_secondary)
-            .when_some(theme.glass_sigma(), |card, _| {
-                card.bg(theme.card_fill(theme.surface_secondary))
-            })
-            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-            .rounded(panel::RADIUS.px(&theme))
-            .p(DynamicSpacing::Base12.px(&theme))
             .flex()
             .flex_col()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(header)
-            .child(badges)
-            .child(facts)
-            .child(base_url)
-            .child(div().h(BORDER_WIDTH).w_full().bg(theme.border))
-            .child(actions)
+            .child(head)
+            .children(panel)
             .into_any_element()
+    }
+
+    /// Open or close a provider row's model list by hand.
+    pub(super) fn toggle_provider_models(
+        &mut self,
+        id: String,
+        currently_open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.provider_models_open.insert(id, !currently_open);
+        cx.notify();
+    }
+
+    /// A provider's models as click-to-select chips, in a well under its row
+    /// (#131).
+    ///
+    /// A chip is *selected* when the composer's picker offers that model; a
+    /// click writes the hide-list ([`crate::hidden_models`]) and never deletes
+    /// anything — the provider's catalog (pi's, or `models.json`) is what it is.
+    /// The context window is shown only when pi reports one. The list is
+    /// height-bounded and scrolls on its own so a long catalog never buries
+    /// the page.
+    fn provider_model_list(
+        &self,
+        provider: &str,
+        models: &[&ModelEntry],
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        let hidden = crate::hidden_models::all();
+        let shown = models
+            .iter()
+            .filter(|model| !hidden.contains(provider, &model.id))
+            .count();
+        let total = models.len();
+        let all_hidden = shown == 0;
+
+        let chips = div()
+            .w_full()
+            .grid()
+            .grid_cols(2)
+            .gap(DynamicSpacing::Base04.px(&theme))
+            .children(
+                models
+                    .iter()
+                    .map(|model| self.provider_model_chip(model, &hidden, theme, this.clone())),
+            );
+        let scroll = div()
+            .id(ElementId::Name(format!("provider-models-scroll-{provider}").into()))
+            .debug_selector({
+                let provider = provider.to_string();
+                move || format!("provider-models-scroll-{provider}")
+            })
+            .w_full()
+            .max_h(px(240.))
+            .overflow_y_scroll()
+            // GPUI's overflow handler does not consume the wheel event; keep
+            // it from scrolling the settings page as well, even at the ends.
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(chips);
+
+        let ids: Vec<(String, String)> = models
+            .iter()
+            .map(|model| (model.provider.clone(), model.id.clone()))
+            .collect();
+        let bulk = button_frame(
+            div().id(ElementId::Name(
+                format!("provider-models-visibility-{provider}").into(),
+            )),
+            &theme,
+            ButtonSize::Default,
+        )
+        .flex_none()
+        .text_size(TextSize::Small.px(&theme))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_secondary)
+        .cursor_pointer()
+        .hover_state(&theme)
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            for (provider, id) in &ids {
+                crate::hidden_models::set(provider, id, !all_hidden);
+            }
+            this.update(cx, |_, cx| cx.notify());
+        })
+        .child(if all_hidden {
+            tr!("settings.show_all_models")
+        } else {
+            tr!("settings.hide_all_models")
+        });
+
+        div()
+            .debug_selector({
+                let provider = provider.to_string();
+                move || format!("provider-models-{provider}")
+            })
+            .w_full()
+            .child(
+                div()
+                    .w_full()
+                    .rounded(Radius::Large.px(&theme))
+                    .bg(theme.surface)
+                    .border_1()
+                    .border_color(theme.border_subtle)
+                    .p(DynamicSpacing::Base08.px(&theme))
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .child(
+                        div()
+                            .w_full()
+                            .pl(DynamicSpacing::Base04.px(&theme))
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base08.px(&theme))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .text_color(theme.text_muted)
+                                    .child(tr!(
+                                        "settings.n_models_shown",
+                                        shown = shown,
+                                        total = total
+                                    )),
+                            )
+                            .child(bulk),
+                    )
+                    .child(scroll),
+            )
+            .into_any_element()
+    }
+
+    /// One model chip in a provider's list: a check when the composer's
+    /// picker offers it, the id, and its context window when pi reports one.
+    /// The whole chip is the toggle — there is no second control to find.
+    fn provider_model_chip(
+        &self,
+        model: &ModelEntry,
+        hidden: &crate::hidden_models::HiddenModels,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        let provider = model.provider.clone();
+        let id = model.id.clone();
+        let label = id.clone();
+        let shown = !hidden.contains(&provider, &id);
+        let chip_id = format!("provider-model-chip-{provider}-{id}");
+        let mut chip = button_frame(
+            div()
+                .id(ElementId::Name(chip_id.clone().into()))
+                .debug_selector({
+                    let chip_id = chip_id.clone();
+                    move || chip_id.clone()
+                }),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .w_full()
+        .min_w_0()
+        .justify_start()
+        .text_color(if shown {
+            theme.text_primary
+        } else {
+            theme.text_muted
+        })
+        .cursor_pointer()
+        .hover_state(&theme)
+        .tip(format!(
+            "{} — {}",
+            label,
+            if shown {
+                tr!("settings.hide_from_model_picker")
+            } else {
+                tr!("settings.show_in_model_picker")
+            }
+        ))
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            crate::hidden_models::set(&provider, &id, shown);
+            this.update(cx, |_, cx| cx.notify());
+        })
+        .child(check_box(shown, theme))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_family(theme::code_font_family())
+                .text_size(theme.code_px(11.5))
+                .child(label),
+        );
+        if let Some(context) = model.context_window {
+            chip = chip.child(
+                div()
+                    .flex_none()
+                    .text_color(theme.text_muted)
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .font(crate::usage::view::num_font())
+                    .child(crate::context_meter::format_tokens(context)),
+            );
+        }
+        chip.into_any_element()
     }
 
     /// A small status/source pill on a provider card.
@@ -3613,9 +3821,12 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: ProviderAction,
     ) -> AnyElement {
+        let action_id = id.clone();
         let icon_path = Self::provider_action_icon(&action);
         let mut button = button_frame(
-            div().id(ElementId::Name(id.into())),
+            div()
+                .id(ElementId::Name(id.into()))
+                .debug_selector(move || format!("provider-action-{action_id}")),
             &theme,
             ButtonSize::Medium,
         )
@@ -3652,6 +3863,9 @@ impl OrbitApp {
             })
             .child(div().child(label.to_string()))
             .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                // A button may sit inside a clickable row (the provider row's
+                // head); the press is the button's alone.
+                cx.stop_propagation();
                 let action = action.clone();
                 this.update(cx, |app, cx| app.apply_provider_action(action, window, cx));
             })
@@ -4130,259 +4344,6 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// The provider editor's model chips (#131): every id Orbit can offer for
-    /// this provider — the ones already in the field, the last **Fetch models**
-    /// result, then pi's catalog for it — as one-click toggles.
-    ///
-    /// A chip is *included* when the field lists it, so a click and a paste
-    /// write the same text. Models pi reports carry their context window and a
-    /// picker-visibility eye; a freshly fetched id pi has no metadata for shows
-    /// its bare id instead of a badge Orbit cannot vouch for.
-    fn provider_model_chips(
-        &self,
-        editor: &ProviderEditor,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> Option<AnyElement> {
-        let provider_id = editor.original_id.clone().or_else(|| {
-            let id = editor.id.read(cx).text().trim().to_string();
-            (!id.is_empty()).then_some(id)
-        })?;
-        let listed = providers::model_ids_in(&editor.models.read(cx).text());
-        let mut offered: Vec<String> = listed.clone();
-        for id in &editor.fetched {
-            if !offered.iter().any(|known| known == id) {
-                offered.push(id.clone());
-            }
-        }
-        let catalog: Vec<&ModelEntry> = self
-            .available_models
-            .iter()
-            .filter(|model| model.provider == provider_id)
-            .collect();
-        for model in &catalog {
-            if !offered.iter().any(|known| known == &model.id) {
-                offered.push(model.id.clone());
-            }
-        }
-        if offered.is_empty() {
-            return None;
-        }
-        let total = offered.len();
-
-        let hidden = crate::hidden_models::all();
-        let mut chips = div()
-            .flex()
-            .flex_wrap()
-            .gap(DynamicSpacing::Base04.px(&theme));
-        for id in offered {
-            let included = listed.iter().any(|known| known == &id);
-            let known = catalog.iter().find(|model| model.id == id);
-            let context = known.and_then(|model| model.context_window);
-            let is_hidden = hidden.contains(&provider_id, &id);
-            chips = chips.child(self.provider_model_chip(
-                &provider_id,
-                &id,
-                included,
-                context,
-                known.map(|_| is_hidden),
-                theme,
-                this.clone(),
-            ));
-        }
-
-        // Bulk picker visibility, the same verb the page's per-provider header
-        // carried before the models moved in here (#131). Only offered when pi
-        // actually reports models for this provider.
-        let bulk = if catalog.is_empty() {
-            None
-        } else {
-            let provider = provider_id.clone();
-            let all_hidden = catalog
-                .iter()
-                .all(|model| hidden.contains(&provider_id, &model.id));
-            let ids: Vec<(String, String)> = catalog
-                .iter()
-                .map(|model| (model.provider.clone(), model.id.clone()))
-                .collect();
-            let label = if all_hidden {
-                tr!("settings.show_all_models")
-            } else {
-                tr!("settings.hide_all_models")
-            };
-            Some(
-                button_frame(
-                    div().id(ElementId::Name(
-                        format!("provider-models-visibility-{provider}").into(),
-                    )),
-                    &theme,
-                    ButtonSize::Compact,
-                )
-                .text_size(TextSize::XSmall.px(&theme))
-                .text_color(theme.text_muted)
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    for (provider, id) in &ids {
-                        crate::hidden_models::set(provider, id, !all_hidden);
-                    }
-                    this.update(cx, |_, cx| cx.notify());
-                })
-                .child(label)
-                .into_any_element(),
-            )
-        };
-
-        Some(
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base06.px(&theme))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(tr!(
-                                    "settings.n_models_selected",
-                                    shown = listed.len(),
-                                    total = total
-                                )),
-                        )
-                        .children(bulk),
-                )
-                .child(chips)
-                .into_any_element(),
-        )
-    }
-
-    /// One chip: the id, its context badge when pi reports one, and (only for a
-    /// model pi knows) the eye that decides whether the composer's picker
-    /// offers it.
-    #[allow(clippy::too_many_arguments)]
-    fn provider_model_chip(
-        &self,
-        provider: &str,
-        id: &str,
-        included: bool,
-        context: Option<u64>,
-        hidden: Option<bool>,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-    ) -> AnyElement {
-        let chip_id = format!("provider-model-chip-{provider}-{id}");
-        let toggle_id = id.to_string();
-        let this_chip = this.clone();
-        let mut chip = button_frame(
-            div().id(ElementId::Name(chip_id.clone().into())),
-            &theme,
-            ButtonSize::Compact,
-        )
-        .group("provider-model-chip")
-        .border_1()
-        .border_color(if included {
-            theme.border_strong
-        } else {
-            theme.border
-        })
-        .raised(
-            if included {
-                theme.surface_selected
-            } else {
-                theme.surface_elevated
-            },
-            &theme,
-        )
-        .text_color(if included {
-            theme.text_primary
-        } else {
-            theme.text_muted
-        })
-        .cursor_pointer()
-        .when(!included, |chip| chip.hover_state(&theme))
-        .tip(id.to_string())
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            let id = toggle_id.clone();
-            this_chip.update(cx, |app, cx| {
-                if let Some(editor) = app.provider_editor.as_mut() {
-                    let next =
-                        providers::toggle_model_id(&editor.models.read(cx).text(), &id, !included);
-                    editor
-                        .models
-                        .update(cx, |input, cx| input.set_text(next, cx));
-                    cx.notify();
-                }
-            });
-        })
-        .child(check_box(included, theme))
-        .child(
-            div()
-                .font_family(theme::code_font_family())
-                .text_size(theme.code_px(10.5))
-                .child(id.to_string()),
-        );
-        if let Some(context) = context {
-            chip = chip.child(
-                div()
-                    .px(DynamicSpacing::Base04.px(&theme))
-                    .rounded(Radius::Small.px(&theme))
-                    .bg(theme.overlay_strong)
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .child(crate::context_meter::format_tokens(context)),
-            );
-        }
-        if let Some(is_hidden) = hidden {
-            let provider = provider.to_string();
-            let id = id.to_string();
-            let eye = icon_button_frame(
-                div().id(ElementId::Name(
-                    format!("provider-model-eye-{provider}-{id}").into(),
-                )),
-                &theme,
-                ButtonSize::Compact,
-            )
-            .tip(if is_hidden {
-                tr!("settings.show_in_model_picker")
-            } else {
-                tr!("settings.hide_from_model_picker")
-            })
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| {
-                    cx.stop_propagation();
-                    crate::hidden_models::set(&provider, &id, !is_hidden);
-                    this.update(cx, |_, cx| cx.notify());
-                }
-            })
-            .child(icon(
-                if is_hidden {
-                    "icons/eye-off.svg"
-                } else {
-                    "icons/eye.svg"
-                },
-                ButtonSize::Compact.icon_size().px(&theme),
-                if is_hidden {
-                    theme.text_muted
-                } else {
-                    theme.text_secondary
-                },
-            ));
-            chip = chip.child(eye);
-        }
-        chip.into_any_element()
-    }
-
     /// The provider editor modal (add / configure), or `None` when closed.
     pub(super) fn provider_editor_layer(
         &self,
@@ -4558,9 +4519,8 @@ impl OrbitApp {
                 }),
                 editor.models.clone(),
             ))
-            // Click-to-select chips under the field (#131): the field stays the
-            // source of truth, so paste and click write the same list.
-            .children(self.provider_model_chips(editor, theme, this.clone(), cx))
+            // The model list itself is on the provider's card (#131): this
+            // dialog edits the ids and the endpoint, it does not repeat them.
             .when(
                 providers::models_endpoint("https://x", &editor.api).is_some(),
                 |body| body.child(self.provider_fetch_button(editor.fetching, theme, this.clone())),
@@ -6872,18 +6832,6 @@ impl OrbitApp {
                     None,
                     Some(self.wallpaper_slider(
                         WallpaperSlider::Blur,
-                        theme,
-                        this.clone(),
-                        &settings,
-                    )),
-                ));
-                rows.push(self.setting_row(
-                    theme,
-                    &tr!("wallpaper.dim"),
-                    Some(&tr!("wallpaper.dim_description")),
-                    None,
-                    Some(self.wallpaper_slider(
-                        WallpaperSlider::Dim,
                         theme,
                         this.clone(),
                         &settings,

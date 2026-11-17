@@ -320,18 +320,7 @@ impl OrbitApp {
                 self.fetch_remote_models(host, 0, cx);
             }
             Err(failure) => {
-                let message = match failure {
-                    ProbeFailure::NeedsPassword { .. } | ProbeFailure::WrongPassword => {
-                        tr!("providers_remote.key_needs_login")
-                    }
-                    ProbeFailure::PiMissing => tr!("remote_hosts.pi_missing"),
-                    ProbeFailure::LoginRefused { message, .. } => message,
-                    ProbeFailure::HostKey(_) => tr!(
-                        "remote_hosts.host_key_unknown",
-                        command = super::ssh_auth_ui::ssh_command(&host)
-                    ),
-                    ProbeFailure::Other(message) => message,
-                };
+                let message = failure_text(failure, &host);
                 if let Some(editor) = self.remote_key_editor.as_mut() {
                     editor.saving = false;
                     editor.error = Some(message);
@@ -1073,6 +1062,23 @@ fn machine_menu(
         .snap_to_window_with_margin(crate::theme::tokens::popover::WINDOW_MARGIN)
         .child(deferred(popup))
         .into_any_element()
+}
+
+/// One line saying why a short ssh run on `host` (saving a key, setting the
+/// workflow mode) did not complete.
+pub(super) fn failure_text(failure: ProbeFailure, host: &RemoteHost) -> String {
+    match failure {
+        ProbeFailure::NeedsPassword { .. } | ProbeFailure::WrongPassword => {
+            tr!("providers_remote.key_needs_login")
+        }
+        ProbeFailure::PiMissing => tr!("remote_hosts.pi_missing"),
+        ProbeFailure::LoginRefused { message, .. } => message,
+        ProbeFailure::HostKey(_) => tr!(
+            "remote_hosts.host_key_unknown",
+            command = super::ssh_auth_ui::ssh_command(host)
+        ),
+        ProbeFailure::Other(message) => message,
+    }
 }
 
 #[cfg(test)]
