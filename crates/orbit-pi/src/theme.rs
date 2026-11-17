@@ -2,11 +2,11 @@
 //!
 //! Colors are semantic roles (backgrounds, text, borders, transcript
 //! surfaces) rather than raw steps, so every paint site reads from one
-//! place. A [`ThemeId`] names a palette; [`DesignSystem`] names a visual
-//! language; [`AppearancePrefs`] chooses the system, which light or dark
-//! palette to use, and optionally follows the system appearance. Classic is
-//! the existing catalog; Operational is the opt-in Restrained Operational
-//! Minimalism layer. The UI face is Zed's bundled IBM Plex Sans
+//! place. A [`ThemeId`] names a palette; [`AppearancePrefs`] chooses which
+//! light and which dark palette to use, and optionally follows the system
+//! appearance. Every palette — the Orbit family, Flexoki and the near-black
+//! Operational pair — belongs to one design system: they differ in colour,
+//! never in geometry. The UI face is Zed's bundled IBM Plex Sans
 //! (`.ZedSans`); code surfaces use Zed's Lilex (`.ZedMono`).
 
 use std::path::PathBuf;
@@ -29,52 +29,6 @@ pub mod tokens;
 pub enum ThemeMode {
     Dark,
     Light,
-}
-
-/// A palette family, independent of light/dark appearance. Existing palettes
-/// are [`DesignSystem::Classic`]; [`DesignSystem::Operational`] is the
-/// Restrained Operational Minimalism colorway. The family selects which
-/// `ThemeId`s the appearance picker offers and which accent/surface colors they
-/// carry — **not** their geometry: every palette resolves the same radii,
-/// control heights, caption size and elevation (see [`crate::theme::tokens`]).
-/// The choice is persisted with the appearance preferences, so switching
-/// families restores the previous palette choice within each.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum DesignSystem {
-    /// Orbit's existing palette family: ember, blue, graphite and paper.
-    #[default]
-    Classic,
-    /// Near-black neutral surfaces with a lime interaction accent.
-    Operational,
-}
-
-impl DesignSystem {
-    pub const ALL: [Self; 2] = [Self::Classic, Self::Operational];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Classic => "classic",
-            Self::Operational => "operational",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "classic" | "legacy" | "orbit" => Some(Self::Classic),
-            "operational" | "restrained" | "operational-minimalism" => Some(Self::Operational),
-            _ => None,
-        }
-    }
-
-    /// The palette this system uses for `mode`.
-    pub fn theme_id(self, mode: ThemeMode) -> ThemeId {
-        match (self, mode) {
-            (Self::Classic, ThemeMode::Dark) => ThemeId::OrbitAzure,
-            (Self::Classic, ThemeMode::Light) => ThemeId::OrbitAzureLight,
-            (Self::Operational, ThemeMode::Dark) => ThemeId::Operational,
-            (Self::Operational, ThemeMode::Light) => ThemeId::OperationalLight,
-        }
-    }
 }
 
 /// One of the selectable Orbit palettes.
@@ -109,9 +63,8 @@ pub enum ThemeId {
 
 impl ThemeId {
     /// Every palette the app ships, dark first, in the order the settings
-    /// dropdown paints them. The settings dropdown filters this list to the
-    /// active [`DesignSystem`]; this catalog stays complete so palette
-    /// invariants cover every shipped color set.
+    /// gallery paints them. There is one catalog for the one design system,
+    /// so palette invariants cover every shipped color set.
     pub const ALL: [ThemeId; 13] = [
         Self::Orbit,
         Self::OrbitDarker,
@@ -144,14 +97,6 @@ impl ThemeId {
             Self::Operational => "operational",
             Self::OperationalLight => "operational-light",
             Self::OrbitOnyx => "orbit-onyx",
-        }
-    }
-
-    /// The design system this palette belongs to.
-    pub fn design_system(self) -> DesignSystem {
-        match self {
-            Self::Operational | Self::OperationalLight => DesignSystem::Operational,
-            _ => DesignSystem::Classic,
         }
     }
 
@@ -2117,15 +2062,6 @@ mod tests {
     }
 
     #[test]
-    fn design_system_keys_round_trip() {
-        for system in DesignSystem::ALL {
-            assert_eq!(DesignSystem::parse(system.as_str()), Some(system));
-            assert_eq!(system.theme_id(ThemeMode::Dark).design_system(), system);
-            assert_eq!(system.theme_id(ThemeMode::Light).design_system(), system);
-        }
-    }
-
-    #[test]
     fn parse_theme_id() {
         assert_eq!(ThemeId::parse("orbit"), Some(ThemeId::Orbit));
         assert_eq!(ThemeId::parse("orbit-light"), Some(ThemeId::OrbitLight));
@@ -2703,7 +2639,7 @@ mod tests {
                         "{id:?}: active must sit above hover"
                     );
                 }
-                ThemeMode::Light if id.design_system() == DesignSystem::Operational => {
+                ThemeMode::Light if id == ThemeId::OperationalLight => {
                     // Operational light is paper-canvas + white panels: the
                     // raised step is the brightest plane, so it lifts off the
                     // warm canvas instead of recessing into it. The interaction
@@ -2855,11 +2791,6 @@ mod tests {
         assert_eq!(ThemeId::OrbitAzureLight.label(), "Orbit Azure Light");
         assert_eq!(ThemeId::Operational.label(), "Operational");
         assert_eq!(ThemeId::OperationalLight.label(), "Operational Light");
-        assert_eq!(
-            ThemeId::Operational.design_system(),
-            DesignSystem::Operational
-        );
-        assert_eq!(ThemeId::Orbit.design_system(), DesignSystem::Classic);
         // The reverted default is the ember identity; Azure is the blue design.
         assert_eq!(
             Theme::for_id(ThemeId::Orbit).accent,

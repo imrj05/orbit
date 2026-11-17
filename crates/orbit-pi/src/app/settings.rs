@@ -8,8 +8,9 @@ use crate::theme::tokens::{
     DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
 use crate::theme::MotionPreference;
+use crate::ui::button::settings_segment;
 use crate::ui::style::surface::SurfaceExt;
-use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
+use gpui::{canvas, Bounds, DispatchPhase, Div, Hitbox, HitboxBehavior, MouseMoveEvent, Stateful};
 
 // Font registration completes at startup, before settings can render. Cache the
 // snapshot for this process rather than enumerating platform fonts each frame.
@@ -182,7 +183,7 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
     (SettingsSection::Agent, "icons/spark.svg", "settings.agent"),
     (
         SettingsSection::Worktrees,
-        "icons/branch.svg",
+        "icons/worktree-settings.svg",
         "worktree.settings.title",
     ),
     (
@@ -402,18 +403,18 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     ),
     (
         SettingsSection::Appearance,
-        "settings.design_system",
-        "design system classic operational minimalism visual language",
+        "settings.accent_color",
+        "accent color colour tint highlight swatch",
     ),
     (
         SettingsSection::Appearance,
         "settings.theme",
-        "theme palette color light dark editor",
+        "theme palette color light dark editor classic operational flexoki orbit",
     ),
     (
         SettingsSection::Appearance,
-        "settings.wallpaper",
-        "wallpaper background image photo desktop hero full window",
+        "settings.background_section",
+        "background wallpaper image photo desktop hero full window placement",
     ),
     (
         SettingsSection::Appearance,
@@ -3857,15 +3858,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: ProviderAction,
     ) -> AnyElement {
-        self.provider_button_sized(
-            id,
-            label,
-            style,
-            ButtonSize::Medium,
-            theme,
-            this,
-            action,
-        )
+        self.provider_button_sized(id, label, style, ButtonSize::Medium, theme, this, action)
     }
 
     /// [`Self::provider_button`] at a caller-chosen frame height. A modal
@@ -6193,25 +6186,12 @@ impl OrbitApp {
                     .map(|(index, (label, value_all, id))| {
                         let this = this.clone();
                         let active = all == value_all;
-                        segmented_segment(
+                        settings_segment(
                             div().id(id),
                             &theme,
-                            ButtonSize::Medium,
                             SegmentPosition::at(index, count),
+                            active,
                         )
-                        .font_weight(FontWeight::MEDIUM)
-                        .cursor_pointer()
-                        .when(active, |b| {
-                            b.border_color(theme.border)
-                                .raised_flat(theme.surface_selected)
-                                .text_color(theme.text_primary)
-                        })
-                        .when(!active, |b| {
-                            b.border_color(theme.border)
-                                .raised_flat(theme.surface_elevated)
-                                .text_color(theme.text_secondary)
-                                .hover_state(&theme)
-                        })
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             this.update(cx, |app, cx| set(app, value_all, cx));
                         })
@@ -6644,61 +6624,71 @@ impl OrbitApp {
 
     // ── Appearance ─────────────────────────────────────────────────────
 
-    /// The Appearance section: theme, wallpaper, type & density, and layout.
-    /// Grouped boards with hairline-separated rows, each section led by a live
-    /// preview so a change is legible on the page before you leave it.
+    /// The Appearance section: Theme, Background, Type & density, Layout and
+    /// Language. Theme and Background lead with what they paint — palette
+    /// thumbnails and the wallpaper itself — so a choice reads on the page
+    /// before you leave it.
     pub(super) fn appearance_rows(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
+        let prefs = theme::appearance_prefs(cx);
+        // One design system: every palette — the Orbit family, Flexoki and
+        // Operational — sits in the same two galleries, one per appearance.
+        // Each gallery remembers its own choice, so a System appearance has a
+        // palette ready for either side.
         let theme_rows = vec![
-            // The design-system switch comes first: it selects the visual
-            // language (Classic or Operational) without touching the
-            // remembered palette in either system.
-            self.setting_row(
-                theme,
-                &tr!("settings.design_system"),
-                Some(&tr!("settings.design_system_description")),
-                None,
-                Some(self.design_system_control(theme, this.clone(), cx)),
-            ),
-            self.setting_row(
+            self.setting_block(
                 theme,
                 &tr!("settings.appearance"),
                 Some(&tr!("settings.appearance_mode_description")),
                 None,
-                Some(self.appearance_mode_control(theme, this.clone(), cx)),
+                self.appearance_mode_cards(theme, prefs, this.clone()),
             ),
-            // One Theme control, not one per appearance mode. It shows and
-            // edits the palette currently in effect, and each mode's choice is
-            // remembered separately. The list is filtered to the active
-            // design system.
-            self.setting_row(
-                theme,
-                &tr!("settings.theme"),
-                None,
-                None,
-                Some(self.theme_select(theme.mode, theme, this.clone(), cx)),
-            ),
-            self.setting_row(
+            self.palette_gallery(ThemeMode::Dark, theme, prefs, this.clone()),
+            self.palette_gallery(ThemeMode::Light, theme, prefs, this.clone()),
+            self.setting_block(
                 theme,
                 &tr!("settings.accent_color"),
-                None,
-                None,
-                Some(self.accent_color_control(theme, this.clone(), cx)),
-            ),
-            self.setting_row(
-                theme,
-                &tr!("language.title"),
-                Some(&tr!("language.description")),
-                None,
-                Some(self.language_select(theme, this.clone(), cx)),
+                Some(&tr!("settings.accent_color_description")),
+                Some(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
+                        .child(accent_label(prefs.accent_color))
+                        .into_any_element(),
+                ),
+                self.accent_swatches(theme, prefs, this.clone()),
             ),
         ];
+        let settings = crate::wallpaper::settings();
         let mut sections = vec![
-            self.settings_section(theme, &tr!("settings.theme_and_background"), theme_rows),
+            self.settings_section_desc(
+                theme,
+                &tr!("settings.theme"),
+                Some(&tr!("settings.theme_section_description")),
+                theme_rows,
+            ),
+            self.settings_section_desc(
+                theme,
+                &tr!("settings.background_section"),
+                Some(&tr!("settings.background_section_description")),
+                self.wallpaper_rows(theme, this.clone(), cx, &settings),
+            ),
+        ];
+        // The tuning sliders only mean something once there is an image, so
+        // the board appears with it instead of sitting inert under an empty
+        // preview.
+        if settings.path.is_some() {
+            sections.push(self.settings_section(
+                theme,
+                &tr!("wallpaper.adjustments"),
+                self.wallpaper_adjustment_rows(theme, this.clone(), &settings),
+            ));
+        }
+        sections.extend([
             self.settings_section(
                 theme,
                 &tr!("settings.type_and_density"),
@@ -6819,59 +6809,373 @@ impl OrbitApp {
                     ),
                 ],
             ),
-        ];
-        // The wallpaper board sits directly under the theme card. Its own
-        // preview and controls are self-contained.
-        sections.insert(
-            1,
             self.settings_section(
                 theme,
-                &tr!("settings.wallpaper"),
-                self.wallpaper_rows(theme, this.clone(), cx),
+                &tr!("language.title"),
+                vec![self.setting_row(
+                    theme,
+                    &tr!("language.interface"),
+                    Some(&tr!("language.description")),
+                    None,
+                    Some(self.language_select(theme, this, cx)),
+                )],
             ),
-        );
+        ]);
         sections
     }
 
-    /// Appearance → the wallpaper board: preview, mode, image picker, effect,
-    /// and the continuous controls. The tuning rows only appear once an image
-    /// exists.
+    /// A settings row whose control is a visual picker too wide for the
+    /// right-hand control axis: the title and description on top, an optional
+    /// note level with the title, and the picker full-width beneath.
+    pub(super) fn setting_block(
+        &self,
+        theme: Theme,
+        title: &str,
+        desc: Option<&str>,
+        aside: Option<AnyElement>,
+        body: AnyElement,
+    ) -> AnyElement {
+        div()
+            .w_full()
+            .flex_none()
+            .px(DynamicSpacing::Base16.px(&theme))
+            .pt(DynamicSpacing::Base12.px(&theme))
+            .pb(DynamicSpacing::Base16.px(&theme))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_start()
+                    .gap(DynamicSpacing::Base16.px(&theme))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(DynamicSpacing::Base03.px(&theme))
+                            .child(
+                                div()
+                                    .text_size(TextSize::Default.px(&theme))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text_primary)
+                                    .child(title.to_string()),
+                            )
+                            .children(desc.map(|desc| {
+                                div()
+                                    .min_w_0()
+                                    .text_size(TextSize::Default.px(&theme))
+                                    .text_color(theme.text_secondary)
+                                    .whitespace_normal()
+                                    .child(desc.to_string())
+                            })),
+                    )
+                    .children(aside.map(|aside| div().flex_none().child(aside))),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
+    /// Light / Dark / System as three picture cards. Each thumbnail is painted
+    /// from the palette that mode would use — System shows both halves — so
+    /// the choice is a preview, not a word.
+    fn appearance_mode_cards(
+        &self,
+        theme: Theme,
+        prefs: theme::AppearancePrefs,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        use theme::AppearanceMode;
+        let current = prefs.mode;
+        let light = prefs.apply(Theme::for_id(prefs.theme(ThemeMode::Light)));
+        let dark = prefs.apply(Theme::for_id(prefs.theme(ThemeMode::Dark)));
+        let keyboard_this = this.clone();
+        let count = AppearanceMode::ALL.len();
+        settings_radio_group(div().id("appearance-mode"), &theme)
+            .mx(flush_inset(&theme))
+            .grid()
+            .grid_cols(count as u16)
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .on_key_down(move |event, _, cx| {
+                let index = AppearanceMode::ALL
+                    .iter()
+                    .position(|mode| *mode == current)
+                    .unwrap_or(0);
+                let Some(next) = radio_step(event.keystroke.key.as_str(), index, count, count)
+                else {
+                    return;
+                };
+                cx.stop_propagation();
+                keyboard_this.update(cx, |app, cx| {
+                    app.set_appearance_mode(AppearanceMode::ALL[next], cx);
+                });
+            })
+            .children(AppearanceMode::ALL.into_iter().map(|mode| {
+                let this = this.clone();
+                let (label, thumbnail) = match mode {
+                    AppearanceMode::Light => (
+                        tr!("settings.appearance_light"),
+                        palette_thumbnail(light).into_any_element(),
+                    ),
+                    AppearanceMode::Dark => (
+                        tr!("settings.appearance_dark"),
+                        palette_thumbnail(dark).into_any_element(),
+                    ),
+                    AppearanceMode::System => (
+                        tr!("settings.appearance_system"),
+                        split_thumbnail(light, dark).into_any_element(),
+                    ),
+                };
+                choice_card(
+                    div().id(mode.as_str()),
+                    &theme,
+                    current == mode,
+                    px(MODE_THUMB_H),
+                    thumbnail,
+                    label.to_string(),
+                )
+                .on_click(move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_appearance_mode(mode, cx));
+                })
+            }))
+            .into_any_element()
+    }
+
+    /// One appearance's palettes as a grid of thumbnails. Every palette of
+    /// that appearance is offered — there is one catalog — and the gallery
+    /// whose appearance is on screen is marked "In use".
+    fn palette_gallery(
+        &self,
+        mode: ThemeMode,
+        theme: Theme,
+        prefs: theme::AppearancePrefs,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        let catalog = self.theme_catalog(mode);
+        let selected = prefs.theme(mode);
+        let (title, desc, group_id) = match mode {
+            ThemeMode::Dark => (
+                tr!("settings.dark_themes"),
+                tr!("settings.dark_themes_description"),
+                "theme-gallery-dark",
+            ),
+            ThemeMode::Light => (
+                tr!("settings.light_themes"),
+                tr!("settings.light_themes_description"),
+                "theme-gallery-light",
+            ),
+        };
+        let in_use = (theme.mode == mode).then(|| {
+            div()
+                .h(ButtonSize::Default.height(&theme))
+                .px(DynamicSpacing::Base06.px(&theme))
+                .flex()
+                .items_center()
+                .rounded(Radius::Small.px(&theme))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface_elevated)
+                .text_size(TextSize::XSmall.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_secondary)
+                .child(tr!("settings.theme_in_use"))
+                .into_any_element()
+        });
+        let keyboard_this = this.clone();
+        let keyboard_catalog = catalog.clone();
+        let gallery = settings_radio_group(div().id(group_id), &theme)
+            .mx(flush_inset(&theme))
+            .grid()
+            .grid_cols(PALETTE_COLUMNS)
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .on_key_down(move |event, _, cx| {
+                let count = keyboard_catalog.len();
+                let index = keyboard_catalog
+                    .iter()
+                    .position(|id| *id == selected)
+                    .unwrap_or(0);
+                let Some(next) = radio_step(
+                    event.keystroke.key.as_str(),
+                    index,
+                    count,
+                    PALETTE_COLUMNS as usize,
+                ) else {
+                    return;
+                };
+                cx.stop_propagation();
+                let id = keyboard_catalog[next];
+                keyboard_this.update(cx, |app, cx| app.choose_palette(mode, id, cx));
+            })
+            .children(catalog.into_iter().map(|id| {
+                let this = this.clone();
+                choice_card(
+                    div().id(ElementId::Name(format!("theme-{}", id.as_str()).into())),
+                    &theme,
+                    id == selected,
+                    px(PALETTE_THUMB_H),
+                    palette_thumbnail(prefs.apply(Theme::for_id(id))).into_any_element(),
+                    id.label().to_string(),
+                )
+                .on_click(move |_, _, cx| {
+                    this.update(cx, |app, cx| app.choose_palette(mode, id, cx));
+                })
+            }))
+            .into_any_element();
+        self.setting_block(theme, &title, Some(&desc), in_use, gallery)
+    }
+
+    /// Remember `id` as the palette for `mode`. With an explicit Light or Dark
+    /// appearance, a palette picked from the other gallery switches to that
+    /// appearance, so a click always shows what was chosen. System keeps
+    /// following the OS; the gallery's description says when it applies.
+    pub(super) fn choose_palette(
+        &mut self,
+        mode: ThemeMode,
+        id: theme::ThemeId,
+        cx: &mut Context<Self>,
+    ) {
+        let mut prefs = theme::appearance_prefs(cx);
+        prefs.set_theme(mode, id);
+        if prefs.mode != theme::AppearanceMode::System {
+            prefs.mode = match mode {
+                ThemeMode::Light => theme::AppearanceMode::Light,
+                ThemeMode::Dark => theme::AppearanceMode::Dark,
+            };
+        }
+        if let Err(error) = theme::set_appearance_prefs(cx, prefs) {
+            self.toast_error(tr!("settings.appearance_save_failed", error = error));
+        }
+        cx.notify();
+    }
+
+    /// The accent choices as colour swatches, each painted with the accent it
+    /// would give the current palette. The chosen swatch is ringed in the
+    /// accent it chose; its name sits beside the row title.
+    fn accent_swatches(
+        &self,
+        theme: Theme,
+        prefs: theme::AppearancePrefs,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        use theme::AccentColor;
+        let current = prefs.accent_color;
+        let base = Theme::for_id(theme.theme_id);
+        let keyboard_this = this.clone();
+        let count = AccentColor::ALL.len();
+        let swatch = |color: AccentColor| {
+            let this = this.clone();
+            let active = color == current;
+            div()
+                .id(ElementId::Name(format!("accent-{}", color.as_str()).into()))
+                .flex_none()
+                .size(px(ACCENT_RING))
+                .rounded_full()
+                .border_1()
+                .border_color(if active {
+                    theme.accent
+                } else {
+                    gpui::transparent_black()
+                })
+                .when(!active, |ring| ring.hover_border(&theme))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .tip(accent_label(color))
+                .on_click(move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_accent_color(color, cx));
+                })
+                .child(
+                    div()
+                        .size(px(ACCENT_SWATCH))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(color.apply(base).accent),
+                )
+                .into_any_element()
+        };
+        let mut swatches = vec![
+            swatch(AccentColor::Default),
+            // The palette's own accent leads, set apart from the named hues.
+            div()
+                .flex_none()
+                .w(BORDER_WIDTH)
+                .h(px(ACCENT_SWATCH))
+                .mx(DynamicSpacing::Base04.px(&theme))
+                .bg(theme.border)
+                .into_any_element(),
+        ];
+        swatches.extend(AccentColor::ALL.into_iter().skip(1).map(swatch));
+        settings_radio_group(div().id("accent-color"), &theme)
+            .mx(flush_inset(&theme))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .on_key_down(move |event, _, cx| {
+                let index = AccentColor::ALL
+                    .iter()
+                    .position(|color| *color == current)
+                    .unwrap_or(0);
+                let Some(next) = radio_step(event.keystroke.key.as_str(), index, count, count)
+                else {
+                    return;
+                };
+                cx.stop_propagation();
+                keyboard_this.update(cx, |app, cx| {
+                    app.set_accent_color(AccentColor::ALL[next], cx);
+                });
+            })
+            .children(swatches)
+            .into_any_element()
+    }
+
+    /// Appearance → Background: the preview first, and with no image an empty
+    /// state that offers the one action that matters. Once an image exists:
+    /// the file, where it sits, and the artwork effect.
     fn wallpaper_rows(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
+        settings: &crate::wallpaper::WallpaperSettings,
     ) -> Vec<AnyElement> {
-        let settings = crate::wallpaper::settings();
-        let this_for_controls = this.clone();
-        let mut rows = vec![
-            self.wallpaper_preview(theme, &settings),
-            self.setting_row(
-                theme,
-                &tr!("wallpaper.mode"),
-                Some(&tr!("wallpaper.mode_description")),
-                None,
-                Some(self.wallpaper_mode_select(theme, this_for_controls.clone(), cx)),
-            ),
-            self.setting_row(
-                theme,
-                &tr!("wallpaper.image"),
-                Some(&tr!("wallpaper.image_description")),
-                settings.display_label(),
-                Some(self.wallpaper_controls(theme, this_for_controls.clone())),
-            ),
-            self.setting_row(
-                theme,
-                &tr!("wallpaper.effect"),
-                Some(&tr!("wallpaper.effect_description")),
-                None,
-                Some(self.wallpaper_effect_select(theme, this_for_controls, cx)),
-            ),
-        ];
+        let mut rows = vec![self.wallpaper_preview(theme, settings, this.clone())];
+        if let Some(error) = crate::wallpaper::last_error() {
+            rows.push(self.setting_row(theme, &tr!("wallpaper.error"), Some(&error), None, None));
+        }
+        if settings.path.is_none() {
+            return rows;
+        }
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.image"),
+            Some(&tr!("wallpaper.image_description")),
+            settings.display_label(),
+            Some(self.wallpaper_controls(theme, this.clone())),
+        ));
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.placement"),
+            Some(&tr!("wallpaper.mode_description")),
+            None,
+            Some(self.wallpaper_placement_control(theme, settings, this.clone())),
+        ));
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.effect"),
+            Some(&tr!("wallpaper.effect_description")),
+            None,
+            Some(self.wallpaper_effect_select(theme, this.clone(), cx)),
+        ));
         // Intensity and pixel size only mean something while an effect is
         // replacing the photograph, so the rows appear with the effect instead
         // of sitting inert next to `None`.
-        if settings.path.is_some() && settings.effect != crate::wallpaper_fx::Effect::None {
+        if settings.effect != crate::wallpaper_fx::Effect::None {
             rows.push(self.setting_row(
                 theme,
                 &tr!("wallpaper.effect_intensity"),
@@ -6881,7 +7185,7 @@ impl OrbitApp {
                     WallpaperSlider::EffectIntensity,
                     theme,
                     this.clone(),
-                    &settings,
+                    settings,
                 )),
             ));
             rows.push(self.setting_row(
@@ -6889,99 +7193,133 @@ impl OrbitApp {
                 &tr!("wallpaper.effect_pixel_size"),
                 Some(&tr!("wallpaper.effect_pixel_size_description")),
                 None,
-                Some(self.wallpaper_slider(
-                    WallpaperSlider::EffectScale,
-                    theme,
-                    this.clone(),
-                    &settings,
-                )),
+                Some(self.wallpaper_slider(WallpaperSlider::EffectScale, theme, this, settings)),
             ));
-        }
-        if let Some(error) = crate::wallpaper::last_error() {
-            rows.push(self.setting_row(theme, &tr!("wallpaper.error"), Some(&error), None, None));
-        }
-        if settings.path.is_some() {
-            rows.push(self.setting_row(
-                theme,
-                &tr!("wallpaper.image_opacity"),
-                Some(&tr!("wallpaper.image_opacity_description")),
-                None,
-                Some(self.wallpaper_slider(
-                    WallpaperSlider::ImageOpacity,
-                    theme,
-                    this.clone(),
-                    &settings,
-                )),
-            ));
-            if settings.mode != crate::wallpaper::WallpaperMode::Disabled {
-                rows.push(self.setting_row(
-                    theme,
-                    &tr!("wallpaper.blur"),
-                    Some(&tr!("wallpaper.blur_description")),
-                    None,
-                    Some(self.wallpaper_slider(
-                        WallpaperSlider::Blur,
-                        theme,
-                        this.clone(),
-                        &settings,
-                    )),
-                ));
-                rows.push(self.setting_row(
-                    theme,
-                    &tr!("wallpaper.card_opacity"),
-                    Some(&tr!("wallpaper.card_opacity_description")),
-                    None,
-                    Some(self.wallpaper_slider(
-                        WallpaperSlider::CardOpacity,
-                        theme,
-                        this.clone(),
-                        &settings,
-                    )),
-                ));
-                if gpui::backdrop_blur_supported() {
-                    rows.push(self.setting_row(
-                        theme,
-                        &tr!("wallpaper.glass"),
-                        Some(&tr!("wallpaper.glass_description")),
-                        None,
-                        Some(self.settings_toggle(
-                            "wallpaper-glass",
-                            settings.glass,
-                            theme,
-                            this.clone(),
-                            Self::toggle_wallpaper_glass,
-                        )),
-                    ));
-                }
-                rows.push(self.setting_row(
-                    theme,
-                    &tr!("wallpaper.derive_accent"),
-                    Some(&tr!("wallpaper.derive_accent_description")),
-                    None,
-                    Some(self.settings_toggle(
-                        "wallpaper-accent",
-                        settings.derive_accent,
-                        theme,
-                        this,
-                        Self::toggle_wallpaper_accent,
-                    )),
-                ));
-            }
         }
         rows
     }
 
+    /// Appearance → Image adjustments: how the image reads through the window
+    /// and the panes. Shown only while an image exists; the pane controls
+    /// only while it is placed somewhere.
+    fn wallpaper_adjustment_rows(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        settings: &crate::wallpaper::WallpaperSettings,
+    ) -> Vec<AnyElement> {
+        let mut rows = vec![self.setting_row(
+            theme,
+            &tr!("wallpaper.image_opacity"),
+            Some(&tr!("wallpaper.image_opacity_description")),
+            None,
+            Some(self.wallpaper_slider(
+                WallpaperSlider::ImageOpacity,
+                theme,
+                this.clone(),
+                settings,
+            )),
+        )];
+        if settings.mode == crate::wallpaper::WallpaperMode::Disabled {
+            return rows;
+        }
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.blur"),
+            Some(&tr!("wallpaper.blur_description")),
+            None,
+            Some(self.wallpaper_slider(WallpaperSlider::Blur, theme, this.clone(), settings)),
+        ));
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.card_opacity"),
+            Some(&tr!("wallpaper.card_opacity_description")),
+            None,
+            Some(self.wallpaper_slider(
+                WallpaperSlider::CardOpacity,
+                theme,
+                this.clone(),
+                settings,
+            )),
+        ));
+        if gpui::backdrop_blur_supported() {
+            rows.push(self.setting_row(
+                theme,
+                &tr!("wallpaper.glass"),
+                Some(&tr!("wallpaper.glass_description")),
+                None,
+                Some(self.settings_toggle(
+                    "wallpaper-glass",
+                    settings.glass,
+                    theme,
+                    this.clone(),
+                    Self::toggle_wallpaper_glass,
+                )),
+            ));
+        }
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.derive_accent"),
+            Some(&tr!("wallpaper.derive_accent_description")),
+            None,
+            Some(self.settings_toggle(
+                "wallpaper-accent",
+                settings.derive_accent,
+                theme,
+                this,
+                Self::toggle_wallpaper_accent,
+            )),
+        ));
+        rows
+    }
+
+    /// The wallpaper as it paints now, over the dot field. With no image the
+    /// preview is the empty state and carries the Choose action; with an
+    /// image that is placed nowhere it says so instead of showing dots alone.
     fn wallpaper_preview(
         &self,
         theme: Theme,
         settings: &crate::wallpaper::WallpaperSettings,
+        this: Entity<OrbitApp>,
     ) -> AnyElement {
+        let has_image = settings.path.is_some();
+        let caption = |title: String, body: String| {
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .px(DynamicSpacing::Base24.px(&theme))
+                .child(icon(
+                    "icons/image.svg",
+                    IconSize::Medium.px(&theme),
+                    theme.text_muted,
+                ))
+                .child(
+                    div()
+                        .text_size(TextSize::Default.px(&theme))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_primary)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_secondary)
+                        .text_align(TextAlign::Center)
+                        .whitespace_normal()
+                        .child(body),
+                )
+        };
         let preview = div()
             .id("wallpaper-preview")
             .debug_selector(|| "wallpaper-preview".to_string())
             .relative()
             .w_full()
-            .h(px(84.))
+            .h(px(WALLPAPER_PREVIEW_H))
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border)
@@ -6991,71 +7329,122 @@ impl OrbitApp {
                 crate::wallpaper::preview(theme)
             } else {
                 None
+            })
+            .when(!has_image, |preview| {
+                preview.child(
+                    caption(tr!("wallpaper.empty_title"), tr!("wallpaper.empty_body")).child(
+                        div()
+                            .pt(DynamicSpacing::Base04.px(&theme))
+                            .child(self.runtime_button(
+                                "wallpaper-choose",
+                                &tr!("settings.choose_image"),
+                                true,
+                                theme,
+                                this,
+                                OrbitApp::wallpaper_choose,
+                            )),
+                    ),
+                )
+            })
+            .when(has_image && !settings.enabled(), |preview| {
+                preview.child(caption(
+                    tr!("wallpaper.hidden_title"),
+                    tr!("wallpaper.hidden_body"),
+                ))
             });
         div()
             .w_full()
-            .px(DynamicSpacing::Base16.px(&theme))
-            .py(DynamicSpacing::Base12.px(&theme))
+            .p(DynamicSpacing::Base16.px(&theme))
             .child(preview)
             .into_any_element()
     }
 
+    /// Replace or remove the image. Only shown once there is one; the empty
+    /// preview carries the first Choose.
     fn wallpaper_controls(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let settings = crate::wallpaper::settings();
-        let choose_label = if settings.path.is_some() {
-            tr!("settings.replace_ellipsis")
-        } else {
-            tr!("settings.choose_image")
-        };
-        let mut controls = div()
+        div()
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(self.runtime_button(
                 "wallpaper-choose",
-                &choose_label,
+                &tr!("settings.replace_ellipsis"),
                 false,
                 theme,
                 this.clone(),
                 OrbitApp::wallpaper_choose,
-            ));
-        if settings.path.is_some() || settings.mode != crate::wallpaper::WallpaperMode::Disabled {
-            controls = controls.child(self.runtime_button(
+            ))
+            .child(self.runtime_button(
                 "wallpaper-reset",
                 &tr!("wallpaper.reset_action"),
                 false,
                 theme,
                 this,
                 OrbitApp::wallpaper_reset,
-            ));
-        }
-        controls.into_any_element()
+            ))
+            .into_any_element()
     }
 
-    fn wallpaper_mode_select(
+    /// Where the image sits, as one keyboard-focusable segmented radio group:
+    /// three short choices read faster side by side than in a dropdown.
+    fn wallpaper_placement_control(
         &self,
         theme: Theme,
+        settings: &crate::wallpaper::WallpaperSettings,
         this: Entity<OrbitApp>,
-        cx: &Context<Self>,
     ) -> AnyElement {
-        let settings = crate::wallpaper::settings();
-        let selected = crate::wallpaper::WallpaperMode::ALL
-            .iter()
-            .position(|mode| *mode == settings.mode)
-            .unwrap_or(0);
-        self.select_control(
-            "wallpaper-mode-select",
-            SettingsSelect::WallpaperMode,
-            wallpaper_mode_label(settings.mode),
-            crate::wallpaper::WallpaperMode::ALL
-                .iter()
-                .map(|mode| wallpaper_mode_label(*mode))
-                .collect(),
-            selected,
-            theme,
-            this,
-            cx,
-        )
+        use crate::wallpaper::WallpaperMode;
+        let current = settings.mode;
+        let keyboard_this = this.clone();
+        let count = WallpaperMode::ALL.len();
+        settings_radio_group(div().id("wallpaper-placement"), &theme)
+            .flex()
+            .items_center()
+            .on_key_down(move |event, _, cx| {
+                let index = WallpaperMode::ALL
+                    .iter()
+                    .position(|mode| *mode == current)
+                    .unwrap_or(0);
+                let Some(next) = radio_step(event.keystroke.key.as_str(), index, count, count)
+                else {
+                    return;
+                };
+                cx.stop_propagation();
+                keyboard_this.update(cx, |app, cx| {
+                    app.set_wallpaper_mode(WallpaperMode::ALL[next], cx);
+                });
+            })
+            .children(
+                WallpaperMode::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, mode)| {
+                        let this = this.clone();
+                        settings_segment(
+                            div().id(ElementId::Name(
+                                format!("wallpaper-placement-{}", mode.as_str()).into(),
+                            )),
+                            &theme,
+                            SegmentPosition::at(index, count),
+                            current == mode,
+                        )
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |app, cx| app.set_wallpaper_mode(mode, cx));
+                        })
+                        .child(wallpaper_mode_label(mode))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn set_wallpaper_mode(
+        &mut self,
+        mode: crate::wallpaper::WallpaperMode,
+        cx: &mut Context<Self>,
+    ) {
+        let mut settings = crate::wallpaper::settings();
+        settings.mode = mode;
+        self.set_wallpaper(settings, cx);
     }
 
     fn wallpaper_effect_select(
@@ -7204,120 +7593,6 @@ impl OrbitApp {
         self.set_wallpaper(settings, cx);
     }
 
-    /// One keyboard-focusable radio group for the visual language. The two
-    /// choices are stable identities; the Theme row below lists only the
-    /// palettes belonging to the chosen system.
-    fn design_system_control(
-        &self,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        use theme::DesignSystem;
-        let current = theme::appearance_prefs(cx).design_system;
-        let keyboard_this = this.clone();
-        let count = DesignSystem::ALL.len();
-        div()
-            .id("design-system")
-            .focusable()
-            .border_1()
-            .border_color(gpui::transparent_black())
-            .rounded(button::RADIUS.px(&theme))
-            .p(DynamicSpacing::Base04.px(&theme))
-            .focus(|style| style.border_color(theme.focus_ring))
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-            .flex()
-            .items_center()
-            .on_key_down(move |event, _, cx| {
-                let index = DesignSystem::ALL
-                    .iter()
-                    .position(|system| *system == current)
-                    .unwrap_or(0);
-                let next = match event.keystroke.key.as_str() {
-                    "left" | "up" => (index + count - 1) % count,
-                    "right" | "down" => (index + 1) % count,
-                    "home" => 0,
-                    "end" => count - 1,
-                    _ => return,
-                };
-                cx.stop_propagation();
-                keyboard_this.update(cx, |app, cx| {
-                    app.set_design_system(DesignSystem::ALL[next], cx);
-                });
-            })
-            .children(
-                DesignSystem::ALL
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, system)| {
-                        let this = this.clone();
-                        let active = current == system;
-                        let label = match system {
-                            DesignSystem::Classic => tr!("settings.design_system_classic"),
-                            DesignSystem::Operational => {
-                                tr!("settings.design_system_operational")
-                            }
-                        };
-                        segmented_segment(
-                            div().id(system.as_str()),
-                            &theme,
-                            ButtonSize::Medium,
-                            SegmentPosition::at(index, count),
-                        )
-                        .font_weight(FontWeight::MEDIUM)
-                        .cursor_pointer()
-                        .when(active, |b| {
-                            b.border_color(theme.border)
-                                .raised_flat(theme.surface_selected)
-                                .text_color(theme.text_primary)
-                        })
-                        .when(!active, |b| {
-                            b.border_color(theme.border)
-                                .raised_flat(theme.surface_elevated)
-                                .text_color(theme.text_secondary)
-                                .hover_state(&theme)
-                        })
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |app, cx| app.set_design_system(system, cx));
-                        })
-                        .child(label)
-                    }),
-            )
-            .into_any_element()
-    }
-
-    fn accent_color_control(
-        &self,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        use theme::AccentColor;
-        let current = theme::appearance_prefs(cx).accent_color;
-        let label = |color: AccentColor| match color {
-            AccentColor::Default => tr!("settings.accent_default").to_string(),
-            AccentColor::Blue => tr!("settings.accent_blue").to_string(),
-            AccentColor::Coral => tr!("settings.accent_coral").to_string(),
-            AccentColor::Orange => tr!("settings.accent_orange").to_string(),
-            AccentColor::Lime => tr!("settings.accent_lime").to_string(),
-            _ => color.label().to_string(),
-        };
-        let selected = AccentColor::ALL
-            .iter()
-            .position(|color| *color == current)
-            .unwrap_or(0);
-        self.select_control(
-            "accent-color-select",
-            SettingsSelect::AccentColor,
-            label(current),
-            AccentColor::ALL.into_iter().map(label).collect(),
-            selected,
-            theme,
-            this,
-            cx,
-        )
-    }
-
     fn set_accent_color(&mut self, color: theme::AccentColor, cx: &mut Context<Self>) {
         let mut prefs = theme::appearance_prefs(cx);
         prefs.accent_color = color;
@@ -7325,100 +7600,6 @@ impl OrbitApp {
             self.toast_error(tr!("settings.appearance_save_failed", error = error));
         }
         cx.notify();
-    }
-
-    fn set_design_system(&mut self, design_system: theme::DesignSystem, cx: &mut Context<Self>) {
-        let mut prefs = theme::appearance_prefs(cx);
-        prefs.set_design_system(design_system);
-        if let Err(error) = theme::set_appearance_prefs(cx, prefs) {
-            self.toast_error(tr!("settings.appearance_save_failed", error = error));
-        }
-        cx.notify();
-    }
-
-    /// One keyboard-focusable radio group drawn as a segmented control (the
-    /// same control as the follow-up delivery mode); arrows choose the
-    /// adjacent mode.
-    fn appearance_mode_control(
-        &self,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        use theme::AppearanceMode;
-        let current = theme::appearance_prefs(cx).mode;
-        let keyboard_this = this.clone();
-        let count = AppearanceMode::ALL.len();
-        div()
-            .id("appearance-mode")
-            .focusable()
-            .border_1()
-            .border_color(gpui::transparent_black())
-            .rounded(button::RADIUS.px(&theme))
-            .p(DynamicSpacing::Base04.px(&theme))
-            .focus(|style| style.border_color(theme.focus_ring))
-            // gpui 0.2 has no `:focus-visible`: an automatic focus transfer
-            // on mouse-down would leave the accent ring behind after a click.
-            // Suppress that transfer so the ring only appears for keyboard
-            // focus; the segment's own `on_click` still selects on mouse-up.
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-            .flex()
-            .items_center()
-            .on_key_down(move |event, _, cx| {
-                let index = AppearanceMode::ALL
-                    .iter()
-                    .position(|mode| *mode == current)
-                    .unwrap_or(0);
-                let next = match event.keystroke.key.as_str() {
-                    "left" | "up" => (index + 2) % 3,
-                    "right" | "down" => (index + 1) % 3,
-                    "home" => 0,
-                    "end" => 2,
-                    _ => return,
-                };
-                cx.stop_propagation();
-                keyboard_this.update(cx, |app, cx| {
-                    app.set_appearance_mode(AppearanceMode::ALL[next], cx);
-                });
-            })
-            .children(
-                AppearanceMode::ALL
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, mode)| {
-                        let this = this.clone();
-                        let active = current == mode;
-                        let label = match mode {
-                            AppearanceMode::Light => tr!("settings.appearance_light"),
-                            AppearanceMode::Dark => tr!("settings.appearance_dark"),
-                            AppearanceMode::System => tr!("settings.appearance_system"),
-                        };
-                        segmented_segment(
-                            div().id(mode.as_str()),
-                            &theme,
-                            ButtonSize::Medium,
-                            SegmentPosition::at(index, count),
-                        )
-                        .font_weight(FontWeight::MEDIUM)
-                        .cursor_pointer()
-                        .when(active, |b| {
-                            b.border_color(theme.border)
-                                .raised_flat(theme.surface_selected)
-                                .text_color(theme.text_primary)
-                        })
-                        .when(!active, |b| {
-                            b.border_color(theme.border)
-                                .raised_flat(theme.surface_elevated)
-                                .text_color(theme.text_secondary)
-                                .hover_state(&theme)
-                        })
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |app, cx| app.set_appearance_mode(mode, cx));
-                        })
-                        .child(label)
-                    }),
-            )
-            .into_any_element()
     }
 
     fn set_appearance_mode(&mut self, mode: theme::AppearanceMode, cx: &mut Context<Self>) {
@@ -7729,41 +7910,12 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// The palettes the Theme dropdown lists, in the order it paints them:
-    /// every palette of `mode` in the active design system, in
-    /// [`theme::ThemeId::ALL`] order.
-    ///
-    /// Both the label builder and the click handler read this, so a row index
-    /// always resolves to the palette it painted.
-    pub(super) fn theme_catalog(&self, mode: ThemeMode, cx: &Context<Self>) -> Vec<theme::ThemeId> {
-        let design_system = theme::appearance_prefs(cx).design_system;
-        theme::themes_for_system(mode, design_system).collect()
-    }
-
-    /// Appearance → Theme. `mode` is the resolved appearance, so the row shows
-    /// and edits the palette currently in effect and each mode's choice is
-    /// remembered separately.
-    pub(super) fn theme_select(
-        &self,
-        mode: ThemeMode,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let catalog = self.theme_catalog(mode, cx);
-        let configured = theme::appearance_prefs(cx).theme(mode);
-        let selected = catalog.iter().position(|id| *id == configured).unwrap_or(0);
-        let options: Vec<String> = catalog.iter().map(|id| id.label().to_string()).collect();
-        self.select_control(
-            "theme-select",
-            SettingsSelect::Theme(mode),
-            configured.label().to_string(),
-            options,
-            selected,
-            theme,
-            this,
-            cx,
-        )
+    /// The palettes a gallery lists, in the order it paints them: every
+    /// palette of `mode` in [`theme::ThemeId::ALL`] order. Both the tiles and
+    /// the gallery's keyboard handler read this, so an index always resolves
+    /// to the palette it painted.
+    pub(super) fn theme_catalog(&self, mode: ThemeMode) -> Vec<theme::ThemeId> {
+        theme::themes_for(mode).collect()
     }
 
     // ── General-settings selects (language / font sizes) ──────────────
@@ -7824,11 +7976,8 @@ impl OrbitApp {
             SettingsSelect::Language
             | SettingsSelect::SuggestionsModel
             | SettingsSelect::ReportModel
-            | SettingsSelect::AccentColor
-            | SettingsSelect::Theme(_)
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
-            | SettingsSelect::WallpaperMode
             | SettingsSelect::WallpaperEffect
             | SettingsSelect::TitleModel
             | SettingsSelect::AgentCalls
@@ -8171,11 +8320,6 @@ impl OrbitApp {
                                 } else {
                                     theme.text_secondary
                                 })
-                                .when(kind == SettingsSelect::AccentColor, |row| {
-                                    let base = Theme::for_id(theme.theme_id);
-                                    let color = theme::AccentColor::ALL[orig_ix].apply(base).accent;
-                                    row.child(div().size(px(14.)).rounded_full().bg(color))
-                                })
                                 .when_some(provider, |row, provider| {
                                     row.child(icon_dyn(
                                         provider_icon(provider),
@@ -8387,24 +8531,6 @@ impl OrbitApp {
             return true;
         }
         match kind {
-            SettingsSelect::AccentColor => {
-                if let Some(color) = theme::AccentColor::ALL.get(ix).copied() {
-                    self.set_accent_color(color, cx);
-                }
-                return true;
-            }
-            SettingsSelect::Theme(mode) => {
-                let catalog = self.theme_catalog(mode, cx);
-                let Some(id) = catalog.get(ix).copied() else {
-                    return true;
-                };
-                let mut prefs = theme::appearance_prefs(cx);
-                prefs.set_theme(mode, id);
-                if let Err(error) = theme::set_appearance_prefs(cx, prefs) {
-                    self.toast_error(tr!("settings.appearance_save_failed", error = error));
-                }
-                return true;
-            }
             SettingsSelect::UiFontFamily | SettingsSelect::CodeFontFamily => {
                 let mut prefs = theme::font_prefs();
                 let current = match kind {
@@ -8547,16 +8673,6 @@ impl OrbitApp {
                 }
                 return true;
             }
-            SettingsSelect::WallpaperMode => {
-                let mode = crate::wallpaper::WallpaperMode::ALL
-                    .get(ix)
-                    .copied()
-                    .unwrap_or_default();
-                let mut settings = crate::wallpaper::settings();
-                settings.mode = mode;
-                self.set_wallpaper(settings, cx);
-                return true;
-            }
             SettingsSelect::WallpaperEffect => {
                 let effect = crate::wallpaper_fx::Effect::ALL
                     .get(ix)
@@ -8607,13 +8723,10 @@ impl OrbitApp {
             SettingsSelect::CornerRounding => {
                 ui.corner_rounding = (ix as u32).min(theme::MAX_CORNER_ROUNDING);
             }
-            SettingsSelect::Theme(_)
-            | SettingsSelect::SuggestionsModel
+            SettingsSelect::SuggestionsModel
             | SettingsSelect::ReportModel
-            | SettingsSelect::AccentColor
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
-            | SettingsSelect::WallpaperMode
             | SettingsSelect::WallpaperEffect
             | SettingsSelect::TitleModel
             | SettingsSelect::AgentCalls
@@ -9616,6 +9729,240 @@ impl OrbitApp {
     }
 }
 
+// ── Appearance pickers ────────────────────────────────────────────────────
+
+/// Columns in a palette gallery. Four keeps a seven-palette appearance to two
+/// rows at every settings width, and a tile wide enough to read as a window.
+const PALETTE_COLUMNS: u16 = 4;
+/// Thumbnail heights: the appearance cards are three across, so they stand a
+/// little taller than the four-across palette tiles.
+const MODE_THUMB_H: f32 = 76.;
+const PALETTE_THUMB_H: f32 = 64.;
+/// Accent swatch disc and the ring that marks the chosen one.
+const ACCENT_SWATCH: f32 = 18.;
+const ACCENT_RING: f32 = 26.;
+/// The wallpaper preview's height; tall enough for the empty state's action.
+const WALLPAPER_PREVIEW_H: f32 = 148.;
+
+/// The shared frame of a settings radio group: one tab stop whose focus ring
+/// wraps the whole group, with arrows choosing inside it. gpui 0.2 has no
+/// `:focus-visible`, so a click must not move focus here or the ring would
+/// stay behind after a mouse choice; the option's own `on_click` still fires.
+fn settings_radio_group(el: Stateful<Div>, theme: &Theme) -> Stateful<Div> {
+    let ring = theme.focus_ring;
+    el.focusable()
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .rounded(button::RADIUS.px(theme))
+        .p(DynamicSpacing::Base04.px(theme))
+        .focus(move |style| style.border_color(ring))
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+}
+
+/// The negative inset that lines a full-width radio group's options up with
+/// its row title: the group's own focus frame (padding plus the transparent
+/// hairline) would otherwise push them in.
+fn flush_inset(theme: &Theme) -> Pixels {
+    -(DynamicSpacing::Base04.px(theme) + BORDER_WIDTH)
+}
+
+/// The option a radio-group key moves to: left/right step and wrap, up/down
+/// step by a row of `columns` (and wrap like left/right when the whole group
+/// is one row), home/end jump to the ends. `None` for keys the group ignores.
+fn radio_step(key: &str, index: usize, count: usize, columns: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let one_row = columns >= count;
+    Some(match key {
+        "left" => (index + count - 1) % count,
+        "right" => (index + 1) % count,
+        "up" if one_row => (index + count - 1) % count,
+        "down" if one_row => (index + 1) % count,
+        "up" => index.checked_sub(columns).unwrap_or(index),
+        "down" if index + columns < count => index + columns,
+        "down" => index,
+        "home" => 0,
+        "end" => count - 1,
+        _ => return None,
+    })
+}
+
+/// A picture choice: a framed thumbnail over its label. The chosen card's
+/// frame takes the accent and its label a check; the rest step their hairline
+/// under the pointer. The caller supplies the id, the thumbnail and `on_click`.
+fn choice_card(
+    el: Stateful<Div>,
+    theme: &Theme,
+    active: bool,
+    thumbnail_h: Pixels,
+    thumbnail: AnyElement,
+    label: String,
+) -> Stateful<Div> {
+    let strong = theme.border_strong;
+    el.min_w_0()
+        .group("choice-card")
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base06.px(theme))
+        .cursor_pointer()
+        .child(
+            div()
+                .w_full()
+                .h(thumbnail_h)
+                .rounded(panel::RADIUS.px(theme))
+                .border_1()
+                .border_color(if active { theme.accent } else { theme.border })
+                .when(!active, |frame| {
+                    frame.group_hover("choice-card", move |style| style.border_color(strong))
+                })
+                .overflow_hidden()
+                .child(thumbnail),
+        )
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(DynamicSpacing::Base04.px(theme))
+                .text_size(TextSize::Small.px(theme))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if active {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                })
+                .child(div().min_w_0().truncate().child(label))
+                .when(active, |row| {
+                    row.child(icon(
+                        "icons/check.svg",
+                        IconSize::XSmall.px(theme),
+                        theme.accent_text,
+                    ))
+                }),
+        )
+}
+
+/// A miniature workbench painted from one palette: sidebar with its selected
+/// row, a heading and body lines, and the composer with an accent send dot.
+/// The palette owns these colours — this is a picture of it, not chrome — so
+/// it reads the same whichever palette is painting the settings page.
+fn palette_thumbnail(p: Theme) -> Div {
+    let line = |width: f32, color: Hsla| {
+        div()
+            .h(px(3.))
+            .w(gpui::relative(width))
+            .rounded_full()
+            .bg(color)
+    };
+    div()
+        .size_full()
+        .bg(p.background)
+        .flex()
+        .child(
+            div()
+                .w(gpui::relative(0.3))
+                .h_full()
+                .bg(p.surface)
+                .border_r_1()
+                .border_color(p.border)
+                .px(px(5.))
+                .py(px(7.))
+                .flex()
+                .flex_col()
+                .gap(px(5.))
+                .child(
+                    div()
+                        .h(px(7.))
+                        .w_full()
+                        .rounded(px(2.))
+                        .bg(p.surface_selected),
+                )
+                .child(line(0.8, p.text_muted))
+                .child(line(0.55, p.text_muted))
+                .child(line(0.7, p.text_muted)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .px(px(8.))
+                .py(px(7.))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .child(line(0.7, p.text_primary))
+                        .child(line(0.9, p.text_secondary))
+                        .child(line(0.5, p.text_secondary)),
+                )
+                .child(
+                    div()
+                        .h(px(14.))
+                        .w_full()
+                        .rounded(px(4.))
+                        .bg(p.surface_elevated)
+                        .border_1()
+                        .border_color(p.border)
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .px(px(3.))
+                        .child(div().size(px(7.)).rounded_full().bg(p.accent)),
+                ),
+        )
+}
+
+/// The System card: the light palette on the left half, the dark one on the
+/// right, each clipped from a full-width thumbnail so the two halves line up.
+fn split_thumbnail(light: Theme, dark: Theme) -> Div {
+    let half = |palette: Theme, left: bool| {
+        let clip = div()
+            .absolute()
+            .top_0()
+            .h_full()
+            .w(gpui::relative(0.5))
+            .overflow_hidden();
+        let picture = div()
+            .absolute()
+            .top_0()
+            .h_full()
+            .w(gpui::relative(2.))
+            .child(palette_thumbnail(palette));
+        if left {
+            clip.left_0().child(picture.left_0())
+        } else {
+            clip.right_0().child(picture.right_0())
+        }
+    };
+    div()
+        .size_full()
+        .relative()
+        .child(half(light, true))
+        .child(half(dark, false))
+}
+
+/// An accent choice's name, translated where the name is a word and kept as
+/// the colour's own name otherwise.
+fn accent_label(color: theme::AccentColor) -> String {
+    use theme::AccentColor;
+    match color {
+        AccentColor::Default => tr!("settings.accent_default").to_string(),
+        AccentColor::Blue => tr!("settings.accent_blue").to_string(),
+        AccentColor::Coral => tr!("settings.accent_coral").to_string(),
+        AccentColor::Orange => tr!("settings.accent_orange").to_string(),
+        AccentColor::Lime => tr!("settings.accent_lime").to_string(),
+        _ => color.label().to_string(),
+    }
+}
+
 fn wallpaper_mode_label(mode: crate::wallpaper::WallpaperMode) -> String {
     match mode {
         crate::wallpaper::WallpaperMode::Disabled => tr!("wallpaper.mode_disabled"),
@@ -9847,11 +10194,9 @@ mod settings_select_tests {
     }
 }
 
-/// The Theme dropdown's option list is the single ordering both the label
-/// builder and the click resolver read, so a row index always resolves to the
-/// palette it painted. Preferences are set in memory here; the real setter
-/// writes the user's `~/.orbit-pi/theme` and has no business running from a
-/// test.
+/// The palette galleries read one catalog per appearance — the Orbit family,
+/// Flexoki and Operational together — and the tile order and the keyboard
+/// handler both resolve through it.
 #[cfg(test)]
 mod theme_catalog_tests {
     use super::*;
@@ -9864,23 +10209,14 @@ mod theme_catalog_tests {
         })
     }
 
-    fn choose_dark_theme(cx: &mut gpui::TestAppContext, id: theme::ThemeId) {
-        cx.update(|cx| {
-            let mut prefs = theme::appearance_prefs(cx);
-            prefs.set_theme(ThemeMode::Dark, id);
-            cx.set_global(prefs);
-        });
-    }
-
     #[gpui::test]
-    fn catalog_lists_every_dark_palette(cx: &mut gpui::TestAppContext) {
+    fn one_catalog_lists_every_dark_palette_operational_included(cx: &mut gpui::TestAppContext) {
         let app = test_app(cx);
         let cx = cx.add_empty_window();
-        choose_dark_theme(cx, theme::ThemeId::Orbit);
         cx.update(|_, cx| {
-            app.update(cx, |app, cx| {
+            app.update(cx, |app, _| {
                 assert_eq!(
-                    app.theme_catalog(ThemeMode::Dark, cx),
+                    app.theme_catalog(ThemeMode::Dark),
                     vec![
                         theme::ThemeId::Orbit,
                         theme::ThemeId::OrbitDarker,
@@ -9888,6 +10224,7 @@ mod theme_catalog_tests {
                         theme::ThemeId::OrbitAzure,
                         theme::ThemeId::Flexoki,
                         theme::ThemeId::OrbitOnyx,
+                        theme::ThemeId::Operational,
                     ]
                 );
             });
@@ -9895,46 +10232,46 @@ mod theme_catalog_tests {
     }
 
     #[gpui::test]
-    fn catalog_follows_the_design_system(cx: &mut gpui::TestAppContext) {
+    fn one_catalog_lists_every_light_palette_operational_included(cx: &mut gpui::TestAppContext) {
         let app = test_app(cx);
         let cx = cx.add_empty_window();
         cx.update(|_, cx| {
-            let mut prefs = theme::appearance_prefs(cx);
-            prefs.set_design_system(theme::DesignSystem::Operational);
-            cx.set_global(prefs);
-        });
-        cx.update(|_, cx| {
-            app.update(cx, |app, cx| {
+            app.update(cx, |app, _| {
                 assert_eq!(
-                    app.theme_catalog(ThemeMode::Dark, cx),
-                    vec![theme::ThemeId::Operational]
-                );
-                assert_eq!(
-                    app.theme_catalog(ThemeMode::Light, cx),
-                    vec![theme::ThemeId::OperationalLight]
-                );
-            });
-        });
-    }
-
-    #[gpui::test]
-    fn catalog_lists_every_light_palette(cx: &mut gpui::TestAppContext) {
-        let app = test_app(cx);
-        let cx = cx.add_empty_window();
-        cx.update(|_, cx| {
-            app.update(cx, |app, cx| {
-                assert_eq!(
-                    app.theme_catalog(ThemeMode::Light, cx),
+                    app.theme_catalog(ThemeMode::Light),
                     vec![
                         theme::ThemeId::OrbitLight,
                         theme::ThemeId::OrbitAzureLight,
                         theme::ThemeId::OrbitPaper,
                         theme::ThemeId::OrbitContrast,
                         theme::ThemeId::FlexokiLight,
+                        theme::ThemeId::OperationalLight,
                     ]
                 );
             });
         });
+    }
+
+    #[test]
+    fn radio_keys_step_wrap_and_move_by_rows() {
+        // One row (the appearance cards, the placement segments, the accent
+        // swatches): every arrow steps and wraps.
+        assert_eq!(radio_step("right", 2, 3, 3), Some(0));
+        assert_eq!(radio_step("left", 0, 3, 3), Some(2));
+        assert_eq!(radio_step("down", 1, 3, 3), Some(2));
+        assert_eq!(radio_step("up", 0, 3, 3), Some(2));
+        // A four-column gallery of seven: up/down move a row and stop at the
+        // edge instead of wrapping into another column.
+        assert_eq!(radio_step("down", 1, 7, 4), Some(5));
+        assert_eq!(radio_step("down", 4, 7, 4), Some(4));
+        assert_eq!(radio_step("up", 5, 7, 4), Some(1));
+        assert_eq!(radio_step("up", 2, 7, 4), Some(2));
+        assert_eq!(radio_step("right", 6, 7, 4), Some(0));
+        assert_eq!(radio_step("home", 5, 7, 4), Some(0));
+        assert_eq!(radio_step("end", 0, 7, 4), Some(6));
+        // Keys the group does not own pass through.
+        assert_eq!(radio_step("tab", 0, 7, 4), None);
+        assert_eq!(radio_step("right", 0, 0, 4), None);
     }
 }
 

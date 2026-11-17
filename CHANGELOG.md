@@ -119,6 +119,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One design system, and a redesigned Theme and Background.** The
+  Classic / Operational switch is gone: Operational and Operational Light are
+  now ordinary palettes beside the Orbit family, Flexoki and Onyx. Settings →
+  Appearance → **Theme** shows Light, Dark and System as picture cards, then a
+  **Dark themes** and a **Light themes** gallery of thumbnails, each a
+  miniature workbench painted from that palette with your accent; each gallery
+  remembers its own choice and the one on screen is marked **In use**. Accent
+  colour is a row of swatches instead of a dropdown. **Background** leads with
+  a larger preview that, with no image, is an empty state with **Choose
+  image…**; placement is a segmented control, and the sliders and pane toggles
+  move to their own **Image adjustments** board once an image exists. Language
+  has its own section. Every picker is one tab stop, with arrow keys moving
+  inside it. If you had chosen the Operational design system, Orbit opens on
+  the Operational palettes as before.
+
 - **Toasts restyled after shadcn's toast.** Cards are cleaner: an inline status
   glyph instead of a tinted tile, a medium title over a muted description at
   the same size, roomier padding and a quiet × centred on the right. Several

@@ -509,12 +509,22 @@ Usage and Settings buttons. The callers retain localized tooltips, icons and mou
 open, hover, press and focus treatments are unchanged. A separate quiet icon
 action recipe now also owns the existing frame, pointer, hover and wash-press
 treatment for Review's tree, refresh and close buttons; their tooltips and
-handlers remain at the call sites. `ui/switch.rs` now owns the existing switch
+handlers remain at the call sites. `ui/button.rs` also owns `SegmentPosition`
+and `segmented_segment`, re-exported through `app/helpers.rs` for existing
+callers. A shared medium settings-segment recipe preserves the selected and
+resting treatment for delivery mode, design system, appearance mode and
+subagent mode; their labels, keyboard and pointer handlers remain local. Other
+segmented controls retain their distinct treatments. `ui/switch.rs` now owns the existing switch
 and its knob-travel test; `app/helpers.rs` re-exports `switch` unchanged, and
-the existing keyboard test remains at the compatibility path. This is not a
-general `IconButton` API or completion of the phase. `cargo check -p orbit-pi`
-passes after the switch move; switch tests and manual visual/glass verification
-remain pending.
+the existing keyboard test remains at the compatibility path. `ui/icon.rs` now
+owns the shared tinted SVG icon primitives and hover group, re-exported by
+`app/helpers.rs`; domain icons stay where they are. The existing layout
+regression test for SVG flex shrinking remains in `app/backdrop_layout_tests.rs`
+(it tests the GPUI behavior directly). This is not a general
+`IconButton` API or completion of the phase. `cargo check -p orbit-pi`
+passes after the switch move; the segmented-control migration has not had
+Cargo checks or tests run; the icon move likewise has not had Cargo checks or
+tests run. Switch tests and manual visual/glass verification remain pending.
 
 `Button`, `IconButton`, `ButtonGroup`, `LinkButton`, `Chip`, `ChipButton`,
 `Badge`, `Pill`, `Kbd`, `Switch` (moved), `Icon`.

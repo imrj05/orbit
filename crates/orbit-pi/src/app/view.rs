@@ -4309,7 +4309,7 @@ impl OrbitApp {
             &theme,
             explorer_visible,
             icon(
-                "icons/folder-open.svg",
+                "icons/folder-panel.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
                 if explorer_visible {
                     theme.text_primary
@@ -4378,7 +4378,7 @@ impl OrbitApp {
             .tip(commands::tooltip(CommandId::OpenGit, false))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_git_nav_click))
             .child(icon(
-                "icons/github.svg",
+                "icons/sidebar-git.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
                 if self.git_open {
                     theme.text_primary

@@ -20,6 +20,7 @@ use crate::subagents;
 use crate::theme::tokens::{
     button, input, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
+use crate::ui::button::settings_segment;
 
 /// One Skills-page-style dispatch point for every Subagents control.
 #[derive(Clone)]
@@ -1259,26 +1260,12 @@ impl OrbitApp {
                     "ask" => tr!("subagents_ui.mode_ask"),
                     _ => tr!("subagents_ui.inherit"),
                 };
-                segmented_segment(
+                settings_segment(
                     div().id(("subagent-mode", index)),
                     theme,
-                    ButtonSize::Medium,
                     SegmentPosition::at(index, modes.len()),
+                    active,
                 )
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .border_color(theme.border)
-                .when(active, |segment| {
-                    segment
-                        .raised_flat(theme.surface_selected)
-                        .text_color(theme.text_primary)
-                })
-                .when(!active, |segment| {
-                    segment
-                        .raised_flat(theme.surface_elevated)
-                        .text_color(theme.text_secondary)
-                        .hover_state(theme)
-                })
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| {
                         app.apply_subagent_action(SubagentAction::SetMode(mode), cx)

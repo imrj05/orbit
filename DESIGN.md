@@ -210,13 +210,14 @@ shadows, with the existing composer contact-shadow treatment as an exception.
 - Density with air: 22–32px control heights, 4–8px padding, 44px page headers. The
   Appearance panel exposes this as UI, Terminal/Editor font sizes (px), and
   Spacing Density (a global multiplier applied through `DynamicSpacing::px`).
-- Two palette families, one grammar: **Classic** is the ember/blue/graphite/paper
-  catalog; **Operational** is the near-black, lime-accented colorway. Shapes, control
-  heights, caption size and elevation are shared by both — a palette changes color, not
-  geometry. Every value is read from `theme::get(cx)`, never hardcoded.
-- Twelve palettes: Appearance lists only the palettes belonging to the chosen palette
-  family and appearance mode, so the common choice is never made inside a
-  catalog-sized list.
+- One design system, many colorways: the ember/blue/graphite/paper Orbit family,
+  Flexoki, Onyx and the near-black, lime-accented Operational pair share one grammar.
+  Shapes, control heights, caption size and elevation are the same everywhere — a
+  palette changes color, not geometry. Every value is read from `theme::get(cx)`,
+  never hardcoded.
+- Thirteen palettes, chosen by sight: Appearance shows a Dark and a Light gallery of
+  thumbnails painted from each palette, so a choice is made by looking, not by reading
+  a catalog-sized list.
 
 ## Linear Alignment
 
@@ -251,9 +252,9 @@ Four things Orbit deliberately does **not** take from Linear:
 
 ## Colors
 
-Classic is a charcoal canvas whose accent is the palette's own — ember in Orbit, blue in
-Orbit Azure, and so on; light mode is warm-neutral off-white, not white. Operational is a
-near-black neutral canvas with a lime interaction accent. Every palette keeps its own
+The Orbit family is a charcoal canvas whose accent is the palette's own — ember in Orbit,
+blue in Orbit Azure, and so on; light mode is warm-neutral off-white, not white. Operational
+is a near-black neutral canvas with a lime interaction accent. Every palette keeps its own
 signature hue inside the same grammar.
 
 ### Primary
@@ -353,15 +354,21 @@ depends on the OS. The bundled IBM Plex Sans and Lilex faces stay in the list
 under their own names (their gpui aliases are `.ZedSans` / `.ZedMono`).
 
 **The Palette Catalog.** `ThemeId::ALL` ships thirteen palettes: Orbit's own family plus
-Flexoki, Orbit Onyx, and the two Operational palettes. The Classic system keeps six dark (Orbit,
-Orbit Darker, Orbit Cobalt, Orbit Azure, Flexoki, Orbit Onyx) and five light (Orbit Light, Orbit
-Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light) palettes. The blue design is
-**Orbit Azure** (dark) and **Orbit Azure Light**; the original ember palette is simply
-**Orbit** / **Orbit Light**. Settings → Appearance → **Theme** is a single control, not
-one row per appearance mode: it shows and edits the palette currently in effect, listing
-only the palettes of that mode and design system. `themes_for_system(mode, system)` is
-the single ordering the dropdown paints and a click resolves, so a row index always maps
-to the palette it painted. Retired editor themes still load from a saved preference:
+Flexoki, Orbit Onyx, and the two Operational palettes — seven dark (Orbit, Orbit Darker,
+Orbit Cobalt, Orbit Azure, Flexoki, Orbit Onyx, Operational) and six light (Orbit Light,
+Orbit Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light, Operational Light), all in
+one design system. The blue design is **Orbit Azure** (dark) and **Orbit Azure Light**; the
+original ember palette is simply **Orbit** / **Orbit Light**. Settings → Appearance →
+**Theme** shows the appearance as three picture cards (Light, Dark, and a split System
+card), then a **Dark themes** and a **Light themes** gallery: four-column grids of
+thumbnails, each a miniature workbench painted from that palette with the chosen accent.
+The chosen tile takes an accent frame and a check; the gallery whose appearance is on
+screen carries an **In use** badge. Each gallery remembers its own palette, and picking
+from the other gallery under an explicit Light or Dark appearance switches to it, so a
+click always shows its result. `themes_for(mode)` is the single ordering the tiles paint
+and the keyboard handler resolves, so an index always maps to the palette it painted.
+Accent is a row of swatches, each painted with the accent it would give the current
+palette, the palette's own default first and set apart. Retired editor themes still load from a saved preference:
 dark keys fall back to Orbit, light keys to Orbit Light.
 
 Orbit Onyx uses a near-black `#010102` canvas, neutral charcoal surfaces, `#f7f8f8`
@@ -369,15 +376,12 @@ primary ink and a `#5e6ad2` action fill. Its muted ink and button states are
 adjusted for Orbit's contrast requirements; error and warning retain distinct
 semantic colours. The surface steps are Orbit adaptations, not sourced Linear tokens.
 
-**The Design-System Switch.** Settings → Appearance → **Design system** chooses
-**Classic** (default) or **Operational**. It selects the *palette family* — which
-themes exist, and the accent and surface colors they carry. It does not change
-geometry: every palette draws the same corners, control heights, captions, and
-elevation, so a Classic palette and an Operational one are two colorways of one
-system. The choice is persisted separately from each family's remembered palette, so
-switching to Operational and back restores the previous Classic palette.
-`AppearancePrefs::resolve` still honors Light/Dark/System; only the `ThemeId` pair
-changes.
+**One Design System.** Classic and Operational were once separate palette families
+behind a Settings switch. They share every corner, control height, caption and
+elevation, so the switch was retired: Operational and Operational Light are ordinary
+palettes in the Dark and Light galleries. A saved `"design_system": "operational"`
+preference migrates to the Operational pair. `AppearancePrefs::resolve` honors
+Light/Dark/System and paints the palette remembered for that appearance.
 
 ### Restrained Operational Minimalism
 
@@ -413,7 +417,7 @@ A few values are deliberately corrected from the first draft for contrast: dark
 `text_secondary` is lifted slightly to clear 4.5:1 on the text-selection wash, and light
 `text_muted` is darkened to clear 4.5:1 on the canvas and selected rows. Operational light's `surface_elevated` is a hair
 off white so the shared light toggle knob stays visible on its off track. The row wash
-is its own `surface_selected` role: Classic sets it equal to `selection`, so existing
+is its own `surface_selected` role: the Orbit family sets it equal to `selection`, so existing
 palettes are pixel-identical, while Operational gets the olive-tinted selected row.
 
 Operational's colorway is the near-black canvas, the lime interaction accent, and the
@@ -723,7 +727,7 @@ Focus is a first-class state, not a stronger hover state. It is one token, drawn
 Selection means "the object currently being operated on"; focus means "the object currently
 receiving keyboard input." They must remain visually distinct.
 
-- Selected rows fill `surface_selected`. Classic palettes resolve it equal to
+- Selected rows fill `surface_selected`. Orbit-family palettes resolve it equal to
   `selection`, so their paint is unchanged; Operational gives rows their own
   olive-tinted step.
 - Text selection (transcript, editor, terminal, find matches) fills `selection` and
@@ -1695,20 +1699,19 @@ frames       shared component shells          app/helpers.rs
   `input_field_frame`, `context_menu_surface`, `segmented_segment`, `empty_state`.
   A new surface composes these; it does not re-derive their geometry.
 
-### Palettes and design systems
+### Palettes
 
-Twelve palettes, two modes, two palette families. Geometry is shared across all of
-them; `themes_for_system(mode, system)` is the single ordering both the dropdown and the
-click resolve through. The "design system" control selects which family you are
-choosing from — the shapes do not change with it.
+Thirteen palettes, two modes, one design system. Geometry is shared across all of
+them; `themes_for(mode)` is the single ordering both the gallery tiles and the keyboard
+handler resolve through.
 
-| System | Dark | Light |
-| -- | -- | -- |
-| Classic | Orbit, Orbit Darker, Orbit Cobalt, Orbit Azure, Flexoki | Orbit Light, Orbit Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light |
-| Operational | Operational | Operational Light |
+| Appearance | Palettes |
+| -- | -- |
+| Dark | Orbit, Orbit Darker, Orbit Cobalt, Orbit Azure, Flexoki, Orbit Onyx, Operational |
+| Light | Orbit Light, Orbit Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light, Operational Light |
 
 `AppearanceMode::System` follows the OS appearance live; an explicit Light or Dark
-choice ignores it. The choice and the remembered palette per system both persist.
+choice ignores it. The choice and the remembered palette per appearance both persist.
 
 These families share the non-color component grammar in the Orbit design skill.
 Components must resolve semantic roles from the active `Theme`, not reuse the Azure

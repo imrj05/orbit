@@ -84,8 +84,8 @@ pub enum Radius {
 
 impl Radius {
     /// One radius ramp for every palette: the Linear-aligned scale. Shapes are
-    /// part of the design language, not of a palette, so a Classic palette and
-    /// an Operational one draw the same button and the same card.
+    /// part of the design language, not of a palette, so Orbit Azure and
+    /// Operational draw the same button and the same card.
     ///
     /// The user's corner-rounding setting still shifts every corner except
     /// [`Radius::None`] and [`Radius::Full`], which stay square and circular.
@@ -1693,9 +1693,9 @@ mod tests {
 
     #[test]
     fn one_linear_geometry_ramp_serves_every_palette() {
-        // Shapes belong to the design language, not to a palette. A Classic
-        // palette and an Operational one must resolve every radius, caption
-        // size and elevation the same way.
+        // Shapes belong to the one design language, not to a palette. Every
+        // palette must resolve every radius, caption size and elevation the
+        // same way.
         for id in crate::theme::ThemeId::ALL {
             let theme = Theme::for_id(id);
             assert!(close(Radius::XSmall.px(&theme), 2.), "{id:?}");

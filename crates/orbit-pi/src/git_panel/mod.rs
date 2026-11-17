@@ -4023,7 +4023,7 @@ impl GitPanel {
                 "git_panel.tab_changes",
             ),
             (GitTab::History, "icons/clock.svg", "git_panel.tab_history"),
-            (GitTab::Graph, "icons/git-fork.svg", "git_panel.tab_graph"),
+            (GitTab::Graph, "icons/git-graph.svg", "git_panel.tab_graph"),
             (
                 GitTab::Stashes,
                 "icons/archive.svg",

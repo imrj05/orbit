@@ -12,7 +12,10 @@ use gpui::{Font, FontFeatures, FontStyle, InteractiveElement, ObjectFit};
 // The interaction-state traits live in `ui::style::control`; re-exported so
 // `crate::app::{ControlExt, …}` and `helpers::{…}` keep resolving while
 // call sites migrate (docs/plans/ui-component-layer.md, phase 1a).
-pub(crate) use crate::ui::button::{button_frame, icon_button_frame};
+pub(crate) use crate::ui::button::{
+    button_frame, icon_button_frame, segmented_segment, SegmentPosition,
+};
+pub(crate) use crate::ui::icon::{icon, icon_dyn, BUTTON_GROUP};
 pub(crate) use crate::ui::switch::switch;
 pub(crate) use crate::ui::style::control::{
     AccentWash, ControlExt, PressedRamp, StatefulControlExt, TipExt,
@@ -141,59 +144,6 @@ pub(crate) fn queue_preview(text: &str) -> String {
         preview.push_str(word);
     }
     preview
-}
-
-/// Render an embedded HugeIcons SVG tinted with the given color.
-///
-/// `flex_none` is load-bearing: an SVG defaults to `flex-shrink: 1`, so in a
-/// Hover group every action button opts into with `.group(BUTTON_GROUP)`.
-/// Any [`icon`] descendant then lifts its ink while that button is hovered —
-/// the one hook that gives the whole app's buttons a consistent hover cue
-/// without threading a theme or a unique group name through each one.
-pub(crate) const BUTTON_GROUP: &str = "orbit-button";
-
-/// How far an icon lightens toward white when its button is hovered. Small
-/// enough that semantic icons (accent, danger) stay on-brand; enough that a
-/// muted `text_secondary`/`text_muted` glyph visibly brightens.
-const ICON_HOVER_LIGHTEN: f32 = 0.12;
-
-/// The hover ink for an icon: the same hue, lightened toward white.
-fn icon_hover_ink(color: Hsla) -> Hsla {
-    Hsla {
-        l: (color.l + ICON_HOVER_LIGHTEN).min(1.0),
-        ..color
-    }
-}
-
-/// flex row beside wide text it collapses to zero width (the "icons render
-/// tiny" bug). Icons must always keep their declared size.
-///
-/// Every icon also lifts its ink toward white while an ancestor wearing
-/// [`BUTTON_GROUP`] is hovered. GPUI resolves a hover group through a balanced
-/// push/pop stack, so one shared group name is safe across siblings and nested
-/// buttons — the nearest opt-in button wins. An icon outside any such button
-/// sees no group and stays inert, so decorative glyphs never react.
-///
-/// `size` is px: a literal, or a token such as `IconSize::Small.px(&theme)`.
-pub(crate) fn icon(path: &'static str, size: impl Into<Pixels>, color: Hsla) -> gpui::Svg {
-    let hover = icon_hover_ink(color);
-    gpui::svg()
-        .path(path)
-        .flex_none()
-        .size(size.into())
-        .text_color(color)
-        .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
-}
-
-/// Same as [`icon`] but for runtime-computed paths (per-provider marks).
-pub(crate) fn icon_dyn(path: SharedString, size: impl Into<Pixels>, color: Hsla) -> gpui::Svg {
-    let hover = icon_hover_ink(color);
-    gpui::svg()
-        .path(path)
-        .flex_none()
-        .size(size.into())
-        .text_color(color)
-        .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
 /// The advance width of one line of UI text at `size`, shaped with the app's
@@ -758,51 +708,6 @@ impl PickerRow {
 /// The row height a two-line [`PickerRow`] fills exactly.
 pub(crate) fn picker_row_height(theme: &Theme) -> gpui::Pixels {
     picker::two_line_entry_height(theme)
-}
-
-/// Where a segment sits inside a segmented control (a grouped row of
-/// [`button_frame`]s sharing one control outline).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SegmentPosition {
-    First,
-    Middle,
-    Last,
-    /// The only segment — rounds every corner like a standalone button.
-    Only,
-}
-
-impl SegmentPosition {
-    /// The position of `index` in a group of `count` segments.
-    pub(crate) fn at(index: usize, count: usize) -> Self {
-        match (index, count) {
-            (_, 0 | 1) => Self::Only,
-            (0, _) => Self::First,
-            (index, count) if index + 1 == count => Self::Last,
-            _ => Self::Middle,
-        }
-    }
-}
-
-/// One segment of a segmented control: a [`button_frame`] trimmed to its
-/// [`SegmentPosition`] so abutting segments round only the group's outer
-/// corners and share a single hairline between them. The segments read as
-/// one control while each keeps a real button's size, padding, label, and
-/// [`button::RADIUS`]. Callers keep the colors, hover, press, and click
-/// handling, exactly as with a standalone button.
-pub(crate) fn segmented_segment<E: Styled + gpui::InteractiveElement>(
-    el: E,
-    theme: &Theme,
-    size: ButtonSize,
-    position: SegmentPosition,
-) -> E {
-    let radius = button::radius(size).px(theme);
-    let el = button_frame(el, theme, size).rounded_none().border_1();
-    match position {
-        SegmentPosition::Only => el.rounded(radius),
-        SegmentPosition::First => el.rounded_l(radius),
-        SegmentPosition::Last => el.rounded_r(radius).border_l_0(),
-        SegmentPosition::Middle => el.border_l_0(),
-    }
 }
 
 /// The app's one disclosure chevron: `chevron-right`, turning a quarter turn to

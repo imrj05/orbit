@@ -27,6 +27,7 @@
 //!    untouched.
 
 pub(crate) mod button;
+pub(crate) mod icon;
 pub(crate) mod style;
 pub(crate) mod switch;
 pub(crate) mod tooltip;

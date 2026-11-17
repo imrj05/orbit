@@ -220,10 +220,10 @@ dialogs — every on-scale `p/px/py/pl/pr/pt/pb/m*/gap(px(N))` site in the app n
 `DynamicSpacing`. What stays px on purpose: 1–2px optical nudges (dot / badge insets), the
 legacy 6–10px rhythm values with no token equivalent (10/14/18/22 — folded into the scale or
 retired by design, pending), and bespoke geometry (widths, heights, icon and dot sizes).
-The palette set is twelve: ten Classic palettes plus the opt-in Operational pair. The blue design
-holds **Orbit Azure** / **Orbit Azure Light** and is the appearance default, while **Orbit** /
-**Orbit Light** carry the original ember identity. **Operational** / **Operational Light** are
-selected by the Design-system control, not by a Classic palette choice. Primary
+The palette set is thirteen, in one design system (D15): seven dark and six light. The blue
+design holds **Orbit Azure** / **Orbit Azure Light** and is the appearance default, while
+**Orbit** / **Orbit Light** carry the original ember identity, and **Operational** /
+**Operational Light** sit in the same Dark and Light galleries as every other palette. Primary
 buttons fill from a role separate from the identity accent — `action` / `action_hover` /
 `action_pressed` with `action_fg` ink — because the ember palettes key their buttons to a light
 neutral with dark ink while Azure keys them to its accent; `accent` / `accent_hover` /
@@ -296,19 +296,23 @@ Orbit compatible with Git's own metadata format across versions.
 A missing worktree surfaces a notice rather than silently re-pointing a session at the
 main repository.
 
-### D15 — Design systems are an opt-in theme layer, not a fork
-**Choice:** `DesignSystem` (`Classic` / `Operational`) is persisted beside the existing
-Light/Dark/System preference and the remembered Classic palettes. `AppearancePrefs::resolve`
-selects a `ThemeId` from the chosen system; every component continues to read the same
-`Theme` semantic roles and token resolvers. Operational supplies its own palette and
-`surface_selected` row wash. Both families now share the same radius, typography and
-elevation grammar; the earlier family-specific geometry was superseded by the shared ramp.
+### D15 — One design system; palettes are colorways, not forks
+**Choice:** there is one design system. Classic (the Orbit family, Flexoki, Onyx) and
+Operational used to be separate `DesignSystem` values behind their own Settings switch; once
+both shared the same radius, typography and elevation grammar the split only hid palettes,
+so `DesignSystem` was removed. `AppearancePrefs` keeps one remembered palette per
+appearance — any palette of that appearance, Operational included — and
+`AppearancePrefs::resolve` honors Light/Dark/System. Operational still supplies its own
+palette and `surface_selected` row wash. Preferences written with
+`"design_system": "operational"` migrate to the Operational pair, so what was on screen
+stays on screen.
 **Rationale:** a second widget tree or parallel CSS-like layer would duplicate every surface
-and drift. Palette families change appearance without forking component geometry.
+and drift; a palette-family switch on top of a shared grammar only made two of thirteen
+palettes harder to find.
 **Consequence:** new visual rules use semantic `Theme` roles and shared `theme/tokens.rs`
-resolvers; do not branch geometry on `DesignSystem`. New palettes join
-`ThemeId::ALL` and the palette-invariant tests; the Appearance Theme dropdown filters the
-catalog with `themes_for_system`, and the Design-system control is the normal way to switch.
+resolvers; never branch geometry on a palette. New palettes join `ThemeId::ALL` and the
+palette-invariant tests, and appear in Settings → Appearance's Dark or Light gallery through
+`themes_for(mode)`, the one ordering the tiles and their keyboard handler resolve through.
 
 ### D16 — Git account diagnostics are local and read-only
 
@@ -605,7 +609,7 @@ Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
 The default interface face and saved font preferences remain unchanged.
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace, plus **rewind** — pi's `fork` at an earlier user message, which branches the conversation into a new session file, keeps the old one in the sidebar, and hands the forked-from prompt back to the composer) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14) plus **Work in** on the status bar in a repository and on the new-task page, which lists exactly two kinds of place — this device's working folder and every enabled remote host (`remote_hosts.rs`; hosts are read once when the picker opens, and picking one runs the same guarded launch as the new-task picker) — while worktree creation (from a new or existing branch, including a remote ref checked out as a local tracking branch via `create_tracking_branch`, because `git worktree add <path> origin/feat` leaves a detached HEAD), opening a worktree folder with `git worktree repair`, and repository cloning all live on the Worktrees page (the Windows job-object clone-cancellation path is covered on the Windows CI leg; manual GUI verification remains); Explorer project panel (its own top-bar button; a two-line workspace header with New File / New Folder and a "…" menu for Refresh, Collapse All Folders and hidden files; an inset filter field; indent guides) + editable Files surface; a **session-details panel** in the right dock (the top bar's `ⓘ` chip toggles it: an inspector of Session / Environment / Model / Context / Changes / Details sections, every value read from live state — the branch watcher, `get_session_stats` context usage, the working-tree counts — and none shown before it is known; it takes the dock one at a time with Review and the Explorer, and no outside click dismisses it); integrated terminal (⌘J, with a full-width expand that opens it as a page with its own top-bar Back and title); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History (D17); notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot UI motion on `Motion` roles migrated onto them.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace, plus **rewind** — pi's `fork` at an earlier user message, which branches the conversation into a new session file, keeps the old one in the sidebar, and hands the forked-from prompt back to the composer) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14) plus **Work in** on the status bar in a repository and on the new-task page, which lists exactly two kinds of place — this device's working folder and every enabled remote host (`remote_hosts.rs`; hosts are read once when the picker opens, and picking one runs the same guarded launch as the new-task picker) — while worktree creation (from a new or existing branch, including a remote ref checked out as a local tracking branch via `create_tracking_branch`, because `git worktree add <path> origin/feat` leaves a detached HEAD), opening a worktree folder with `git worktree repair`, and repository cloning all live on the Worktrees page (the Windows job-object clone-cancellation path is covered on the Windows CI leg; manual GUI verification remains); Explorer project panel (its own top-bar button; a two-line workspace header with New File / New Folder and a "…" menu for Refresh, Collapse All Folders and hidden files; an inset filter field; indent guides) + editable Files surface; a **session-details panel** in the right dock (the top bar's `ⓘ` chip toggles it: an inspector of Session / Environment / Model / Context / Changes / Details sections, every value read from live state — the branch watcher, `get_session_stats` context usage, the working-tree counts — and none shown before it is known; it takes the dock one at a time with Review and the Explorer, and no outside click dismisses it); integrated terminal (⌘J, with a full-width expand that opens it as a page with its own top-bar Back and title); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system with picture cards; thirteen palettes in one design system, chosen from Dark and Light thumbnail galleries; accent swatches; a Background board with an empty state, segmented placement and a separate Image adjustments board) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History (D17); notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot UI motion on `Motion` roles migrated onto them.
 
 Finder file URLs and Windows CF_HDROP lists take precedence over clipboard preview images: pasted image files enter the image queue, and other files enter the existing file-reference queue. On Linux, file URI lists exposed as clipboard text use the same queue; GPUI cannot currently read file-only clipboard offers. Plain path text stays text.
 

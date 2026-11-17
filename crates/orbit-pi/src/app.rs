@@ -4419,8 +4419,6 @@ struct DefaultModelPushed {
 /// Which dropdown is open on the settings surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSelect {
-    Theme(ThemeMode),
-    AccentColor,
     Language,
     UiFontSize,
     TerminalFont,
@@ -4429,7 +4427,6 @@ enum SettingsSelect {
     CornerRounding,
     UiFontFamily,
     CodeFontFamily,
-    WallpaperMode,
     WallpaperEffect,
     /// The model the auto-title extension asks (Settings → Agent).
     TitleModel,
