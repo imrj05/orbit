@@ -759,12 +759,26 @@ pub mod toast {
     pub const WIDTH: Pixels = px(360.);
     pub const BADGE_RADIUS: Radius = Radius::Small;
     pub const ENTER: Duration = Motion::Interaction.nominal();
+    /// How far a card rises into place as it arrives.
+    pub const ENTER_RISE: Pixels = px(12.);
     pub const TITLE: TextSize = TextSize::Default;
+    /// A card's description: the title's size in muted ink, so the two read
+    /// as one statement rather than a heading over fine print.
+    pub const DESCRIPTION: TextSize = TextSize::Default;
     pub const BODY: TextSize = TextSize::Small;
-    pub const ICON: IconSize = IconSize::Small;
+    /// The kind glyph sits inline with the text, not on a tinted tile.
+    pub const ICON: IconSize = IconSize::Medium;
     pub const CLOSE_BUTTON: ButtonSize = ButtonSize::Default;
     pub const ACTION_BUTTON: ButtonSize = ButtonSize::Medium;
-    pub const ICON_RADIUS: Radius = Radius::Large;
+    /// Older cards visible behind the front one while the deck is collapsed.
+    pub const DECK_DEPTH: usize = 2;
+    /// How much narrower each card behind the front one paints.
+    pub const DECK_SCALE_STEP: f32 = 0.1;
+
+    /// How far each card behind the front one peeks above it.
+    pub fn deck_peek(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base12.px(theme)
+    }
 
     pub fn surface<E: Styled + ParentElement>(element: E, theme: &Theme) -> E {
         element.elevation_2(theme)
@@ -775,27 +789,19 @@ pub mod toast {
     }
 
     pub fn stack_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base08.px(theme)
-    }
-
-    pub fn padding_x(theme: &Theme) -> Pixels {
         DynamicSpacing::Base12.px(theme)
     }
 
-    pub fn padding_y(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base08.px(theme)
+    pub fn padding(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base16.px(theme)
     }
 
     pub fn content_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base08.px(theme)
-    }
-
-    pub fn icon_tile_size(theme: &Theme) -> Pixels {
-        ACTION_BUTTON.height(theme)
+        DynamicSpacing::Base12.px(theme)
     }
 
     pub fn title_body_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base02.px(theme)
+        DynamicSpacing::Base04.px(theme)
     }
 
     pub fn header_gap(theme: &Theme) -> Pixels {

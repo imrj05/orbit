@@ -119,6 +119,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Toasts restyled after shadcn's toast.** Cards are cleaner: an inline status
+  glyph instead of a tinted tile, a medium title over a muted description at
+  the same size, roomier padding and a quiet × centred on the right. Several
+  toasts now rest as a collapsed deck, the newest in front and up to two older
+  ones peeking above it, and fan out into a column under the pointer. While
+  the pointer is over the stack nothing expires; leaving resumes each card's
+  timer where it stopped. New cards rise into place as they fade in; with
+  Reduce Motion on they simply appear.
+
 - **Settings → Subagents reads as one workflow.** The agent header is a single
   bar — name and status on the left, Duplicate, Save and the Enabled switch on
   the right — and the form follows the order an agent is written in: identity,

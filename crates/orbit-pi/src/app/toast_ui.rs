@@ -1,6 +1,6 @@
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{toast as toast_tokens, IconSize};
+use crate::theme::tokens::{toast as toast_tokens, IconSize, Motion};
 use crate::toast::{Toast, ToastKind};
 
 fn short_revision(revision: &str) -> &str {
@@ -48,18 +48,81 @@ impl OrbitApp {
         }
     }
 
-    /// The toast stack: bottom-right, newest nearest the corner, oldest at
-    /// the top. It sits above every surface, so a fact that lands while
-    /// Settings / Git / Usage owns the main area is still announced.
+    /// Pointer entered or left the toast deck: fan it out and hold every
+    /// clock while it is read, then resume where they stopped.
+    fn hover_toast_stack(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let changed = if hovered {
+            self.toasts.hold(now)
+        } else {
+            self.toasts.release(now)
+        };
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// The toast stack: bottom-right, newest nearest the corner. At rest it is
+    /// a collapsed deck — the newest card in front, up to
+    /// [`toast_tokens::DECK_DEPTH`] older ones peeking above it, each a step
+    /// narrower. Under the pointer it fans out into a column. It sits above
+    /// every surface, so a fact that lands while Settings / Git / Usage owns
+    /// the main area is still announced.
     pub(super) fn toast_layer(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if self.toasts.is_empty() && self.plugin_update_prompt.is_none() {
             return None;
         }
         let theme = *theme::get(cx);
         let reduce_motion = theme.reduce_motion();
+        let now = Instant::now();
+        let items = self.toasts.items();
+        let deck = (!items.is_empty()).then(|| {
+            let expanded = self.toasts.is_held() || items.len() == 1;
+            let stack = div()
+                .id("toast-stack")
+                .debug_selector(|| "toast-stack".to_string())
+                .relative()
+                .w(toast_tokens::WIDTH)
+                .flex()
+                .flex_col()
+                .gap(toast_tokens::stack_gap(&theme))
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    this.hover_toast_stack(*hovered, cx)
+                }));
+            if expanded {
+                // Oldest at the top, newest nearest the corner.
+                stack.children(items.iter().map(|toast| {
+                    self.toast_card(toast, now, theme, reduce_motion, cx)
+                }))
+            } else {
+                // Collapsed: empty slabs for the older cards, deepest first so
+                // the front card paints over them. Each slab is the front
+                // card's height (it is inset from the card's own box), raised
+                // by the peek and narrowed by the scale step.
+                let peek = toast_tokens::deck_peek(&theme);
+                let behind = items.len().saturating_sub(1).min(toast_tokens::DECK_DEPTH);
+                let slabs = (1..=behind).rev().map(|depth| {
+                    let inset = toast_tokens::WIDTH
+                        * (toast_tokens::DECK_SCALE_STEP * depth as f32 / 2.0);
+                    let lift = peek * depth as f32;
+                    toast_tokens::surface(
+                        div().debug_selector(move || format!("toast-deck-{depth}")),
+                        &theme,
+                    )
+                    .absolute()
+                    .top(-lift)
+                    .bottom(lift)
+                    .left(inset)
+                    .right(inset)
+                });
+                let front = items.last().map(|toast| {
+                    self.toast_card(toast, now, theme, reduce_motion, cx)
+                });
+                stack.children(slabs).children(front)
+            }
+        });
         Some(
             div()
-                .debug_selector(|| "toast-stack".to_string())
                 .absolute()
                 .bottom(toast_tokens::stack_inset(&theme))
                 .right(toast_tokens::stack_inset(&theme))
@@ -67,14 +130,10 @@ impl OrbitApp {
                 .flex_col()
                 .items_end()
                 .gap(toast_tokens::stack_gap(&theme))
-                // The container is not itself a hitbox: only the cards below
-                // take clicks, so the area around them stays click-through.
-                .children(
-                    self.toasts
-                        .items()
-                        .iter()
-                        .map(|toast| Self::toast_card(toast, theme, reduce_motion, cx)),
-                )
+                // The container is not itself a hitbox: only the deck and the
+                // cards take pointer events, so the area around them stays
+                // click-through.
+                .children(deck)
                 .children(self.plugin_update_prompt.as_ref().map(|updates| {
                     self.plugin_update_prompt_card(updates, theme, reduce_motion, cx)
                 }))
@@ -211,20 +270,17 @@ impl OrbitApp {
             &theme,
         )
         .w(toast_tokens::WIDTH)
-        .px(toast_tokens::padding_x(&theme))
-        .py(toast_tokens::padding_y(&theme))
+        .p(toast_tokens::padding(&theme))
         .flex()
         .items_start()
         .gap(toast_tokens::content_gap(&theme))
         .child(
+            // Inline with the title row, as on every toast card.
             div()
                 .flex_none()
-                .size(toast_tokens::icon_tile_size(&theme))
-                .rounded(toast_tokens::ICON_RADIUS.px(&theme))
+                .h(toast_tokens::CLOSE_BUTTON.height(&theme))
                 .flex()
                 .items_center()
-                .justify_center()
-                .bg(theme.accent.opacity(0.12))
                 .child(icon(
                     "icons/extensions.svg",
                     toast_tokens::ICON.px(&theme),
@@ -301,24 +357,31 @@ impl OrbitApp {
         }
     }
 
-    /// One toast card: kind glyph, title (+ optional body), and a ×. Clicking
+    /// One toast card in the shadcn shape: an inline kind glyph, the title
+    /// over a muted description, and a quiet × centred on the right. Clicking
     /// anywhere dismisses it before its TTL lapses.
     fn toast_card(
+        &self,
         toast: &Toast,
+        now: Instant,
         theme: Theme,
         reduce_motion: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
+        // Status reinforces the title; it is never the only signal. Info and
+        // success stay in secondary ink so the stack reads calm, and only the
+        // kinds that need attention take a status hue.
         let (glyph, tint) = match toast.kind {
-            ToastKind::Info => ("icons/info.svg", theme.info),
-            ToastKind::Success => ("icons/check.svg", theme.success),
-            ToastKind::Warning => ("icons/info.svg", theme.warning),
-            ToastKind::Error => ("icons/stop.svg", theme.error),
+            ToastKind::Info => ("icons/info.svg", theme.text_secondary),
+            ToastKind::Success => ("icons/circle-check.svg", theme.success),
+            ToastKind::Warning => ("icons/alert-circle.svg", theme.warning),
+            ToastKind::Error => ("icons/circle-x.svg", theme.error),
         };
         let id = toast.id;
         let close_button = press(icon_button_frame(
             div()
                 .id(ElementId::Name(format!("toast-close-{id}").into()))
+                .flex_none()
                 .cursor_pointer()
                 .hover_state(&theme),
             &theme,
@@ -337,11 +400,11 @@ impl OrbitApp {
                 .debug_selector(move || format!("toast-{id}")),
             &theme,
         )
-        .w(toast_tokens::WIDTH)
-        .px(toast_tokens::padding_x(&theme))
-        .py(toast_tokens::padding_y(&theme))
+        .relative()
+        .w_full()
+        .p(toast_tokens::padding(&theme))
         .flex()
-        .items_start()
+        .items_center()
         .gap(toast_tokens::content_gap(&theme))
         .cursor_pointer()
         .hover_border(&theme)
@@ -352,12 +415,6 @@ impl OrbitApp {
         .child(
             div()
                 .flex_none()
-                .size(toast_tokens::icon_tile_size(&theme))
-                .rounded(toast_tokens::ICON_RADIUS.px(&theme))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(tint.opacity(0.14))
                 .child(icon(glyph, toast_tokens::ICON.px(&theme), tint)),
         )
         .child(
@@ -379,40 +436,51 @@ impl OrbitApp {
                     div()
                         .whitespace_normal()
                         .line_clamp(3)
-                        .text_size(toast_tokens::BODY.px(&theme))
+                        .text_size(toast_tokens::DESCRIPTION.px(&theme))
                         .text_color(theme.text_muted)
                         .child(body.clone())
                 })),
         )
         .child(close_button);
 
-        // The animation spans the card's whole life: fade in, hold through
-        // the TTL, then fade out so the eventual removal is never a snap.
-        // Reduce-motion keeps the card static (and `tick` expires it at the
+        // Reduce Motion keeps the card static (and `tick` expires it at the
         // bare TTL, with no fade grace).
         if reduce_motion {
             return card.into_any_element();
         }
-        let ttl = toast.kind.ttl().as_secs_f32();
-        let fade = crate::toast::FADE.as_secs_f32();
-        let enter = toast_tokens::ENTER.as_secs_f32();
-        let total = ttl + fade;
-        // The duration here is the toast's own lifetime, not a motion choice:
-        // the bar is a countdown, so it is data rather than a `Motion` role.
-        // The guard above is what keeps it still under Reduce Motion.
+        // The animation only drives repaints across the card's life; the
+        // frame itself is read from the model's clocks, so a hold freezes the
+        // fade-out and a release resumes it (the revision re-keys the driver).
+        // Its duration is the toast's own lifetime, not a motion choice: it is
+        // a countdown over data rather than a `Motion` role.
+        let ttl = toast.kind.ttl();
+        let fade = crate::toast::FADE;
+        let enter = toast_tokens::ENTER;
+        let elapsed = self.toasts.elapsed(toast, now);
+        let shown = toast.shown;
+        let lifetime = (ttl + fade).saturating_sub(elapsed).max(enter);
+        let held = self.toasts.is_held();
+        let rendered_at = now;
+        let ease = Motion::Interaction.easing();
         card.with_animation(
             ElementId::Name(format!("toast-life-{id}-{}", toast.revision).into()),
-            Animation::new(Duration::from_secs_f32(total)),
-            move |card, delta| {
-                let elapsed = delta * total;
-                let opacity = if elapsed < enter {
-                    elapsed / enter
-                } else if elapsed > ttl {
-                    ((total - elapsed) / fade).clamp(0.0, 1.0)
+            Animation::new(Duration::from_secs_f32(lifetime.as_secs_f32())),
+            move |card, _| {
+                let now = Instant::now();
+                let arrived = ease(crate::toast::enter_progress(
+                    now.saturating_duration_since(shown),
+                    enter,
+                ));
+                let life = if held {
+                    elapsed
                 } else {
-                    1.0
+                    elapsed + now.saturating_duration_since(rendered_at)
                 };
-                card.opacity(opacity)
+                let leaving = crate::toast::exit_opacity(life, ttl, fade);
+                // A relative offset moves the paint, not the layout, so the
+                // stack never reflows while a card rises into place.
+                card.opacity(arrived * leaving)
+                    .top(toast_tokens::ENTER_RISE * (1.0 - arrived))
             },
         )
         .into_any_element()
