@@ -4,12 +4,13 @@
 //! signs in on its own row and all accounts are live in every session at once.
 //! Nothing here reads or copies a credential.
 use super::*;
-use crate::app::helpers::{input_label, modal_footer, modal_header, ButtonVariant, ModalSubtitle};
 use crate::provider_accounts::{AccountProfile, CredentialKind};
 use crate::theme::tokens::{input, modal, panel, ButtonSize, DynamicSpacing, Radius, TextSize};
 use crate::ui::button::IconButton;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
+use crate::ui::prelude::*;
+use crate::ui::prelude::{input_label, modal_footer, modal_header, ButtonVariant, ModalSubtitle};
 
 impl OrbitApp {
     /// One pass over the account store for the Settings controller. Rendering

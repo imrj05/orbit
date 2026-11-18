@@ -1,9 +1,9 @@
-use super::helpers::*;
 use super::*;
 use crate::theme::tokens::{
     context_menu, picker, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::ui::popover::{popover_list, PopoverExt};
+use crate::ui::prelude::*;
 
 /// Why the completion gate was invoked. The gate behaves the same either way
 /// for a completion that changes the text; they differ only when accepting

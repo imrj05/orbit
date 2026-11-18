@@ -1,5 +1,5 @@
 use super::composer_ops::CompletionIntent;
-use super::helpers::*;
+use crate::ui::prelude::*;
 use super::mcp_ui::QuotaPopupTab;
 use super::*;
 use crate::ui::button::{ButtonGroup, SegmentFill};
@@ -1960,7 +1960,7 @@ impl OrbitApp {
         let generating = self.title_generating;
         let size = ButtonSize::Default;
         let glyph = if generating {
-            crate::app::spinner(
+            crate::ui::prelude::spinner(
                 "sess-generate-title-spinner",
                 size.icon_size().px(&theme),
                 theme.accent_text,

@@ -10,7 +10,6 @@
 //! after a remote turn settles, on ⌘R, and from a group's refresh button.
 //! Launch and settle fetches never ask for a password; the refresh button may.
 
-use super::helpers::*;
 use super::remote_ui::TaskPlace;
 use super::ssh_auth_ui::AuthThen;
 use super::*;
@@ -19,6 +18,7 @@ use crate::remote_hosts::{self, ProbeFailure, RemoteHost};
 use crate::remote_sessions::{self, RemoteSession};
 use crate::theme::tokens::{list_item, ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::ui::button::IconButton;
+use crate::ui::prelude::*;
 
 /// What a server's list is doing, beside the sessions it last returned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

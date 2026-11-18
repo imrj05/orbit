@@ -7,13 +7,13 @@
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window};
 
-use crate::app::helpers::empty_state_glyph;
-use crate::app::{button_frame, icon, press, ControlExt, BUTTON_GROUP};
 use crate::git::RefKind;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::Theme;
 use crate::ui::button::{Button, ButtonVariant, IconButton};
 use crate::ui::chip::{Badge, BadgeFill};
+use crate::ui::prelude::empty_state_glyph;
+use crate::ui::prelude::{button_frame, icon, press, ControlExt, BUTTON_GROUP};
 
 /// The color for a `git status` porcelain badge byte.
 pub fn status_color(badge: char, theme: Theme) -> Hsla {

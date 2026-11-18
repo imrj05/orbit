@@ -6,7 +6,7 @@
 //! row type — keeps its items and asks this for the cursor. Callers still own
 //! positioning, dismissal and focus restore.
 
-use gpui::{div, ParentElement, Styled};
+use gpui::{div, ParentElement, SharedString, Styled};
 
 use crate::theme::{
     self,
@@ -225,6 +225,32 @@ impl MenuCursor {
             MenuKey::Last => self.state.last(len, enabled),
         }
     }
+}
+
+/// Zed's inset `ListSubHeader`, the section label inside a menu or picker:
+/// a 20px row of Small, muted text, Base02 + `px_2` in from the edges, with
+/// Base04 below.
+pub(crate) fn menu_header(label: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
+    div()
+        .w_full()
+        .flex_none()
+        .flex()
+        .px(list::sub_header_padding_x(theme))
+        .pb(list::sub_header_padding_bottom(theme))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(list::sub_header_height(theme))
+                .px(list::sub_header_inset_x(theme))
+                .flex()
+                .items_center()
+                .gap(theme.rems(0.25))
+                .truncate()
+                .text_size(list::SUB_HEADER_TEXT.px(theme))
+                .text_color(theme.text_muted)
+                .child(label.into()),
+        )
 }
 
 #[cfg(test)]

@@ -83,7 +83,7 @@ pub fn register_zed_fonts(cx: &mut gpui::App) -> anyhow::Result<()> {
 }
 
 /// The Nerd Fonts symbols face backing the devicons file glyphs (see
-/// `app::helpers::file_glyph`). It carries only private-use glyphs, so it is
+/// `ui::glyph::file_glyph`). It carries only private-use glyphs, so it is
 /// loaded with the core faces rather than through the curated picker catalog.
 const SYMBOL_FONTS: [&str; 1] = ["fonts/SymbolsNerdFont-Regular.ttf"];
 

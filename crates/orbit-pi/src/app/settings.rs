@@ -1,4 +1,6 @@
-use super::helpers::*;
+use crate::ui::prelude::*;
+use super::format::*;
+use super::sidebar::star_project_banner;
 use super::*;
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::TextField;
@@ -1961,7 +1963,7 @@ impl OrbitApp {
             PluginAction::Refresh,
         );
 
-        let plugin_spinner: AnyElement = crate::app::spinner(
+        let plugin_spinner: AnyElement = crate::ui::prelude::spinner(
             "plugin-action-spin",
             IconSize::Small.px(&theme),
             theme.text_secondary,
@@ -9721,6 +9723,41 @@ fn stepped_visible_position(
             None => visible.len() - 1,
         },
     )
+}
+
+/// A Runtime detail value in the UI text color.
+pub(crate) fn runtime_text(theme: Theme, text: String) -> AnyElement {
+    div()
+        .min_w_0()
+        .truncate()
+        .text_size(TextSize::Small.px(&theme))
+        .text_color(theme.text_primary)
+        .child(text)
+        .into_any_element()
+}
+
+/// A Runtime detail value rendered as a path (monospace, dimmed).
+pub(crate) fn runtime_path(theme: Theme, text: String) -> AnyElement {
+    div()
+        .min_w_0()
+        .truncate()
+        .font_family(theme::code_font_family())
+        .text_size(theme.code_px(11.5))
+        .text_color(theme.text_secondary)
+        .child(text)
+        .into_any_element()
+}
+
+/// A Runtime error value: the same two facts as [`error_state`], sized for a
+/// settings row. It wraps instead of truncating — an error a user cannot read
+/// is not an error message.
+pub(crate) fn runtime_error(theme: Theme, text: String) -> AnyElement {
+    div()
+        .min_w_0()
+        .text_size(TextSize::Small.px(&theme))
+        .text_color(theme.error)
+        .child(text)
+        .into_any_element()
 }
 
 #[cfg(test)]

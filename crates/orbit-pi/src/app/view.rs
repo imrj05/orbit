@@ -1,4 +1,5 @@
-use super::helpers::*;
+use crate::ui::prelude::*;
+use super::format::*;
 use super::session::{SESSION_DETAILS_GUTTER, SESSION_DETAILS_W};
 use super::sidebar::*;
 use super::*;

@@ -9,15 +9,15 @@
 //! Every control writes through `UsagePage`'s filter setters, so one state
 //! object drives every panel on the page (§10).
 
-use crate::app::{
-    button_frame, context_menu_separator, menu_header, picker_entry, refresh_glyph, ControlExt,
-    PressedRamp, StatefulControlExt,
-};
 use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::{
+    button_frame, context_menu_separator, menu_header, picker_entry, refresh_glyph, ControlExt,
+    PressedRamp, StatefulControlExt,
+};
 use chrono::Datelike;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
@@ -31,12 +31,13 @@ use super::model::{
 };
 use super::page::{BucketSort, ExportFormat, MenuKind, SessionSort, UsagePage, PAGE_SIZES};
 use super::table::FailureSort;
+use crate::composer::ComposerInput;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, list, picker, popover, ButtonSize, DynamicSpacing, TextSize,
 };
 use crate::theme::Theme;
-use crate::{app::icon, composer::ComposerInput};
+use crate::ui::prelude::icon;
 
 /// Every trigger on the filter bar and under the tables — filter chips, the
 /// removable narrowing chips, text and pager buttons — shares one button

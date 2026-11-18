@@ -15,15 +15,15 @@ use gpui::{
     Subscription, Window,
 };
 
-use crate::app::{
-    icon, menu_header, picker_entry, picker_row_height, working_folder_keyboard_hints, ControlExt,
-    PickerRow, PressedRamp, StatefulControlExt,
-};
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{context_menu, list, picker};
 use crate::theme::{self, Theme};
 use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::{
+    icon, menu_header, picker_entry, picker_row_height, working_folder_keyboard_hints, ControlExt,
+    PickerRow, PressedRamp, StatefulControlExt,
+};
 
 /// The popover caps at this width — wide enough for a two-line row (name over
 /// path, or a branch over its ref) and no wider, because a folder list is a
@@ -509,8 +509,8 @@ impl Render for WorkspacePicker {
                     .mark(
                         device_mark.clone(),
                         match entry.mark {
-                            EntryMark::Local => crate::app::EntryMarkLike::Local,
-                            EntryMark::Folder => crate::app::EntryMarkLike::Folder,
+                            EntryMark::Local => crate::ui::prelude::EntryMarkLike::Local,
+                            EntryMark::Folder => crate::ui::prelude::EntryMarkLike::Folder,
                         },
                         &theme,
                     )

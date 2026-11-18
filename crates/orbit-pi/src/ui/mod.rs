@@ -43,6 +43,7 @@ pub(crate) mod kbd;
 pub(crate) mod lightbox;
 pub(crate) mod menu;
 pub(crate) mod popover;
+pub(crate) mod prelude;
 pub(crate) mod rail;
 pub(crate) mod resize;
 pub(crate) mod row;

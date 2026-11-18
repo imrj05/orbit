@@ -11,13 +11,13 @@
 //! `gh issue create --attach`; a signed-out `gh` or a preflight upload
 //! limitation falls back to GitHub's web form and the saved image folder.
 
-use super::helpers::*;
 use super::*;
 use crate::git_panel::widgets::action_button;
 use crate::issue_message::ReportKind;
 use crate::theme::tokens::{input, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::{FormRow, TextField};
+use crate::ui::prelude::*;
 use gpui::ClickEvent;
 
 /// The most screenshots one report may carry.

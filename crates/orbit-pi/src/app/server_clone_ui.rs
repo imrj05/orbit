@@ -12,7 +12,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::helpers::*;
 use super::remote_ui::TaskPlace;
 use super::ssh_auth_ui::AuthThen;
 use super::*;
@@ -24,6 +23,7 @@ use crate::ui::button::ButtonVariant;
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
+use crate::ui::prelude::*;
 
 /// Each dialog opening gets its own number, so a result for one that was
 /// closed (or reopened) lands nowhere.

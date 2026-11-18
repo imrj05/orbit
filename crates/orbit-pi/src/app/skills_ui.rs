@@ -6,11 +6,11 @@
 //! removes the skill directory. Discovery and file I/O live in
 //! [`crate::skills`].
 
-use super::helpers::*;
 use super::*;
 use crate::skills::{self, Skill, SkillScope};
 use crate::theme::tokens::{list_item, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::ui::field::search_field;
+use crate::ui::prelude::*;
 
 /// A Skills-page control, dispatched through one entry point.
 #[derive(Clone)]

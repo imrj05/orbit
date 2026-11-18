@@ -45,11 +45,8 @@ use orbit_rpc::MessageUsage;
 
 use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::agent_call_display::AgentCallDisplay;
-use crate::app::{
-    anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
-    icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, OrbitApp, TipExt,
-    BUTTON_GROUP,
-};
+use crate::app::{OrbitApp};
+use crate::ui::prelude::{anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile, icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, TipExt, BUTTON_GROUP};
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
@@ -1294,7 +1291,7 @@ fn selection_menu_item(
                 },
             )
         })
-        .child(crate::app::icon(
+        .child(crate::ui::prelude::icon(
             icon_path,
             context_menu::ICON.px(&theme),
             theme.text_muted,
@@ -3938,7 +3935,7 @@ fn render_subagent_card(
         // only signal.
         let queued = matches!(child.phase, crate::subagent::Phase::Queued);
         let status_mark = match child.status {
-            Status::Running if pulse && !queued => crate::app::spinner(
+            Status::Running if pulse && !queued => crate::ui::prelude::spinner(
                 ElementId::NamedInteger("subagent-spin".into(), id << 8 | ix as u64),
                 IconSize::Small.px(&theme),
                 theme.accent_text,
@@ -4879,7 +4876,7 @@ fn render_activity_card(
                     row.child(render_line_delta(added, removed, theme, 12.5))
                 })
                 .when(pulse, |row| {
-                    row.child(crate::app::spinner(
+                    row.child(crate::ui::prelude::spinner(
                         ElementId::NamedInteger(
                             "activity-spin".into(),
                             (key.0 as u64) << 16 | key.1 as u64,
@@ -5688,13 +5685,13 @@ enum DiffRowKind {
 
 /// One painted row: the text plus the syntax tokens resolved for its line.
 #[derive(Clone)]
-struct DiffRow {
+struct EditDiffLine {
     kind: DiffRowKind,
     text: String,
     tokens: Option<Vec<Token>>,
 }
 
-type EditDiffCache = HashMap<u64, Rc<Vec<DiffRow>>>;
+type EditDiffCache = HashMap<u64, Rc<Vec<EditDiffLine>>>;
 
 thread_local! {
     /// Bounded per-tool edit-diff memo. A card repaints every frame (and on
@@ -5705,7 +5702,7 @@ thread_local! {
 
 /// The inline diff for an `edit` / `write` tool, or `None` when its arguments
 /// carry no text to diff. Content comes only from the tool itself.
-fn edit_diff(tool: &ToolCall) -> Option<Rc<Vec<DiffRow>>> {
+fn edit_diff(tool: &ToolCall) -> Option<Rc<Vec<EditDiffLine>>> {
     let key = {
         let mut hasher = DefaultHasher::new();
         tool.name.hash(&mut hasher);
@@ -5741,12 +5738,12 @@ fn edit_diff(tool: &ToolCall) -> Option<Rc<Vec<DiffRow>>> {
     })
 }
 
-fn build_edit_diff(tool: &ToolCall) -> Option<Vec<DiffRow>> {
+fn build_edit_diff(tool: &ToolCall) -> Option<Vec<EditDiffLine>> {
     let lang = tool.path.as_deref().and_then(path_language);
     match tool.name.as_str() {
         "edit" => {
             let edits = tool.args.as_ref()?.get("edits")?.as_array()?;
-            let mut rows: Vec<DiffRow> = Vec::new();
+            let mut rows: Vec<EditDiffLine> = Vec::new();
             for edit in edits {
                 let (Some(old), Some(new)) = (
                     edit.get("oldText").and_then(Value::as_str),
@@ -5755,7 +5752,7 @@ fn build_edit_diff(tool: &ToolCall) -> Option<Vec<DiffRow>> {
                     continue;
                 };
                 if !rows.is_empty() {
-                    rows.push(DiffRow {
+                    rows.push(EditDiffLine {
                         kind: DiffRowKind::Break,
                         text: String::new(),
                         tokens: None,
@@ -5773,7 +5770,7 @@ fn build_edit_diff(tool: &ToolCall) -> Option<Vec<DiffRow>> {
                 lines
                     .iter()
                     .enumerate()
-                    .map(|(ix, text)| DiffRow {
+                    .map(|(ix, text)| EditDiffLine {
                         kind: DiffRowKind::Addition,
                         text: (*text).to_string(),
                         tokens: tokens.as_ref().and_then(|t| t.get(ix)).cloned(),
@@ -5805,7 +5802,7 @@ fn split_diff_lines(text: &str) -> Vec<&str> {
 /// Longest-common-subsequence line diff: unchanged lines become context, the
 /// rest are deletions (old only) and additions (new only). Oversized edits
 /// fall back to a whole-block replacement so the paint stays bounded.
-fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<DiffRow> {
+fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<EditDiffLine> {
     let old_lines = split_diff_lines(old);
     let new_lines = split_diff_lines(new);
     let old_tokens = lang.map(|lang| highlight::tokenize(lang, old));
@@ -5835,7 +5832,7 @@ fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<DiffRow
                         .and_then(|t| new_ix.and_then(|ix| t.get(ix))),
                 ),
             };
-            DiffRow {
+            EditDiffLine {
                 kind,
                 text: text.unwrap_or("").to_string(),
                 tokens: tokens.cloned(),
@@ -5846,7 +5843,7 @@ fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<DiffRow
 
 /// Unified-patch text for the copy button — `+`/`-`/space prefixes, minus the
 /// cosmetic break rows.
-fn edit_patch_text(rows: &[DiffRow]) -> String {
+fn edit_patch_text(rows: &[EditDiffLine]) -> String {
     let mut out = String::new();
     for row in rows {
         let marker = match row.kind {
@@ -5868,7 +5865,7 @@ fn edit_patch_text(rows: &[DiffRow]) -> String {
 /// pane's rows. Long diffs fold to a preview; copy always carries the whole
 /// patch.
 fn render_edit_diff(
-    rows: &[DiffRow],
+    rows: &[EditDiffLine],
     key: (usize, usize),
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
@@ -5962,7 +5959,7 @@ fn render_edit_diff(
 }
 
 fn render_edit_diff_row(
-    row: &DiffRow,
+    row: &EditDiffLine,
     line_ix: usize,
     key: (usize, usize),
     theme: Theme,
@@ -5999,7 +5996,7 @@ fn render_edit_diff_row(
 
 /// Syntax-colored text for one diff row (tokens are already per-line); the
 /// row's text (with its `+`/`-` marker) is what a selection copies.
-fn diff_row_text(row: &DiffRow, key: ElementId, theme: Theme) -> SelectableText {
+fn diff_row_text(row: &EditDiffLine, key: ElementId, theme: Theme) -> SelectableText {
     let (display, runs) = syntax_runs(&row.text, row.tokens.as_deref(), theme.code_text, theme);
     let scope = text_scope();
     let range = scope
@@ -6399,7 +6396,7 @@ fn format_time(millis: i64) -> Option<String> {
 fn glyph(path: &'static str, size: impl Into<Pixels>, color: Hsla) -> impl IntoElement {
     // The shared icon carries the button hover ink-lift, so every control in
     // the transcript that opts into `BUTTON_GROUP` brightens its glyph.
-    crate::app::icon(path, size, color)
+    crate::ui::prelude::icon(path, size, color)
 }
 
 fn fold_label(elapsed: Option<Duration>) -> String {

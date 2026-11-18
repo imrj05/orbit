@@ -67,11 +67,7 @@ use crate::ui::table::{
     cell_shell, data_table, empty_cell, status_badge, table_row, text_cell, two_line_cell, Column,
     SortState, TableHandlers, FILL_SLACK, HEADER_H, ROW_H,
 };
-use crate::app::{
-    button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
-    icon_dyn, picker_entry, press, provider_mark_color, ControlExt,
-    BUTTON_GROUP,
-};
+use crate::ui::prelude::{empty_state_glyph, button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn, picker_entry, press, provider_mark_color, ControlExt, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;

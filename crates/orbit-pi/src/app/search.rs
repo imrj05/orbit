@@ -5,9 +5,10 @@
 //! document-wide render pass.
 
 use super::*;
-use crate::app::picker_search_frame;
 use crate::theme::tokens::{input, ButtonSize, StyledExt, TextSize};
 use crate::ui::button::IconButton;
+use crate::ui::prelude::picker_search_frame;
+use crate::ui::prelude::*;
 
 /// State for the open find bar. Dropping this closes the surface.
 pub(super) struct TranscriptSearch {

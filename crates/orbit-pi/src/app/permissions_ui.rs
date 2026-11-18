@@ -21,13 +21,13 @@
 //! there, so showing editable rules would imply an effect they do not have.
 //! Their stored rules survive untouched for when the mode is confined again.
 
-use super::helpers::*;
 use super::*;
 use crate::permissions::{Action, Rule, Rules, Scope, Target};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, Radius, TextSize};
 use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::TextField;
+use crate::ui::prelude::*;
 
 /// The inline "add a pattern" form for one family. Only one is open at a time.
 pub(super) struct PatternEditor {

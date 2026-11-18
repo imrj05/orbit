@@ -1,7 +1,7 @@
 # Plan — UI component layer
 
-**Status (2026-11-18):** Phases 1–5 partly landed, Phases 6–7 not started.
-Work is on the `feat/sidebar-toolbar` branch (§6.10–§6.13 uncommitted). Start at
+**Status (2026-11-18):** Phases 1–7 landed; only the manual pass is outstanding.
+Work is on the `feat/sidebar-toolbar` branch (§6.14 uncommitted). Start at
 **Resume here** below; §6.2–§6.13 is the per-pass log (what moved, the checks
 that ran and every declared pixel change).
 
@@ -46,8 +46,8 @@ that ran and every declared pixel change).
 | Avatar | `ui/avatar.rs` `Avatar`, `initials` | ✅ Git (photo + monogram); GitHub login lookup stays in `git_panel` |
 | StatusBar | `ui/status_bar.rs` `StatusBar`, `status_item`, `status_button`, `status_message` | ✅ the composer status row |
 | Navigation rail | `ui/rail.rs` `tick_width`, `tick_ink`, `tick_bar`, `edge_fade`, `side_card` | ✅ transcript turn rail (state, scroll and hint lifetime stay in the transcript) |
-| `app/helpers.rs` deletion (Phase 6) | — | ⬜ 462 lines left (was 1,391), 33 files import it |
-| One-owner guard, `DESIGN.md` / `INTENT.md` (Phase 7) | — | ⬜ |
+| `app/helpers.rs` deletion (Phase 6) | `ui/prelude.rs`, `app/format.rs` | ✅ deleted; nothing imports it; `app.rs` re-exports no UI |
+| One-owner guard, docs (Phase 7) | `scripts/check_ui_owners.py`; `DESIGN.md` §Components, `INTENT.md` D22, `README.md`, `CHANGELOG.md`, `AGENTS.md` | ✅ |
 
 ### Next, in order
 
@@ -56,10 +56,10 @@ that ran and every declared pixel change).
 3. ~~Popovers, `DiffRow`, `StatusBar`, `Rail`, `LinkButton`, `ButtonGroup`,
    modal headers and Tab stops~~ — done (§6.13). Every element family in §4
    now has an owner under `ui/`.
-4. **Phase 6**: classify what is left in `app/helpers.rs` (UI → `ui/`,
+4. ~~**Phase 6**~~ — done (§6.14). Was: classify what is left in `app/helpers.rs` (UI → `ui/`,
    formatting → `app/format.rs`), switch imports from `app::helpers` /
    `crate::app::{…}` re-exports to `crate::ui::…`, delete the file.
-5. **Phase 7**: a one-owner guard (each family's defining file), `DESIGN.md`
+5. ~~**Phase 7**~~ — done (§6.14). Was: a one-owner guard (each family's defining file), `DESIGN.md`
    §Components, an `INTENT.md` `D#` decision, `README.md`.
 6. **Manual pass** (never done yet): `bacon run` in one light, one dark
     non-blue-accent and the Operational palette; check sidebar rows/drag,
@@ -1167,6 +1167,25 @@ bottom margin; the custom-UI header uses the modal headline, padding-based
 height (was a fixed 64px) and the standard hairline (was `border_subtle`).
 The MCP, remote-host and account editors' Cancel/Save are `Button`s
 (Secondary/Primary), and footer buttons show the focus ring when tabbed to.
+
+## 6.14 Phase 6 and Phase 7 (2026-11-18)
+
+- **Phase 6:** `app/helpers.rs` is deleted. Its UI pieces moved to their
+  owners (`kbd_shortcut` and the working-folder legend → `ui/kbd.rs`,
+  `menu_header` → `ui/menu.rs`, `picker_row_height` → `ui/row.rs`,
+  `text_width` → `ui/style/text.rs`), the star banner to `app/sidebar.rs` and
+  the Runtime value cells to `app/settings.rs`; formatting and small domain
+  helpers to `app/format.rs`. Its re-exports and `app.rs`'s became
+  `ui/prelude.rs`, and every `crate::app::{…UI…}` import now names
+  `crate::ui::…`. Four surface items that shadowed component names were
+  renamed (`FileTab`, `EditDiffLine`, `filter_field`, `picker_empty_state`).
+- **Phase 7:** `scripts/check_ui_owners.py` (+ `--self-test`) fails a second
+  definition of any of 22 components / 33 owning functions and any raw
+  `anchored_popover` / `on_mouse_down_out` / `segmented_segment` outside
+  `ui/`, and requires a `// Bespoke:` note on a raw `icon_button_frame`.
+  `review::TreeRow` (the diff tree's data model) is its one named exception.
+  DESIGN.md §Components gained the owner table, INTENT.md D22 records the
+  decision, and README, CHANGELOG and AGENTS describe the layer.
 
 ## 6.1 Remaining owner work — actionable backlog
 

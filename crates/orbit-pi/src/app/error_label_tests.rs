@@ -1,4 +1,4 @@
-use super::helpers::*;
+use super::format::*;
 
 #[test]
 fn humanize_command_reads_as_a_label() {

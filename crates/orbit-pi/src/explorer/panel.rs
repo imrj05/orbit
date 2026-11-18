@@ -27,12 +27,7 @@ use crate::ui::list::virtual_list;
 use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::style::surface::SurfaceExt;
-use crate::app::{
-    anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
-    context_menu_surface, empty_state, file_badge, file_glyph, icon,
-    nerd_font_family, press, ControlExt, EmptyFill, TipExt,
-    BUTTON_GROUP,
-};
+use crate::ui::prelude::{anchored_popover_at, button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state, file_badge, file_glyph, icon, nerd_font_family, press, ControlExt, EmptyFill, TipExt, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
@@ -998,7 +993,7 @@ impl ProjectPanel {
                                     .child(title),
                             )
                             .when(self.loading, |row| {
-                                row.child(crate::app::spinner(
+                                row.child(crate::ui::prelude::spinner(
                                     "explorer-header-loading",
                                     IconSize::XSmall.px(&theme),
                                     theme.text_muted,
@@ -1674,7 +1669,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(DynamicSpacing::Base08.px(theme))
-        .child(crate::app::spinner(
+        .child(crate::ui::prelude::spinner(
             "explorer-loading",
             IconSize::Small.px(theme),
             theme.text_muted,

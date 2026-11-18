@@ -168,6 +168,7 @@ Orbit spawns the `pi` CLI as a child process per open session and speaks its RPC
 
 ```
 crates/orbit-pi/      The GPUI app — window, transcript, markdown, workbench
+                      (src/ui/ is the component layer: one owner per element)
 crates/orbit-rpc/     pi CLI RPC client (process lifecycle + JSONL protocol)
 contrib/              Bundled pi extensions (access guard, auth/quota bridges)
 scripts/make-dmg.sh   Build a signed .app + DMG (arm64 / universal)

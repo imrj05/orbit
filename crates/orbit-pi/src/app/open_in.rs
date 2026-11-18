@@ -1,9 +1,9 @@
-use super::helpers::*;
 use super::*;
 use crate::theme::tokens::{context_menu, picker, popover, ButtonSize, IconSize, BASE_REM_PX};
 use crate::ui::field::search_field;
 use crate::ui::popover::{dropdown_below, DropdownAlign};
 use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::*;
 
 /// The slot an "open in" app icon draws in: 18px at the default UI scale.
 ///
@@ -153,6 +153,7 @@ impl OrbitApp {
             )
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_primary));
 
+        // Bespoke: the split button's caret half (see the primary above).
         let caret = icon_button_frame(
             div().id("header-open-in-caret"),
             &theme,

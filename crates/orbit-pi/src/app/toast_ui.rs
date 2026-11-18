@@ -1,7 +1,7 @@
-use super::helpers::*;
 use super::*;
 use crate::theme::tokens::{toast as toast_tokens, IconSize, Motion};
 use crate::toast::{Toast, ToastKind};
+use crate::ui::prelude::*;
 
 fn short_revision(revision: &str) -> &str {
     if revision.len() > 12 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {

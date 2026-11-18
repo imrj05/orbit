@@ -27,9 +27,7 @@ use crate::ui::chip::{Badge, BadgeFill};
 use crate::ui::list::virtual_list;
 use crate::ui::button::IconButton;
 use crate::ui::tab::{tab_strip, Tab as TabButton};
-use crate::app::{
-    button_frame, empty_state, file_badge, file_glyph, icon, nerd_font_family,
-    ControlExt, EmptyFill, };
+use crate::ui::prelude::{button_frame, empty_state, file_badge, file_glyph, icon, nerd_font_family, ControlExt, EmptyFill};
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
 use crate::theme::tokens::RaisedExt;
@@ -309,7 +307,7 @@ enum SaveState {
     Failed(String),
 }
 
-struct Tab {
+struct FileTab {
     /// Stable id: observers and save timers outlive a shift in the tab vec.
     id: u64,
     path: PathBuf,
@@ -336,7 +334,7 @@ struct Tab {
     _sub: Subscription,
 }
 
-impl Tab {
+impl FileTab {
     fn editable(&self) -> bool {
         self.content.as_ref().is_some_and(FileContent::editable)
     }
@@ -350,7 +348,7 @@ impl Tab {
 /// [`ComposerInput`].
 pub struct FileViewer {
     open: bool,
-    tabs: Vec<Tab>,
+    tabs: Vec<FileTab>,
     active: usize,
     loading: bool,
     list: ListState,
@@ -485,7 +483,7 @@ impl FileViewer {
         let sub = cx.observe(&editor, move |this, editor, cx| {
             this.on_editor_changed(id, &editor, cx);
         });
-        self.tabs.push(Tab {
+        self.tabs.push(FileTab {
             id,
             path,
             display,
@@ -919,7 +917,7 @@ impl FileViewer {
     }
 
     /// Read-only lock for non-editable modes; autosave status for editable ones.
-    fn status_chip(&self, theme: Theme, tab: &Tab) -> AnyElement {
+    fn status_chip(&self, theme: Theme, tab: &FileTab) -> AnyElement {
         let (label, color) = if !tab.editable() {
             (tr!("explorer.read_only"), theme.text_muted)
         } else if tab.conflict {
@@ -1184,7 +1182,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(DynamicSpacing::Base08.px(theme))
-        .child(crate::app::spinner(
+        .child(crate::ui::prelude::spinner(
             "viewer-loading",
             IconSize::Small.px(theme),
             theme.text_muted,
@@ -1278,7 +1276,7 @@ fn active_after_close(active: usize, index: usize, len_after: usize) -> usize {
 /// Whether a tab currently paints its editor, as opposed to a read-only body
 /// or the Markdown preview. Used to pick a focus target that exists in the
 /// tree: focusing a hidden editor would drop focus and the `Files` context.
-fn editor_shown(tab: &Tab) -> bool {
+fn editor_shown(tab: &FileTab) -> bool {
     let Some(content) = tab.content.as_ref() else {
         return false;
     };
@@ -1291,7 +1289,7 @@ fn editor_shown(tab: &Tab) -> bool {
 
 /// The Explorer's editing surface. A column so the editor's `flex_1` grows
 /// vertically; a row would leave its height auto and collapse the buffer to 0.
-fn editor_body(theme: Theme, tab: &Tab) -> AnyElement {
+fn editor_body(theme: Theme, tab: &FileTab) -> AnyElement {
     div()
         .flex()
         .flex_col()

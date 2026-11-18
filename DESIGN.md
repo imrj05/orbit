@@ -594,6 +594,24 @@ the chat page has neither.
 
 ## Components
 
+Every component below has **one owner** in `crates/orbit-pi/src/ui/`
+(INTENT.md D22); a surface uses it or extends it, and never re-derives it.
+`scripts/check_ui_owners.py` fails a second definition.
+
+| Element | Owner |
+|---|---|
+| Button, icon button, segmented control, link | `ui/button.rs` — `Button`, `IconButton`, `ButtonGroup`, `LinkButton` |
+| Trigger chip, badge, pill | `ui/chip.rs` — `ChipButton`, `Badge`, `Pill` |
+| Banner, empty / error state, spinner, progress, skeleton | `ui/banner.rs`, `ui/feedback.rs` |
+| Text field, search field, form row | `ui/field.rs` — `TextField`, `search_field`, `FormRow` |
+| Menu cursor, menu surface and rows | `ui/menu.rs` — `MenuState`, `MenuCursor`, `context_menu_*` |
+| Dropdown, popover placement, dismissal | `ui/popover.rs` — `dropdown_below/above`, `column_menu` |
+| Modal card, header, footer, focus | `ui/dialog.rs` — `ModalHeader`, `modal_button`, `ModalFocus` |
+| Rows, list rows, table, tree, tabs, virtual list | `ui/row.rs`, `ui/table.rs`, `ui/tree.rs`, `ui/tab.rs`, `ui/list.rs` |
+| Diff row, status bar, navigation rail | `ui/diff.rs`, `ui/status_bar.rs`, `ui/rail.rs` |
+| Card treatment | `SurfaceExt::card_surface` (`ui/style/surface.rs`), `ui/card.rs` |
+| Toast card, avatar, lightbox, keycaps, switch, tooltip | `ui/toast.rs`, `ui/avatar.rs`, `ui/lightbox.rs`, `ui/kbd.rs`, `ui/switch.rs`, `ui/tooltip.rs` |
+
 ### Buttons
 - **Shape:** `button::radius(size)` — 5px on compact frames, 6px on the standard scale;
   32px (`Large`), 28px (`Medium`), 22px (`Default`), 18px (`Compact`), 16px (`None`).
@@ -644,7 +662,7 @@ the chat page has neither.
 ### Modals and dialogs
 
 A modal is the only live layer while it is open, and every one of them is built from
-the same two pieces (`modal_card`, `modal_scrim` in `app/helpers.rs`):
+the same two pieces (`modal_card`, `modal_scrim` in `ui/dialog.rs`):
 
 - **Scrim:** `scrim_modal` over the whole window, `Base24` padding, card centred. A
   click on the scrim cancels a dismissible dialog; a click on the card never reaches
@@ -687,11 +705,10 @@ other modal floated on `surface_elevated`.
 - Row-level actions are revealed on row hover, never as a permanent icon rail.
 - Sort indicators are small chevrons in `text_muted`; the sorted column's label steps to
   `text_secondary`.
-- **Data tables and plots are drawn with GPUI's own elements.** The usage tables
-  are built from `div` in `usage::table` and the timeline from `canvas` in
-  `usage::chart`, each reading colors only from `theme::get(cx)` — the same
-  surface as the rest of the page. There is no component layer and no second
-  palette to synchronise.
+- **Data tables and plots are drawn with GPUI's own elements.** The grid is
+  `ui/table.rs` (`data_table`, `table_row`, cells) and the timeline is `canvas`
+  in `usage::chart`, each reading colors only from `theme::get(cx)` — the same
+  surface as the rest of the page. There is no second palette to synchronise.
 
 **The Bridge Rule.** A table or chart reads every color from `theme::get(cx)`. If
 it renders in a color this file does not list, the element is wrong — fix the

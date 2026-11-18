@@ -11,11 +11,11 @@ use gpui::{
     SharedString, StyledText, TextRun, Window,
 };
 
-use crate::app::{file_glyph, icon};
 use crate::review::{self, LineKind};
 use crate::theme::tokens::{DynamicSpacing, IconSize, TextSize};
 use crate::theme::{self, Theme};
 use crate::ui::diff::{DiffGutter, DiffRow, DiffTone};
+use crate::ui::prelude::{file_glyph, icon};
 
 /// Review diff row metrics, shared by every surface that paints rows.
 pub const DIFF_TEXT_SIZE: f32 = 12.5;

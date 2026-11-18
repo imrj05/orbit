@@ -475,6 +475,33 @@ left as an empty version-1 store so an older Orbit build still starts. The
 per-session routing plumbing remains in the spawn path but always carries an
 empty selection; removing it is a follow-up.
 
+### D22 — UI components: one owner per element, in `ui/`
+
+**Choice:** every UI element family has exactly one defining file under
+`crates/orbit-pi/src/ui/` — `Button`, `IconButton`, `ButtonGroup`,
+`LinkButton`, `ChipButton`, `Badge`, `Pill`, `Banner`, `TextField`, `FormRow`,
+`TreeRow`, `DiffRow`, `StatusBar`, `ModalHeader`, the table, tabs, menus,
+popovers and the rest (DESIGN.md §Components lists them). Surfaces import
+`crate::ui::prelude::*` and the named components; they own content, state and
+actions, never an element's look. Two style tiers stay: zero-cost traits in
+`ui/style/` (states, material, text) and components that own composition or
+behaviour. Entities (`ComposerInput`, `FileViewer`, terminals) are unchanged.
+
+**Rationale:** the design-system audit finished the vocabulary (roles,
+tokens, states, motion) but each surface still re-assembled the same shells —
+44 button functions, 24 popup renderers, 95 row renderers — so "primary" or
+"selected" drifted between screens. One owner makes a fix land everywhere at
+once and lets a guard prove it.
+
+**Consequence:** `app/helpers.rs` is deleted (formatting lives in
+`app/format.rs`). `scripts/check_ui_layers.py` keeps `ui/` from importing a
+surface; `scripts/check_ui_owners.py` fails a second definition of a
+component or owning function and any raw popover / dismissal / segment
+primitive outside `ui/`. A one-off control that cannot use its component (the
+composer's morphing send button, the updater pill) carries a `// Bespoke:`
+comment saying why. The migration's declared visual changes are recorded in
+`docs/plans/ui-component-layer.md` §6.2–§6.13.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -498,6 +525,14 @@ legacy app today:
     as keyboard/mouse surfaces (⌘P palette, shortcuts), not only through menus.
 
 ### Implementation status (living)
+
+The component layer (D22) is complete: every element family has one owner in
+`crates/orbit-pi/src/ui/`, surfaces import `crate::ui::prelude`, `app/helpers.rs`
+is gone, and `scripts/check_ui_owners.py` guards ownership. The Explorer,
+transcript and sidebar context menus work from the keyboard (Shift-F10 / the
+Menu key opens a sidebar row's menu) and form-modal footer buttons are Tab
+stops. Covered by focused unit and GPUI layout tests; a manual pass across
+palettes in the running app is still outstanding.
 
 Remote sessions (D20) ship agent-only SSH sessions: Settings → Remote hosts
 (host list with Test / Edit / Remove, an add/edit form with `~/.ssh/config` alias

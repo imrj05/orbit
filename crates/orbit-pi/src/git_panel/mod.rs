@@ -32,12 +32,8 @@ use crate::ui::field::TextField;
 use crate::ui::banner::{Banner, BannerTone};
 use crate::ui::button::IconButton;
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
-use crate::app::{
-    button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn,
-    menu_header, nerd_font_family, picker_entry,
-    picker_surface, press, provider_mark_color, refresh_glyph, spinner, ControlExt, ModelEntry,
-    PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
-};
+use crate::app::{ModelEntry};
+use crate::ui::prelude::{button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn, menu_header, nerd_font_family, picker_entry, picker_surface, press, provider_mark_color, refresh_glyph, spinner, ControlExt, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP};
 use crate::commit_message;
 use crate::commit_model::{CommitModel, CommitModelConfig};
 use crate::gh;
@@ -5243,7 +5239,7 @@ impl GitPanel {
         for file in detail.files.iter().take(MAX_FILE_ROWS) {
             let path = file.path.clone();
             let fallback = icon("icons/file.svg", glyph_size, theme.text_muted).into_any_element();
-            let glyph = crate::app::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
+            let glyph = crate::ui::prelude::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
             let color = status_color(file.status, theme);
             let hash = detail.hash.clone();
             column = column.child(
@@ -5702,7 +5698,7 @@ impl GitPanel {
             .flex_wrap()
             .items_center()
             .gap(DynamicSpacing::Base04.px(&theme))
-            .child(search_field(
+            .child(filter_field(
                 theme,
                 self.issue_search.clone(),
                 "git-issue-search",
@@ -6389,7 +6385,7 @@ impl GitPanel {
             .flex_wrap()
             .items_center()
             .gap(DynamicSpacing::Base04.px(&theme))
-            .child(search_field(
+            .child(filter_field(
                 theme,
                 self.pr_search.clone(),
                 "git-pr-search",
@@ -6862,7 +6858,7 @@ impl GitPanel {
                 let fallback =
                     icon("icons/file.svg", glyph_size, theme.text_muted).into_any_element();
                 let glyph =
-                    crate::app::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
+                    crate::ui::prelude::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
                 files = files.child(
                     div()
                         .group("git-row")
@@ -9357,7 +9353,7 @@ fn composer_field(
 /// affordance inside one frame. Keeping submit in the frame (rather than beside
 /// it) leaves the input the row's remaining width, so its placeholder never
 /// clips to a fragment in a narrow list pane.
-fn search_field(
+fn filter_field(
     theme: Theme,
     input: Entity<crate::composer::ComposerInput>,
     submit_id: &'static str,

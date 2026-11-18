@@ -11,10 +11,6 @@ use gpui::{
     Subscription, Window,
 };
 
-use crate::app::helpers::text_width;
-use crate::app::{
-    button_frame, icon, menu_header, picker_entry, ControlExt, PressedRamp, StatefulControlExt,
-};
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
 use crate::theme::tokens::RaisedExt;
@@ -25,6 +21,10 @@ use crate::theme::{self, Theme};
 use crate::ui::field::search_field;
 use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::text_width;
+use crate::ui::prelude::{
+    button_frame, icon, menu_header, picker_entry, ControlExt, PressedRamp, StatefulControlExt,
+};
 
 const POPOVER_W: f32 = 320.;
 /// Branch rows visible before the list scrolls.

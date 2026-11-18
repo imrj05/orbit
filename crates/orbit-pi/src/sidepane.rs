@@ -31,10 +31,7 @@ use crate::ui::list::virtual_list;
 use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::style::surface::SurfaceExt;
-use crate::app::{
-    button_frame, context_menu_separator, empty_state, file_glyph, icon,
-    nerd_font_family, picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
-};
+use crate::ui::prelude::{button_frame, context_menu_separator, empty_state, file_glyph, icon, nerd_font_family, picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::diff_view::{
     diff_gutter_width, render_code_row, render_file_header, render_hunk_header, render_meta,

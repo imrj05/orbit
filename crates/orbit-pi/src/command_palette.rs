@@ -36,10 +36,7 @@ use gpui::{
     SharedString, Styled, Subscription, Window,
 };
 
-use crate::app::{
-    icon, menu_header, picker_entry, picker_surface, PressedRamp, SettingsSection,
-    StatefulControlExt,
-};
+use crate::app::SettingsSection;
 use crate::commands::{self, CommandId, CommandSpec};
 use crate::composer::ComposerInput;
 use crate::platform::shortcuts;
@@ -50,6 +47,9 @@ use crate::theme::tokens::{
 };
 use crate::theme::{self, Theme};
 use crate::ui::field::search_field;
+use crate::ui::prelude::{
+    icon, menu_header, picker_entry, picker_surface, PressedRamp, StatefulControlExt,
+};
 
 /// The palette's layout metrics, resolved from the theme so the card's
 /// height caps and the keyboard reveal math measure exactly what renders.

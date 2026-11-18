@@ -7,11 +7,11 @@
 //! release is offered: it shows the search, the changelog, and the install
 //! decision, and the sidebar/settings controls only open it.
 
-use super::helpers::*;
 use super::*;
 use crate::theme::tokens::{
     button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
+use crate::ui::prelude::*;
 use crate::ui::tooltip::Tooltip;
 use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
 
@@ -432,7 +432,7 @@ impl OrbitApp {
                 .raised(theme.action, &theme)
                 .cursor_default()
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-                .child(crate::app::spinner(
+                .child(crate::ui::prelude::spinner(
                     ElementId::NamedInteger("update-spin".into(), 0),
                     ButtonSize::Compact.icon_size().px(&theme),
                     theme.action_fg,

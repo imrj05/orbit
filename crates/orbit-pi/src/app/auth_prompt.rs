@@ -2,9 +2,10 @@
 //! Authorization codes are masked; provider text questions remain readable.
 //! The single-window shell owns this transient UI state as an app global; the
 //! auth reducer remains display-only and independent of GPUI.
-use super::helpers::{button_frame, ControlExt, PressedRamp};
 use super::*;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, TextSize};
+use crate::ui::prelude::*;
+use crate::ui::prelude::{button_frame, ControlExt, PressedRamp};
 use gpui::{Global, RenderOnce};
 
 #[derive(Default)]

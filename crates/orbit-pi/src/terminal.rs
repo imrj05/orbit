@@ -56,10 +56,7 @@ use gpui::{
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::button::IconButton;
 use crate::ui::tab::{tab_strip, Tab};
-use crate::app::{
-    button_frame, icon, nerd_font_family, press, refresh_glyph, ControlExt,
-    TipExt,
-};
+use crate::ui::prelude::{button_frame, icon, nerd_font_family, press, refresh_glyph, ControlExt, TipExt};
 use crate::motion::Hover;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::tokens::{RaisedExt, StyledExt};

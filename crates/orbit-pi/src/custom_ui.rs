@@ -21,12 +21,12 @@ use gpui::{
 };
 use serde_json::Value;
 
-use crate::app::{icon, modal_card, modal_scrim};
 use crate::terminal::encode_key;
 use crate::theme;
 use crate::theme::tokens::{panel, DynamicSpacing, IconSize, TextSize};
 use crate::ui::button::IconButton;
 use crate::ui::dialog::ModalHeader;
+use crate::ui::prelude::{icon, modal_card, modal_scrim};
 use crate::widgets;
 
 /// Column budget the host offers the component: the card is exactly this many

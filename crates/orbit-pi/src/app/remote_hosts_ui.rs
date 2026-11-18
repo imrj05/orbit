@@ -13,7 +13,6 @@
 //! background executor; a result is dropped when the form or row it was for
 //! has moved on (see `check_gen`).
 
-use super::helpers::*;
 use super::mcp_ui::mcp_text_button;
 use super::*;
 use crate::remote_hosts::{self, RemoteHost};
@@ -23,6 +22,7 @@ use crate::ui::button::IconButton;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::*;
 
 /// How many `~/.ssh/config` aliases the form offers at once.
 const MAX_ALIAS_SUGGESTIONS: usize = 8;

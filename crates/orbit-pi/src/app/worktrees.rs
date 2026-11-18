@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 use gpui::{AnyElement, MouseDownEvent, MouseUpEvent};
 
-use super::helpers::*;
 use super::*;
 use crate::motion::Hover;
 use crate::theme::tokens::{
@@ -29,6 +28,7 @@ use crate::ui::banner::{Banner, BannerTone};
 use crate::ui::button::IconButton;
 use crate::ui::field::{form_label, FormRow, TextField};
 use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::*;
 use crate::worktree::{self, Worktree, WorktreeError, WorktreeManager};
 use crate::worktree_setup;
 

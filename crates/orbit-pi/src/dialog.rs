@@ -17,11 +17,11 @@ use gpui::{
     SharedString, Window,
 };
 
-use crate::app::{modal_card, modal_scrim, PressedRamp, StatefulControlExt};
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{button, input, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
 use crate::ui::dialog::ModalHeader;
+use crate::ui::prelude::{modal_card, modal_scrim, PressedRamp, StatefulControlExt};
 
 /// Card width — a question plus its options without owning the window.
 const CARD_W: f32 = 560.;

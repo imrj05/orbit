@@ -15,7 +15,7 @@ use gpui::{
 use orbit_rpc::{ContextUsage, SessionUsage};
 
 use crate::ui::button::IconButton;
-use crate::app::{button_frame, ControlExt};
+use crate::ui::prelude::{button_frame, ControlExt};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;

@@ -15,7 +15,6 @@
 
 use std::collections::BTreeMap;
 
-use super::helpers::*;
 use super::mcp_ui::mcp_text_button;
 use super::ssh_auth_ui::AuthThen;
 use super::*;
@@ -25,6 +24,7 @@ use crate::ui::button::ButtonVariant;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::*;
 
 /// One host's provider listing.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -17,7 +17,7 @@
 //! - [`toast_ui`] — the in-app toast stack: push/dismiss helpers and layer
 //! - [`view`] — top-level chrome: sidebar, transcript, composer, status bar
 //! - [`open_in`] — "open workspace in" app detection and menu
-//! - [`helpers`] — icons, file glyphs, and small formatting helpers
+//! - [`format`] — formatting and small domain helpers (no UI; UI lives in `crate::ui`)
 
 use std::{
     cell::Cell,
@@ -4488,7 +4488,7 @@ mod composer_ops;
 mod dialogs;
 mod events;
 mod git_accounts_ui;
-pub(crate) mod helpers;
+pub(crate) mod format;
 mod mcp_ui;
 mod new_task;
 mod open_in;
@@ -4631,18 +4631,7 @@ mod worktree_chip_tests;
 #[cfg(test)]
 mod worktree_howto_tests;
 
-// `icon` and friends are part of the crate-wide UI kit; keep their original
-// `crate::app::…` paths stable for the other modules that import them.
 pub(crate) use crate::theme::tokens::{Motion, RaisedExt};
-pub(crate) use helpers::{
-    anchored_popover_at, button_frame, context_menu_entry,
-    context_menu_separator, context_menu_surface, disclosure_chevron, empty_state, file_badge,
-    file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, menu_header,
-    modal_card, modal_scrim, nerd_font_family, picker_entry, picker_row_height,
-    picker_search_frame, picker_surface, press, provider_mark_color, refresh_glyph,
-    running_spinner, spinner, working_folder_keyboard_hints, ControlExt, EmptyFill,
-    EntryMarkLike, PickerRow, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
-};
 use sidebar::sessions_with_placeholder;
 
 #[cfg(test)]

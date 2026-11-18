@@ -12,7 +12,6 @@
 //! either: a save re-reads the file, refuses to clobber an external edit, and
 //! leaves every key it does not own byte-for-byte.
 
-use super::helpers::*;
 use super::*;
 use crate::git_panel::widgets::check_box;
 use crate::subagent_file::{self, Agent, Source, Tier};
@@ -25,6 +24,7 @@ use crate::ui::button::{Button, ButtonVariant, IconButton};
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::search_field;
 use crate::ui::field::{FormRow, TextField};
+use crate::ui::prelude::*;
 
 /// One Skills-page-style dispatch point for every Subagents control.
 #[derive(Clone)]

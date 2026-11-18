@@ -134,7 +134,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/open_in.rs    installed-editor/terminal detection and the "open in" menu
   src/app/worktrees.rs  Worktrees page + controller: list/create/open/rename/move/lock/remove, setup progress, settings rows
   src/app/pi_update_ui.rs launch-time pi self-update: background check, install, toasts
-  src/app/helpers.rs    shared UI primitives (icon/file glyphs, the loading spinner, the floating-surface chrome, the empty/error state) + small formatting helpers
+  src/app/format.rs     formatting and small domain helpers (command labels, queue row identity
+                        and previews, session titles, uptime); no UI — elements live in `src/ui/`
   src/auth.rs           non-sensitive provider-auth state machine for the auth.* RPC namespace (login/cancel/timeout/restart recovery)
   src/transcript.rs     virtualized messages (snapshot + stream)
   src/transcript_view.rs Waku-style transcript paint (rail, activity cards, copy); plain-GPUI message rows (no component library)
@@ -174,17 +175,24 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/terminal.rs       bottom terminal panel (⌘J): tabbed shells (one PTY per tab, background tabs keep
                         running) with each tab's login-shell profile mark; alacritty_terminal VT grid,
                         GPUI canvas render, keys/selection/paste
-  src/ui/               the shared UI layer: `ui/style/` holds the zero-cost style
-                        seams (control states, press, surface/material); `ui/button.rs`
-                        owns `Button` + `ButtonVariant` (the one place a variant is
-                        decided), `ui/chip.rs` `Badge`, `ui/banner.rs` `Banner`,
-                        `ui/menu.rs` `MenuState`, `ui/popover.rs` anchoring + `DismissGuard` +
-                        `dismiss_on_outside`, `ui/dialog.rs` modal frame + `ModalFocus`, `ui/row.rs` picker/option/nav rows,
-                        `ui/resize.rs` handles, `ui/chrome.rs` window chrome, `ui/glyph.rs` file
-                        glyphs + provider tints,
-                        `ui/tooltip.rs` the tooltip view. `ui/*` may use theme/motion/i18n/gpui and
-                        must NOT import a surface (`scripts/check_ui_layers.py`).
-                        Every element gets one owner here; see docs/plans/ui-component-layer.md
+  src/ui/               the component layer (INTENT.md D22): every UI element has one owner
+                        here. `ui/prelude.rs` is the everyday import (`use crate::ui::prelude::*`);
+                        named components come from their module. `ui/style/` control states,
+                        press, material (`card_surface`) and text (`num_font`, `text_width`);
+                        `ui/button.rs` `Button`/`IconButton`/`ButtonGroup`/`LinkButton`;
+                        `ui/chip.rs` `ChipButton`/`Badge`/`Pill`; `ui/banner.rs` `Banner`;
+                        `ui/feedback.rs` empty/error/spinner/progress/skeleton; `ui/field.rs`
+                        `TextField`/`FormRow`/`search_field`; `ui/menu.rs` `MenuState`/`MenuCursor`;
+                        `ui/popover.rs` `dropdown_below/above`, `column_menu`, dismissal;
+                        `ui/dialog.rs` `ModalHeader`/footer/`modal_button`/`ModalFocus`;
+                        `ui/row.rs` picker/nav/setting rows + `RowState`/`list_row`;
+                        `ui/table.rs`, `ui/tree.rs`, `ui/tab.rs`, `ui/list.rs` (`virtual_list`),
+                        `ui/diff.rs`, `ui/status_bar.rs`, `ui/rail.rs`, `ui/toast.rs`,
+                        `ui/avatar.rs`, `ui/lightbox.rs`, `ui/kbd.rs`, `ui/switch.rs`,
+                        `ui/resize.rs`, `ui/chrome.rs`, `ui/glyph.rs`, `ui/icon.rs`, `ui/tooltip.rs`.
+                        `ui/*` may use theme/motion/i18n/gpui and must NOT import a surface
+                        (`scripts/check_ui_layers.py`); no element gets a second owner
+                        (`scripts/check_ui_owners.py`). See docs/plans/ui-component-layer.md
   src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_1/2/3, component metrics) resolved through the Theme; see INTENT.md D11
   src/providers.rs      provider catalog + models.json / auth.json read/write for Settings → Providers (provider metadata introspected from pi-ai; curated table is the fallback)
   src/provider_accounts.rs  extra provider accounts: ~/.orbit-pi/accounts.json (name, provider,
@@ -401,7 +409,7 @@ a second component library.
 - **Charts** — Usage is painted directly in `src/usage/`.
 - **Git** — the `git` CLI, not libgit2.
 - **State management / DI / component library / a second HTTP client / tokio /
-  an editor widget** — gpui entities, `app/helpers.rs`, `widgets.rs`,
+  an editor widget** — gpui entities, `src/ui/`, `widgets.rs`,
   `zed-reqwest`, gpui's smol runtime, and `ComposerInput` cover these.
 
 No new dependency without a stated reason (also in *Verification*). When one is
@@ -431,6 +439,7 @@ python3 scripts/check_states.py       # interaction states must come from the co
 python3 scripts/check_motion.py       # animations must use a motion primitive
 python3 scripts/check_keyboard.py     # every key binding lands in a declared context
 python3 scripts/check_ui_layers.py    # ui/ imports no surface; material resolved once
+python3 scripts/check_ui_owners.py    # every UI element has one owner under src/ui/
 python3 scripts/read-perf.py          # frame-time captures from a debug build (⌘⌥P)
 ```
 
@@ -512,7 +521,8 @@ stack is gone; do not resurrect it.
   `DynamicSpacing` / `TextSize` / `IconSize` / `ButtonSize` / `Radius` and
   `elevation_2` / `elevation_3` instead of px literals. Context menus build on
   `context_menu_surface` / `context_menu_entry` / `context_menu_separator`
-  (`app/helpers.rs`).
+  (`ui/menu.rs`). A new element extends its `ui/` owner instead of starting a
+  second one; a true one-off says why with `// Bespoke:`.
 - Public releases cannot assume the author's providers, models, paths, or machine state.
 - Provider HTTP bodies have hard caps (measured: `ollama.com/v1` accepts ~7.5 MB and
   returns `413` at ~8 MB; much larger bodies surface as `400 failed to read request

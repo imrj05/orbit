@@ -1157,3 +1157,54 @@ mod tests {
         assert!(ButtonVariant::Tinted.fade(&theme).is_none());
     }
 }
+
+#[cfg(test)]
+mod segment_position_tests {
+    use super::*;
+    use crate::theme::tokens::button;
+    use gpui::{div, Styled};
+
+    /// A group of segments rounds only its outer corners: the first rounds
+    /// its left edge, the last its right, and the middle stays square so
+    /// abutting segments read as one control.
+    #[test]
+    fn segment_positions_trim_the_group_outline() {
+        let theme = Theme::dark();
+        let radius = button::RADIUS.px(&theme);
+        let corners = |position| {
+            segmented_segment(div(), &theme, ButtonSize::Medium, position)
+                .style()
+                .corner_radii
+                .clone()
+        };
+        let explicit = |mut el: gpui::Div| el.style().corner_radii.clone();
+        assert_eq!(
+            corners(SegmentPosition::Only),
+            explicit(div().rounded_none().rounded(radius))
+        );
+        assert_eq!(
+            corners(SegmentPosition::First),
+            explicit(div().rounded_none().rounded_l(radius))
+        );
+        assert_eq!(
+            corners(SegmentPosition::Last),
+            explicit(div().rounded_none().rounded_r(radius))
+        );
+        assert_eq!(
+            corners(SegmentPosition::Middle),
+            explicit(div().rounded_none())
+        );
+    }
+
+    #[test]
+    fn segment_positions_cover_a_group() {
+        use SegmentPosition::{First, Last, Middle, Only};
+        assert_eq!(SegmentPosition::at(0, 1), Only);
+        assert_eq!(SegmentPosition::at(0, 0), Only);
+        assert_eq!(SegmentPosition::at(0, 2), First);
+        assert_eq!(SegmentPosition::at(1, 2), Last);
+        assert_eq!(SegmentPosition::at(0, 3), First);
+        assert_eq!(SegmentPosition::at(1, 3), Middle);
+        assert_eq!(SegmentPosition::at(2, 3), Last);
+    }
+}

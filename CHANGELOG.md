@@ -160,6 +160,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One component layer for the whole app.** Every button, chip, banner, field,
+  menu, popover, modal, row, table, tree, tab strip, diff line, status bar and
+  rail now comes from one shared component, so they look and behave the same on
+  every screen. Visible effects: segmented controls share one cross-fading
+  style with medium labels; icon buttons press with the same wash; the Git
+  failure notice, the worktree setup banner and the Explorer's notice strip use
+  the shared banner; the Review tree's keyboard cursor matches the Explorer's;
+  transcript edit diffs use Review's red/green strengths; dialog headers share
+  one layout. Settings → Appearance theme previews no longer show square corners
+  inside their rounded cards.
+- **Context menus work from the keyboard.** The Explorer, transcript text and
+  sidebar session/project menus take the arrow keys, Home/End, Enter and
+  Escape; Shift-F10 or the Menu key opens a sidebar row's menu (and the
+  Explorer's). Form dialogs' Cancel and Save buttons are Tab stops — Enter or
+  Space presses them.
 - **The wallpaper's page tint is yours, not the contrast pass's.** In full-window
   mode the sidebar, the chat column and the settings nav used to take at least
   65% of the palette's own background colour over the picture, and the contrast

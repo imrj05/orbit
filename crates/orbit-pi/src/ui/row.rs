@@ -445,6 +445,11 @@ pub(crate) fn list_row(
     )
 }
 
+/// The row height a two-line [`PickerRow`] fills exactly.
+pub(crate) fn picker_row_height(theme: &Theme) -> gpui::Pixels {
+    picker::two_line_entry_height(theme)
+}
+
 #[cfg(test)]
 mod row_state_tests {
     use super::RowState;

@@ -1,5 +1,6 @@
 use super::*;
-use crate::app::helpers::anchored_popover_in_window;
+use crate::ui::popover::anchored_popover_in_window;
+use crate::ui::prelude::*;
 
 // ── settings select popup anchoring ───────────────────────────────────
 

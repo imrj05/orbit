@@ -17,7 +17,6 @@
 //! the form's **Test connection**, a row's **Test**, and starting a task from
 //! the folder picker (which checks the host before spawning pi there).
 
-use super::helpers::*;
 use super::remote_hosts_ui::HostCheck;
 use super::remote_providers_ui::RemoteModels;
 use super::*;
@@ -26,6 +25,7 @@ use crate::theme::tokens::{input, modal, panel, DynamicSpacing, TextSize};
 use crate::ui::button::ButtonVariant;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
+use crate::ui::prelude::*;
 use orbit_rpc::remote::HostKeyProblem;
 
 /// Password tries per connection before Orbit stops asking.

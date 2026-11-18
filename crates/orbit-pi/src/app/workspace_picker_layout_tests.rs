@@ -11,6 +11,7 @@
 use super::*;
 use crate::theme::tokens::picker;
 use crate::theme::{Theme, ThemeId};
+use crate::ui::prelude::*;
 use crate::worktree::Worktree;
 use std::fs;
 

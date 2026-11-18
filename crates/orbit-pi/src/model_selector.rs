@@ -40,10 +40,7 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
-use crate::app::{
-    button_frame, icon, icon_dyn, picker_entry, picker_surface, provider_mark_color, ControlExt,
-    ModelEntry, PressedRamp, StatefulControlExt, TipExt,
-};
+use crate::app::ModelEntry;
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
 use crate::favorites::Favorites;
@@ -58,6 +55,10 @@ use crate::theme::{self, Theme};
 use crate::ui::button::IconButton;
 use crate::ui::field::search_field;
 use crate::ui::popover::PopoverExt;
+use crate::ui::prelude::{
+    button_frame, icon, icon_dyn, picker_entry, picker_surface, provider_mark_color, ControlExt,
+    PressedRamp, StatefulControlExt, TipExt,
+};
 
 /// Model popover width — room for the search field, mode tabs, a provider
 /// header, and one-line rows with their metadata.
@@ -1158,7 +1159,7 @@ impl Render for ModelSelector {
                     .flatten(),
             )
             .child(if rows.is_empty() {
-                empty_state(self.kind, theme).into_any_element()
+                picker_empty_state(self.kind, theme).into_any_element()
             } else {
                 list.into_any_element()
             })
@@ -1390,7 +1391,7 @@ fn favorite_button(
 /// Favorites section, so the two read as the same register.
 ///
 /// Laid out on Zed's inset `ListSubHeader` metrics like
-/// [`crate::app::menu_header`], which has no glyph or trailing-count slot;
+/// [`crate::ui::prelude::menu_header`], which has no glyph or trailing-count slot;
 /// its height is [`ListMetrics::header_h`].
 fn group_header(label: &str, lead: Option<AnyElement>, theme: Theme) -> impl IntoElement + use<> {
     div()
@@ -1416,7 +1417,7 @@ fn group_header(label: &str, lead: Option<AnyElement>, theme: Theme) -> impl Int
         )
 }
 
-fn empty_state(kind: PickerKind, theme: Theme) -> impl IntoElement + use<> {
+fn picker_empty_state(kind: PickerKind, theme: Theme) -> impl IntoElement + use<> {
     let (title, hint) = match kind {
         PickerKind::Model => (
             tr!("model_selector.no_matching_models"),
@@ -1503,7 +1504,7 @@ fn manage_models_button(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     theme: Theme,
 ) -> AnyElement {
-    let button = crate::app::press(
+    let button = crate::ui::prelude::press(
         button_frame(
             div()
                 .id("picker-manage-models")

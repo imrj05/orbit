@@ -278,3 +278,56 @@ pub(crate) fn window_drag_region(el: gpui::Div) -> gpui::Div {
         el.window_control_area(gpui::WindowControlArea::Drag)
     }
 }
+
+#[cfg(test)]
+mod helpers_moved_tests {
+    use super::*;
+    use crate::theme::tokens::button;
+    use gpui::{div, Styled};
+
+    /// `header_chip` dresses the surface (hairline, glass, hover lift) but
+    /// must leave the caller's rounding alone: a circular control may use
+    /// `rounded_full` while the rectangular chips take [`header_ctrl_radius`],
+    /// so a rest style that also set the corners would square the circle off.
+    #[test]
+    fn chip_glass_keeps_the_callers_rounding() {
+        let theme = Theme::dark();
+        let round = div().rounded_full().style().corner_radii.clone();
+        let square = div()
+            .rounded(header_ctrl_radius(&theme))
+            .style()
+            .corner_radii
+            .clone();
+        assert_ne!(round, square);
+        assert_eq!(
+            header_chip(div().rounded_full(), &theme)
+                .style()
+                .corner_radii
+                .clone(),
+            round
+        );
+        assert_eq!(
+            header_chip(div().rounded(header_ctrl_radius(&theme)), &theme)
+                .style()
+                .corner_radii
+                .clone(),
+            square
+        );
+    }
+
+    /// Header chips are buttons: their corner must track the button scale, not
+    /// a fixed pixel value, so Operational's tighter radius reaches them too.
+    #[test]
+    fn header_radius_tracks_the_button_scale() {
+        for theme in [
+            Theme::dark(),
+            Theme::for_id(crate::theme::ThemeId::Operational),
+        ] {
+            assert_eq!(
+                header_ctrl_radius(&theme),
+                button::RADIUS.px(&theme),
+                "header chip radius drifted from the button radius"
+            );
+        }
+    }
+}

@@ -16,12 +16,12 @@ use gpui::{
     ListAlignment, ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
-use crate::app::{
+use crate::theme::tokens::{ButtonSize, Radius, StyledExt};
+use crate::theme::Theme;
+use crate::ui::prelude::{
     button_frame, icon_button_frame, ControlExt, PressedRamp, StatefulControlExt, TipExt,
     BUTTON_GROUP,
 };
-use crate::theme::tokens::{ButtonSize, Radius, StyledExt};
-use crate::theme::Theme;
 use crate::ui::style::surface::SurfaceExt;
 
 const LIST_OVERDRAW: f32 = 400.0;

@@ -1,8 +1,8 @@
 //! Settings presentation and background lifecycle for local Git diagnostics.
-use super::helpers::*;
 use super::*;
 use crate::git_accounts::{self, State};
 use crate::theme::tokens::{ButtonSize, RaisedExt, TextSize};
+use crate::ui::prelude::*;
 
 fn state_text<T>(state: &State<T>) -> String {
     match state {
