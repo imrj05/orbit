@@ -8,3 +8,4 @@
 
 pub(crate) mod control;
 pub(crate) mod surface;
+pub(crate) mod text;

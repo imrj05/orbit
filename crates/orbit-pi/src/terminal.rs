@@ -55,12 +55,13 @@ use gpui::{
 
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::button::IconButton;
+use crate::ui::tab::{tab_strip, Tab};
 use crate::app::{
     button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, ControlExt,
     PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::motion::Hover;
-use crate::theme::tokens::{button, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::tokens::{RaisedExt, StyledExt};
 use crate::theme::{self, Theme};
 
@@ -2034,33 +2035,10 @@ impl TerminalPanel {
             let view = terminal.read(cx);
             (view.label(), view.profile_icon(), view.tooltip())
         };
-        press(
-            div()
-                .id(gpui::ElementId::Name(
-                    format!("terminal-tab-{index}").into(),
-                ))
-                .h(ButtonSize::Default.height(&theme))
-                .max_w(px(TAB_MAX_W))
-                .flex_none()
-                .px(DynamicSpacing::Base06.px(&theme))
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base04.px(&theme))
-                .rounded(button::RADIUS.px(&theme))
-                .cursor_pointer()
-                .text_size(TextSize::Small.px(&theme))
-                .when(active, |el| el.bg(theme.surface_active))
-                .when(!active, |el| {
-                    el.text_color(theme.text_muted).hover_quiet(&theme)
-                }),
-        )
-        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
-            this.select_tab(index, window, cx);
-        }))
         // The profile mark: which shell this tab runs, ahead of what it is
         // doing. Dimmed with the label so an inactive tab stays one quiet
         // shape rather than two tones.
-        .child(icon(
+        let glyph = icon(
             icon_path,
             IconSize::XSmall.px(&theme),
             if active {
@@ -2068,41 +2046,25 @@ impl TerminalPanel {
             } else {
                 theme.text_muted
             },
-        ))
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .font_weight(if active {
-                    FontWeight::MEDIUM
-                } else {
-                    FontWeight::NORMAL
-                })
-                .text_color(if active {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                })
-                .child(label),
+        );
+        Tab::new(
+            gpui::ElementId::Name(format!("terminal-tab-{index}").into()),
+            label,
         )
-        .child(
-            IconButton::new(gpui::ElementId::Name(
-                    format!("terminal-tab-close-{index}").into(),
-                ), "icons/x.svg")
-.size(ButtonSize::None)
-.ink(if active {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                })
-.tip(tr!("terminal.close_tab"))
-.on_click(&theme, cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+        .max_w(px(TAB_MAX_W))
+        .glyph(glyph)
+        .active(active)
+        .close(
+            gpui::ElementId::Name(format!("terminal-tab-close-{index}").into()),
+            tr!("terminal.close_tab"),
+            cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
                 this.close_tab(index, window, cx);
-                // Click handlers bubble: without this the chip's own handler
-                // would select the stale index inside the shrunken strip.
-                cx.stop_propagation();
-            })),
+            }),
         )
+        .render(&theme)
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+            this.select_tab(index, window, cx);
+        }))
         .tip(tooltip)
         .into_any_element()
     }
@@ -2112,15 +2074,8 @@ impl TerminalPanel {
             .active_terminal()
             .is_some_and(|terminal| terminal.read(cx).is_exited());
 
-        let mut strip = div()
-            .id("terminal-tabs")
-            .h_full()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base04.px(&theme))
-            .overflow_x_scroll()
-            .track_scroll(&self.tab_scroll);
+        let mut strip =
+            tab_strip("terminal-tabs", &self.tab_scroll, ButtonSize::Default, &theme).min_w_0();
         for index in 0..self.tabs.len() {
             strip = strip.child(self.tab_chip(index, theme, cx));
         }

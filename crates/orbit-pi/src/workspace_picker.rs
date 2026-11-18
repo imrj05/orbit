@@ -16,12 +16,13 @@ use gpui::{
 };
 
 use crate::app::{
-    icon, menu_header, picker_entry, picker_row_height, picker_search_frame,
-    working_folder_keyboard_hints, ControlExt, PickerRow, PressedRamp, StatefulControlExt,
+    icon, menu_header, picker_entry, picker_row_height, working_folder_keyboard_hints, ControlExt,
+    PickerRow, PressedRamp, StatefulControlExt,
 };
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{context_menu, input, list, picker};
+use crate::theme::tokens::{context_menu, list, picker};
 use crate::theme::{self, Theme};
+use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
 
 /// The popover caps at this width — wide enough for a two-line row (name over
@@ -655,16 +656,7 @@ impl Render for WorkspacePicker {
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
             // search row — Zed's picker head.
-            .child(
-                picker_search_frame(div(), &theme)
-                    .text_color(theme.text_primary)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
-            )
+            .child(search_field(self.filter.clone(), &theme).text_color(theme.text_primary))
             // section label — "This device" over the folder rows, with a
             // count on the right, like every other list header.
             .child(

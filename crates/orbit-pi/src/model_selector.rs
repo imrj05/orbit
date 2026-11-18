@@ -41,9 +41,8 @@ use gpui::{
 use std::time::{Duration, Instant};
 
 use crate::app::{
-    button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_search_frame,
-    picker_surface, provider_mark_color, ControlExt, ModelEntry, PressedRamp, StatefulControlExt,
-    TipExt,
+    button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_surface,
+    provider_mark_color, ControlExt, ModelEntry, PressedRamp, StatefulControlExt, TipExt,
 };
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
@@ -52,10 +51,11 @@ use crate::model_selector_match::is_model_selected;
 use crate::providers::provider_display_name;
 use crate::recent_models::Recents;
 use crate::theme::tokens::{
-    context_menu, input, list, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
-    Radius, TextSize,
+    context_menu, list, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius,
+    TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::field::search_field;
 use crate::ui::popover::PopoverExt;
 
 /// Model popover width — room for the search field, mode tabs, a provider
@@ -1145,14 +1145,8 @@ impl Render for ModelSelector {
             })
             // search field — grouped above the list with a divider
             .child(
-                picker_search_frame(div(), &theme)
-                    .debug_selector(|| "picker-search".to_string())
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
+                search_field(self.filter.clone(), &theme)
+                    .debug_selector(|| "picker-search".to_string()),
             )
             // The model picker's modes — quiet tabs, not a provider rail; a
             // fresh install with no recents or favorites has nothing to switch

@@ -1,6 +1,6 @@
 use super::*;
 use crate::theme::tokens::{
-    input, list, panel, picker, ButtonSize, DynamicSpacing, TextSize,
+    list, panel, picker, ButtonSize, DynamicSpacing, TextSize,
 };
 use crate::ui::kbd::kbd_key;
 use gpui::{InteractiveElement};
@@ -193,21 +193,7 @@ pub(crate) fn menu_header(label: impl Into<SharedString>, theme: &Theme) -> gpui
         )
 }
 
-/// A picker's search row, Zed's picker head: 36px tall, `px_2p5`, a hairline
-/// below, and Default-size input text. Put the `ComposerInput` in a
-/// `flex_1` child; a leading search icon takes `IconSize::Small`.
-pub(crate) fn picker_search_frame<E: Styled>(el: E, theme: &Theme) -> E {
-    el.flex_none()
-        .h(picker::search_height(theme))
-        .px(picker::search_padding_x(theme))
-        .flex()
-        .items_center()
-        .gap(input::gap(theme))
-        .overflow_hidden()
-        .border_b_1()
-        .border_color(theme.border)
-        .text_size(TextSize::Default.px(theme))
-}
+pub(crate) use crate::ui::field::picker_search_frame;
 
 /// The row height a two-line [`PickerRow`] fills exactly.
 pub(crate) fn picker_row_height(theme: &Theme) -> gpui::Pixels {

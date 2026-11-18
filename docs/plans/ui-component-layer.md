@@ -1,8 +1,8 @@
 # Plan — UI component layer
 
 **Status (2026-11-18):** Phases 1–5 partly landed, Phases 6–7 not started.
-Everything below is uncommitted on the `feat/sidebar-toolbar` branch. Start at
-**Resume here** below; §6.2–§6.7 is the per-pass log (what moved, the checks
+Work is on the `feat/sidebar-toolbar` branch (§6.8–§6.9 uncommitted). Start at
+**Resume here** below; §6.2–§6.9 is the per-pass log (what moved, the checks
 that ran and every declared pixel change).
 
 ## Resume here
@@ -18,12 +18,12 @@ that ran and every declared pixel change).
 | Segmented control | `ui/button.rs` `segmented_segment`, `settings_segment`, `active_segment` | ✅ recipes |
 | Trigger chip (quiet / outlined) | `ui/chip.rs` `ChipButton` | 🟡 Usage filters + composer access/workflow; model/thinking chips left |
 | Badge | `ui/chip.rs` `Badge` | ✅ owner; Git refs + provider badges |
-| Pill | — | ⬜ not started |
+| Pill | `ui/chip.rs` `Pill` (bare / faced) | 🟡 MCP status, composer queue count; Explorer save-state chip left |
 | Banner / error card | `ui/banner.rs` `Banner`, `error_state` | 🟡 owner; `error_banner` (view), Git `failure_banner`, Explorer notice strip, worktree setup banner left |
 | Empty / error / spinner / refresh | `ui/feedback.rs` | ✅ owner (+ action slot) |
 | Progress bar | `ui/feedback.rs` `progress_bar` | ✅ 3 meters |
-| Skeleton | — | ⬜ (`usage/view.rs::skeleton` is the only one) |
-| Toast card | — | ⬜ blocked: `app/toast_ui.rs` had parallel uncommitted work |
+| Skeleton | `ui/feedback.rs` `skeleton_bar` | ✅ Usage (the only loading shape) |
+| Toast card | `ui/toast.rs` `ToastCard`, `kind_glyph` | ✅ ordinary toasts; plugin-update prompt card still local |
 | Menu cursor | `ui/menu.rs` `MenuState` (Home/End, skip disabled, reconcile) | 🟡 5 menus (add, access, workflow, Work in, extension select); `PanelMenu`, `TextMenu`, sidebar menus still hand-roll |
 | Menu frame + hint | `ui/menu.rs` `context_menu_*`, `menu_hint` | ✅ |
 | Popover shell + dismissal | `ui/popover.rs` `popover_list`, `popover_picker`, `dismiss_on_outside`, `DismissGuard` | ✅ `on_mouse_down_out` only in `ui/` |
@@ -34,10 +34,16 @@ that ran and every declared pixel change).
 | Window chrome | `ui/chrome.rs` | ✅ moved (no API change) |
 | Glyphs (file, provider, images) | `ui/glyph.rs`, `ui/icon.rs` (+ chevrons) | ✅ moved |
 | Card / section | `ui/card.rs` | 🟡 Usage only |
-| Field frame / label | `ui/field.rs` | 🟡 frame only; no `TextField` / `SearchField` |
+| Field frame / label / search | `ui/field.rs` `input_field_frame`, `input_label`, `picker_search_frame`, `search_field` | 🟡 `search_field` at 20 sites (⌘F bar keeps the frame); no `TextField` / `FormRow` |
 | Switch, keycap, tooltip view | `ui/switch.rs`, `ui/kbd.rs`, `ui/tooltip.rs` | ✅ moved |
-| Table, TabStrip, TreeRow, VirtualList, DiffRow | — | ⬜ need design (sort, drag, virtualization) |
-| Lightbox, StatusBar, Avatar, nav Rail | — | ⬜ not started |
+| Tab / tab strip | `ui/tab.rs` `Tab`, `tab_strip` | 🟡 terminal + file viewer; Settings / Usage tabs left |
+| VirtualList | `ui/list.rs` `virtual_list` | ✅ all 7 `list()` sites (transcript, sidebar, Review diff + tree, Explorer, viewer, scroller test) |
+| Table / TableRow | `ui/table.rs` `data_table`, `Column`, `SortState`, `TableHandlers`, `table_row`, cells | ✅ the grid moved out of `usage/table.rs`; all five Usage tables and their rows (only Usage has a data table) |
+| TreeRow | `ui/tree.rs` `TreeRow`, `TreeNode`, `TreeRowState`, `indent` | ✅ Explorer project tree + Review changed-files tree |
+| DiffRow | — | ⬜ need design (paint-only, streaming contract) |
+| Lightbox | `ui/lightbox.rs` `lightbox` | ✅ |
+| Avatar | `ui/avatar.rs` `Avatar`, `initials` | ✅ Git (photo + monogram); GitHub login lookup stays in `git_panel` |
+| StatusBar, nav Rail | — | ⬜ not started (one site each; Rail is transcript-only) |
 | `app/helpers.rs` deletion (Phase 6) | — | ⬜ 462 lines left (was 1,391), 33 files import it |
 | One-owner guard, `DESIGN.md` / `INTENT.md` (Phase 7) | — | ⬜ |
 
@@ -54,18 +60,15 @@ that ran and every declared pixel change).
 3. **Remaining banners**: `app/view.rs::error_banner`,
    `git_panel/mod.rs::failure_banner`, `explorer/panel.rs::notice_banner`
    (a strip, may need `BannerTone` + a `Strip` layout), worktree setup banner.
-4. **`ToastCard`**: split `app/toast_ui.rs::toast_card` into a pure
-   `ui/toast.rs` card (glyph, title, body, dismiss, progress) and keep timing in
-   `toast.rs`. Check `git status app/toast_ui.rs` first.
+4. ~~**`ToastCard`**~~ — done (§6.8). The plugin-update prompt card in
+   `app/toast_ui.rs` could share its surface next.
 5. **Menus on `MenuState`**: `explorer/panel.rs` `PanelMenu`,
    `transcript_view.rs` `TextMenu`, sidebar session/workspace menus.
-6. **Fields**: `TextField` / `SearchField` over `ui/field.rs` +
-   `picker_search_frame` (still in `helpers.rs`); placeholders stay
-   `with_placeholder_key`.
-7. **Phase 4 data**: design `ListRow`/`TableRow`/`Table` against Git's row
-   functions and `usage/table.rs`; `TabStrip` from `terminal.rs::tab_chip` and
-   Settings tabs; `TreeRow` from `explorer/tree.rs`. `VirtualList` must keep
-   `h_full` inside `flex_1 min_h_0`.
+6. **Fields**: `search_field` is done (§6.8); `TextField` / `FormRow` over
+   `input_field_frame` remain; placeholders stay `with_placeholder_key`.
+7. **Phase 4 data**: `Table` and `TreeRow` are done (§6.9). Left: `ListRow`
+   against Git's row functions, Settings / Usage tabs onto `ui/tab.rs`, and
+   `DiffRow`.
 8. **Phase 6**: classify what is left in `app/helpers.rs` (UI → `ui/`,
    formatting → `app/format.rs`), switch imports from `app::helpers` /
    `crate::app::{…}` re-exports to `crate::ui::…`, delete the file.
@@ -942,6 +945,86 @@ a manual drag of each handle and a look at the moved chrome.
   remains is mostly domain formatting (`session_display_title`, runtime
   text), the star banner, the picker search frame, `menu_header` and the
   working-folder legend — Phase 6 material.
+
+## 6.8 Pill, skeleton, toast, tabs, avatar, lightbox, search, list (2026-11-18)
+
+Verified: `cargo check -p orbit-pi --all-targets` and `cargo clippy -p orbit-pi
+--all-targets -- -D warnings` clean; 810 focused tests (`ui::`, popup layout,
+focus return, sidebar, composer, toast, terminal, Explorer, Usage, Git, MCP,
+Review, scroller, pickers, palette, rewind, Settings, skills, subagents,
+open-in); the six guards (hover budget rebaselined 229 → 227, the hovers moved
+into `ui/tab.rs` and `ui/toast.rs`); `git diff --check`. rustfmt ran only on
+files whose `HEAD` was formatted. **Not verified:** a manual `bacon run` pass.
+No declared pixel changes — every move keeps the call site's metrics.
+
+- **`Pill`** (`ui/chip.rs`): a status read-out, glyph + label in one tone.
+  Bare (Small, `Base04` gap) for the MCP connection state; faced
+  (`.face(fill, ButtonSize)`: capsule, XSmall, `Base02` gap) for the
+  composer's queued-messages count. Reports, never acts.
+- **`skeleton_bar`** (`ui/feedback.rs`): the static trough bar Usage's loading
+  page is built from. No shimmer, by design.
+- **`ToastCard`** (`ui/toast.rs`): anatomy and the kind → glyph/tint map moved
+  out of `app/toast_ui.rs`; TTL, deck, hold and the enter/exit animation stay
+  in the layer, wrapped around the returned card. Tested: only warning/error
+  take a status hue, every kind has its own glyph.
+- **`Tab` / `tab_strip`** (`ui/tab.rs`): the terminal's and file viewer's
+  byte-identical tab chips. Density follows `ButtonSize` (Default: `Base06`
+  inset / `Base04` gap; Medium: `Base08` / `Base06`); the close button stops
+  propagation itself, so a stale-index select can no longer be reintroduced at
+  a call site. Optional unsaved dot.
+- **`Avatar`** (`ui/avatar.rs`): photo with monogram on load and failure; the
+  monogram's tint and initials moved from `git_panel` with tests. The GitHub
+  login resolution stays in `git_panel` (domain).
+- **`lightbox`** (`ui/lightbox.rs`): the image lightbox frame; the caller owns
+  the open image and the close handler.
+- **`search_field`** (`ui/field.rs`, with `picker_search_frame` moved from
+  `app/helpers.rs`): frame + search glass + `flex_1` input. A strict codemod
+  converted 20 of 21 sites; the ⌘F bar (`app/search.rs`) is a floating keyed
+  element and keeps the raw frame. Callers import it from `crate::ui::field`
+  directly (no `app::helpers` re-export).
+- **`virtual_list`** (`ui/list.rs`): `list()` with `h_full` pinned, plus a
+  GPUI test that the list fills a `flex_1 min_h_0` parent and paints only its
+  visible rows. Every `list()` site uses it.
+
+Still open after this pass: `TreeRow`, `Table`/`TableRow`, `DiffRow`,
+`StatusBar`, the transcript `Rail`, `TextField`/`FormRow`, `LinkButton` /
+`ButtonGroup`, and the migrations in **Next, in order** (icon buttons,
+model/thinking chips, banners, menus, Phases 6–7).
+
+## 6.9 Table and TreeRow (2026-11-18)
+
+Verified: `cargo check` / `cargo clippy -p orbit-pi --all-targets -- -D
+warnings` clean; 656 focused tests (`ui::`, Usage, Explorer, Review, transcript,
+popup layout, focus return, sidebar) plus the 84 tree-specific ones; the six
+guards (hover budget 227 → 221: the Usage row hovers moved into
+`table_row`); `git diff --check`. **Not verified:** a manual `bacon run` pass.
+
+- **`TreeRow`** (`ui/tree.rs`): indent (`indent(depth, directory)`: 7px base,
+  14px step, files +16px so names align with sibling folders — tested), the
+  turning disclosure chevron and folder mark, the name (Small; Medium weight
+  for folders), an inline editor slot (rename), trailing marks, optional
+  indent guides and focus ring, and one fill per `TreeRowState::{Editing,
+  Selected, Cursor, Rest}` (tested per palette). Handlers stay with the
+  surface. Explorer and Review's changed-files tree use it.
+  **Declared pixel changes (Review tree only):** the keyboard-cursor wash is
+  `overlay` (was `overlay_strong` on folders, `surface_hover` on files — now
+  Explorer's); folders turn one chevron instead of swapping two glyphs; the
+  right inset is `Base08` (was 7px). Explorer is unchanged apart from test
+  hooks: the caret's animation key is `<row id>-caret`, and the focus ring's
+  selector is `tree-row-focus-ring`.
+- **`Table`** (`ui/table.rs`): the generic grid moved out of `usage/table.rs`
+  — `data_table` (frame, sticky header band, body scroll rules, empty slot),
+  `Column`, `SortState` (three-state cycle, tested), `TableHandlers` (sort,
+  resize start/move/end), the header cell's sort caret and drag divider,
+  `cell_shell`, `text_cell`, `two_line_cell`, `status_badge`, `empty_cell` and
+  `clip_to` (tested). New: **`table_row`** — the body-row frame (48px, column
+  min width, hairline except the last, hover), which the five Usage row loops
+  had each spelled out; callers keep ids, selection fill and handlers.
+  `usage/table.rs` keeps only `TableKind` and the failures table's keys and
+  cell text. Column-divider ids are now `<table id>-col-handle-<column>`
+  (were `usage-col-handle-<column>`).
+- **`num_font`** moved to `ui/style/text.rs` (tabular, lining figures);
+  Review and the transcript import it from there, Usage re-exports it.
 
 ## 6.1 Remaining owner work — actionable backlog
 

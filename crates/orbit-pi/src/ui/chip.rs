@@ -1,5 +1,6 @@
-//! Chips and badges: compact labels. A [`Badge`] reports a state and never
-//! acts; a [`ChipButton`] is a trigger that opens a picker.
+//! Chips, badges and pills: compact labels. A [`Badge`] reports a state and
+//! never acts; a [`Pill`] reports a state with a leading glyph (a status, a
+//! count); a [`ChipButton`] is a trigger that opens a picker.
 //!
 //! A badge reports; it never acts. Anything a user presses is a
 //! [`crate::ui::button::Button`] (or a chip trigger), so a decorative label
@@ -67,6 +68,68 @@ impl Badge {
         match self.fill {
             BadgeFill::Solid(face) => el.bg(face),
             BadgeFill::Outline(edge) => el.border_1().border_color(edge),
+        }
+    }
+}
+
+/// A status read-out: a leading glyph (an icon, a live spinner) and a short
+/// label in one tone. Like a [`Badge`] it reports and never acts.
+///
+/// Two shapes, decided by whether it has a face:
+///
+/// - **bare** — glyph and Small label on the row's own surface (an MCP
+///   server's connection state);
+/// - **faced** ([`Pill::face`]) — a fully rounded capsule at a button height,
+///   XSmall label, tighter gap (the composer's queued-messages count).
+pub(crate) struct Pill {
+    label: SharedString,
+    ink: Hsla,
+    leading: Option<AnyElement>,
+    face: Option<(Hsla, ButtonSize)>,
+}
+
+impl Pill {
+    pub(crate) fn new(label: impl Into<SharedString>, ink: Hsla) -> Self {
+        Self {
+            label: label.into(),
+            ink,
+            leading: None,
+            face: None,
+        }
+    }
+
+    /// The glyph before the label, sized by the caller (`IconSize::XSmall`).
+    pub(crate) fn leading(mut self, leading: impl IntoElement) -> Self {
+        self.leading = Some(leading.into_any_element());
+        self
+    }
+
+    /// A capsule face behind the pill, `size` tall.
+    pub(crate) fn face(mut self, fill: Hsla, size: ButtonSize) -> Self {
+        self.face = Some((fill, size));
+        self
+    }
+
+    /// The finished pill, for a caller that adds an id, a selector or a tip.
+    pub(crate) fn render(self, theme: &Theme) -> gpui::Div {
+        let el = div()
+            .flex()
+            .items_center()
+            .text_color(self.ink)
+            .children(self.leading)
+            .child(self.label);
+        match self.face {
+            Some((fill, size)) => el
+                .flex_none()
+                .h(size.height(theme))
+                .px(DynamicSpacing::Base06.px(theme))
+                .rounded_full()
+                .bg(fill)
+                .gap(DynamicSpacing::Base02.px(theme))
+                .text_size(TextSize::XSmall.px(theme)),
+            None => el
+                .gap(DynamicSpacing::Base04.px(theme))
+                .text_size(TextSize::Small.px(theme)),
         }
     }
 }
@@ -300,6 +363,31 @@ impl<T> WhenOpen for T {}
 mod tests {
     use super::*;
     use crate::theme::ThemeId;
+
+    #[test]
+    fn a_faced_pill_is_a_capsule_and_a_bare_one_has_no_frame() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let mut faced = Pill::new("2", theme.text_muted)
+                .face(theme.surface_elevated, ButtonSize::Medium)
+                .render(&theme);
+            let mut bare = Pill::new("Connected", theme.success).render(&theme);
+            let (faced, bare) = (faced.style(), bare.style());
+            assert_eq!(
+                faced.background,
+                Some(theme.surface_elevated.into()),
+                "{id:?}"
+            );
+            assert!(faced.size.height.is_some(), "{id:?}");
+            assert!(bare.background.is_none(), "{id:?}");
+            assert!(bare.size.height.is_none(), "{id:?}");
+            assert_eq!(
+                bare.text.as_ref().and_then(|text| text.color),
+                Some(theme.success),
+                "{id:?}"
+            );
+        }
+    }
 
     #[test]
     fn solid_and_outline_badges_share_one_geometry_in_every_palette() {

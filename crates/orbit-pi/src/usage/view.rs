@@ -32,15 +32,15 @@
 //!
 //! Sections: Summary · Usage over time · Breakdown · Records · Daily activity.
 
+use crate::ui::field::search_field;
 use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::ui::card::{card, section};
 use crate::ui::popover::{popover_list, PopoverExt};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use gpui::{
     anchored, deferred, div, prelude::*, px, AnyElement, App,
-    Context, Corner, ElementId, Entity, Font, FontFeatures, FontWeight, Hsla, IntoElement,
+    Context, Corner, ElementId, Entity, FontWeight, Hsla, IntoElement,
     MouseButton, Pixels, Render, SharedString, Stateful, Window,
 };
 
@@ -60,20 +60,21 @@ use super::page::{
     FailureQueryResult, MenuKind, SessionQueryResult, SessionSort, ToolQueryResult, UsagePage,
 };
 use super::sparkline;
-use super::table::{
-    cell_shell, data_table, empty_cell, status_badge, text_cell, two_line_cell, Column,
-    FailureSort, SortState, TableHandlers, TableKind, FILL_SLACK, HEADER_H, ROW_H,
+use super::table::{FailureSort, TableKind};
+use crate::ui::table::{
+    cell_shell, data_table, empty_cell, status_badge, table_row, text_cell, two_line_cell, Column,
+    SortState, TableHandlers, FILL_SLACK, HEADER_H, ROW_H,
 };
 use crate::app::{
     button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
-    icon_dyn, picker_entry, picker_search_frame, press, provider_mark_color, ControlExt, TipExt,
+    icon_dyn, picker_entry, press, provider_mark_color, ControlExt, TipExt,
     BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
+    button, context_menu, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
     Radius, TextSize,
 };
 use crate::theme::{self, Theme};
@@ -948,12 +949,7 @@ impl UsagePage {
     fn skeleton(&self, theme: Theme) -> AnyElement {
         // A placeholder bar, drawn in the trough so it reads against a card.
         let bar = |width: f32, height: f32| {
-            div()
-                .w(px(width))
-                .h(px(height))
-                .rounded(Radius::Small.px(&theme))
-                .bg(theme.surface_secondary)
-                .into_any_element()
+            crate::ui::feedback::skeleton_bar(px(width), px(height), &theme).into_any_element()
         };
         // One card shell, so the load→loaded swap keeps the same shape: a
         // header strip over a body.
@@ -2618,28 +2614,18 @@ impl UsagePage {
     ) -> AnyElement {
         let rows = &result.rows;
         let (columns, keys) = self.breakdown_columns();
-        let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let total_tokens = result.totals.tokens.total;
         let entity = cx.entity();
         let mut elements = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
             let last = ix + 1 == rows.len();
             let target = row.id;
-            let mut line = div()
+            let mut line = table_row(&columns, last, &theme)
                 .id(SharedString::from(format!(
                     "usage-breakdown-{kind}-{}",
                     row.label
                 )))
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(total_w))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .cursor_pointer()
-                .hover_state(&theme);
+                .cursor_pointer();
             for column in &columns {
                 let cell = match column.id {
                     "name" => breakdown_name_cell(
@@ -2947,20 +2933,10 @@ impl UsagePage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let columns = self.tool_columns();
-        let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut elements = Vec::with_capacity(result.rows.len());
         for (ix, row) in result.rows.iter().enumerate() {
             let last = ix + 1 == result.rows.len();
-            let mut line = div()
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(total_w))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .hover_state(&theme);
+            let mut line = table_row(&columns, last, &theme);
             for column in &columns {
                 let cell = match column.id {
                     "tool" => cell_shell(column)
@@ -3651,18 +3627,9 @@ impl UsagePage {
         let mut out = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
             let last = ix + 1 == rows.len();
-            let mut line = div()
+            let mut line = table_row(columns, last, &theme)
                 .id(("usage-session-row", ix))
                 .group("usage-row")
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(columns.iter().map(|column| column.width).sum::<f32>()))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .hover_state(&theme)
                 .when(selected == Some(row.session), |line| {
                     line.bg(theme.surface_selected)
                 })
@@ -3717,20 +3684,10 @@ impl UsagePage {
         granularity: Granularity,
         theme: Theme,
     ) -> Vec<AnyElement> {
-        let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut out = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
             let last = ix + 1 == rows.len();
-            let mut line = div()
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(total_w))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .hover_state(&theme);
+            let mut line = table_row(columns, last, &theme);
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(BucketSort::Date);
                 if key == BucketSort::Date {
@@ -3791,20 +3748,10 @@ impl UsagePage {
         keys: &[FailureSort],
         theme: Theme,
     ) -> Vec<AnyElement> {
-        let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut elements = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
             let last = ix + 1 == rows.len();
-            let mut line = div()
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(total_w))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .hover_state(&theme);
+            let mut line = table_row(columns, last, &theme);
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(FailureSort::When);
                 if key == FailureSort::Kind {
@@ -4341,15 +4288,9 @@ where
 /// A search field, shared by the Sessions table and the Breakdown table so both
 /// read the same.
 fn search_box(input: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
-    picker_search_frame(div(), &theme)
+    search_field(input.clone(), &theme)
         .flex_1()
         .min_w(px(180.))
-        .child(icon(
-            "icons/search.svg",
-            input::ICON.px(&theme),
-            theme.text_muted,
-        ))
-        .child(div().flex_1().min_w_0().child(input.clone()))
         .into_any_element()
 }
 
@@ -4573,16 +4514,7 @@ fn retry_note(theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// Tabular figures for numeric columns (§54). Both bundled faces carry `tnum`,
-/// and requesting it is what stops columns from jittering as digits change.
-pub(crate) fn num_font() -> Font {
-    let mut font = gpui::font(theme::ui_font_family());
-    font.features = FontFeatures(Arc::new(vec![
-        ("tnum".to_string(), 1),
-        ("lnum".to_string(), 1),
-    ]));
-    font
-}
+pub(crate) use crate::ui::style::text::num_font;
 
 /// One row of a breakdown legend, shared by every breakdown tab: the row's
 /// glyph, its name and scope, the figure and its share, and a track whose fill

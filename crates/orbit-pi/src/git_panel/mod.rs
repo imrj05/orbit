@@ -21,16 +21,16 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    canvas, deferred, div, fill, hsla, img, point, prelude::*, px, size, AnyElement, Background,
+    canvas, deferred, div, fill, hsla, point, prelude::*, px, size, AnyElement, Background,
     Bounds, ClickEvent, Context, Corner, Div, Entity, FocusHandle, Focusable,
-    FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
+    FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PathBuilder, Pixels, Render, ScrollHandle, Stateful, Subscription, Window,
 };
 
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::app::{
     anchored_popover, button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn,
-    input_field_frame, menu_header, nerd_font_family, picker_entry, picker_search_frame,
+    input_field_frame, menu_header, nerd_font_family, picker_entry,
     picker_surface, press, provider_mark_color, refresh_glyph, spinner, ControlExt, ModelEntry,
     PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
@@ -2008,13 +2008,7 @@ impl GitPanel {
                 this.close_ref_picker(cx);
             }))
             .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.branch_filter.clone())),
+                crate::ui::field::search_field(self.branch_filter.clone(), &theme),
             )
             .child(list);
         Some(deferred(menu).into_any_element())
@@ -3284,18 +3278,7 @@ impl GitPanel {
                 this.close_commit_model_menu(cx);
             }))
             .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.commit_model_filter.clone()),
-                    ),
+                crate::ui::field::search_field(self.commit_model_filter.clone(), &theme),
             )
             .child(list);
 
@@ -7570,13 +7553,7 @@ impl GitPanel {
                 this.dismiss_branch_menu(cx);
             }))
             .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.branch_filter.clone())),
+                crate::ui::field::search_field(self.branch_filter.clone(), &theme),
             )
             .child(list);
 
@@ -10245,23 +10222,10 @@ fn author_avatar(name: &str, email: &str, theme: Theme) -> AnyElement {
 /// A small round avatar from an explicit URL (a GitHub event carries the exact
 /// one), falling back to the monogram. `name`/`email` seed the fallback.
 fn avatar_image(url: Option<String>, name: &str, email: &str, theme: Theme) -> AnyElement {
-    match url {
-        Some(url) => {
-            let name = name.to_string();
-            let email = email.to_string();
-            img(url)
-                .size(px(AUTHOR_AVATAR))
-                .rounded_full()
-                .object_fit(ObjectFit::Cover)
-                .with_loading({
-                    let (name, email) = (name.clone(), email.clone());
-                    move || monogram_chip(&name, &email, theme)
-                })
-                .with_fallback(move || monogram_chip(&name, &email, theme))
-                .into_any_element()
-        }
-        None => monogram_chip(name, email, theme),
-    }
+    crate::ui::avatar::Avatar::new(name.to_string(), email.to_string())
+        .photo(url)
+        .diameter(AUTHOR_AVATAR)
+        .render(&theme)
 }
 
 /// The GitHub avatar URL for a commit author. A user-supplied email→login
@@ -10350,62 +10314,6 @@ fn is_github_handle(candidate: &str) -> bool {
         && handle
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-')
-}
-
-/// A tiny initials chip — the avatar fallback. The tint is a stable function
-/// of the author's email so the same person keeps their color across sessions;
-/// saturation stays low so identity doesn't read as confetti.
-fn monogram_chip(name: &str, email: &str, theme: Theme) -> AnyElement {
-    let (saturation, lightness) = match theme.mode {
-        ThemeMode::Dark => (0.40, 0.34),
-        ThemeMode::Light => (0.46, 0.34),
-    };
-    div()
-        .flex_none()
-        .size(px(AUTHOR_AVATAR))
-        .rounded_full()
-        .bg(hsla(avatar_hue(email, name), saturation, lightness, 1.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(theme.ui_px(7.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(hsla(0., 0., 0.985, 1.))
-        .child(initials_for(name))
-        .into_any_element()
-}
-
-/// Up to two initials from an author name.
-fn initials_for(name: &str) -> String {
-    let pick = |word: &str| word.chars().next().map(|c| c.to_uppercase().to_string());
-    let mut words = name.split_whitespace();
-    let first = words.next().unwrap_or("");
-    let last = words.last();
-    match (pick(first), last.and_then(pick)) {
-        (Some(a), Some(b)) => format!("{a}{b}"),
-        (Some(a), None) => {
-            let mut chars = first.chars();
-            chars.next();
-            match chars.next() {
-                Some(b) => format!("{a}{}", b.to_uppercase()),
-                None => a,
-            }
-        }
-        _ => "?".to_string(),
-    }
-}
-
-/// A stable hue in `0..1` derived from the author's email (falling back to the
-/// name). FNV-1a keeps it cheap and stable across runs.
-fn avatar_hue(email: &str, name: &str) -> f32 {
-    const HUES: [f32; 8] = [14., 44., 96., 158., 202., 236., 274., 330.];
-    let seed = if email.trim().is_empty() { name } else { email };
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in seed.trim().to_ascii_lowercase().bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    HUES[(hash % HUES.len() as u64) as usize] / 360.
 }
 
 /// An icon-only action for the embedded review's file header. Stops

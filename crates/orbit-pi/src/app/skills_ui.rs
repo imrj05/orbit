@@ -9,7 +9,8 @@
 use super::helpers::*;
 use super::*;
 use crate::skills::{self, Skill, SkillScope};
-use crate::theme::tokens::{input, list_item, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{list_item, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::ui::field::search_field;
 
 /// A Skills-page control, dispatched through one entry point.
 #[derive(Clone)]
@@ -58,16 +59,10 @@ impl OrbitApp {
         };
         let filtered: Vec<&Skill> = self.skills.iter().filter(matches).collect();
 
-        let search = picker_search_frame(div(), &theme)
+        let search = search_field(self.skills_filter.clone(), &theme)
             .mx(DynamicSpacing::Base12.px(&theme))
             .mt(DynamicSpacing::Base12.px(&theme))
-            .mb(DynamicSpacing::Base08.px(&theme))
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.skills_filter.clone()));
+            .mb(DynamicSpacing::Base08.px(&theme));
 
         let all_row = div()
             .mx(DynamicSpacing::Base12.px(&theme))

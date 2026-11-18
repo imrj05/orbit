@@ -24,7 +24,7 @@ use std::{
 };
 
 use gpui::{
-    canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
+    canvas, deferred, div, img, linear_color_stop, linear_gradient, point, prelude::*, px,
     relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
     DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
     Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
@@ -1356,7 +1356,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     // Devicons resolve once per frame: every file row in the list shares the
     // same Nerd Fonts family (or falls back to extension badges).
     let nerd = nerd_font_family(cx);
-    let list_el = list(view.scroller.list_state(), move |ix, _window, cx| {
+    let list_el = crate::ui::list::virtual_list(view.scroller.list_state(), move |ix, _window, cx| {
         let live = streaming.get() == Some(ix);
         // The card can appear while a turn is still streaming. Its Copy
         // footer belongs to a settled answer, so a live turn keeps the
@@ -1586,8 +1586,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             row
         }
     })
-    .w_full()
-    .h_full();
+    .w_full();
 
     // Same height chain as the sessions sidebar: this panel is a `flex_1` +
     // `min_h_0` child of a column, so `h_full` on the list is a definite
@@ -3901,7 +3900,7 @@ fn render_subagent_card(
                             format!("subagent-row-step-{}-{}-{ix}", key.0, key.1)
                         })
                         .flex_none()
-                        .font(crate::usage::view::num_font())
+                        .font(crate::ui::style::text::num_font())
                         .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_muted)
                         .child(SharedString::from(format!("{}", ix + 1))),
@@ -3948,7 +3947,7 @@ fn render_subagent_card(
                 .min_w(theme.ui_px(min_w))
                 .flex()
                 .justify_end()
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_muted)
                 .when_some(text, |cell, text| cell.child(text))
@@ -4047,7 +4046,7 @@ fn render_subagent_card(
         footer = footer.child(
             div()
                 .flex_none()
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .child(if run.total_tools() == 1 {
                     tr!("transcript_view.subagent_tools_one", count = 1)
                 } else {
@@ -4062,7 +4061,7 @@ fn render_subagent_card(
         footer = footer.child(
             div()
                 .flex_none()
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .child(elapsed),
         );
     }
@@ -4093,7 +4092,7 @@ fn render_subagent_card(
         footer = footer.child(
             div()
                 .flex_none()
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .child(SharedString::from(label)),
         );
     }
@@ -4397,7 +4396,7 @@ fn render_subagent_detail(
             .join(" · ");
         about = about.child(
             quiet_line(tally)
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .debug_selector(|| "subagent-detail-tally".to_string()),
         );
     }

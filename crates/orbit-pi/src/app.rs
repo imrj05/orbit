@@ -31,7 +31,7 @@ use std::{
 
 use base64::Engine as _;
 use gpui::{
-    anchored, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
+    anchored, deferred, div, img, linear_color_stop, linear_gradient, point, prelude::*, px,
     relative, uniform_list, AnchoredPositionMode, Animation, AnimationExt, AnyElement,
     App, ClickEvent, ClipboardItem, Context, Corner, DragMoveEvent, ElementId, Entity,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement,

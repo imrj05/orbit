@@ -21,10 +21,12 @@ use gpui::{
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
+use crate::ui::list::virtual_list;
+use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::app::{
     anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
-    context_menu_surface, disclosure_chevron, empty_state, file_badge, file_glyph, icon,
+    context_menu_surface, empty_state, file_badge, file_glyph, icon,
     icon_button_frame, nerd_font_family, press, ControlExt, EmptyFill, TipExt,
     BUTTON_GROUP,
 };
@@ -33,7 +35,7 @@ use crate::git;
 use crate::platform;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt,
+    context_menu, input, panel, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt,
     TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
@@ -1059,13 +1061,13 @@ impl ProjectPanel {
 
     fn tree(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
-        let list = gpui::list(self.list.clone(), move |index, window, cx| {
+        let list = virtual_list(self.list.clone(), move |index, window, cx| {
             entity
                 .upgrade()
                 .map(|entity| entity.update(cx, |this, cx| this.render_row(index, window, cx)))
                 .unwrap_or_else(|| div().into_any_element())
         })
-        .size_full()
+        .w_full()
         .py(DynamicSpacing::Base04.px(&theme));
         let no_files_detail = tr!("explorer.no_files_detail");
         let body: AnyElement = if self.loading && self.rows.is_empty() {
@@ -1203,58 +1205,75 @@ impl ProjectPanel {
         let theme = *theme::get(cx);
         let cursor = self.cursor == Some(index);
         let active = self.active.as_deref() == Some(row.path.as_str());
-        let nerd = nerd_font_family(cx);
-        let dark = theme.mode == ThemeMode::Dark;
-        // Dirs lead with a chevron + folder; files with a devicon. The file
-        // indent offsets that difference so names align in one column.
-        let indent = (if row.is_dir() { 7.0 } else { 23.0 }) + row.depth as f32 * 14.0;
-        let icon_color = if active {
-            theme.text_primary
-        } else {
-            theme.text_muted
-        };
-        let name_color = if active {
-            theme.text_primary
-        } else {
-            theme.text_secondary
-        };
-
-        let mut content = div()
-            .id(gpui::ElementId::Name(
-                format!("explorer-row-{}", row.path).into(),
-            ))
-            .relative()
-            .w_full()
-            .h(px(ROW_H))
-            .pl(px(indent))
-            .pr(DynamicSpacing::Base08.px(&theme))
-            .rounded(Radius::Medium.px(&theme))
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme));
         // A row with an open rename prompt owns the keyboard; it must not also
         // activate the file or open its context menu on click.
         let renaming = self
             .entry
             .as_ref()
             .is_some_and(|entry| entry.target.as_deref() == Some(row.path.as_str()));
-        let entry_input = renaming.then(|| {
-            self.entry
-                .as_ref()
-                .expect("renaming implies an entry")
-                .input
-                .clone()
-        });
-        if renaming {
-            content = content.bg(theme.surface_active);
+        let entry_input = renaming
+            .then(|| self.entry.as_ref().map(|entry| entry.input.clone()))
+            .flatten();
+        let state = if renaming {
+            TreeRowState::Editing
+        } else if active {
+            TreeRowState::Selected
+        } else if cursor {
+            TreeRowState::Cursor
         } else {
+            TreeRowState::Rest
+        };
+        let node = if row.is_dir() {
+            TreeNode::Directory {
+                expanded: row.expanded(),
+            }
+        } else {
+            let nerd = nerd_font_family(cx);
+            let dark = theme.mode == ThemeMode::Dark;
+            let fallback = file_badge(&row.path, theme);
+            TreeNode::File {
+                glyph: file_glyph(
+                    &row.path,
+                    dark,
+                    nerd.as_ref(),
+                    IconSize::Small.px(&theme),
+                    fallback,
+                ),
+            }
+        };
+        let mut tree_row = TreeRow::new(
+            format!("explorer-row-{}", row.path),
+            row.depth,
+            node,
+            row.name.clone(),
+        )
+        .height(px(ROW_H))
+        .state(state)
+        .guides(true)
+        .editor(entry_input)
+        .focus_ring(active && cursor && !renaming && self.focus.is_focused(window));
+        if row.is_dir() && row.dirty {
+            tree_row = tree_row.trailing(
+                div()
+                    .size(px(5.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(theme.warning),
+            );
+        }
+        if let (false, Some(badge)) = (row.is_dir(), row.badge) {
+            tree_row = tree_row.trailing(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(badge_color(badge, &theme))
+                    .child(badge.letter().to_string()),
+            );
+        }
+        let mut content = tree_row.render(&theme).w_full();
+        if !renaming {
             content = content
-                .cursor_pointer()
-                // Selected (open in the viewer) wins; the keyboard cursor is a
-                // quieter wash; pointer hover is the lightest step.
-                .when(active, |el| el.bg(theme.surface_selected))
-                .when(!active && cursor, |el| el.bg(theme.overlay))
-                .when(!active && !cursor, |el| el.hover_state(&theme))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     // Clicking away from an open prompt cancels it rather than
                     // activating the row under the pointer.
@@ -1277,113 +1296,6 @@ impl ProjectPanel {
                         }
                     }),
                 );
-        }
-
-        // Indent guides: one hairline per ancestor, through the centre of
-        // that ancestor's chevron, so nesting reads at a glance in a deep
-        // tree. Painted under the row's own content; no layout cost.
-        let chevron_mid = f32::from(IconSize::Indicator.px(&theme)) / 2.;
-        for level in 0..row.depth {
-            content = content.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(7.0 + level as f32 * 14.0 + chevron_mid))
-                    .w(px(1.))
-                    .bg(theme.border_subtle),
-            );
-        }
-
-        if row.is_dir() {
-            content = content
-                // One glyph turning a quarter turn, not two glyphs swapping —
-                // the row is the same object between the two states.
-                .child(disclosure_chevron(
-                    format!("explorer-caret-{}", row.path),
-                    row.expanded(),
-                    IconSize::Indicator.px(&theme),
-                    icon_color,
-                    &theme,
-                ))
-                .child(icon(
-                    "icons/folder.svg",
-                    IconSize::Small.px(&theme),
-                    icon_color,
-                ));
-            if let Some(input) = entry_input {
-                content = content.child(div().flex().flex_1().min_w_0().child(input));
-            } else {
-                content = content.child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(TextSize::Small.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(name_color)
-                        .child(row.name.clone()),
-                );
-                if row.dirty {
-                    content = content.child(
-                        div()
-                            .size(px(5.))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(theme.warning),
-                    );
-                }
-            }
-        } else {
-            let fallback = file_badge(&row.path, theme);
-            let glyph = file_glyph(
-                &row.path,
-                dark,
-                nerd.as_ref(),
-                IconSize::Small.px(&theme),
-                fallback,
-            );
-            content = content.child(glyph);
-            if let Some(input) = entry_input {
-                content = content.child(div().flex().flex_1().min_w_0().child(input));
-            } else {
-                content = content.child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(name_color)
-                        .child(row.name.clone()),
-                );
-                if let Some(badge) = row.badge {
-                    let color = badge_color(badge, &theme);
-                    content = content.child(
-                        div()
-                            .flex_none()
-                            .text_size(TextSize::Small.px(&theme))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(color)
-                            .child(badge.letter().to_string()),
-                    );
-                }
-            }
-        }
-
-        if active && cursor && !renaming && self.focus.is_focused(window) {
-            // Paint the ring over the selected row without changing its layout
-            // or replacing the open-file selection fill.
-            content = content.child(
-                div()
-                    .debug_selector(|| "explorer-selected-focus-ring".to_string())
-                    .absolute()
-                    .inset_0()
-                    .rounded(Radius::Medium.px(&theme))
-                    .border_1()
-                    .border_color(theme.focus_ring),
-            );
         }
 
         // The list measures each row with a definite width, but a bare flex
@@ -2020,7 +1932,7 @@ mod tests {
             );
             assert_eq!(
                 visual
-                    .debug_bounds("explorer-selected-focus-ring")
+                    .debug_bounds("tree-row-focus-ring")
                     .is_some(),
                 expected_ring
             );

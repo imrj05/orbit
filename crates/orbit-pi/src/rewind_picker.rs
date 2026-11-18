@@ -16,13 +16,14 @@ use gpui::{
 };
 
 use crate::app::{
-    icon, menu_header, picker_entry, picker_search_frame, picker_surface,
-    working_folder_keyboard_hints, ControlExt, PressedRamp, StatefulControlExt,
+    menu_header, picker_entry, picker_surface, working_folder_keyboard_hints, ControlExt,
+    PressedRamp, StatefulControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::rewind::{self, ForkPoint};
-use crate::theme::tokens::{input, list, picker, DynamicSpacing, TextSize};
+use crate::theme::tokens::{list, picker, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
+use crate::ui::field::search_field;
 use crate::ui::popover::PopoverExt;
 
 const CARD_W: f32 = 460.;
@@ -366,15 +367,7 @@ impl Render for RewindPicker {
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
-            .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
-            )
+            .child(search_field(self.filter.clone(), &theme))
             .child(
                 menu_header(tr!("rewind.title"), &theme)
                     .pt(picker::list_padding_y(&theme))

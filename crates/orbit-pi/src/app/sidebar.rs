@@ -4,11 +4,12 @@ use super::*;
 use gpui::{point, Div, Hsla, Pixels};
 use std::{cell::Cell, rc::Rc};
 
+use crate::ui::field::search_field;
 use crate::motion::Hover;
 use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
-    context_menu, input, list_item, looping, picker, popover, tooltip, BufferLineHeight,
+    context_menu, list_item, looping, picker, popover, tooltip, BufferLineHeight,
     ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::ui::popover::{popover_picker, PopoverExt};
@@ -5105,14 +5106,8 @@ impl OrbitApp {
     /// text mirrors into `sidebar_query`, which both the row builder and
     /// keyboard navigation read.
     pub(super) fn sidebar_search_bar(&self, theme: Theme) -> AnyElement {
-        let field = picker_search_frame(div(), &theme)
+        let field = search_field(self.sidebar_search.clone(), &theme)
             .w_full()
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.sidebar_search.clone()))
             .when(self.sidebar_query.is_empty(), |field| {
                 field.child(
                     div()

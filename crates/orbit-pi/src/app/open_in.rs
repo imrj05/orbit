@@ -1,8 +1,7 @@
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{
-    context_menu, input, picker, popover, ButtonSize, IconSize, BASE_REM_PX,
-};
+use crate::theme::tokens::{context_menu, picker, popover, ButtonSize, IconSize, BASE_REM_PX};
+use crate::ui::field::search_field;
 use crate::ui::popover::{dropdown_below, DropdownAlign};
 use crate::ui::popover::{popover_picker, PopoverExt};
 
@@ -297,15 +296,7 @@ impl OrbitApp {
                 }
             })
             // Search field — filters the apps below.
-            .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.open_in_filter.clone())),
-            )
+            .child(search_field(self.open_in_filter.clone(), &theme))
             .child(list);
 
         Some(

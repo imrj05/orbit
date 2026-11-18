@@ -37,18 +37,19 @@ use gpui::{
 };
 
 use crate::app::{
-    icon, menu_header, picker_entry, picker_search_frame, picker_surface, PressedRamp,
-    SettingsSection, StatefulControlExt,
+    icon, menu_header, picker_entry, picker_surface, PressedRamp, SettingsSection,
+    StatefulControlExt,
 };
 use crate::commands::{self, CommandId, CommandSpec};
 use crate::composer::ComposerInput;
 use crate::platform::shortcuts;
 use crate::sessions::SessionInfo;
 use crate::theme::tokens::{
-    context_menu, input, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing,
-    Radius, TextSize,
+    context_menu, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing, Radius,
+    TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::field::search_field;
 
 /// The palette's layout metrics, resolved from the theme so the card's
 /// height caps and the keyboard reveal math measure exactly what renders.
@@ -926,16 +927,7 @@ impl Render for CommandPalette {
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
             // search row
-            .child(
-                picker_search_frame(div(), &theme)
-                    .text_color(theme.text_primary)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
-            )
+            .child(search_field(self.filter.clone(), &theme).text_color(theme.text_primary))
             .child(list)
             // footer — the palette is new chrome; name the keys once, quietly.
             .child(

@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 
 use super::helpers::*;
 use super::*;
+use crate::ui::field::search_field;
 use crate::ui::button::IconButton;
+use crate::ui::chip::Pill;
 use crate::mcp::config::{self as mcp_config, SecretUpdate};
 use crate::mcp::manager::McpProbe;
 use crate::mcp::{
@@ -1052,14 +1054,8 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         _cx: &Context<Self>,
     ) -> AnyElement {
-        let search = picker_search_frame(div(), &theme)
-            .w_full()
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.mcp_filter.clone()));
+        let search = search_field(self.mcp_filter.clone(), &theme)
+            .w_full();
 
         let refresh = icon_button_frame(div().id("mcp-refresh"), &theme, ButtonSize::Large)
             .border_1()
@@ -2922,14 +2918,9 @@ fn mcp_status_pill(id: &str, status: McpServerStatus, theme: Theme) -> AnyElemen
     } else {
         icon(mcp_status_glyph(status), IconSize::XSmall.px(&theme), color).into_any_element()
     };
-    div()
-        .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base04.px(&theme))
-        .text_size(TextSize::Small.px(&theme))
-        .text_color(color)
-        .child(glyph)
-        .child(tr!(status.label_key()))
+    Pill::new(tr!(status.label_key()), color)
+        .leading(glyph)
+        .render(&theme)
         .into_any_element()
 }
 

@@ -572,7 +572,7 @@ mod tests {
             _: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
             let heights = self.heights.clone();
-            gpui::list(self.state.list_state(), move |ix, _, _| {
+            crate::ui::list::virtual_list(self.state.list_state(), move |ix, _, _| {
                 let height = heights.borrow().get(&ix).copied().unwrap_or(40.);
                 gpui::div()
                     .id(gpui::ElementId::NamedInteger("probe-row".into(), ix as u64))
@@ -582,7 +582,7 @@ mod tests {
                     .child(format!("row {ix}"))
                     .into_any_element()
             })
-            .size_full()
+            .w_full()
         }
     }
 

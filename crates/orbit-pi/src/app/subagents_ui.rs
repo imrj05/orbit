@@ -22,6 +22,7 @@ use crate::theme::tokens::{
 };
 use crate::ui::banner::{truncated_line, Banner, BannerTone};
 use crate::ui::button::{settings_segment, Button, ButtonVariant, IconButton};
+use crate::ui::field::search_field;
 
 /// One Skills-page-style dispatch point for every Subagents control.
 #[derive(Clone)]
@@ -236,21 +237,10 @@ impl OrbitApp {
         };
         let filtered: Vec<&Agent> = self.subagents.iter().filter(matches).collect();
 
-        let search = picker_search_frame(div(), &theme)
+        let search = search_field(self.subagents_filter.clone(), &theme)
             .mx(DynamicSpacing::Base12.px(&theme))
             .mt(DynamicSpacing::Base12.px(&theme))
-            .mb(DynamicSpacing::Base08.px(&theme))
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(self.subagents_filter.clone()),
-            );
+            .mb(DynamicSpacing::Base08.px(&theme));
 
         let mut list = div()
             .id("subagents-list")

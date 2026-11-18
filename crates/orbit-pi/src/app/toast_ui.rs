@@ -370,80 +370,19 @@ impl OrbitApp {
         reduce_motion: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
-        // Status reinforces the title; it is never the only signal. Info and
-        // success stay in secondary ink so the stack reads calm, and only the
-        // kinds that need attention take a status hue.
-        let (glyph, tint) = match toast.kind {
-            ToastKind::Info => ("icons/info.svg", theme.text_secondary),
-            ToastKind::Success => ("icons/circle-check.svg", theme.success),
-            ToastKind::Warning => ("icons/alert-circle.svg", theme.warning),
-            ToastKind::Error => ("icons/circle-x.svg", theme.error),
-        };
         let id = toast.id;
-        let close_button = press(icon_button_frame(
-            div()
-                .id(ElementId::Name(format!("toast-close-{id}").into()))
-                .flex_none()
-                .cursor_pointer()
-                .hover_state(&theme),
-            &theme,
-            toast_tokens::CLOSE_BUTTON,
-        ))
-        .child(icon(
-            "icons/x.svg",
-            toast_tokens::CLOSE_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ));
-        let card = toast_tokens::surface(
-            div()
-                .id(ElementId::Name(
-                    format!("toast-{id}-{}", toast.revision).into(),
-                ))
-                .debug_selector(move || format!("toast-{id}")),
-            &theme,
+        let card = crate::ui::toast::ToastCard::new(
+            ElementId::Name(format!("toast-{id}-{}", toast.revision).into()),
+            toast.kind,
+            toast.title.clone(),
         )
-        .relative()
-        .w_full()
-        .p(toast_tokens::padding(&theme))
-        .flex()
-        .items_center()
-        .gap(toast_tokens::content_gap(&theme))
-        .cursor_pointer()
-        .hover_border(&theme)
-        .on_mouse_up(
-            MouseButton::Left,
+        .body(toast.body.clone())
+        .on_dismiss(
+            &theme,
+            ElementId::Name(format!("toast-close-{id}").into()),
             cx.listener(move |this, _, _, cx| this.dismiss_toast(id, cx)),
         )
-        .child(
-            div()
-                .flex_none()
-                .child(icon(glyph, toast_tokens::ICON.px(&theme), tint)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(toast_tokens::title_body_gap(&theme))
-                .child(
-                    div()
-                        .line_clamp(2)
-                        .text_size(toast_tokens::TITLE.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(toast.title.clone()),
-                )
-                .children(toast.body.as_ref().map(|body| {
-                    div()
-                        .whitespace_normal()
-                        .line_clamp(3)
-                        .text_size(toast_tokens::DESCRIPTION.px(&theme))
-                        .text_color(theme.text_muted)
-                        .child(body.clone())
-                })),
-        )
-        .child(close_button);
+        .debug_selector(move || format!("toast-{id}"));
 
         // Reduce Motion keeps the card static (and `tick` expires it at the
         // bare TTL, with no fade grace).

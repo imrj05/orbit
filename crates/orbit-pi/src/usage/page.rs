@@ -1355,7 +1355,7 @@ impl UsagePage {
         let Some((table, id, start_x, start_width)) = self.resizing else {
             return;
         };
-        let width = (start_width + (x - start_x)).max(super::table::MIN_COL_W);
+        let width = (start_width + (x - start_x)).max(crate::ui::table::MIN_COL_W);
         self.widths.entry(table).or_default().insert(id, width);
         cx.notify();
     }

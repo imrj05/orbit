@@ -26,6 +26,7 @@
 //!    treatment, not a component variant — and glass off must leave geometry
 //!    untouched.
 
+pub(crate) mod avatar;
 pub(crate) mod banner;
 pub(crate) mod button;
 pub(crate) mod card;
@@ -36,11 +37,17 @@ pub(crate) mod feedback;
 pub(crate) mod field;
 pub(crate) mod glyph;
 pub(crate) mod icon;
+pub(crate) mod list;
 pub(crate) mod kbd;
+pub(crate) mod lightbox;
 pub(crate) mod menu;
 pub(crate) mod popover;
 pub(crate) mod resize;
 pub(crate) mod row;
 pub(crate) mod style;
 pub(crate) mod switch;
+pub(crate) mod tab;
+pub(crate) mod table;
+pub(crate) mod toast;
 pub(crate) mod tooltip;
+pub(crate) mod tree;

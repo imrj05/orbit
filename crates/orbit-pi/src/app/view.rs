@@ -925,7 +925,7 @@ impl Render for OrbitApp {
                                                     // up past the list top.
                                                     .overflow_hidden()
                                                     .child(
-                                                        list(
+                                                        crate::ui::list::virtual_list(
                                                             self.sidebar_list.clone(),
                                                             move |ix, _window, cx| {
                                                                 let row_workspace_menu =
@@ -980,8 +980,7 @@ impl Render for OrbitApp {
                                                                 .into_any_element()
                                                             },
                                                         )
-                                                        .w_full()
-                                                        .h_full(),
+                                                        .w_full(),
                                                     )
                                                     .children(sticky_header),
                                             )
@@ -4529,26 +4528,17 @@ impl OrbitApp {
             return None;
         }
         Some(
-            div()
-                .id("queue-badge")
-                .debug_selector(|| "queue-badge".to_string())
-                .flex_none()
-                .h(ButtonSize::Medium.height(&theme))
-                .px(DynamicSpacing::Base06.px(&theme))
-                .rounded_full()
-                .bg(theme.surface_elevated)
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base02.px(&theme))
-                .text_size(TextSize::XSmall.px(&theme))
-                .text_color(theme.text_muted)
-                .tip(tr!("view.queued_after_task", count = count))
-                .child(icon(
+            crate::ui::chip::Pill::new(count.to_string(), theme.text_muted)
+                .leading(icon(
                     "icons/clock.svg",
                     IconSize::XSmall.px(&theme),
                     theme.text_muted,
                 ))
-                .child(count.to_string())
+                .face(theme.surface_elevated, ButtonSize::Medium)
+                .render(&theme)
+                .id("queue-badge")
+                .debug_selector(|| "queue-badge".to_string())
+                .tip(tr!("view.queued_after_task", count = count))
                 .into_any_element(),
         )
     }
@@ -5931,38 +5921,14 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let theme = *theme::get(cx);
-        let scrim = theme.scrim_media();
-        div()
-            .id("image-lightbox")
-            .debug_selector(|| "image-lightbox".to_string())
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(scrim)
-            .p(DynamicSpacing::Base48.px(&theme))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.lightbox = None;
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        img(ImageSource::Image(image))
-                            .size_full()
-                            .object_fit(ObjectFit::Contain),
-                    ),
-            )
-            .into_any_element()
+        crate::ui::lightbox::lightbox(
+            image,
+            &theme,
+            cx.listener(|this, _, _, cx| {
+                this.lightbox = None;
+                cx.notify();
+            }),
+        )
+        .into_any_element()
     }
 }

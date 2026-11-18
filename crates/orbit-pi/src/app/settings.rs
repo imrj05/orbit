@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use crate::ui::field::search_field;
 use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::git_panel::widgets::check_box;
 use crate::motion::Hover;
@@ -933,14 +934,8 @@ impl OrbitApp {
     /// The global settings search, at the top of the nav column so a query
     /// can reach any setting without hunting through the section list.
     fn settings_search_bar(&self, theme: Theme) -> AnyElement {
-        let search = picker_search_frame(div(), &theme)
-            .w_full()
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.settings_search.clone()));
+        let search = search_field(self.settings_search.clone(), &theme)
+            .w_full();
         div()
             .w_full()
             .flex_shrink_0()
@@ -1989,14 +1984,8 @@ impl OrbitApp {
                 .into_any_element(),
         };
 
-        let search = picker_search_frame(div(), &theme)
-            .w_full()
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.plugins_filter.clone()));
+        let search = search_field(self.plugins_filter.clone(), &theme)
+            .w_full();
 
         div()
             .w_full()
@@ -2183,14 +2172,8 @@ impl OrbitApp {
             .count();
         let filtered = self.models_favorites_only || !needle.is_empty();
 
-        let search = picker_search_frame(div(), &theme)
-            .w_full()
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.provider_filter.clone()));
+        let search = search_field(self.provider_filter.clone(), &theme)
+            .w_full();
 
         let refresh_icon = refresh_glyph(
             "providers-refresh-spin",
@@ -8165,13 +8148,7 @@ impl OrbitApp {
         })
         // Search field — filters the options below.
         .child(
-            picker_search_frame(div(), &theme)
-                .child(icon(
-                    "icons/search.svg",
-                    input::ICON.px(&theme),
-                    theme.text_muted,
-                ))
-                .child(div().flex_1().min_w_0().child(self.settings_filter.clone())),
+            search_field(self.settings_filter.clone(), &theme),
         )
         .child(list);
         // Anchor to the chip's top-right corner (via a zero-size point) and

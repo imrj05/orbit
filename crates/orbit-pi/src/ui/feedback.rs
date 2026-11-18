@@ -1,7 +1,7 @@
 //! Shared loading, empty and error feedback.
 
 use crate::theme::{
-    tokens::{looping, panel, DynamicSpacing, IconSize, TextSize},
+    tokens::{looping, panel, DynamicSpacing, IconSize, Radius, TextSize},
     Theme,
 };
 use crate::ui::banner::{Banner, BannerTone};
@@ -23,6 +23,23 @@ pub(crate) fn spinner(
     theme: Theme,
 ) -> AnyElement {
     spinning_icon("icons/loader.svg", id, size, color, theme)
+}
+
+/// One skeleton placeholder: a static bar in the trough (`surface_secondary`)
+/// at `Radius::Small`, standing in for a line of text or a figure while a page
+/// loads. A skeleton holds the loaded page's shape so the swap does not jump;
+/// it never shimmers (a perpetual loop on a page that may load slowly is noise,
+/// and reduce-motion would have to turn it off anyway).
+pub(crate) fn skeleton_bar(
+    width: impl Into<Pixels>,
+    height: impl Into<Pixels>,
+    theme: &Theme,
+) -> gpui::Div {
+    div()
+        .w(width.into())
+        .h(height.into())
+        .rounded(Radius::Small.px(theme))
+        .bg(theme.surface_secondary)
 }
 
 /// The sidebar's running-session indicator: one minimal accent arc turning in

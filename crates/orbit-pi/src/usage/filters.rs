@@ -11,10 +11,11 @@
 
 use crate::app::{
     button_frame, context_menu_separator, icon_button_frame, menu_header, picker_entry,
-    picker_search_frame, refresh_glyph, ControlExt, PressedRamp, StatefulControlExt, TipExt,
+    refresh_glyph, ControlExt, PressedRamp, StatefulControlExt, TipExt,
 };
 use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use chrono::Datelike;
 use gpui::{
@@ -31,7 +32,7 @@ use super::page::{BucketSort, ExportFormat, MenuKind, SessionSort, UsagePage, PA
 use super::table::FailureSort;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, list, picker, popover, ButtonSize, DynamicSpacing, TextSize,
+    context_menu, list, picker, popover, ButtonSize, DynamicSpacing, TextSize,
 };
 use crate::theme::Theme;
 use crate::{app::icon, composer::ComposerInput};
@@ -205,14 +206,7 @@ fn panel(
 
 /// The search field row at the top of a multi-select menu.
 fn search_row(query: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
-    picker_search_frame(div(), &theme)
-        .child(icon(
-            "icons/search.svg",
-            input::ICON.px(&theme),
-            theme.text_muted,
-        ))
-        .child(div().flex_1().min_w_0().child(query.clone()))
-        .into_any_element()
+    search_field(query.clone(), &theme).into_any_element()
 }
 
 /// One row in a menu: the title, and — when the row carries one — the

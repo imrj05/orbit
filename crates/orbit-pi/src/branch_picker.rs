@@ -13,16 +13,17 @@ use gpui::{
 
 use crate::app::helpers::text_width;
 use crate::app::{
-    button_frame, icon, input_field_frame, menu_header, picker_entry, picker_search_frame,
-    ControlExt, PressedRamp, StatefulControlExt,
+    button_frame, icon, input_field_frame, menu_header, picker_entry, ControlExt, PressedRamp,
+    StatefulControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, list, list_item, picker, ButtonSize, DynamicSpacing, TextSize,
+    context_menu, list, list_item, picker, ButtonSize, DynamicSpacing, TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
 
 const POPOVER_W: f32 = 320.;
@@ -503,15 +504,7 @@ impl Render for BranchPicker {
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
-            .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
-            )
+            .child(search_field(self.filter.clone(), &theme))
             .child(
                 menu_header(tr!("branch_picker.branches"), &theme)
                     .pt(picker::list_padding_y(&theme))

@@ -25,10 +25,13 @@ use gpui::{
     StatefulInteractiveElement, Window,
 };
 
+use crate::ui::field::search_field;
+use crate::ui::list::virtual_list;
+use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::app::{
     button_frame, context_menu_separator, empty_state, file_glyph, icon, icon_button_frame,
-    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+    nerd_font_family, picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::diff_view::{
@@ -39,7 +42,7 @@ use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
+    context_menu, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
     TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
@@ -1788,7 +1791,7 @@ impl SidePane {
                     .min_w(px(40.))
                     .flex()
                     .justify_center()
-                    .font(crate::usage::view::num_font())
+                    .font(crate::ui::style::text::num_font())
                     .whitespace_nowrap()
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_muted)
@@ -1951,7 +1954,7 @@ impl SidePane {
         // List row renderers run while the list state is borrowed. Capture the
         // visible file before layout so their navigation controls never borrow it again.
         let current_file = self.current_file(&snapshot);
-        let list_el = gpui::list(self.diff_list.clone(), move |index, _window, cx| {
+        let list_el = virtual_list(self.diff_list.clone(), move |index, _window, cx| {
             entity
                 .upgrade()
                 .map(|entity| {
@@ -1961,7 +1964,6 @@ impl SidePane {
                 })
                 .unwrap_or_else(|| div().into_any_element())
         })
-        .h_full()
         .w_full()
         .min_w(min_w);
         let rows = if self.wrap {
@@ -2433,23 +2435,17 @@ impl SidePane {
 
     fn render_tree(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
-        let tree_el = gpui::list(self.tree_list.clone(), move |index, _window, cx| {
+        let tree_el = virtual_list(self.tree_list.clone(), move |index, _window, cx| {
             entity
                 .upgrade()
                 .map(|entity| entity.update(cx, |this, cx| this.render_tree_row(index, cx)))
                 .unwrap_or_else(|| div().into_any_element())
         })
-        .size_full()
+        .w_full()
         .py(DynamicSpacing::Base04.px(&theme));
 
         let column_w = (f32::from(self.width) * 0.42).clamp(TREE_MIN_COL_W, TREE_MAX_COL_W);
-        let filter_row = picker_search_frame(div(), &theme)
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.tree_filter.clone()));
+        let filter_row = search_field(self.tree_filter.clone(), &theme);
 
         div()
             .w(px(column_w))
@@ -2516,58 +2512,29 @@ impl SidePane {
                 name,
                 depth,
                 expanded,
-            } => div()
-                .w_full()
-                .h(px(30.))
-                .px(DynamicSpacing::Base06.px(&theme))
-                .flex()
-                .items_center()
-                .child(
-                    div()
-                        .id(gpui::ElementId::Name(format!("review-dir-{path}").into()))
-                        .h(px(26.))
-                        .flex_1()
-                        .min_w_0()
-                        .pl(px(7. + depth as f32 * 14.))
-                        .pr(px(7.))
-                        .rounded(Radius::Medium.px(&theme))
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .cursor_pointer()
-                        .when(cursor, |row| row.bg(theme.overlay_strong))
-                        .when(!cursor, |row| row.hover_state(&theme))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            window.focus(&this.tree_focus);
-                            this.tree_cursor = Some(index);
-                            this.toggle_dir(path.clone(), cx);
-                        }))
-                        .child(icon(
-                            if expanded {
-                                "icons/chevron-down.svg"
-                            } else {
-                                "icons/chevron-right.svg"
-                            },
-                            IconSize::Indicator.px(&theme),
-                            theme.text_muted,
-                        ))
-                        .child(icon(
-                            "icons/folder.svg",
-                            IconSize::Small.px(&theme),
-                            theme.text_muted,
-                        ))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(TextSize::Small.px(&theme))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_secondary)
-                                .child(name),
-                        ),
+            } => tree_row_slot(
+                TreeRow::new(
+                    format!("review-dir-{path}"),
+                    depth,
+                    TreeNode::Directory { expanded },
+                    name,
                 )
+                .height(px(26.))
+                .state(if cursor {
+                    TreeRowState::Cursor
+                } else {
+                    TreeRowState::Rest
+                })
+                .render(&theme)
+                .flex_1()
+                .min_w_0()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    window.focus(&this.tree_focus);
+                    this.tree_cursor = Some(index);
+                    this.toggle_dir(path.clone(), cx);
+                })),
+                &theme,
+            )
                 .into_any_element(),
             review::TreeRow::File { file_index, depth } => {
                 let Some(file) = snapshot.files.get(file_index) else {
@@ -2601,68 +2568,46 @@ impl SidePane {
                     IconSize::Small.px(&theme),
                     fallback,
                 );
-                div()
-                    .w_full()
-                    .h(px(30.))
-                    .px(DynamicSpacing::Base06.px(&theme))
+                let badge = div()
+                    .w(px(18.))
+                    .h(px(18.))
+                    .flex_none()
+                    .rounded(Radius::Small.px(&theme))
+                    .border_1()
+                    .border_color(status_color.opacity(0.65))
                     .flex()
                     .items_center()
-                    .child(
-                        div()
-                            .id(gpui::ElementId::Name(
-                                format!("review-file-{file_index}").into(),
-                            ))
-                            .h(px(26.))
-                            .flex_1()
-                            .min_w_0()
-                            .pl(px(23. + depth as f32 * 14.))
-                            .pr(px(7.))
-                            .rounded(Radius::Medium.px(&theme))
-                            .flex()
-                            .items_center()
-                            .gap(DynamicSpacing::Base06.px(&theme))
-                            .cursor_pointer()
-                            .when(selected, |row| row.bg(theme.surface_selected))
-                            .when(!selected && cursor, |row| row.bg(theme.surface_hover))
-                            .when(!selected && !cursor, |row| row.hover_state(&theme))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                window.focus(&this.tree_focus);
-                                this.tree_cursor = Some(index);
-                                this.select_file(file_index, cx);
-                            }))
-                            .child(glyph)
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_size(TextSize::Small.px(&theme))
-                                    .text_color(if selected {
-                                        theme.text_primary
-                                    } else {
-                                        theme.text_secondary
-                                    })
-                                    .child(name),
-                            )
-                            .child(
-                                div()
-                                    .w(px(18.))
-                                    .h(px(18.))
-                                    .flex_none()
-                                    .rounded(Radius::Small.px(&theme))
-                                    .border_1()
-                                    .border_color(status_color.opacity(0.65))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(TextSize::Small.px(&theme))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(status_color)
-                                    .child(status),
-                            ),
+                    .justify_center()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(status_color)
+                    .child(status);
+                tree_row_slot(
+                    TreeRow::new(
+                        format!("review-file-{file_index}"),
+                        depth,
+                        TreeNode::File { glyph },
+                        name,
                     )
-                    .into_any_element()
+                    .height(px(26.))
+                    .state(if selected {
+                        TreeRowState::Selected
+                    } else if cursor {
+                        TreeRowState::Cursor
+                    } else {
+                        TreeRowState::Rest
+                    })
+                    .trailing(badge)
+                    .render(&theme)
+                    .flex_1()
+                    .min_w_0()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        window.focus(&this.tree_focus);
+                        this.tree_cursor = Some(index);
+                        this.select_file(file_index, cx);
+                    })),
+                    &theme,
+                )
             }
         }
     }
@@ -2943,6 +2888,19 @@ impl Render for DragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
     }
+}
+
+/// The Review tree's 30px list slot around a 26px [`TreeRow`]: the row sits
+/// inset so neighbouring hover fills never touch.
+fn tree_row_slot(row: impl IntoElement, theme: &Theme) -> AnyElement {
+    div()
+        .w_full()
+        .h(px(30.))
+        .px(DynamicSpacing::Base06.px(theme))
+        .flex()
+        .items_center()
+        .child(row)
+        .into_any_element()
 }
 
 #[cfg(test)]
