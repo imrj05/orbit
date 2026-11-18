@@ -24,13 +24,13 @@ use std::{
 };
 
 use gpui::{
-    canvas, deferred, div, img, point, prelude::*, px,
-    relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
-    DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
-    Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
-    ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign,
-    TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
+    canvas, deferred, div, img, point, prelude::*, px, relative, Animation, AnimationExt,
+    AnyElement, App, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Element, ElementId, Font,
+    FontFeatures, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image,
+    ImageSource, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString,
+    StrikethroughStyle, StyledText, TextAlign, TextLayout, TextRun, TransformationMatrix,
+    UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -43,10 +43,8 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
-use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::agent_call_display::AgentCallDisplay;
-use crate::app::{OrbitApp};
-use crate::ui::prelude::{anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile, icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, TipExt, BUTTON_GROUP};
+use crate::app::OrbitApp;
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
@@ -60,7 +58,12 @@ use crate::theme::tokens::{
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, HistoryCard, Step, SummaryRow, ToolCall, ToolFacts};
 use crate::turn_review::{ChangedFile, TurnFiles};
+use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::ui::popover::{popover_list, PopoverExt};
+use crate::ui::prelude::{
+    anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
+    icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, TipExt, BUTTON_GROUP,
+};
 use crate::ui::style::surface::SurfaceExt;
 
 fn frosted_transcript_fill(theme: Theme) -> Hsla {
@@ -1485,237 +1488,238 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     // Devicons resolve once per frame: every file row in the list shares the
     // same Nerd Fonts family (or falls back to extension badges).
     let nerd = nerd_font_family(cx);
-    let list_el = crate::ui::list::virtual_list(view.scroller.list_state(), move |ix, _window, cx| {
-        let live = streaming.get() == Some(ix);
-        // The card can appear while a turn is still streaming. Its Copy
-        // footer belongs to a settled answer, so a live turn keeps the
-        // message row's own footer.
-        let card_owns_footer =
-            summary_files.is_some() && streaming.get().is_none() && !awaiting_reply.get();
-        // The rate's clock: prefer the turn's request start (`turn_start`),
-        // the same basis as pi's `durationMs`; fall back to the stream start
-        // when an older pi build never emitted one.
-        let rate_clock = turn_started
-            .get()
-            .or_else(|| stream_started.get())
-            .map(|started| started.elapsed());
-        // The "Working for…" clock measures the whole turn, so it must not
-        // share the rate's clock: `turn_start` re-arms on every provider
-        // request inside an agentic turn (once per tool-call step), which
-        // restarted the timer mid-run (#59). `stream_started` is armed once
-        // per turn and matches the settled `worked_for` duration.
-        let live_elapsed = if live {
-            stream_started.get().map(|started| started.elapsed())
-        } else {
-            None
-        };
-        // Tokens/sec for the streaming row: the provider's cumulative
-        // output (or a chars/4 estimate) over the turn's request clock.
-        let live_tps = if live {
-            messages.borrow().get(ix).and_then(|message| {
-                streaming_tps(message, live_generation_clock(message, rate_clock))
-            })
-        } else {
-            None
-        };
-        let fold_open = expanded_turns.borrow().contains(&ix);
-        let copied_now = copied
-            .borrow()
-            .get(&ix)
-            .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-        let row_count = messages.borrow().len();
-        // The list's tail slot (ix == row_count) is the end-of-task
-        // changed-files summary — pinned after the last message, in the
-        // same centered column as every other row.
-        if ix >= row_count {
-            let theme = *theme::get(cx);
-            // The prompt is out; the answer has not started. Show the same live
-            // row the streaming turn will wear, so pressing Enter is answered by
-            // the transcript itself and not only by the composer's Stop button.
-            if awaiting_reply.get() && streaming.get().is_none() {
-                let elapsed = stream_started
-                    .get()
-                    .map(|started| started.elapsed())
+    let list_el =
+        crate::ui::list::virtual_list(view.scroller.list_state(), move |ix, _window, cx| {
+            let live = streaming.get() == Some(ix);
+            // The card can appear while a turn is still streaming. Its Copy
+            // footer belongs to a settled answer, so a live turn keeps the
+            // message row's own footer.
+            let card_owns_footer =
+                summary_files.is_some() && streaming.get().is_none() && !awaiting_reply.get();
+            // The rate's clock: prefer the turn's request start (`turn_start`),
+            // the same basis as pi's `durationMs`; fall back to the stream start
+            // when an older pi build never emitted one.
+            let rate_clock = turn_started
+                .get()
+                .or_else(|| stream_started.get())
+                .map(|started| started.elapsed());
+            // The "Working for…" clock measures the whole turn, so it must not
+            // share the rate's clock: `turn_start` re-arms on every provider
+            // request inside an agentic turn (once per tool-call step), which
+            // restarted the timer mid-run (#59). `stream_started` is armed once
+            // per turn and matches the settled `worked_for` duration.
+            let live_elapsed = if live {
+                stream_started.get().map(|started| started.elapsed())
+            } else {
+                None
+            };
+            // Tokens/sec for the streaming row: the provider's cumulative
+            // output (or a chars/4 estimate) over the turn's request clock.
+            let live_tps = if live {
+                messages.borrow().get(ix).and_then(|message| {
+                    streaming_tps(message, live_generation_clock(message, rate_clock))
+                })
+            } else {
+                None
+            };
+            let fold_open = expanded_turns.borrow().contains(&ix);
+            let copied_now = copied
+                .borrow()
+                .get(&ix)
+                .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+            let row_count = messages.borrow().len();
+            // The list's tail slot (ix == row_count) is the end-of-task
+            // changed-files summary — pinned after the last message, in the
+            // same centered column as every other row.
+            if ix >= row_count {
+                let theme = *theme::get(cx);
+                // The prompt is out; the answer has not started. Show the same live
+                // row the streaming turn will wear, so pressing Enter is answered by
+                // the transcript itself and not only by the composer's Stop button.
+                if awaiting_reply.get() && streaming.get().is_none() {
+                    let elapsed = stream_started
+                        .get()
+                        .map(|started| started.elapsed())
+                        .unwrap_or_default();
+                    return div()
+                        .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .px(DynamicSpacing::Base20.px(&theme))
+                        .pb(px(14.))
+                        .child(
+                            div()
+                                .w_full()
+                                .max_w(px(CONTENT_MAX_WIDTH))
+                                .min_w_0()
+                                .child(render_working_indicator(elapsed, None, None, theme)),
+                        )
+                        .into_any_element();
+                }
+                let Some(files) = summary_files.as_ref() else {
+                    return div().into_any_element();
+                };
+                let card = render_changed_files(
+                    files,
+                    theme,
+                    nerd.as_ref(),
+                    ix,
+                    workspace.as_deref(),
+                    expanded_files.borrow().contains(&ix),
+                    expanded_files.clone(),
+                    scroller.clone(),
+                    summary_turn.and_then(|turn| review_changes.clone().map(|open| (turn, open))),
+                );
+                // One run footer, after the changed-files card (turn order:
+                // answer → files card → Copy): the copy affordance copies the
+                // answer, with the settled time and the run's usage. The last
+                // message's own footer is suppressed (see `suppress_footer`) so
+                // these details are not shown twice.
+                let last_ix = row_count.saturating_sub(1);
+                let copy_text = messages
+                    .borrow()
+                    .get(last_ix)
+                    .filter(|message| message.is_assistant())
+                    .map(|message| message.text())
                     .unwrap_or_default();
+                let copied_last = copied
+                    .borrow()
+                    .get(&last_ix)
+                    .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+                // Regenerate belongs to a response; an interrupted run's tail is a
+                // user prompt with no answer to replace.
+                let summary_regenerate = messages
+                    .borrow()
+                    .get(last_ix)
+                    .is_some_and(|message| message.is_assistant() && message.has_text())
+                    .then(|| regenerate.clone())
+                    .flatten();
+                let stamp = summary_finished_at
+                    .map(|millis| footer_time_stamp(summary_time_label(millis), theme));
+                let summary_generation = messages
+                    .borrow()
+                    .get(last_ix)
+                    .and_then(|message| message.generation_time());
+                let footer = div()
+                    .mt(px(10.))
+                    .px(DynamicSpacing::Base04.px(&theme))
+                    .child(render_message_footer(
+                        copy_text,
+                        last_ix,
+                        stamp,
+                        summary_usage.clone(),
+                        summary_generation,
+                        copied_last,
+                        false,
+                        theme,
+                        copied.clone(),
+                        hovered_usage.clone(),
+                        rewind.clone(),
+                        summary_regenerate,
+                        export_response.clone(),
+                    ));
                 return div()
                     .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
                     .w_full()
                     .flex()
                     .justify_center()
                     .px(DynamicSpacing::Base20.px(&theme))
-                    .pb(px(14.))
+                    .pb(px(22.))
                     .child(
                         div()
                             .w_full()
                             .max_w(px(CONTENT_MAX_WIDTH))
                             .min_w_0()
-                            .child(render_working_indicator(elapsed, None, None, theme)),
+                            .flex()
+                            .flex_col()
+                            .child(card)
+                            .when(card_owns_footer, |column| column.child(footer)),
                     )
                     .into_any_element();
             }
-            let Some(files) = summary_files.as_ref() else {
-                return div().into_any_element();
-            };
-            let card = render_changed_files(
-                files,
-                theme,
-                nerd.as_ref(),
-                ix,
-                workspace.as_deref(),
-                expanded_files.borrow().contains(&ix),
-                expanded_files.clone(),
-                scroller.clone(),
-                summary_turn.and_then(|turn| review_changes.clone().map(|open| (turn, open))),
-            );
-            // One run footer, after the changed-files card (turn order:
-            // answer → files card → Copy): the copy affordance copies the
-            // answer, with the settled time and the run's usage. The last
-            // message's own footer is suppressed (see `suppress_footer`) so
-            // these details are not shown twice.
-            let last_ix = row_count.saturating_sub(1);
-            let copy_text = messages
-                .borrow()
-                .get(last_ix)
-                .filter(|message| message.is_assistant())
-                .map(|message| message.text())
-                .unwrap_or_default();
-            let copied_last = copied
-                .borrow()
-                .get(&last_ix)
-                .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-            // Regenerate belongs to a response; an interrupted run's tail is a
-            // user prompt with no answer to replace.
-            let summary_regenerate = messages
-                .borrow()
-                .get(last_ix)
-                .is_some_and(|message| message.is_assistant() && message.has_text())
-                .then(|| regenerate.clone())
-                .flatten();
-            let stamp = summary_finished_at
-                .map(|millis| footer_time_stamp(summary_time_label(millis), theme));
-            let summary_generation = messages
-                .borrow()
-                .get(last_ix)
-                .and_then(|message| message.generation_time());
-            let footer = div()
-                .mt(px(10.))
-                .px(DynamicSpacing::Base04.px(&theme))
-                .child(render_message_footer(
-                    copy_text,
-                    last_ix,
-                    stamp,
-                    summary_usage.clone(),
-                    summary_generation,
-                    copied_last,
-                    false,
-                    theme,
-                    copied.clone(),
-                    hovered_usage.clone(),
-                    rewind.clone(),
-                    summary_regenerate,
-                    export_response.clone(),
-                ));
-            return div()
-                .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
-                .w_full()
-                .flex()
-                .justify_center()
-                .px(DynamicSpacing::Base20.px(&theme))
-                .pb(px(22.))
-                .child(
-                    div()
-                        .w_full()
-                        .max_w(px(CONTENT_MAX_WIDTH))
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(card)
-                        .when(card_owns_footer, |column| column.child(footer)),
-                )
-                .into_any_element();
-        }
-        let row = render_row(
-            RowPaint {
-                messages: messages.clone(),
-                text_selection: text_selection.clone(),
-                ix,
-                row_count,
-                theme: *theme::get(cx),
-                nerd: nerd.clone(),
-                agent_calls,
-                live,
-                live_elapsed,
-                live_tps,
-                fold_open,
-                copied: copied_now,
-                suppress_footer: suppress_message_footer(card_owns_footer, ix, row_count),
-                expanded_turns: expanded_turns.clone(),
-                expanded_activities: expanded_activities.clone(),
-                copied_at: copied.clone(),
-                scroller: scroller.clone(),
-                expanded_tools: expanded_tools.clone(),
-                open_child_logs: open_child_logs.clone(),
-                copied_sections: copied_sections.clone(),
-                hovered_sections: hovered_sections.clone(),
-                expanded_sections: expanded_sections.clone(),
-                expanded_blocks: expanded_blocks.clone(),
-                thinking_scrolls: thinking_scrolls.clone(),
-                collapsed_thoughts: collapsed_thoughts.clone(),
-                thinking_detached: thinking_detached.clone(),
-                hovered_usage: hovered_usage.clone(),
-                image_opener: image_opener.clone(),
-                rewind: rewind.clone(),
-                regenerate: regenerate.clone(),
-                export_response: export_response.clone(),
-                search_hit: search_hits
-                    .as_ref()
-                    .is_some_and(|hits| hits.borrow().contains(&ix)),
-                search_active: search_active
-                    .as_ref()
-                    .is_some_and(|active| active.get() == Some(ix)),
-                table_breakout,
-            },
-            cx,
-        )
-        .into_any_element();
-        if let Some((_, turn, files)) = history_cards.iter().find(|(last, _, _)| *last == ix) {
-            let card = render_changed_files(
-                files,
-                *theme::get(cx),
-                nerd.as_ref(),
-                ix,
-                workspace.as_deref(),
-                expanded_files.borrow().contains(&ix),
-                expanded_files.clone(),
-                scroller.clone(),
-                review_changes.clone().map(|open| (*turn, open)),
-            );
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .child(row)
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .justify_center()
-                        .px(DynamicSpacing::Base20.px(theme::get(cx)))
-                        .pb(px(22.))
-                        .child(
-                            div()
-                                .w_full()
-                                .max_w(px(CONTENT_MAX_WIDTH))
-                                .min_w_0()
-                                .child(card),
-                        ),
-                )
-                .into_any_element()
-        } else {
-            row
-        }
-    })
-    .w_full();
+            let row = render_row(
+                RowPaint {
+                    messages: messages.clone(),
+                    text_selection: text_selection.clone(),
+                    ix,
+                    row_count,
+                    theme: *theme::get(cx),
+                    nerd: nerd.clone(),
+                    agent_calls,
+                    live,
+                    live_elapsed,
+                    live_tps,
+                    fold_open,
+                    copied: copied_now,
+                    suppress_footer: suppress_message_footer(card_owns_footer, ix, row_count),
+                    expanded_turns: expanded_turns.clone(),
+                    expanded_activities: expanded_activities.clone(),
+                    copied_at: copied.clone(),
+                    scroller: scroller.clone(),
+                    expanded_tools: expanded_tools.clone(),
+                    open_child_logs: open_child_logs.clone(),
+                    copied_sections: copied_sections.clone(),
+                    hovered_sections: hovered_sections.clone(),
+                    expanded_sections: expanded_sections.clone(),
+                    expanded_blocks: expanded_blocks.clone(),
+                    thinking_scrolls: thinking_scrolls.clone(),
+                    collapsed_thoughts: collapsed_thoughts.clone(),
+                    thinking_detached: thinking_detached.clone(),
+                    hovered_usage: hovered_usage.clone(),
+                    image_opener: image_opener.clone(),
+                    rewind: rewind.clone(),
+                    regenerate: regenerate.clone(),
+                    export_response: export_response.clone(),
+                    search_hit: search_hits
+                        .as_ref()
+                        .is_some_and(|hits| hits.borrow().contains(&ix)),
+                    search_active: search_active
+                        .as_ref()
+                        .is_some_and(|active| active.get() == Some(ix)),
+                    table_breakout,
+                },
+                cx,
+            )
+            .into_any_element();
+            if let Some((_, turn, files)) = history_cards.iter().find(|(last, _, _)| *last == ix) {
+                let card = render_changed_files(
+                    files,
+                    *theme::get(cx),
+                    nerd.as_ref(),
+                    ix,
+                    workspace.as_deref(),
+                    expanded_files.borrow().contains(&ix),
+                    expanded_files.clone(),
+                    scroller.clone(),
+                    review_changes.clone().map(|open| (*turn, open)),
+                );
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(row)
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .px(DynamicSpacing::Base20.px(theme::get(cx)))
+                            .pb(px(22.))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(px(CONTENT_MAX_WIDTH))
+                                    .min_w_0()
+                                    .child(card),
+                            ),
+                    )
+                    .into_any_element()
+            } else {
+                row
+            }
+        })
+        .w_full();
 
     // Same height chain as the sessions sidebar: this panel is a `flex_1` +
     // `min_h_0` child of a column, so `h_full` on the list is a definite
@@ -4908,26 +4912,29 @@ fn render_activity_card(
                     let patch = edit_patch_text(&rows);
                     let copied_sections = copied_sections.clone();
                     row.child(
-                        IconButton::glyph(ElementId::NamedInteger(
+                        IconButton::glyph(
+                            ElementId::NamedInteger(
                                 "copy-edit-diff".into(),
                                 (key.0 as u64) << 16 | key.1 as u64,
-                            ), glyph(
-                            if copied {
-                                "icons/check.svg"
-                            } else {
-                                "icons/copy.svg"
-                            },
-                            ButtonSize::Compact.icon_size().px(&theme),
-                            if copied {
-                                theme.success
-                            } else {
-                                theme.text_muted
-                            },
-                        ))
-.size(ButtonSize::Compact)
-.variant(IconButtonVariant::Glass)
-.tip(tr!("transcript.copy_diff"))
-.on_click(&theme, move |_, _, cx| {
+                            ),
+                            glyph(
+                                if copied {
+                                    "icons/check.svg"
+                                } else {
+                                    "icons/copy.svg"
+                                },
+                                ButtonSize::Compact.icon_size().px(&theme),
+                                if copied {
+                                    theme.success
+                                } else {
+                                    theme.text_muted
+                                },
+                            ),
+                        )
+                        .size(ButtonSize::Compact)
+                        .variant(IconButtonVariant::Glass)
+                        .tip(tr!("transcript.copy_diff"))
+                        .on_click(&theme, move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()));
                             copied_sections
                                 .borrow_mut()
@@ -6128,7 +6135,11 @@ fn render_message_footer(
     let regenerate_button = regenerate.map(|opener| {
         IconButton::glyph(
             ElementId::NamedInteger("regenerate-response".into(), ix as u64),
-            glyph("icons/refresh.svg", FOOTER_BUTTON.icon_size().px(&theme), theme.text_muted),
+            glyph(
+                "icons/refresh.svg",
+                FOOTER_BUTTON.icon_size().px(&theme),
+                theme.text_muted,
+            ),
         )
         .size(FOOTER_BUTTON)
         .variant(IconButtonVariant::Glass)
@@ -6140,18 +6151,28 @@ fn render_message_footer(
     let pdf_button = export_response.clone().map(|export| {
         IconButton::glyph(
             ElementId::NamedInteger("export-response-pdf".into(), ix as u64),
-            glyph("icons/file.svg", FOOTER_BUTTON.icon_size().px(&theme), theme.text_muted),
+            glyph(
+                "icons/file.svg",
+                FOOTER_BUTTON.icon_size().px(&theme),
+                theme.text_muted,
+            ),
         )
         .size(FOOTER_BUTTON)
         .variant(IconButtonVariant::Glass)
         .tip(tr!("transcript.export_response_pdf"))
-        .on_click(&theme, move |_, window, cx| export(pdf_text.clone(), true, ix, window, cx))
+        .on_click(&theme, move |_, window, cx| {
+            export(pdf_text.clone(), true, ix, window, cx)
+        })
         .debug_selector(move || format!("export-response-pdf-{ix}"))
     });
     let export_button = export_response.map(|export| {
         IconButton::glyph(
             ElementId::NamedInteger("export-response".into(), ix as u64),
-            glyph("icons/arrow-down.svg", FOOTER_BUTTON.icon_size().px(&theme), theme.text_muted),
+            glyph(
+                "icons/arrow-down.svg",
+                FOOTER_BUTTON.icon_size().px(&theme),
+                theme.text_muted,
+            ),
         )
         .size(FOOTER_BUTTON)
         .variant(IconButtonVariant::Glass)
@@ -11175,10 +11196,16 @@ mod tests {
             assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(1));
             text_menu_key(&selection, "enter", window, cx);
         });
-        assert!(selection.borrow().menu.is_none(), "running an item closes the menu");
+        assert!(
+            selection.borrow().menu.is_none(),
+            "running an item closes the menu"
+        );
         let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
         assert_eq!(copied.as_deref(), Some("the whole message"));
-        assert!(cx.update(|window, _| opener.is_focused(window)), "focus returns to the opener");
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "focus returns to the opener"
+        );
     }
 
     #[gpui::test]

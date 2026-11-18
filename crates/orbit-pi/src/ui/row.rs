@@ -460,7 +460,10 @@ mod row_state_tests {
         let theme = Theme::for_id(ThemeId::ALL[0]);
         assert_eq!(RowState::of(true, true), RowState::Selected);
         assert_eq!(RowState::of(false, true), RowState::Cursor);
-        assert_eq!(RowState::Selected.rest_fill(&theme), Some(theme.surface_selected));
+        assert_eq!(
+            RowState::Selected.rest_fill(&theme),
+            Some(theme.surface_selected)
+        );
         assert_eq!(RowState::Cursor.rest_fill(&theme), Some(theme.overlay));
         assert_eq!(RowState::Rest.rest_fill(&theme), None);
     }
@@ -480,7 +483,10 @@ mod tests {
                 let mut cursor = nav_row(div(), &theme, height, true);
                 let (rest, cursor) = (rest.style(), cursor.style());
                 assert_eq!(rest.min_size, cursor.min_size, "{id:?} {height:?}");
-                assert_eq!(rest.border_widths, cursor.border_widths, "{id:?} {height:?}");
+                assert_eq!(
+                    rest.border_widths, cursor.border_widths,
+                    "{id:?} {height:?}"
+                );
                 assert_eq!(rest.corner_radii, cursor.corner_radii, "{id:?} {height:?}");
                 assert_eq!(cursor.border_color, Some(theme.focus_ring));
                 assert_eq!(rest.border_color.map(|c| c.a), Some(0.));
@@ -509,11 +515,21 @@ mod tests {
         let theme = Theme::dark();
         let open = nav_row_fill(&theme, true, false);
         assert_eq!(open.at(0.).0, Some(theme.surface_selected), "at rest");
-        assert_eq!(open.at(1.).0, Some(theme.surface_selected), "under the pointer");
+        assert_eq!(
+            open.at(1.).0,
+            Some(theme.surface_selected),
+            "under the pointer"
+        );
         // The keyboard cursor rests on the wash; an idle row has none.
-        assert_eq!(nav_row_fill(&theme, false, true).at(0.).0, Some(theme.surface_hover));
+        assert_eq!(
+            nav_row_fill(&theme, false, true).at(0.).0,
+            Some(theme.surface_hover)
+        );
         let idle = nav_row_fill(&theme, false, false).at(0.).0;
-        assert!(idle.is_none_or(|fill| fill.a == 0.), "idle rows rest unfilled");
+        assert!(
+            idle.is_none_or(|fill| fill.a == 0.),
+            "idle rows rest unfilled"
+        );
     }
 
     #[test]

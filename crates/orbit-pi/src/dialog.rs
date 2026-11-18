@@ -21,7 +21,7 @@ use crate::composer::ComposerInput;
 use crate::theme::tokens::{button, input, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
 use crate::ui::dialog::ModalHeader;
-use crate::ui::prelude::{modal_card, modal_scrim, PressedRamp, StatefulControlExt};
+use crate::ui::prelude::{modal_card, modal_scrim, ModalWidthExt, PressedRamp, StatefulControlExt};
 
 /// Card width — a question plus its options without owning the window.
 const CARD_W: f32 = 560.;
@@ -349,8 +349,7 @@ impl Render for Dialog {
         let mut card = modal_card(&theme)
             .id("dialog-card")
             .debug_selector(|| "dialog-card".to_string())
-            .w_full()
-            .max_w(px(CARD_W))
+            .modal_width(px(CARD_W))
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_cancel))

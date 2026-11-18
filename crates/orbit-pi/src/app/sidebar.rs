@@ -1,22 +1,22 @@
-use crate::ui::prelude::*;
 use super::format::*;
-use crate::ui::menu::MenuKey;
 use super::*;
+use crate::ui::menu::MenuKey;
+use crate::ui::prelude::*;
 
 use gpui::{point, Div, Hsla, Pixels};
 use std::{cell::Cell, rc::Rc};
 
-use crate::ui::field::search_field;
 use crate::motion::Hover;
 use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
-    context_menu, list_item, looping, picker, popover, tooltip, BufferLineHeight,
-    ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    context_menu, list_item, looping, picker, popover, tooltip, BufferLineHeight, ButtonSize,
+    DynamicSpacing, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
+use crate::ui::button::IconButton;
+use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::row::{nav_row, nav_row_fill, NavRowHeight};
-use crate::ui::button::IconButton;
 
 /// How far a grouped session row sits in from its project header: the
 /// header's hairline, its leading inset and the chevron column, plus the gap
@@ -1554,32 +1554,34 @@ pub(crate) fn render_side_row(
                         this_menu.clone(),
                         theme,
                     ))
-                    .child(IconButton::new(
-                        ElementId::Name(format!("workspace-new-{label}").into()),
-                        "icons/plus.svg",
+                    .child(
+                        IconButton::new(
+                            ElementId::Name(format!("workspace-new-{label}").into()),
+                            "icons/plus.svg",
+                        )
+                        .size(ButtonSize::Compact)
+                        .tip(crate::commands::tooltip(
+                            crate::commands::CommandId::NewSession,
+                            false,
+                        ))
+                        .faded(&theme, |button| {
+                            button
+                                // Revealed on row hover — the quiet default
+                                // keeps group headers to just label + count.
+                                .opacity(0.)
+                                .group_hover("workspace-row", |s| s.opacity(1.))
+                                .on_mouse_up(MouseButton::Left, {
+                                    let this = this_new.clone();
+                                    move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        let cwd = cwd_for_new.clone();
+                                        this.update(cx, |app, cx| {
+                                            app.on_new_session_in_workspace(cwd, window, cx);
+                                        });
+                                    }
+                                })
+                        }),
                     )
-                    .size(ButtonSize::Compact)
-                    .tip(crate::commands::tooltip(
-                        crate::commands::CommandId::NewSession,
-                        false,
-                    ))
-                    .faded(&theme, |button| {
-                        button
-                            // Revealed on row hover — the quiet default
-                            // keeps group headers to just label + count.
-                            .opacity(0.)
-                            .group_hover("workspace-row", |s| s.opacity(1.))
-                            .on_mouse_up(MouseButton::Left, {
-                                let this = this_new.clone();
-                                move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    let cwd = cwd_for_new.clone();
-                                    this.update(cx, |app, cx| {
-                                        app.on_new_session_in_workspace(cwd, window, cx);
-                                    });
-                                }
-                            })
-                    }))
                     // Session count, pinned to the header's right edge.
                     // Bare muted figures, right-aligned in a fixed slot:
                     // metadata, not a control, so it carries no fill that
@@ -2381,7 +2383,10 @@ fn workspace_menu_items(menu: &WorkspaceMenu) -> Vec<(RowMenuItem, bool)> {
 }
 
 /// The id of the row under the keyboard cursor, if the keyboard has shown it.
-fn lit_row(cursor: &crate::ui::menu::MenuCursor, items: &[(RowMenuItem, bool)]) -> Option<&'static str> {
+fn lit_row(
+    cursor: &crate::ui::menu::MenuCursor,
+    items: &[(RowMenuItem, bool)],
+) -> Option<&'static str> {
     cursor
         .highlighted(items.len())
         .and_then(|ix| items.get(ix))
@@ -2815,8 +2820,7 @@ where
     if !enabled {
         return menu_item_unavailable(id, icon_path, label, reason.into().to_string(), theme);
     }
-    workspace_menu_item(id, icon_path, label, theme, this, highlighted, on_click)
-        .into_any_element()
+    workspace_menu_item(id, icon_path, label, theme, this, highlighted, on_click).into_any_element()
 }
 
 /// Move up / Move down for a project group's row menu.
@@ -5499,7 +5503,12 @@ impl OrbitApp {
     }
 
     /// Run one row-menu action through the same handler its row's click uses.
-    fn run_row_menu_item(&mut self, item: RowMenuItem, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_row_menu_item(
+        &mut self,
+        item: RowMenuItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let session_path = self.session_menu.as_ref().map(|menu| menu.path.clone());
         let project_label = self.workspace_menu.as_ref().map(|menu| menu.label.clone());
         match item {
@@ -5516,11 +5525,7 @@ impl OrbitApp {
             RowMenuItem::Delete => self.on_menu_delete_request(cx),
             RowMenuItem::ProjectMoveUp | RowMenuItem::ProjectMoveDown => {
                 if let Some(label) = project_label {
-                    self.on_workspace_move_project(
-                        &label,
-                        item == RowMenuItem::ProjectMoveUp,
-                        cx,
-                    );
+                    self.on_workspace_move_project(&label, item == RowMenuItem::ProjectMoveUp, cx);
                 }
             }
             RowMenuItem::ProjectCopyPath => self.on_workspace_copy_path(cx),

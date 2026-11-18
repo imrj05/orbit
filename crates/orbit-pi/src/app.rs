@@ -32,13 +32,12 @@ use std::{
 use base64::Engine as _;
 use gpui::{
     anchored, deferred, div, img, linear_color_stop, linear_gradient, point, prelude::*, px,
-    relative, uniform_list, AnchoredPositionMode, Animation, AnimationExt, AnyElement,
-    App, ClickEvent, ClipboardItem, Context, Corner, DragMoveEvent, ElementId, Entity,
-    ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement,
-    ListAlignment, ListState, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
-    PathPromptOptions, Pixels, Point, Render, ScrollHandle, ScrollStrategy, SharedString,
-    StatefulInteractiveElement, Subscription, TextAlign, Transformation, UniformListScrollHandle,
-    Window,
+    relative, uniform_list, AnchoredPositionMode, Animation, AnimationExt, AnyElement, App,
+    ClickEvent, ClipboardItem, Context, Corner, DragMoveEvent, ElementId, Entity, ExternalPaths,
+    FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement, ListAlignment,
+    ListState, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, PathPromptOptions, Pixels,
+    Point, Render, ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement,
+    Subscription, TextAlign, Transformation, UniformListScrollHandle, Window,
 };
 use orbit_rpc::{
     CommandBody, ContextUsage, Event, PendingQueue, PiClient, QueueLane, QuotaReport, SessionState,
@@ -4487,8 +4486,8 @@ mod bug_report_ui;
 mod composer_ops;
 mod dialogs;
 mod events;
-mod git_accounts_ui;
 pub(crate) mod format;
+mod git_accounts_ui;
 mod mcp_ui;
 mod new_task;
 mod open_in;

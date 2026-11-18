@@ -17,13 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::ui::prelude::*;
 use super::*;
-use crate::ui::button::ButtonVariant;
-use crate::ui::dialog::modal_button;
-use crate::ui::field::search_field;
-use crate::ui::button::IconButton;
-use crate::ui::chip::Pill;
 use crate::mcp::config::{self as mcp_config, SecretUpdate};
 use crate::mcp::manager::McpProbe;
 use crate::mcp::{
@@ -33,6 +27,12 @@ use crate::mcp::{
 use crate::theme::tokens::{
     button, input, list_item, modal, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
+use crate::ui::button::ButtonVariant;
+use crate::ui::button::IconButton;
+use crate::ui::chip::Pill;
+use crate::ui::dialog::modal_button;
+use crate::ui::field::search_field;
+use crate::ui::prelude::*;
 
 /// How long after a configuration change the probe is debounced, so several
 /// quick edits share one `pi mcp list` run.
@@ -1056,8 +1056,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         _cx: &Context<Self>,
     ) -> AnyElement {
-        let search = search_field(self.mcp_filter.clone(), &theme)
-            .w_full();
+        let search = search_field(self.mcp_filter.clone(), &theme).w_full();
 
         let refresh = IconButton::glyph(
             "mcp-refresh",
@@ -2352,8 +2351,7 @@ impl OrbitApp {
         });
 
         let card = modal_card(&theme)
-            .w_full()
-            .max_w(px(560.))
+            .modal_width(px(560.))
             .max_h(relative(1.))
             .on_action(cx.listener(Self::mcp_editor_cancel))
             .on_action(cx.listener(Self::mcp_editor_confirm))
@@ -2496,19 +2494,22 @@ impl OrbitApp {
             .iter()
             .filter(|server| self.mcp.runtime(&server.name).status == McpServerStatus::Connected)
             .count();
-        let refresh = IconButton::glyph("quota-mcp-refresh", refresh_glyph(
+        let refresh = IconButton::glyph(
+            "quota-mcp-refresh",
+            refresh_glyph(
                 "quota-mcp-refresh-spin",
                 ButtonSize::Medium.icon_size().px(&theme),
                 self.mcp.is_probing(),
                 theme.text_secondary,
                 theme,
-            ))
-.size(ButtonSize::Medium)
-.tip(tr!("mcp.refresh"))
-.on_mouse_up(&theme, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
-            });
+            ),
+        )
+        .size(ButtonSize::Medium)
+        .tip(tr!("mcp.refresh"))
+        .on_mouse_up(&theme, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
+        });
         div()
             .flex()
             .items_center()

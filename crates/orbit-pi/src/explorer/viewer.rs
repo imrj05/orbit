@@ -23,16 +23,19 @@ use gpui::{
     Timer, Window,
 };
 
-use crate::ui::chip::{Badge, BadgeFill};
-use crate::ui::list::virtual_list;
-use crate::ui::button::IconButton;
-use crate::ui::tab::{tab_strip, Tab as TabButton};
-use crate::ui::prelude::{button_frame, empty_state, file_badge, file_glyph, icon, nerd_font_family, ControlExt, EmptyFill};
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
+use crate::ui::button::IconButton;
+use crate::ui::chip::{Badge, BadgeFill};
+use crate::ui::list::virtual_list;
+use crate::ui::prelude::{
+    button_frame, empty_state, file_badge, file_glyph, icon, nerd_font_family, ControlExt,
+    EmptyFill,
+};
+use crate::ui::tab::{tab_strip, Tab as TabButton};
 
 /// Files above this are not previewed. Two megabytes is far past any source
 /// file a person reads and well under anything that would stall a frame.
@@ -835,17 +838,20 @@ impl FileViewer {
             .child(tabs.flex_1().min_w_0())
             .child(
                 IconButton::new("viewer-close", "icons/x.svg")
-.size(ButtonSize::Default)
-.ink(theme.text_muted)
-.tip(tr!("common.close"))
-.on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| {
-                        // Close here — this listener already holds the viewer's
-                        // lease, so the app callback must not re-enter `update`
-                        // on this entity (that would double-lease and abort).
-                        let on_close = this.on_close.clone();
-                        this.hide(cx);
-                        on_close(cx);
-                    })),
+                    .size(ButtonSize::Default)
+                    .ink(theme.text_muted)
+                    .tip(tr!("common.close"))
+                    .on_click(
+                        &theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            // Close here — this listener already holds the viewer's
+                            // lease, so the app callback must not re-enter `update`
+                            // on this entity (that would double-lease and abort).
+                            let on_close = this.on_close.clone();
+                            this.hide(cx);
+                            on_close(cx);
+                        }),
+                    ),
             )
             .into_any_element()
     }

@@ -316,6 +316,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Dialogs grow to fit what they hold.** The Add account dialog on Models &
+  providers cut its Cancel and Create account buttons off at the bottom, and the
+  API key, provider, usage, MCP, remote host, remote API key, "Add to a server",
+  SSH password, extension question and Git branch / stage dialogs could come out
+  shorter than their content, scrolling a body that would have fit. Each dialog
+  now takes its full height and scrolls only when the window is too short for it.
+
 - **Subagents detail sections no longer collapse.** The detail pane's scroll
   body had no definite width, so each board shrank to its content and the
   delegation-limit labels ran under their steppers.

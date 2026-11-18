@@ -1,11 +1,6 @@
-use crate::ui::prelude::*;
 use super::format::*;
 use super::sidebar::star_project_banner;
 use super::*;
-use crate::ui::button::{ButtonGroup, SegmentFill};
-use crate::ui::field::TextField;
-use crate::ui::field::search_field;
-use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::git_panel::widgets::check_box;
 use crate::motion::Hover;
 use crate::quota::note_should_render;
@@ -14,8 +9,13 @@ use crate::theme::tokens::{
     DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
 use crate::theme::MotionPreference;
+use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::chip::{Badge, BadgeFill};
+use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
+use crate::ui::field::search_field;
+use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::*;
 use crate::ui::style::surface::SurfaceExt;
 use gpui::{canvas, Bounds, DispatchPhase, Div, Hitbox, HitboxBehavior, MouseMoveEvent, Stateful};
 
@@ -940,8 +940,7 @@ impl OrbitApp {
     /// The global settings search, at the top of the nav column so a query
     /// can reach any setting without hunting through the section list.
     fn settings_search_bar(&self, theme: Theme) -> AnyElement {
-        let search = search_field(self.settings_search.clone(), &theme)
-            .w_full();
+        let search = search_field(self.settings_search.clone(), &theme).w_full();
         div()
             .w_full()
             .flex_shrink_0()
@@ -1990,8 +1989,7 @@ impl OrbitApp {
                 .into_any_element(),
         };
 
-        let search = search_field(self.plugins_filter.clone(), &theme)
-            .w_full();
+        let search = search_field(self.plugins_filter.clone(), &theme).w_full();
 
         div()
             .w_full()
@@ -2178,8 +2176,7 @@ impl OrbitApp {
             .count();
         let filtered = self.models_favorites_only || !needle.is_empty();
 
-        let search = search_field(self.provider_filter.clone(), &theme)
-            .w_full();
+        let search = search_field(self.provider_filter.clone(), &theme).w_full();
 
         let refresh_icon = refresh_glyph(
             "providers-refresh-spin",
@@ -4004,8 +4001,7 @@ impl OrbitApp {
             );
 
         let card = modal_card(&theme)
-            .w_full()
-            .max_w(px(460.))
+            .modal_width(px(460.))
             .max_h(relative(1.))
             .on_action(cx.listener(Self::provider_editor_cancel))
             .child(modal_header(
@@ -4089,9 +4085,7 @@ impl OrbitApp {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_secondary),
                     )
-                    .child(
-                        TextField::new(editor.key.clone(), theme.background).render(&theme),
-                    )
+                    .child(TextField::new(editor.key.clone(), theme.background).render(&theme))
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
@@ -4179,8 +4173,8 @@ impl OrbitApp {
         );
 
         let card = modal_card(&theme)
-            .w_full()
-            .max_w(px(460.))
+            .debug_selector(|| "provider-key-card".to_string())
+            .modal_width(px(460.))
             .max_h(relative(1.))
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
@@ -4192,12 +4186,13 @@ impl OrbitApp {
             .child(
                 div()
                     .id("provider-key-body")
+                    .debug_selector(|| "provider-key-body".to_string())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     .px(modal::section_padding_x(&theme, false))
                     .py(DynamicSpacing::Base16.px(&theme))
-                    .child(body),
+                    .child(body.debug_selector(|| "provider-key-content".to_string())),
             )
             .child(modal_footer(&theme).child(cancel).child(save));
 
@@ -4299,9 +4294,7 @@ impl OrbitApp {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_secondary),
                 )
-                .child(
-                    TextField::new(input, theme.background).render(&theme),
-                );
+                .child(TextField::new(input, theme.background).render(&theme));
             if let Some(hint) = hint {
                 column = column.child(
                     div()
@@ -4449,9 +4442,8 @@ impl OrbitApp {
             );
 
         let mut card = modal_card(&theme)
-            .w_full()
-            .max_w(px(520.))
-            .max_h(px(560.))
+            .modal_width(px(520.))
+            .max_h(relative(1.))
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
             .child(modal_header(
@@ -4634,7 +4626,11 @@ impl OrbitApp {
         let last = rows.len().saturating_sub(1);
         let mut board = div()
             .w_full()
-            .card_surface(&theme, theme.border, theme.card_fill(theme.surface_secondary))
+            .card_surface(
+                &theme,
+                theme.border,
+                theme.card_fill(theme.surface_secondary),
+            )
             .flex()
             .flex_col();
         for (i, row) in rows.into_iter().enumerate() {
@@ -5710,7 +5706,10 @@ impl OrbitApp {
     /// Orbit-only preference; existing pi queues are left untouched.
     fn composer_send_mode_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
         let mut group = ButtonGroup::new(SegmentFill::Active);
-        for (index, mode) in [SendMode::FollowUp, SendMode::Steer].into_iter().enumerate() {
+        for (index, mode) in [SendMode::FollowUp, SendMode::Steer]
+            .into_iter()
+            .enumerate()
+        {
             let this = this.clone();
             group = group.segment(
                 ("composer-send-mode", index),
@@ -8016,9 +8015,7 @@ impl OrbitApp {
             }
         })
         // Search field — filters the options below.
-        .child(
-            search_field(self.settings_filter.clone(), &theme),
-        )
+        .child(search_field(self.settings_filter.clone(), &theme))
         .child(list);
         // Anchor to the chip's top-right corner (via a zero-size point) and
         // drop the popup `popover::MENU_OFFSET` below the chip
@@ -10106,7 +10103,10 @@ mod thumbnail_corner_tests {
         for id in ThemeId::ALL {
             let theme = Theme::for_id(id);
             let radius = thumbnail_radius(&theme);
-            assert!(radius > px(0.) && radius < panel::RADIUS.px(&theme), "{id:?}");
+            assert!(
+                radius > px(0.) && radius < panel::RADIUS.px(&theme),
+                "{id:?}"
+            );
             let mut thumbnail = palette_thumbnail(theme, radius);
             let corners = thumbnail.style().corner_radii.clone();
             assert_eq!(radius_of(corners.top_left), Some(radius), "{id:?}");

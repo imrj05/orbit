@@ -1,23 +1,23 @@
-use crate::ui::prelude::*;
 use super::format::*;
 use super::session::{SESSION_DETAILS_GUTTER, SESSION_DETAILS_W};
 use super::sidebar::*;
 use super::*;
+use crate::ui::prelude::*;
 
-use crate::ui::status_bar::{status_button, status_item, status_message, StatusBar};
-use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
-use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::commands::{self, CommandId};
 use crate::motion::Hover;
-use crate::ui::popover::{popover_list, PopoverExt};
-use crate::ui::menu::menu_hint;
-use crate::ui::row::option_row;
+use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::menu::menu_hint;
+use crate::ui::popover::{popover_list, PopoverExt};
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::row::option_row;
+use crate::ui::status_bar::{status_button, status_item, status_message, StatusBar};
 use gpui::StyledText;
 
 use crate::theme::tokens::{
-    button, context_menu, input, looping, panel, picker, ButtonSize, DynamicSpacing,
-    IconSize, Radius, TextSize, BORDER_WIDTH,
+    button, context_menu, input, looping, panel, picker, ButtonSize, DynamicSpacing, IconSize,
+    Radius, TextSize, BORDER_WIDTH,
 };
 use crate::ui::button::navigation_icon_button;
 use crate::ui::style::surface::SurfaceExt;
@@ -2023,18 +2023,18 @@ impl OrbitApp {
                         .variant(IconButtonVariant::Glass)
                         .tip(tr!("common.dismiss"))
                         .render(&theme)
-                    .debug_selector(|| "dismiss-follow-up-suggestions".to_string())
-                    .focusable()
-                    .focus(|style| style.border_1().border_color(theme.focus_ring))
-                    .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            cx.stop_propagation();
+                        .debug_selector(|| "dismiss-follow-up-suggestions".to_string())
+                        .focusable()
+                        .focus(|style| style.border_1().border_color(theme.focus_ring))
+                        .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                cx.stop_propagation();
+                                app.dismiss_suggestions(window, cx);
+                            }
+                        }))
+                        .on_click(cx.listener(|app, _, window, cx| {
                             app.dismiss_suggestions(window, cx);
-                        }
-                    }))
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dismiss_suggestions(window, cx);
-                    }));
+                        }));
                     column = column.child(
                         div()
                             .w_full()
@@ -2180,16 +2180,20 @@ impl OrbitApp {
             .items_start()
             .children(self.access_popup(cx))
             .child({
-                    let chip = ChipButton::new("access-chip", ChipStyle::Quiet)
-                        .selector("access-chip")
-                        .icon(mode.icon())
-                        .open(self.access_menu_open)
-                        // The label already names the mode when it is visible;
-                        // the terse (icon-only) chip names it in the tooltip.
-                        .caret(!terse);
-                    let chip = if terse { chip.tip(tip) } else { chip.label(label) };
-                    chip.on_mouse_up(&theme, cx.listener(Self::on_access_trigger_click))
-                })
+                let chip = ChipButton::new("access-chip", ChipStyle::Quiet)
+                    .selector("access-chip")
+                    .icon(mode.icon())
+                    .open(self.access_menu_open)
+                    // The label already names the mode when it is visible;
+                    // the terse (icon-only) chip names it in the tooltip.
+                    .caret(!terse);
+                let chip = if terse {
+                    chip.tip(tip)
+                } else {
+                    chip.label(label)
+                };
+                chip.on_mouse_up(&theme, cx.listener(Self::on_access_trigger_click))
+            })
     }
 
     /// The shared picker caret. `chevron-down` at rest, so the chip reads as a
@@ -2288,9 +2292,11 @@ impl OrbitApp {
             }))
             .child(list);
 
-        Some(
-            crate::ui::popover::column_menu(popup, "anchored_popover-in-12", &theme),
-        )
+        Some(crate::ui::popover::column_menu(
+            popup,
+            "anchored_popover-in-12",
+            &theme,
+        ))
     }
 
     /// The workflow-mode chip: the active session's scope, opening the
@@ -2304,24 +2310,24 @@ impl OrbitApp {
             .items_start()
             .children(self.workflow_popup(cx))
             .child({
-                    let chip = ChipButton::new("workflow-chip", ChipStyle::Quiet)
-                        .selector("workflow-chip")
-                        .icon(self.workflow_mode.icon())
-                        .label(self.workflow_mode.label())
-                        .open(self.workflow_menu_open);
-                    // Read-only modes cannot edit; the lock says so at a glance,
-                    // matching the access chip's motif.
-                    let chip = if self.workflow_mode.is_read_only() {
-                        chip.trailing(icon(
-                            "icons/lock.svg",
-                            IconSize::Indicator.px(&theme),
-                            theme.text_muted,
-                        ))
-                    } else {
-                        chip
-                    };
-                    chip.on_mouse_up(&theme, cx.listener(Self::on_workflow_trigger_click))
-                })
+                let chip = ChipButton::new("workflow-chip", ChipStyle::Quiet)
+                    .selector("workflow-chip")
+                    .icon(self.workflow_mode.icon())
+                    .label(self.workflow_mode.label())
+                    .open(self.workflow_menu_open);
+                // Read-only modes cannot edit; the lock says so at a glance,
+                // matching the access chip's motif.
+                let chip = if self.workflow_mode.is_read_only() {
+                    chip.trailing(icon(
+                        "icons/lock.svg",
+                        IconSize::Indicator.px(&theme),
+                        theme.text_muted,
+                    ))
+                } else {
+                    chip
+                };
+                chip.on_mouse_up(&theme, cx.listener(Self::on_workflow_trigger_click))
+            })
     }
 
     /// The workflow-mode picker popup, while open. Same construction as the
@@ -2391,9 +2397,11 @@ impl OrbitApp {
             }))
             .child(list);
 
-        Some(
-            crate::ui::popover::column_menu(popup, "anchored_popover-in-13", &theme),
-        )
+        Some(crate::ui::popover::column_menu(
+            popup,
+            "anchored_popover-in-13",
+            &theme,
+        ))
     }
 
     /// Quiet inline hints immediately left of the context meter, including
@@ -2507,9 +2515,7 @@ impl OrbitApp {
                             })
                             .child(tr!(*label)),
                     )
-                    .when(!hint.is_empty(), |row| {
-                        row.child(menu_hint(*hint, &theme))
-                    }),
+                    .when(!hint.is_empty(), |row| row.child(menu_hint(*hint, &theme))),
             );
         }
 
@@ -2535,9 +2541,11 @@ impl OrbitApp {
             }))
             .child(list);
 
-        Some(
-            crate::ui::popover::column_menu(popup, "anchored_popover-in-14", &theme),
-        )
+        Some(crate::ui::popover::column_menu(
+            popup,
+            "anchored_popover-in-14",
+            &theme,
+        ))
     }
 
     /// The anchored popup for `kind`, when that picker is open. `deferred`
@@ -3456,10 +3464,10 @@ impl OrbitApp {
                     )
                     .child(
                         IconButton::new(("copy", ix), "icons/copy.svg")
-.size(ButtonSize::Default)
-.ink(theme.text_secondary)
-.tip(tr!("common.copy"))
-.on_click(&theme, move |_, _window, cx| {
+                            .size(ButtonSize::Default)
+                            .ink(theme.text_secondary)
+                            .tip(tr!("common.copy"))
+                            .on_click(&theme, move |_, _window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(cmd.to_string()));
                             }),
                     )
@@ -4644,7 +4652,11 @@ impl OrbitApp {
                     // A floating strip over the wallpaper, like the approval
                     // bar below it: translucent, and frosted wherever the
                     // renderer can blur.
-                    .card_surface(&theme, theme.border, theme.card_fill(theme.surface_elevated))
+                    .card_surface(
+                        &theme,
+                        theme.border,
+                        theme.card_fill(theme.surface_elevated),
+                    )
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -4693,7 +4705,11 @@ impl OrbitApp {
                     .mb(DynamicSpacing::Base08.px(&theme))
                     .px(px(10.))
                     .py(px(7.))
-                    .card_surface(&theme, theme.border, theme.card_fill(theme.surface_elevated))
+                    .card_surface(
+                        &theme,
+                        theme.border,
+                        theme.card_fill(theme.surface_elevated),
+                    )
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -4744,7 +4760,11 @@ impl OrbitApp {
             // Sits in the composer column beside the approval bar and the run
             // strip, so it takes the same glass: a pane over the wallpaper,
             // not an opaque slab dropped on it.
-            .card_surface(&theme, theme.accent.opacity(0.3), theme.card_fill(theme.surface_elevated))
+            .card_surface(
+                &theme,
+                theme.accent.opacity(0.3),
+                theme.card_fill(theme.surface_elevated),
+            )
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -4806,11 +4826,14 @@ impl OrbitApp {
         // A visible dismiss affordance beside the keyboard hint.
         header = header.child(
             IconButton::new("ask-close", "icons/x.svg")
-.size(ButtonSize::Compact)
-.variant(IconButtonVariant::Glass)
-.ink(theme.text_muted)
-.tip(tr!("common.close"))
-.on_click(&theme, cx.listener(|this, _, window, cx| this.ask_cancel(window, cx))),
+                .size(ButtonSize::Compact)
+                .variant(IconButtonVariant::Glass)
+                .ink(theme.text_muted)
+                .tip(tr!("common.close"))
+                .on_click(
+                    &theme,
+                    cx.listener(|this, _, window, cx| this.ask_cancel(window, cx)),
+                ),
         );
         card = card.child(header);
 
@@ -5187,7 +5210,11 @@ impl OrbitApp {
             .h(px(BAR_H))
             .mb(px(GAP))
             .px(DynamicSpacing::Base12.px(&theme))
-            .card_surface(&theme, theme.accent.opacity(0.3), theme.card_fill(theme.surface_elevated))
+            .card_surface(
+                &theme,
+                theme.accent.opacity(0.3),
+                theme.card_fill(theme.surface_elevated),
+            )
             .flex()
             .items_center()
             .gap(px(10.))
@@ -5304,7 +5331,11 @@ impl OrbitApp {
                 .debug_selector(|| "queue-bar".to_string())
                 .w_full()
                 .mb(DynamicSpacing::Base08.px(&theme))
-                .card_surface(&theme, theme.border, theme.card_fill(theme.surface_elevated))
+                .card_surface(
+                    &theme,
+                    theme.border,
+                    theme.card_fill(theme.surface_elevated),
+                )
                 .flex()
                 .flex_col()
                 // Clip the rows' hairline separators to the rounded corners.

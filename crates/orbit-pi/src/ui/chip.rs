@@ -357,26 +357,30 @@ impl ChipButton {
             })
         });
         el.children(leading)
-        .children(self.label.map(|label| {
-            let mut text = div().text_color(label_ink);
-            if let Some(selector) = self.selector {
-                text = text.debug_selector(move || format!("{selector}-label"));
-            }
-            let text = match self.label_max_w {
-                Some(width) => text.min_w_0().max_w(width).truncate(),
-                None => text,
-            };
-            text.child(label)
-        }))
-        .children(self.trailing)
-        .children(self.caret.then(|| {
-            if quiet {
-                dropdown_chevron(caret_id, open, IconSize::XSmall.px(theme), caret_ink, theme)
-            } else {
-                icon("icons/chevron-down.svg", IconSize::XSmall.px(theme), caret_ink)
+            .children(self.label.map(|label| {
+                let mut text = div().text_color(label_ink);
+                if let Some(selector) = self.selector {
+                    text = text.debug_selector(move || format!("{selector}-label"));
+                }
+                let text = match self.label_max_w {
+                    Some(width) => text.min_w_0().max_w(width).truncate(),
+                    None => text,
+                };
+                text.child(label)
+            }))
+            .children(self.trailing)
+            .children(self.caret.then(|| {
+                if quiet {
+                    dropdown_chevron(caret_id, open, IconSize::XSmall.px(theme), caret_ink, theme)
+                } else {
+                    icon(
+                        "icons/chevron-down.svg",
+                        IconSize::XSmall.px(theme),
+                        caret_ink,
+                    )
                     .into_any_element()
-            }
-        }))
+                }
+            }))
     }
 
     fn finish(self, el: gpui::Stateful<gpui::Div>, theme: &Theme) -> AnyElement {

@@ -34,16 +34,15 @@
 
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::button::{IconButton, IconButtonVariant};
-use crate::ui::field::search_field;
-use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::ui::card::{card, section};
+use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
+use crate::ui::field::search_field;
 use crate::ui::popover::{popover_list, PopoverExt};
 use std::rc::Rc;
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, AnyElement, App,
-    Context, Corner, ElementId, Entity, FontWeight, Hsla, IntoElement,
-    MouseButton, Pixels, Render, SharedString, Stateful, Window,
+    anchored, deferred, div, prelude::*, px, AnyElement, App, Context, Corner, ElementId, Entity,
+    FontWeight, Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Stateful, Window,
 };
 
 use super::aggregate::{
@@ -63,20 +62,22 @@ use super::page::{
 };
 use super::sparkline;
 use super::table::{FailureSort, TableKind};
-use crate::ui::table::{
-    cell_shell, data_table, empty_cell, status_badge, table_row, text_cell, two_line_cell, Column,
-    SortState, TableHandlers, FILL_SLACK, HEADER_H, ROW_H,
-};
-use crate::ui::prelude::{empty_state_glyph, button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn, picker_entry, press, provider_mark_color, ControlExt, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
-    Radius, TextSize,
+    context_menu, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::transcript_view::activity_icon;
+use crate::ui::prelude::{
+    button_frame, context_menu_separator, empty_state_glyph, icon, icon_button_frame, icon_dyn,
+    picker_entry, press, provider_mark_color, ControlExt, BUTTON_GROUP,
+};
+use crate::ui::table::{
+    cell_shell, data_table, empty_cell, status_badge, table_row, text_cell, two_line_cell, Column,
+    SortState, TableHandlers, FILL_SLACK, HEADER_H, ROW_H,
+};
 use crate::ui::tooltip::Tooltip;
 
 /// Inner column width for a data surface (§58): wide enough for a full table,

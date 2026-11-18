@@ -652,8 +652,7 @@ impl OrbitApp {
 
         let card = modal_card(&theme)
             .debug_selector(|| "remote-password-dialog".to_string())
-            .w_full()
-            .max_w(px(440.))
+            .modal_width(px(440.))
             .key_context("Picker")
             .on_action(cx.listener(Self::remote_password_confirm_action))
             .on_action(cx.listener(Self::remote_password_cancel_action))

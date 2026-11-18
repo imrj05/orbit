@@ -1421,3 +1421,125 @@ fn settings_select_shows_no_matches_inside_the_popup(cx: &mut gpui::TestAppConte
         "the no-matches row {empty:?} must sit inside the popup {popup:?}"
     );
 }
+
+// ── modal cards size to their content ─────────────────────────────────
+
+/// The real app on the Providers page, Reduce Motion on so the card rests.
+fn providers_page(
+    cx: &mut gpui::VisualTestContext,
+    viewport: gpui::Size<Pixels>,
+) -> Entity<OrbitApp> {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|_, cx| {
+        let mut theme = Theme::for_id(ThemeId::Orbit);
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        cx.set_global(theme);
+    });
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Providers;
+            cx.notify();
+        });
+    });
+    app
+}
+
+/// The Add-account card must be tall enough for its footer: with `w_full` +
+/// `max_w` its height was measured at the unclamped width, where the hint
+/// wraps to fewer lines, and Cancel / Create account were clipped.
+#[gpui::test]
+fn provider_account_modal_keeps_its_footer_inside_the_card(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let viewport = gpui::size(px(1200.), px(820.));
+    let app = providers_page(cx, viewport);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.account_editor_open(
+                "openai-codex".into(),
+                "ChatGPT (Codex)".into(),
+                None,
+                window,
+                cx,
+            );
+        });
+    });
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+    let card = cx
+        .debug_bounds("provider-account-card")
+        .expect("the card laid out");
+    let footer = cx
+        .debug_bounds("provider-account-footer")
+        .expect("the footer laid out");
+    assert!(
+        footer.bottom() <= card.bottom() && footer.size.height > px(30.),
+        "the footer {footer:?} must sit whole inside the card {card:?}"
+    );
+}
+
+/// Opens the API-key modal (a wrapping note and the OAuth line) and returns
+/// the card, its scrolling body, and the body's content.
+fn provider_key_modal(
+    cx: &mut gpui::VisualTestContext,
+    viewport: gpui::Size<Pixels>,
+) -> (
+    gpui::Bounds<Pixels>,
+    gpui::Bounds<Pixels>,
+    gpui::Bounds<Pixels>,
+) {
+    let app = providers_page(cx, viewport);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.provider_key_open(
+                "openai-codex".into(),
+                "ChatGPT (Codex)".into(),
+                true,
+                "ChatGPT Plus/Pro subscription.",
+                window,
+                cx,
+            );
+        });
+    });
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    (
+        cx.debug_bounds("provider-key-card")
+            .expect("the card laid out"),
+        cx.debug_bounds("provider-key-body")
+            .expect("the body laid out"),
+        cx.debug_bounds("provider-key-content")
+            .expect("the content laid out"),
+    )
+}
+
+/// With room in the window the card grows to its content: the body shows
+/// everything instead of scrolling a card measured too short.
+#[gpui::test]
+fn provider_key_modal_grows_to_its_content(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let (card, body, content) = provider_key_modal(cx, gpui::size(px(1200.), px(820.)));
+    assert!(
+        content.bottom() <= body.bottom(),
+        "the content {content:?} overflows its body {body:?}: the card {card:?} is too short"
+    );
+}
+
+/// In a window too short for the card it stops at the window and the body
+/// scrolls; the card never runs past the scrim's padding.
+#[gpui::test]
+fn provider_key_modal_scrolls_only_when_the_window_is_short(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let viewport = gpui::size(px(1200.), px(200.));
+    let (card, body, content) = provider_key_modal(cx, viewport);
+    assert!(
+        card.top() >= px(0.) && card.bottom() <= viewport.height,
+        "the card {card:?} must stay inside the {viewport:?} window"
+    );
+    assert!(
+        content.size.height > body.size.height,
+        "the body {body:?} should scroll its content {content:?} here"
+    );
+}

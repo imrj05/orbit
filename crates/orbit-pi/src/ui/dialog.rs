@@ -4,7 +4,7 @@
 //! whichever way it closes.
 
 use gpui::{
-    div, App, FocusHandle, FontWeight, InteractiveElement, MouseButton, ParentElement,
+    div, App, FocusHandle, FontWeight, InteractiveElement, MouseButton, ParentElement, Pixels,
     SharedString, Styled, Window,
 };
 
@@ -31,6 +31,22 @@ pub(crate) fn modal_card(theme: &Theme) -> gpui::Div {
         .font_family(theme::ui_font_family())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
+
+/// A modal card's width: `width`, narrowed to fit a smaller window.
+pub(crate) trait ModalWidthExt: Styled + Sized {
+    /// Use this rather than `w_full()` + `max_w(width)`. With that pair the
+    /// card's height is measured at the unclamped full width, where wrapping
+    /// text takes fewer lines, so the card comes out shorter than its content
+    /// and clips the footer or scrolls a body that would fit. A definite
+    /// width keeps the height in step with the content; the card then grows
+    /// with it up to its `max_h`, and only a body taller than the window
+    /// scrolls.
+    fn modal_width(self, width: Pixels) -> Self {
+        self.w(width).max_w_full()
+    }
+}
+
+impl<T: Styled> ModalWidthExt for T {}
 
 /// The backdrop every modal shares: a full-window scrim that centres its card
 /// and dims the workbench beneath. Callers add the layer id, the dismissal

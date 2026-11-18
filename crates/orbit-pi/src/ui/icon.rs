@@ -59,8 +59,6 @@ pub(crate) fn icon_dyn(path: SharedString, size: impl Into<Pixels>, color: Hsla)
         .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
-
-
 /// The app's one disclosure chevron: `chevron-right`, turning a quarter turn to
 /// point down while `open`, on [`Motion::Interaction`].
 ///

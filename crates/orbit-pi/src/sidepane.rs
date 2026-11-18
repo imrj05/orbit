@@ -20,18 +20,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, ClickEvent, Context, Entity, FontWeight,
-    ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, ScrollHandle,
+    div, prelude::*, px, AnyElement, ClickEvent, Context, Entity, FontWeight, ListAlignment,
+    ListOffset, ListState, MouseDownEvent, Pixels, Render, ScrollHandle,
     StatefulInteractiveElement, Window,
 };
 
-use crate::ui::button::IconButton;
-use crate::ui::field::search_field;
-use crate::ui::list::virtual_list;
-use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
-use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
-use crate::ui::style::surface::SurfaceExt;
-use crate::ui::prelude::{button_frame, context_menu_separator, empty_state, file_glyph, icon, nerd_font_family, picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::diff_view::{
     diff_gutter_width, render_code_row, render_file_header, render_hunk_header, render_meta,
@@ -41,14 +34,24 @@ use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
-    TextSize,
+    context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
+use crate::ui::button::IconButton;
 use crate::ui::button::{quiet_icon_button, Button, ButtonVariant};
 use crate::ui::feedback::empty_state_with_action;
-use crate::ui::popover::PopoverExt;
+use crate::ui::field::search_field;
+use crate::ui::list::virtual_list;
 use crate::ui::menu::menu_hint;
+use crate::ui::popover::PopoverExt;
+use crate::ui::prelude::{
+    button_frame, context_menu_separator, empty_state, file_glyph, icon, nerd_font_family,
+    picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp,
+    StatefulControlExt, TipExt, BUTTON_GROUP,
+};
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::style::surface::SurfaceExt;
+use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
@@ -1836,9 +1839,7 @@ impl SidePane {
         .tip(tooltip)
         .on_click(
             &theme,
-            cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.review_move_file(direction, cx)
-            }),
+            cx.listener(move |this, _: &ClickEvent, _, cx| this.review_move_file(direction, cx)),
         )
         .debug_selector(move || selector.clone())
         .into_any_element()
@@ -2097,18 +2098,17 @@ impl SidePane {
                         theme,
                         cx,
                     );
-                    layers =
-                        layers.child(
-                            div()
-                                .absolute()
-                                .top(section_push)
-                                .left_0()
-                                .w_full()
-                                .page_sticky_frost(&theme)
-                                .child(render_section_header(
-                                    label, *icon, *count, *additions, *deletions, actions, theme,
-                                )),
-                        );
+                    layers = layers.child(
+                        div()
+                            .absolute()
+                            .top(section_push)
+                            .left_0()
+                            .w_full()
+                            .page_sticky_frost(&theme)
+                            .child(render_section_header(
+                                label, *icon, *count, *additions, *deletions, actions, theme,
+                            )),
+                    );
                     has_layer = true;
                 }
             }
@@ -2534,7 +2534,7 @@ impl SidePane {
                 })),
                 &theme,
             )
-                .into_any_element(),
+            .into_any_element(),
             review::TreeRow::File { file_index, depth } => {
                 let Some(file) = snapshot.files.get(file_index) else {
                     return div().h(px(30.)).into_any_element();
@@ -2830,16 +2830,21 @@ impl Render for SidePane {
             .flex_col()
             .min_h_0()
             .child(
-                resize_handle("side-pane-resize-handle", &theme, ResizeAxis::Horizontal, ResizeLook::Wash)
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    // Sit on the card's left border (the 12px gutter, minus
-                    // half the handle width), not the panel's outer edge, so
-                    // the edge users see is the edge they can grab.
-                    .left(px(9.))
-                    .w(px(6.))
-                    .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
+                resize_handle(
+                    "side-pane-resize-handle",
+                    &theme,
+                    ResizeAxis::Horizontal,
+                    ResizeLook::Wash,
+                )
+                .absolute()
+                .top_0()
+                .bottom_0()
+                // Sit on the card's left border (the 12px gutter, minus
+                // half the handle width), not the panel's outer edge, so
+                // the edge users see is the edge they can grab.
+                .left(px(9.))
+                .w(px(6.))
+                .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
             )
             // The dock reads as a rounded card, like the Git/Usage cards in
             // the main column. The menus stay outside this clipped shell so

@@ -1,18 +1,18 @@
 use super::composer_ops::CompletionIntent;
-use crate::ui::prelude::*;
 use super::mcp_ui::QuotaPopupTab;
 use super::*;
-use crate::ui::button::{ButtonGroup, SegmentFill};
-use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::context_meter::context_ring;
 use crate::quota::{canonical_provider, is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::theme::tokens::{
     panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
 use crate::ui::button::IconButton;
-use crate::ui::style::surface::SurfaceExt;
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::ui::popover::PopoverExt;
 use crate::ui::popover::{dropdown_below, DropdownAlign};
+use crate::ui::prelude::*;
+use crate::ui::style::surface::SurfaceExt;
 use gpui::{Div, Stateful};
 
 /// A workspace-relative `/`-separated path for the Files toolbar. Falls back
@@ -2431,12 +2431,13 @@ impl OrbitApp {
                         .tip(tr!("explorer.rename"))
                         .faded(&theme, |el| {
                             let this = this.clone();
-                            el.debug_selector(|| "sess-edit-title".into())
-                                .on_click(move |_, window, cx| {
+                            el.debug_selector(|| "sess-edit-title".into()).on_click(
+                                move |_, window, cx| {
                                     this.update(cx, |app, cx| {
                                         app.begin_session_name_edit(window, cx)
                                     });
-                                })
+                                },
+                            )
                         }),
                 )
             }
@@ -2917,11 +2918,10 @@ impl OrbitApp {
             theme.text_secondary,
             theme,
         );
-        let refresh_button =
-            IconButton::glyph("quota-refresh", refresh_icon)
-                .size(ButtonSize::Medium)
-                .tip(tr!("common.refresh"))
-                .on_mouse_up(&theme, cx.listener(Self::on_quota_refresh));
+        let refresh_button = IconButton::glyph("quota-refresh", refresh_icon)
+            .size(ButtonSize::Medium)
+            .tip(tr!("common.refresh"))
+            .on_mouse_up(&theme, cx.listener(Self::on_quota_refresh));
 
         // Two panes in one popover: the original provider quotas and the MCP
         // server list. A segmented control keeps the switch in the header
@@ -3089,17 +3089,20 @@ impl OrbitApp {
             .size(ButtonSize::Compact)
             .tip(label.clone())
             .on_mouse_up(
-            &theme,
-            cx.listener(
-                move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
-                    this.hidden_quota_providers.toggle(&provider);
-                    this.hidden_quota_providers.persist();
-                    cx.notify();
-                },
-            ),
-        )
-        .debug_selector(move || selector.clone())
-        .into_any_element()
+                &theme,
+                cx.listener(
+                    move |this: &mut Self,
+                          _: &MouseUpEvent,
+                          _: &mut Window,
+                          cx: &mut Context<Self>| {
+                        this.hidden_quota_providers.toggle(&provider);
+                        this.hidden_quota_providers.persist();
+                        cx.notify();
+                    },
+                ),
+            )
+            .debug_selector(move || selector.clone())
+            .into_any_element()
     }
 
     /// The Providers pane with nothing to show (no quota reports yet, or a

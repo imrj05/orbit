@@ -10,7 +10,9 @@ use crate::ui::button::IconButton;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
 use crate::ui::prelude::*;
-use crate::ui::prelude::{input_label, modal_footer, modal_header, ButtonVariant, ModalSubtitle};
+use crate::ui::prelude::{
+    input_label, modal_footer, modal_header, ButtonVariant, ModalSubtitle, ModalWidthExt,
+};
 
 impl OrbitApp {
     /// One pass over the account store for the Settings controller. Rendering
@@ -593,8 +595,8 @@ impl OrbitApp {
         });
 
         let card = modal_card(&theme)
-            .w_full()
-            .max_w(px(460.))
+            .debug_selector(|| "provider-account-card".to_string())
+            .modal_width(px(460.))
             .max_h(relative(1.))
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
@@ -613,7 +615,12 @@ impl OrbitApp {
                     .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             )
-            .child(modal_footer(&theme).child(cancel).child(create));
+            .child(
+                modal_footer(&theme)
+                    .debug_selector(|| "provider-account-footer".to_string())
+                    .child(cancel)
+                    .child(create),
+            );
 
         let scrim = match theme.mode {
             ThemeMode::Dark => Hsla {

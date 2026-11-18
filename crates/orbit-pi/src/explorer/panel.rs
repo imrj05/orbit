@@ -13,33 +13,36 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, ClickEvent, Context, Entity, FocusHandle,
-    FontWeight, Hsla, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, Pixels,
-    Render, Subscription, Window,
+    div, prelude::*, px, AnyElement, App, ClickEvent, Context, Entity, FocusHandle, FontWeight,
+    Hsla, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, Pixels, Render,
+    Subscription, Window,
 };
 
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
-use crate::ui::banner::{Banner, BannerTone};
-use crate::ui::button::IconButton;
-use crate::ui::list::virtual_list;
-use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
-use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
-use crate::ui::style::surface::SurfaceExt;
-use crate::ui::prelude::{anchored_popover_at, button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state, file_badge, file_glyph, icon, nerd_font_family, press, ControlExt, EmptyFill, TipExt, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt,
-    TextSize,
+    context_menu, input, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
+use crate::ui::banner::{Banner, BannerTone};
+use crate::ui::button::IconButton;
+use crate::ui::list::virtual_list;
 use crate::ui::menu::menu_hint;
 use crate::ui::popover::PopoverExt;
 use crate::ui::popover::{dropdown_below, DropdownAlign};
+use crate::ui::prelude::{
+    anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
+    context_menu_surface, empty_state, file_badge, file_glyph, icon, nerd_font_family, press,
+    ControlExt, EmptyFill, TipExt, BUTTON_GROUP,
+};
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::style::surface::SurfaceExt;
+use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 
 /// Panel width defaults / drag clamps.
 pub const PANEL_DEFAULT_W: f32 = 248.;
@@ -1062,8 +1065,9 @@ impl ProjectPanel {
             .open(open)
             .tip(tr!("sidebar.more_actions"))
             .faded(&theme, |el| {
-                el.debug_selector(|| "explorer-more".into())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_header_menu(cx)))
+                el.debug_selector(|| "explorer-more".into()).on_click(
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_header_menu(cx)),
+                )
             });
         let popup = open.then(|| {
             let menu = context_menu_surface(div().id("explorer-header-menu"), &theme)
@@ -1242,11 +1246,9 @@ impl ProjectPanel {
             .min_h_0()
             .flex()
             .flex_col()
-            .on_key_down(
-                cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    this.on_key_down(event, window, cx)
-                }),
-            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.on_key_down(event, window, cx)
+            }))
             .on_action(cx.listener(Self::on_entry_confirm))
             .on_action(cx.listener(Self::on_entry_cancel))
             .children(self.entry_row(theme))
@@ -1467,7 +1469,9 @@ impl ProjectPanel {
                 continue;
             };
             let (icon_path, label) = match item {
-                MenuItem::Toggle if expanded => ("icons/chevron-down.svg", tr!("explorer.collapse")),
+                MenuItem::Toggle if expanded => {
+                    ("icons/chevron-down.svg", tr!("explorer.collapse"))
+                }
                 MenuItem::Toggle => ("icons/chevron-right.svg", tr!("explorer.expand")),
                 MenuItem::NewFile => ("icons/file-plus.svg", tr!("explorer.new_file")),
                 MenuItem::NewFolder => ("icons/folder-plus.svg", tr!("explorer.new_folder")),
@@ -1716,16 +1720,21 @@ impl Render for ProjectPanel {
             .flex_col()
             .min_h_0()
             .child(
-                resize_handle("explorer-resize-handle", &theme, ResizeAxis::Horizontal, ResizeLook::Wash)
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    // Sit on the card's left border (the 12px gutter, minus
-                    // half the handle width), not the panel's outer edge, so
-                    // the edge users see is the edge they can grab.
-                    .left(px(9.))
-                    .w(px(6.))
-                    .on_drag(ExplorerResize, |_, _, _, cx| cx.new(|_| ExplorerDragGhost)),
+                resize_handle(
+                    "explorer-resize-handle",
+                    &theme,
+                    ResizeAxis::Horizontal,
+                    ResizeLook::Wash,
+                )
+                .absolute()
+                .top_0()
+                .bottom_0()
+                // Sit on the card's left border (the 12px gutter, minus
+                // half the handle width), not the panel's outer edge, so
+                // the edge users see is the edge they can grab.
+                .left(px(9.))
+                .w(px(6.))
+                .on_drag(ExplorerResize, |_, _, _, cx| cx.new(|_| ExplorerDragGhost)),
             )
             // The dock reads as a rounded card, like the Git/Usage cards in
             // the main column. The popups stay outside this clipped shell so
@@ -1812,7 +1821,9 @@ mod tests {
             assert!(layout.first().unwrap().is_some(), "starts with an action");
             assert!(layout.last().unwrap().is_some(), "ends with an action");
             assert!(
-                layout.windows(2).all(|pair| pair[0].is_some() || pair[1].is_some()),
+                layout
+                    .windows(2)
+                    .all(|pair| pair[0].is_some() || pair[1].is_some()),
                 "no doubled separators"
             );
             let items = menu_items(is_dir);
@@ -1983,9 +1994,7 @@ mod tests {
                 move |_, _| drawn.clone(),
             );
             assert_eq!(
-                visual
-                    .debug_bounds("tree-row-focus-ring")
-                    .is_some(),
+                visual.debug_bounds("tree-row-focus-ring").is_some(),
                 expected_ring
             );
         }

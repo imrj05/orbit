@@ -21,19 +21,13 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    canvas, deferred, div, fill, hsla, point, prelude::*, px, size, AnyElement, Background,
-    Bounds, ClickEvent, Context, Div, Entity, FocusHandle, Focusable,
-    FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathBuilder, Pixels, Render, ScrollHandle, Stateful, Subscription, Window,
+    canvas, deferred, div, fill, hsla, point, prelude::*, px, size, AnyElement, Background, Bounds,
+    ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Render, ScrollHandle,
+    Stateful, Subscription, Window,
 };
 
-use crate::ui::row::{list_row, RowState};
-use crate::ui::field::TextField;
-use crate::ui::banner::{Banner, BannerTone};
-use crate::ui::button::IconButton;
-use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
-use crate::app::{ModelEntry};
-use crate::ui::prelude::{button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn, menu_header, nerd_font_family, picker_entry, picker_surface, press, provider_mark_color, refresh_glyph, spinner, ControlExt, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP};
+use crate::app::ModelEntry;
 use crate::commit_message;
 use crate::commit_model::{CommitModel, CommitModelConfig};
 use crate::gh;
@@ -50,8 +44,18 @@ use crate::theme::tokens::{
     StyledExt, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
+use crate::ui::banner::{Banner, BannerTone};
+use crate::ui::button::IconButton;
+use crate::ui::field::TextField;
 use crate::ui::popover::{dropdown_above, dropdown_below, DropdownAlign};
 use crate::ui::popover::{popover_list, popover_picker, PopoverExt};
+use crate::ui::prelude::{
+    button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn, menu_header,
+    nerd_font_family, picker_entry, picker_surface, press, provider_mark_color, refresh_glyph,
+    spinner, ControlExt, ModalWidthExt, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+};
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::row::{list_row, RowState};
 use crate::ui::tooltip::Tooltip;
 
 mod failure;
@@ -2007,9 +2011,10 @@ impl GitPanel {
             .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.close_ref_picker(cx);
             }))
-            .child(
-                crate::ui::field::search_field(self.branch_filter.clone(), &theme),
-            )
+            .child(crate::ui::field::search_field(
+                self.branch_filter.clone(),
+                &theme,
+            ))
             .child(list);
         Some(deferred(menu).into_any_element())
     }
@@ -3277,9 +3282,10 @@ impl GitPanel {
                 this.commit_model_dismissed_at.arm();
                 this.close_commit_model_menu(cx);
             }))
-            .child(
-                crate::ui::field::search_field(self.commit_model_filter.clone(), &theme),
-            )
+            .child(crate::ui::field::search_field(
+                self.commit_model_filter.clone(),
+                &theme,
+            ))
             .child(list);
 
         Some(
@@ -4174,16 +4180,19 @@ impl GitPanel {
                 IconButton::new("git-sync-more", "icons/chevron-down.svg")
                     .open(self.sync_menu_open)
                     .tip(tr!("git_panel.tip_sync_more"))
-                    .on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| {
-                        // The outside-click dismiss runs on mouse-down for the
-                        // same press, so a click within its wake-up window is
-                        // the close, not a reopen.
-                        let just_dismissed = this.sync_menu_dismissed_at.swallows();
-                        if !just_dismissed {
-                            this.sync_menu_open = !this.sync_menu_open;
-                        }
-                        cx.notify();
-                    }))
+                    .on_click(
+                        &theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            // The outside-click dismiss runs on mouse-down for the
+                            // same press, so a click within its wake-up window is
+                            // the close, not a reopen.
+                            let just_dismissed = this.sync_menu_dismissed_at.swallows();
+                            if !just_dismissed {
+                                this.sync_menu_open = !this.sync_menu_open;
+                            }
+                            cx.notify();
+                        }),
+                    )
                     // The split button's right half: full height, square
                     // inner corners.
                     .h_full()
@@ -5239,7 +5248,8 @@ impl GitPanel {
         for file in detail.files.iter().take(MAX_FILE_ROWS) {
             let path = file.path.clone();
             let fallback = icon("icons/file.svg", glyph_size, theme.text_muted).into_any_element();
-            let glyph = crate::ui::prelude::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
+            let glyph =
+                crate::ui::prelude::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
             let color = status_color(file.status, theme);
             let hash = detail.hash.clone();
             column = column.child(
@@ -5568,25 +5578,25 @@ impl GitPanel {
         )
         .debug_selector(|| "github-split-handle".into())
         .flex_none()
-            .w(px(GITHUB_LIST_HANDLE_W))
-            .h_full()
-            .flex()
-            .justify_center()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
-                    // Do not stop propagation: the drag's pending-mouse-down
-                    // listener is registered after this one, and swallowing the
-                    // event here would leave the divider unable to drag.
-                    let width = github_list_pane_width(this.page_width, this.github_list_width);
-                    this.github_list_drag = Some(GithubListDrag {
-                        origin_width: width,
-                        origin_x: event.position.x,
-                        moved: false,
-                    });
-                }),
-            )
-            .into_any_element()
+        .w(px(GITHUB_LIST_HANDLE_W))
+        .h_full()
+        .flex()
+        .justify_center()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _, _| {
+                // Do not stop propagation: the drag's pending-mouse-down
+                // listener is registered after this one, and swallowing the
+                // event here would leave the divider unable to drag.
+                let width = github_list_pane_width(this.page_width, this.github_list_width);
+                this.github_list_drag = Some(GithubListDrag {
+                    origin_width: width,
+                    origin_x: event.position.x,
+                    moved: false,
+                });
+            }),
+        )
+        .into_any_element()
     }
 
     /// End a list-divider drag: persist the width it settled on, but only when
@@ -6857,8 +6867,13 @@ impl GitPanel {
                     .unwrap_or_else(|| (String::new(), path.as_str()));
                 let fallback =
                     icon("icons/file.svg", glyph_size, theme.text_muted).into_any_element();
-                let glyph =
-                    crate::ui::prelude::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
+                let glyph = crate::ui::prelude::file_glyph(
+                    &path,
+                    dark,
+                    nerd.as_ref(),
+                    glyph_size,
+                    fallback,
+                );
                 files = files.child(
                     div()
                         .group("git-row")
@@ -7477,9 +7492,10 @@ impl GitPanel {
             .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.dismiss_branch_menu(cx);
             }))
-            .child(
-                crate::ui::field::search_field(self.branch_filter.clone(), &theme),
-            )
+            .child(crate::ui::field::search_field(
+                self.branch_filter.clone(),
+                &theme,
+            ))
             .child(list);
 
         Some(
@@ -7722,8 +7738,7 @@ impl GitPanel {
             ),
         };
         let card = div()
-            .w_full()
-            .max_w(px(420.))
+            .modal_width(px(420.))
             .elevation_2(&theme)
             .p(DynamicSpacing::Base16.px(&theme))
             .flex()
@@ -7740,8 +7755,7 @@ impl GitPanel {
                     .child(title),
             )
             .child(
-                TextField::new(self.branch_input.clone(), theme.surface_secondary)
-                    .render(&theme),
+                TextField::new(self.branch_input.clone(), theme.surface_secondary).render(&theme),
             )
             .child(
                 div()
@@ -7803,8 +7817,7 @@ impl GitPanel {
             tr!("git_panel.stage_prompt_body_other", count = unstaged)
         };
         let card = div()
-            .w_full()
-            .max_w(px(420.))
+            .modal_width(px(420.))
             .elevation_2(&theme)
             .p(DynamicSpacing::Base16.px(&theme))
             .flex()

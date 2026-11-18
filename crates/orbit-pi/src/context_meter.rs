@@ -14,12 +14,12 @@ use gpui::{
 };
 use orbit_rpc::{ContextUsage, SessionUsage};
 
-use crate::ui::button::IconButton;
-use crate::ui::prelude::{button_frame, ControlExt};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
+use crate::ui::button::IconButton;
 use crate::ui::popover::PopoverExt;
+use crate::ui::prelude::{button_frame, ControlExt};
 
 const RING: f32 = 16.;
 const RING_BOX: f32 = 22.;
@@ -414,14 +414,17 @@ pub fn details_card(
                         .child(tr!("context_meter.context_usage")),
                 )
                 .child(
-                    IconButton::glyph("context-close", glyph(
+                    IconButton::glyph(
+                        "context-close",
+                        glyph(
                             "icons/x.svg",
                             ButtonSize::Compact.icon_size().px(&theme),
                             theme.text_muted,
-                        ))
-.size(ButtonSize::Compact)
-.tip(tr!("common.close"))
-.on_click(&theme, on_close),
+                        ),
+                    )
+                    .size(ButtonSize::Compact)
+                    .tip(tr!("common.close"))
+                    .on_click(&theme, on_close),
                 ),
         )
         .child(

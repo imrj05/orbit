@@ -1128,8 +1128,7 @@ impl OrbitApp {
 
         let card = modal_card(&theme)
             .debug_selector(|| "remote-host-editor".to_string())
-            .w_full()
-            .max_w(px(560.))
+            .modal_width(px(560.))
             .max_h(relative(1.))
             .key_context("Picker")
             .on_action(cx.listener(Self::remote_host_editor_cancel))

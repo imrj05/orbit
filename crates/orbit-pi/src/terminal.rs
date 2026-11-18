@@ -53,14 +53,16 @@ use gpui::{
     Window,
 };
 
-use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
-use crate::ui::button::IconButton;
-use crate::ui::tab::{tab_strip, Tab};
-use crate::ui::prelude::{button_frame, icon, nerd_font_family, press, refresh_glyph, ControlExt, TipExt};
 use crate::motion::Hover;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::tokens::{RaisedExt, StyledExt};
 use crate::theme::{self, Theme};
+use crate::ui::button::IconButton;
+use crate::ui::prelude::{
+    button_frame, icon, nerd_font_family, press, refresh_glyph, ControlExt, TipExt,
+};
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::tab::{tab_strip, Tab};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
 /// a zero-sized window.
@@ -2071,8 +2073,13 @@ impl TerminalPanel {
             .active_terminal()
             .is_some_and(|terminal| terminal.read(cx).is_exited());
 
-        let mut strip =
-            tab_strip("terminal-tabs", &self.tab_scroll, ButtonSize::Default, &theme).min_w_0();
+        let mut strip = tab_strip(
+            "terminal-tabs",
+            &self.tab_scroll,
+            ButtonSize::Default,
+            &theme,
+        )
+        .min_w_0();
         for index in 0..self.tabs.len() {
             strip = strip.child(self.tab_chip(index, theme, cx));
         }
@@ -2095,12 +2102,15 @@ impl TerminalPanel {
             // it, and never scrolls away with them.
             .child(
                 IconButton::new("terminal-new-tab", "icons/plus.svg")
-.size(ButtonSize::Default)
-.ink(theme.text_secondary)
-.tip(tr!("terminal.new_tab"))
-.on_click(&theme, cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
-                        this.new_tab(window, cx);
-                    })),
+                    .size(ButtonSize::Default)
+                    .ink(theme.text_secondary)
+                    .tip(tr!("terminal.new_tab"))
+                    .on_click(
+                        &theme,
+                        cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                            this.new_tab(window, cx);
+                        }),
+                    ),
             );
         if exited {
             header = header.child(
@@ -2148,7 +2158,9 @@ impl TerminalPanel {
             // Restart reads as the primary action once the shell has exited,
             // and only ever touches the active tab.
             .child(
-                IconButton::glyph("terminal-restart", refresh_glyph(
+                IconButton::glyph(
+                    "terminal-restart",
+                    refresh_glyph(
                         "terminal-restart-spin",
                         ButtonSize::Default.icon_size().px(&theme),
                         self.restart_spin_until.is_some(),
@@ -2158,19 +2170,26 @@ impl TerminalPanel {
                             theme.text_secondary
                         },
                         theme,
-                    ))
-.size(ButtonSize::Default)
-.tip(tr!("terminal.restart"))
-.on_click(&theme, cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.restart(cx))),
+                    ),
+                )
+                .size(ButtonSize::Default)
+                .tip(tr!("terminal.restart"))
+                .on_click(
+                    &theme,
+                    cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.restart(cx)),
+                ),
             )
             .child(
                 IconButton::new("terminal-close", "icons/x.svg")
-.size(ButtonSize::Default)
-.ink(theme.text_secondary)
-.tip(tr!("common.close"))
-.on_click(&theme, cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                    .size(ButtonSize::Default)
+                    .ink(theme.text_secondary)
+                    .tip(tr!("common.close"))
+                    .on_click(
+                        &theme,
+                        cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
                             this.toggle(window, cx)
-                        }),),
+                        }),
+                    ),
             )
             .into_any_element()
     }

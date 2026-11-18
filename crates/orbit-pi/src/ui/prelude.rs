@@ -10,7 +10,7 @@ pub(crate) use crate::ui::chrome::{
     window_controls, window_drag_region, HEADER_CTRL_H,
 };
 pub(crate) use crate::ui::dialog::{
-    modal_card, modal_footer, modal_header, modal_scrim, ModalSubtitle,
+    modal_card, modal_footer, modal_header, modal_scrim, ModalSubtitle, ModalWidthExt,
 };
 pub(crate) use crate::ui::feedback::{
     empty_state, empty_state_glyph, error_state, refresh_glyph, running_spinner, spinner, EmptyFill,

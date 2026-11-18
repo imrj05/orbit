@@ -639,8 +639,7 @@ impl OrbitApp {
 
         let card = modal_card(&theme)
             .debug_selector(|| "server-clone-dialog".to_string())
-            .w_full()
-            .max_w(px(540.))
+            .modal_width(px(540.))
             .max_h(relative(1.))
             .key_context("Picker")
             .on_action(
