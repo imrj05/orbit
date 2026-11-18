@@ -1514,6 +1514,40 @@ impl Theme {
         self
     }
 
+    /// Scope the wallpaper material to a full page (Git, Usage, Files,
+    /// Worktrees, Review, Settings) and the docks beside the chat: hero
+    /// wallpaper sits only behind the new-task page, so a page has the picture
+    /// behind it in full-window mode alone. Elsewhere every surface resolves
+    /// to the palette's own opaque fill, exactly as it did before.
+    pub fn for_page(mut self) -> Self {
+        self.wallpaper.active &= self.wallpaper.full_window;
+        self
+    }
+
+    /// Whether a page is laid over the wallpaper as a glass card.
+    pub fn page_glass(self) -> bool {
+        self.wallpaper.active && self.wallpaper.full_window
+    }
+
+    /// The canvas of a page's own root (and of the flat rows on it). Over the
+    /// wallpaper the page's glass card already paints the tint and the frost,
+    /// so the page is clear; painting `background` here was what hid the
+    /// glass behind every page. Without a wallpaper it is `background`.
+    pub fn page_canvas(self) -> Hsla {
+        if self.page_glass() {
+            gpui::transparent_black()
+        } else {
+            self.background
+        }
+    }
+
+    /// A raised surface inside a page (a file header, a board, the commit
+    /// box): `base` at the contrast-floored card alpha over the page's glass,
+    /// and exactly `base` everywhere else.
+    pub fn page_fill(self, base: Hsla) -> Hsla {
+        self.for_page().card_fill(base)
+    }
+
     /// The chat composer uses the contrast-adjusted card treatment only with
     /// a supported, enabled wallpaper frost; otherwise retain its opaque fill.
     pub fn composer_fill(self) -> Hsla {
@@ -2991,6 +3025,40 @@ mod tests {
             ..treatment
         };
         assert_eq!(theme.with_wallpaper(off).glass_sigma(), None);
+    }
+
+    #[test]
+    fn pages_are_glass_only_over_a_full_window_wallpaper() {
+        let theme = Theme::dark();
+        let base = theme.surface_elevated;
+        // No wallpaper: every page surface is the palette's own opaque fill.
+        assert!(!theme.page_glass());
+        assert_eq!(theme.page_canvas(), theme.background);
+        assert_eq!(theme.page_fill(base), base);
+        assert_eq!(theme.for_page().glass_sigma(), None);
+
+        let full = theme.with_wallpaper(SurfaceTreatment {
+            active: true,
+            full_window: true,
+            glass: true,
+            card_alpha: 0.7,
+            ..SurfaceTreatment::OPAQUE
+        });
+        assert!(full.page_glass());
+        assert_eq!(full.page_canvas(), gpui::transparent_black());
+        assert_eq!(full.page_fill(base), base.opacity(0.7));
+        assert_eq!(full.for_page().glass_sigma(), Some(GLASS_BLUR));
+
+        // Hero wallpaper is only behind the new-task page: a page stays opaque
+        // and never asks for a blur over a flat canvas.
+        let hero = theme.with_wallpaper(SurfaceTreatment {
+            full_window: false,
+            ..full.wallpaper
+        });
+        assert!(!hero.page_glass());
+        assert_eq!(hero.page_canvas(), hero.background);
+        assert_eq!(hero.page_fill(base), base);
+        assert_eq!(hero.for_page().glass_sigma(), None);
     }
 
     #[test]

@@ -25,12 +25,14 @@ use gpui::{
     StatefulInteractiveElement, Window,
 };
 
+use crate::ui::button::IconButton;
 use crate::ui::field::search_field;
 use crate::ui::list::virtual_list;
 use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::style::surface::SurfaceExt;
 use crate::app::{
-    button_frame, context_menu_separator, empty_state, file_glyph, icon, icon_button_frame,
+    button_frame, context_menu_separator, empty_state, file_glyph, icon,
     nerd_font_family, picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
@@ -42,7 +44,7 @@ use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
+    context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
     TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
@@ -50,7 +52,6 @@ use crate::ui::button::{quiet_icon_button, Button, ButtonVariant};
 use crate::ui::feedback::empty_state_with_action;
 use crate::ui::popover::PopoverExt;
 use crate::ui::menu::menu_hint;
-use crate::ui::tooltip::Tooltip;
 
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
@@ -1661,18 +1662,15 @@ impl SidePane {
         } else {
             theme.text_muted
         };
-        let button = icon_button_frame(div().id(id), &theme, size)
-            .group(BUTTON_GROUP)
-            .child(icon(icon_path, size.icon_size().px(&theme), color));
-        if !enabled {
-            return button.into_any_element();
-        }
-        button
-            .cursor_pointer()
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
+        IconButton::new(id, icon_path)
+            .size(size)
+            .ink(color)
+            .disabled(!enabled)
+            .tip(tooltip)
+            .on_click(
+                &theme,
+                cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)),
+            )
             .into_any_element()
     }
 
@@ -1822,36 +1820,31 @@ impl SidePane {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let button = icon_button_frame(
-            div().id(gpui::ElementId::Name(id.clone().into())),
-            &theme,
-            ButtonSize::Default,
+        // A small glyph in a Default frame: the file-step arrows sit quieter
+        // than the toolbar's toggles.
+        let selector = id.clone();
+        IconButton::glyph(
+            gpui::ElementId::Name(id.into()),
+            icon(
+                icon_path,
+                IconSize::XSmall.px(&theme),
+                if enabled {
+                    theme.text_muted
+                } else {
+                    theme.text_disabled
+                },
+            ),
         )
-        .group(BUTTON_GROUP)
-        .debug_selector(move || id.clone())
-        .child(icon(
-            icon_path,
-            IconSize::XSmall.px(&theme),
-            if enabled {
-                theme.text_muted
-            } else {
-                theme.text_disabled
-            },
-        ));
-        if !enabled {
-            return button.into_any_element();
-        }
-        button
-            .cursor_pointer()
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .tip(tooltip)
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.review_move_file(direction, cx)
-                }),
-            )
-            .into_any_element()
+        .disabled(!enabled)
+        .tip(tooltip)
+        .on_click(
+            &theme,
+            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.review_move_file(direction, cx)
+            }),
+        )
+        .debug_selector(move || selector.clone())
+        .into_any_element()
     }
 
     fn render_content(
@@ -2079,6 +2072,9 @@ impl SidePane {
                                 .top(section_height + push)
                                 .left_0()
                                 .w_full()
+                                // Over a page's glass the header is
+                                // translucent: frost the code sliding under it.
+                                .page_sticky_frost(&theme)
                                 .child(self.file_header_row(line.file_index, true, theme, cx)),
                         );
                         has_layer = true;
@@ -2105,11 +2101,17 @@ impl SidePane {
                         cx,
                     );
                     layers =
-                        layers.child(div().absolute().top(section_push).left_0().w_full().child(
-                            render_section_header(
-                                label, *icon, *count, *additions, *deletions, actions, theme,
-                            ),
-                        ));
+                        layers.child(
+                            div()
+                                .absolute()
+                                .top(section_push)
+                                .left_0()
+                                .w_full()
+                                .page_sticky_frost(&theme)
+                                .child(render_section_header(
+                                    label, *icon, *count, *additions, *deletions, actions, theme,
+                                )),
+                        );
                     has_layer = true;
                 }
             }
@@ -2806,7 +2808,7 @@ impl Render for SidePane {
                 .min_h_0()
                 .min_w_0()
                 .w_full()
-                .bg(theme.background)
+                .bg(theme.page_canvas())
                 .flex()
                 .flex_col()
                 .child(body)
@@ -2844,20 +2846,18 @@ impl Render for SidePane {
             )
             // The dock reads as a rounded card, like the Git/Usage cards in
             // the main column. The menus stay outside this clipped shell so
-            // they are not cut off at its corners.
+            // they are not cut off at its corners. Over a full-window
+            // wallpaper the card is glass, like the pages.
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .bg(theme.background)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(panel::RADIUS.px(&theme))
+                    .bg(theme.page_canvas())
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .child(body),
+                    .page_card(&theme, body),
             )
             .children(self.source_menu(theme, cx))
             .on_action(cx.listener(Self::on_filter_cancel))

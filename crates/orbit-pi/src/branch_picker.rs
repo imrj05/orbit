@@ -13,8 +13,7 @@ use gpui::{
 
 use crate::app::helpers::text_width;
 use crate::app::{
-    button_frame, icon, input_field_frame, menu_header, picker_entry, ControlExt, PressedRamp,
-    StatefulControlExt,
+    button_frame, icon, menu_header, picker_entry, ControlExt, PressedRamp, StatefulControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
@@ -24,6 +23,7 @@ use crate::theme::tokens::{
 };
 use crate::theme::{self, Theme};
 use crate::ui::field::search_field;
+use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
 
 const POPOVER_W: f32 = 320.;
@@ -322,10 +322,8 @@ impl Render for BranchPicker {
                                 .child(tr!("branch_picker.uncommitted_changes_come_with_you")),
                         )
                         .child(
-                            input_field_frame(div(), &theme)
-                                .w_full()
-                                .bg(theme.background)
-                                .child(self.create_input.clone()),
+                            TextField::new(self.create_input.clone(), theme.background)
+                                .render(&theme),
                         ),
                 )
                 .child(

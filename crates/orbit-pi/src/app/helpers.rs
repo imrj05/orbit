@@ -8,9 +8,7 @@ use gpui::{InteractiveElement};
 // The interaction-state traits live in `ui::style::control`; re-exported so
 // `crate::app::{ControlExt, …}` and `helpers::{…}` keep resolving while
 // call sites migrate (docs/plans/ui-component-layer.md, phase 1a).
-pub(crate) use crate::ui::button::{
-    button_frame, icon_button_frame, segmented_segment, Button, ButtonVariant, SegmentPosition,
-};
+pub(crate) use crate::ui::button::{button_frame, icon_button_frame, Button, ButtonVariant};
 pub(crate) use crate::ui::dialog::{
     modal_card, modal_footer, modal_header, modal_scrim, ModalSubtitle,
 };
@@ -26,7 +24,7 @@ pub(crate) use crate::ui::menu::{
     context_menu_entry, context_menu_separator, context_menu_surface,
 };
 pub(crate) use crate::ui::popover::{
-    anchored_popover, anchored_popover_at, anchored_popover_in_window, picker_surface,
+    anchored_popover_at, anchored_popover_in_window, picker_surface,
     popover_enter,
 };
 // Preserve the helper API while callers migrate to the UI layer.
@@ -342,6 +340,7 @@ pub(crate) fn format_uptime(elapsed: Duration) -> String {
 mod tests {
     use super::*;
     use crate::theme::tokens::button;
+    use crate::ui::button::{segmented_segment, SegmentPosition};
 
     /// A queued skill file arrives with hundreds of newlines, and gpui's
     /// `line_clamp` still emits every one of them. The row preview folds them

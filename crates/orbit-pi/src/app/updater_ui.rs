@@ -9,7 +9,6 @@
 
 use super::helpers::*;
 use super::*;
-use crate::motion::Hover;
 use crate::theme::tokens::{
     button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
@@ -427,6 +426,7 @@ impl OrbitApp {
             } else {
                 tr!("updater_ui.updating")
             };
+            // Bespoke: the updater pill (action fill, animated width).
             let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
                 .rounded_full()
                 .raised(theme.action, &theme)
@@ -448,6 +448,7 @@ impl OrbitApp {
         } else {
             (tr!("updater_ui.update"), "icons/arrow-down.svg")
         };
+        // Bespoke: the updater pill (action fill, animated width).
         let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
             .overflow_hidden()
             .rounded_full()
@@ -611,6 +612,7 @@ impl OrbitApp {
                 } else {
                     (tr!("updater_ui.update"), "icons/arrow-down.svg")
                 };
+                // Bespoke: an action-filled icon button (the primary update).
                 icon_button_frame(
                     div().id("settings-update-action"),
                     &theme,
@@ -699,37 +701,17 @@ impl OrbitApp {
         &self,
         version: &str,
         theme: Theme,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let url = crate::updater::changelog_url(version)?;
         Some(
-            crate::motion::hover(
-                div()
-                    .id("update-changelog-link")
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base04.px(&theme))
-                    .cursor_pointer()
-                    .text_size(TextSize::Small.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
-                            cx.open_url(&url);
-                        }),
-                    )
-                    .child(tr!("updater_ui.view_changelog"))
-                    .child(icon(
-                        "icons/arrow-up-right.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.accent_text,
-                    )),
+            crate::ui::button::LinkButton::new(
                 "update-changelog-link",
-                &theme,
-                Hover::ink(theme.accent_text, theme.accent),
+                tr!("updater_ui.view_changelog"),
             )
-            .into_any_element(),
+            .external()
+            .size(TextSize::Small)
+            .on_click(&theme, move |_, _, cx| cx.open_url(&url)),
         )
     }
 
@@ -761,17 +743,11 @@ impl OrbitApp {
             .id("update-dialog-card")
             .w(card_width)
             .max_h(card_max_height)
+            // The version and notes continue the headline: no hairline.
             .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .text_size(modal::HEADLINE.px(&theme))
-                    .line_height(modal::HEADLINE.line_height(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(title),
+                crate::ui::dialog::ModalHeader::new(title)
+                    .divider(false)
+                    .render(&theme),
             );
 
         let mut body: AnyElement = match dialog {

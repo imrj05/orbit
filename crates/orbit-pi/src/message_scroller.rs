@@ -370,6 +370,8 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
     let button = if unread {
         button_frame(button, &theme, ButtonSize::Large)
     } else {
+        // Bespoke: a floating, frosted, fully round control over the
+        // transcript, with its own elevation; not a toolbar icon button.
         icon_button_frame(button, &theme, ButtonSize::Large)
     };
     div()

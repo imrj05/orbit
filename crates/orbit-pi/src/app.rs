@@ -1400,6 +1400,10 @@ pub struct OrbitApp {
     mcp_editor: Option<mcp_ui::McpEditor>,
     /// Hands focus back to whatever opened `mcp_editor` once it closes.
     mcp_editor_focus: ModalFocus,
+    /// The open form modal's footer buttons as Tab stops. One form modal
+    /// shows at a time, so every footer shares these two handles.
+    modal_cancel_focus: FocusHandle,
+    modal_confirm_focus: FocusHandle,
     /// Focus handle carrying the `McpList` key context while the MCP page is
     /// open (↑/↓ move the row cursor, Enter edits, Space toggles).
     mcp_list_focus: FocusHandle,
@@ -2732,6 +2736,8 @@ impl OrbitApp {
             _mcp_filter_sub: mcp_filter_sub,
             mcp_editor: None,
             mcp_editor_focus: ModalFocus::default(),
+            modal_cancel_focus: cx.focus_handle(),
+            modal_confirm_focus: cx.focus_handle(),
             mcp_list_focus: cx.focus_handle(),
             mcp_focus_pending: false,
             mcp_remove_confirm: None,
@@ -4006,6 +4012,8 @@ struct SessionMenu {
     /// painted disabled instead of quietly doing nothing.
     can_move_up: bool,
     can_move_down: bool,
+    /// The keyboard cursor over [`session_menu_items`]; ignored by `==`.
+    cursor: crate::ui::menu::MenuCursor,
 }
 
 /// State of the row-actions popup on a workspace group header: which
@@ -4025,6 +4033,8 @@ struct WorkspaceMenu {
     /// painted disabled instead of quietly doing nothing.
     can_move_up: bool,
     can_move_down: bool,
+    /// The keyboard cursor over [`workspace_menu_items`]; ignored by `==`.
+    cursor: crate::ui::menu::MenuCursor,
 }
 
 /// User-requested GitHub CLI release check, separate from local inspection.
@@ -4625,9 +4635,9 @@ mod worktree_howto_tests;
 // `crate::app::…` paths stable for the other modules that import them.
 pub(crate) use crate::theme::tokens::{Motion, RaisedExt};
 pub(crate) use helpers::{
-    anchored_popover, anchored_popover_at, button_frame, context_menu_entry,
+    anchored_popover_at, button_frame, context_menu_entry,
     context_menu_separator, context_menu_surface, disclosure_chevron, empty_state, file_badge,
-    file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header,
+    file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, menu_header,
     modal_card, modal_scrim, nerd_font_family, picker_entry, picker_row_height,
     picker_search_frame, picker_surface, press, provider_mark_color, refresh_glyph,
     running_spinner, spinner, working_folder_keyboard_hints, ControlExt, EmptyFill,

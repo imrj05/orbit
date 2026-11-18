@@ -22,15 +22,19 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     canvas, deferred, div, fill, hsla, point, prelude::*, px, size, AnyElement, Background,
-    Bounds, ClickEvent, Context, Corner, Div, Entity, FocusHandle, Focusable,
+    Bounds, ClickEvent, Context, Div, Entity, FocusHandle, Focusable,
     FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PathBuilder, Pixels, Render, ScrollHandle, Stateful, Subscription, Window,
 };
 
+use crate::ui::row::{list_row, RowState};
+use crate::ui::field::TextField;
+use crate::ui::banner::{Banner, BannerTone};
+use crate::ui::button::IconButton;
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::app::{
-    anchored_popover, button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn,
-    input_field_frame, menu_header, nerd_font_family, picker_entry,
+    button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn,
+    menu_header, nerd_font_family, picker_entry,
     picker_surface, press, provider_mark_color, refresh_glyph, spinner, ControlExt, ModelEntry,
     PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
@@ -3938,25 +3942,23 @@ impl GitPanel {
                     .child(div().text_color(theme.error).child(format!("-{deletions}")))
             }))
             .child(
-                icon_button_frame(div().id("git-refresh"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .tooltip({
-                        let label = tr!("common.refresh");
-                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.refresh_from_button(cx);
-                    }))
-                    .child(refresh_glyph(
+                IconButton::glyph(
+                    "git-refresh",
+                    refresh_glyph(
                         "git-refresh-spinner",
                         ButtonSize::Default.icon_size().px(&theme),
                         self.refresh_spin_until.is_some() || self.tab_loading(),
                         theme.text_muted,
                         theme,
-                    )),
+                    ),
+                )
+                .tip(tr!("common.refresh"))
+                .on_click(
+                    &theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.refresh_from_button(cx);
+                    }),
+                ),
             )
             .into_any_element()
     }
@@ -4100,6 +4102,7 @@ impl GitPanel {
         let user = self.gh_user.as_ref()?;
         let login = user.login.clone();
         Some(
+            // Bespoke: an identity mark in a button-sized disc, not an action.
             icon_button_frame(div().id("git-account"), &theme, ButtonSize::Default)
                 .rounded_full()
                 .raised(theme.surface_elevated, &theme)
@@ -4172,14 +4175,10 @@ impl GitPanel {
             )
             .child(div().w(px(1.)).h(px(18.)).bg(theme.border))
             .child(
-                icon_button_frame(div().id("git-sync-more"), &theme, ButtonSize::Default)
+                IconButton::new("git-sync-more", "icons/chevron-down.svg")
+                    .open(self.sync_menu_open)
                     .tip(tr!("git_panel.tip_sync_more"))
-                    .h_full()
-                    .rounded_l_none()
-                    .cursor_pointer()
-                    .when(self.sync_menu_open, |b| b.bg(theme.surface_active))
-                    .hover_state(&theme)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    .on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| {
                         // The outside-click dismiss runs on mouse-down for the
                         // same press, so a click within its wake-up window is
                         // the close, not a reopen.
@@ -4189,11 +4188,10 @@ impl GitPanel {
                         }
                         cx.notify();
                     }))
-                    .child(icon(
-                        "icons/chevron-down.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.text_muted,
-                    )),
+                    // The split button's right half: full height, square
+                    // inner corners.
+                    .h_full()
+                    .rounded_l_none(),
             )
             .children(self.sync_menu(theme, cx))
             .into_any_element()
@@ -4282,27 +4280,17 @@ impl GitPanel {
             .relative()
             .flex_none()
             .child(
-                icon_button_frame(div().id("git-branch-more"), &theme, ButtonSize::Medium)
-                    .group(BUTTON_GROUP)
-                    .when(self.branch_more_open, |b| b.bg(theme.surface_active))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .tooltip({
-                        let label = tr!("git_panel.tip_more");
-                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.toggle_branch_more(cx);
-                    }))
-                    .child(icon(
-                        "icons/more.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        if self.branch_more_open {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        },
-                    )),
+                IconButton::new("git-branch-more", "icons/more.svg")
+                    .size(ButtonSize::Medium)
+                    .open(self.branch_more_open)
+                    .ink(theme.text_secondary)
+                    .tip(tr!("git_panel.tip_more"))
+                    .on_click(
+                        &theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.toggle_branch_more(cx);
+                        }),
+                    ),
             )
             .children(self.branch_more_menu(theme, cx))
             .into_any_element()
@@ -4376,123 +4364,73 @@ impl GitPanel {
         if self.last_action.is_none() {
             actions.retain(|action| *action != RecoveryAction::Retry);
         }
+        let copy = IconButton::new("git-failure-copy", "icons/copy.svg")
+            .size(ButtonSize::Compact)
+            .ink(theme.text_secondary)
+            .tip(tr!("git_panel.tip_copy_error"))
+            .on_mouse_up(
+                &theme,
+                cx.listener(move |_, _, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()));
+                }),
+            );
+        let dismiss = IconButton::new("git-failure-dismiss", "icons/x.svg")
+            .size(ButtonSize::Compact)
+            .ink(theme.text_secondary)
+            .tip(tr!("git_panel.tip_dismiss"))
+            .on_mouse_up(
+                &theme,
+                cx.listener(|this, _, _, cx| {
+                    this.clear_failure();
+                    cx.notify();
+                }),
+            );
+        // The detail is git's own stderr: it can run long, so it scrolls in
+        // place instead of pushing the page down.
+        let detail = div()
+            .id("git-failure-detail")
+            .max_h(px(160.))
+            .overflow_y_scroll()
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_secondary)
+            .whitespace_normal()
+            .child(failure.detail.clone());
+        let mut banner = Banner::new(BannerTone::Error)
+            .id("git-failure")
+            .title(failure.title.clone())
+            .line(detail)
+            .action(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .child(copy)
+                    .child(dismiss),
+            );
+        if !actions.is_empty() {
+            banner = banner.line(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .pt(DynamicSpacing::Base03.px(&theme))
+                    .children(
+                        actions
+                            .into_iter()
+                            .map(|action| recovery_button(action, theme, cx)),
+                    ),
+            );
+        }
         Some(
             div()
-                .id("git-failure")
                 .flex_none()
                 .mx(DynamicSpacing::Base20.px(&theme))
                 .mt(DynamicSpacing::Base12.px(&theme))
-                .bg(theme.error.opacity(0.1))
-                .border_1()
-                .border_color(theme.error.opacity(0.45))
-                .rounded(panel::RADIUS.px(&theme))
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base08.px(&theme))
-                .flex()
-                .items_start()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(
-                    div()
-                        .flex_none()
-                        .mt(DynamicSpacing::Base01.px(&theme))
-                        .child(icon(
-                            "icons/stop.svg",
-                            IconSize::Medium.px(&theme),
-                            theme.error,
-                        )),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(DynamicSpacing::Base03.px(&theme))
-                        .child(
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_primary)
-                                .child(failure.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .id("git-failure-detail")
-                                .max_h(px(160.))
-                                .overflow_y_scroll()
-                                .text_size(TextSize::Small.px(&theme))
-                                .line_height(theme.ui_px(16.))
-                                .text_color(theme.text_secondary)
-                                .whitespace_normal()
-                                .child(failure.detail.clone()),
-                        )
-                        .when(!actions.is_empty(), |column| {
-                            column.child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .gap(DynamicSpacing::Base06.px(&theme))
-                                    .pt(DynamicSpacing::Base03.px(&theme))
-                                    .children(
-                                        actions
-                                            .into_iter()
-                                            .map(|action| recovery_button(action, theme, cx)),
-                                    ),
-                            )
-                        }),
-                )
-                .child(
-                    icon_button_frame(div().id("git-failure-copy"), &theme, ButtonSize::Compact)
-                        .cursor_pointer()
-                        .text_color(theme.text_secondary)
-                        .hover_state(&theme)
-                        .tooltip({
-                            let label = tr!("git_panel.tip_copy_error");
-                            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                        })
-                        .on_mouse_up(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |_, _, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    copy_text.clone(),
-                                ));
-                            }),
-                        )
-                        .child(icon(
-                            "icons/copy.svg",
-                            ButtonSize::Compact.icon_size().px(&theme),
-                            theme.text_secondary,
-                        )),
-                )
-                .child(
-                    icon_button_frame(div().id("git-failure-dismiss"), &theme, ButtonSize::Compact)
-                        .cursor_pointer()
-                        .text_color(theme.text_secondary)
-                        .hover_state(&theme)
-                        .tooltip({
-                            let label = tr!("git_panel.tip_dismiss");
-                            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                        })
-                        .on_mouse_up(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.clear_failure();
-                                cx.notify();
-                            }),
-                        )
-                        .child(icon(
-                            "icons/x.svg",
-                            ButtonSize::Compact.icon_size().px(&theme),
-                            theme.text_secondary,
-                        )),
-                )
+                .child(banner.render(&theme))
                 .into_any_element(),
         )
     }
 
-    /// The single "operation in progress" strip: which merge/rebase/cherry-pick
-    /// Git is waiting on, the conflicting files, and Continue / Skip / Abort.
-    /// It is the page's only source of truth for "you are mid-merge".
     fn operation_bar(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let op = self.git_operation?;
         let conflicts = self.conflicts.len();
@@ -4690,7 +4628,7 @@ impl GitPanel {
                     .rounded(input::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.surface_secondary)
+                    .bg(theme.page_fill(theme.surface_secondary))
                     .shadow(theme.composer_shadow())
                     .text_size(TextSize::Default.px(&theme))
                     // Clicking the box's padding focuses the editor, the way
@@ -5254,7 +5192,7 @@ impl GitPanel {
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border)
-            .bg(theme.surface_elevated)
+            .bg(theme.page_fill(theme.surface_elevated))
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme));
@@ -6346,26 +6284,17 @@ impl GitPanel {
             }))
             .child(menu_header(tr!("git_panel.labels"), &theme))
             .child(list);
-        let wrapper = if align_right {
-            div().absolute().right(px(0.)).top(px(30.))
-        } else {
-            div().absolute().left(px(0.)).top(px(30.))
-        };
-        Some(
-            wrapper
-                .child(anchored_popover(
-                    if align_right {
-                        Corner::TopRight
-                    } else {
-                        Corner::TopLeft
-                    },
-                    point(px(0.), px(0.)),
-                    menu,
-                    "git-label-popover",
-                    &theme,
-                ))
-                .into_any_element(),
-        )
+        Some(dropdown_below(
+            if align_right {
+                DropdownAlign::End
+            } else {
+                DropdownAlign::Start
+            },
+            crate::theme::tokens::popover::MENU_OFFSET,
+            menu,
+            "git-label-popover",
+            &theme,
+        ))
     }
 
     // ── pull request rendering ─────────────────────────────────────────
@@ -7628,24 +7557,19 @@ impl GitPanel {
             // an unmerged branch then asks before the forced `-D`.
             let delete_id = gpui::ElementId::Name(format!("git-branch-delete-{name}").into());
             row = row.child(
-                icon_button_frame(div().id(delete_id), &theme, ButtonSize::Compact)
-                    .cursor_pointer()
+                IconButton::new(delete_id, "icons/trash.svg")
+                    .size(ButtonSize::Compact)
+                    .tip(tr!("git_panel.tip_delete_branch"))
+                    .on_click(
+                        &theme,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.delete_branch(branch_delete.clone(), cx);
+                        }),
+                    )
+                    // Revealed on row hover.
                     .opacity(0.)
-                    .group_hover("git-branch-row", |s| s.opacity(1.))
-                    .hover_state(&theme)
-                    .tooltip({
-                        let label = tr!("git_panel.tip_delete_branch");
-                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.delete_branch(branch_delete.clone(), cx);
-                    }))
-                    .child(icon(
-                        "icons/trash.svg",
-                        ButtonSize::Compact.icon_size().px(&theme),
-                        theme.text_muted,
-                    )),
+                    .group_hover("git-branch-row", |s| s.opacity(1.)),
             );
         }
         if let Some(age) = commit_date.map(crate::gh::relative_time) {
@@ -7820,9 +7744,8 @@ impl GitPanel {
                     .child(title),
             )
             .child(
-                input_field_frame(div(), &theme)
-                    .bg(theme.surface_secondary)
-                    .child(div().flex_1().min_w_0().child(self.branch_input.clone())),
+                TextField::new(self.branch_input.clone(), theme.surface_secondary)
+                    .render(&theme),
             )
             .child(
                 div()
@@ -8119,7 +8042,7 @@ impl Render for GitPanel {
             .min_w_0()
             .min_h_0()
             .h_full()
-            .bg(theme.background)
+            .bg(theme.page_canvas())
             .font_family(theme::ui_font_family())
             .flex()
             .flex_col()
@@ -8765,6 +8688,8 @@ fn github_create_button(
             .into_any_element();
     }
     let tooltip = label.to_string();
+    // Bespoke: an action-filled icon button (primary create); `Button`'s
+    // Primary treatment on an icon-only square.
     let button = icon_button_frame(div().id(id), &theme, ButtonSize::Medium)
         .debug_selector(|| "github-create".into())
         .group(BUTTON_GROUP)
@@ -8951,7 +8876,7 @@ fn detail_note(theme: Theme, label: &str) -> AnyElement {
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
-        .bg(theme.surface_elevated)
+        .bg(theme.page_fill(theme.surface_elevated))
         .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_muted)
         .child(label.to_string())
@@ -9037,28 +8962,17 @@ fn github_draft_marker(theme: Theme) -> AnyElement {
 fn github_row_link(number: u64, url: &str, theme: Theme) -> AnyElement {
     let label = tr!("git_panel.open_on_github");
     let url = url.to_owned();
-    press(
-        icon_button_frame(
-            div()
-                .id(gpui::ElementId::Name(format!("git-open-{number}").into()))
-                .debug_selector(|| "github-row-link".into()),
-            &theme,
-            ButtonSize::Compact,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .hover_state(&theme),
+    IconButton::new(
+        gpui::ElementId::Name(format!("git-open-{number}").into()),
+        "icons/github.svg",
     )
-    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-    .on_click(move |_, _, cx| {
+    .size(ButtonSize::Compact)
+    .tip(label)
+    .on_click(&theme, move |_, _, cx| {
         cx.stop_propagation();
         cx.open_url(&url);
     })
-    .child(icon(
-        "icons/github.svg",
-        ButtonSize::Compact.icon_size().px(&theme),
-        theme.text_muted,
-    ))
+    .debug_selector(|| "github-row-link".into())
     .into_any_element()
 }
 
@@ -9238,18 +9152,12 @@ where
         // only ellipsizes a run it measured at a definite width, which a flex
         // row does not provide, so the row clips as well as the run does.
         .overflow_hidden()
-        .cursor_pointer()
         .when(selected, |row| row.border_color(theme.border))
         .on_click(on_click)
         .child(github_row_header(&parts, theme))
         .child(github_row_title(parts.title, parts.emphasized, theme))
         .child(github_row_meta(parts.url, parts.labels, theme));
-    crate::motion::hover(
-        row,
-        name,
-        &theme,
-        Hover::over(row_rest(selected, cursor, theme), theme.hover_wash()),
-    )
+    list_row(row, name, RowState::of(selected, cursor), &theme)
 }
 
 /// One issue row in the list: state, title, repository and labels.
@@ -9439,24 +9347,10 @@ fn composer_field(
     input: Entity<crate::composer::ComposerInput>,
     min_h: Pixels,
 ) -> AnyElement {
-    items_stretch(input_field_frame(div(), &theme))
-        .w_full()
-        .min_w_0()
-        .min_h(min_h.max(input::min_height(&theme)))
-        .bg(theme.surface_secondary)
-        // The column wrapper lets the input grow to the field's min height, so
-        // the whole text area is clickable, not just the first line.
-        .child(div().flex_1().min_w_0().flex().flex_col().child(input))
+    TextField::new(input, theme.surface_secondary)
+        .multiline(min_h)
+        .render(&theme)
         .into_any_element()
-}
-
-/// `input_field_frame` centers a one-line input. A multi-line field stretches
-/// its input column to the box instead — the flex default the frame
-/// overrides, which GPUI 0.2.2 has no `items_stretch` for — so the whole
-/// field takes clicks, not just its first line.
-fn items_stretch<E: Styled>(mut el: E) -> E {
-    el.style().align_items = Some(gpui::AlignItems::Stretch);
-    el
 }
 
 /// A filter-bar search field: a leading glyph, the input, and the submit
@@ -9481,7 +9375,7 @@ fn search_field(
         .rounded(input::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
-        .bg(theme.surface_secondary)
+        .bg(theme.page_fill(theme.surface_secondary))
         .flex()
         .items_center()
         .gap(input::gap(&theme))
@@ -9494,19 +9388,10 @@ fn search_field(
         ))
         .child(div().flex_1().min_w_0().child(input))
         .child(
-            press(
-                icon_button_frame(div().id(submit_id), &theme, ButtonSize::Compact)
-                    .group(BUTTON_GROUP)
-                    .cursor_pointer()
-                    .hover_state(&theme),
-            )
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tip.clone())).into())
-            .on_click(on_submit)
-            .child(icon(
-                "icons/arrow-right.svg",
-                ButtonSize::Compact.icon_size().px(&theme),
-                theme.text_muted,
-            )),
+            IconButton::new(submit_id, "icons/arrow-right.svg")
+                .size(ButtonSize::Compact)
+                .tip(tip)
+                .on_click(&theme, on_submit),
         )
 }
 
@@ -10007,7 +9892,6 @@ fn commit_row_core(
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
-        .cursor_pointer()
         .on_click(listener)
         .child(leading)
         .child(
@@ -10023,12 +9907,7 @@ fn commit_row_core(
                 .child(meta),
         )
         .child(trailing);
-    crate::motion::hover(
-        element,
-        row_name,
-        &theme,
-        Hover::over(row_rest(selected, cursor, theme), theme.hover_wash()),
-    )
+    list_row(element, row_name, RowState::of(selected, cursor), &theme)
 }
 
 /// One row in the Graph list: the lane drawing on the left, then the shared
@@ -10140,18 +10019,6 @@ fn lane_color(lane: usize, theme: Theme) -> Hsla {
         ThemeMode::Light => (0.60, 0.46),
     };
     hsla(HUES[lane % HUES.len()] / 360., saturation, lightness, 1.)
-}
-
-/// A list row's rest fill: the open row's selection, else the keyboard
-/// cursor's quiet wash (the Explorer's convention), else nothing.
-fn row_rest(selected: bool, cursor: bool, theme: Theme) -> Option<Hsla> {
-    if selected {
-        Some(theme.surface_selected)
-    } else if cursor {
-        Some(theme.overlay)
-    } else {
-        None
-    }
 }
 
 /// One row in the History list: an author monogram, the subject with its ref
@@ -10326,25 +10193,13 @@ fn review_action_icon(
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let label = tr!(tip_key);
-    icon_button_frame(
-        div().id(gpui::ElementId::Name(id.into())),
-        &theme,
-        ButtonSize::Default,
-    )
-    .group(BUTTON_GROUP)
-    .cursor_pointer()
-    .hover_state(&theme)
-    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-    .on_click(move |event, window, cx| {
-        cx.stop_propagation();
-        listener(event, window, cx);
-    })
-    .child(icon(
-        icon_path,
-        ButtonSize::Default.icon_size().px(&theme),
-        theme.text_muted,
-    ))
-    .into_any_element()
+    IconButton::new(gpui::ElementId::Name(id.into()), icon_path)
+        .tip(label)
+        .on_click(&theme, move |event, window, cx| {
+            cx.stop_propagation();
+            listener(event, window, cx);
+        })
+        .into_any_element()
 }
 
 /// An icon-only bulk action on the embedded review's grouped strips — Stage
@@ -10358,17 +10213,11 @@ fn review_toolbar_button(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    icon_button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .hover_state(&theme)
-        .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-        .on_click(listener)
-        .child(icon(
-            icon_path,
-            ButtonSize::Medium.icon_size().px(&theme),
-            color,
-        ))
+    IconButton::new(id, icon_path)
+        .size(ButtonSize::Medium)
+        .ink(color)
+        .tip(label)
+        .on_click(&theme, listener)
         .into_any_element()
 }
 

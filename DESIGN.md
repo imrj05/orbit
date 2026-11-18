@@ -246,7 +246,9 @@ Four things Orbit deliberately does **not** take from Linear:
   accent (Orbit Azure does) or to a neutral step (Orbit's light primary buttons).
   The accent keeps its meaning either way.
 - **Translucency and glass.** Chrome is opaque. The wallpaper surface treatment is
-  opt-in and never the default.
+  opt-in and never the default; with a full-window wallpaper the pages and docks
+  become glass cards (see *Wallpaper*), and nothing frosts without one except
+  floating layers in dark palettes.
 - **Marketing motion.** No parallax, no spring overshoot, no scroll-triggered
   reveals. Motion confirms a state change and stops.
 
@@ -566,6 +568,13 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   has no wallpaper behind the composer in active chat. The page itself never goes below
   88% of the palette canvas, so an artwork effect's dots tint the page instead of drawing
   behind the transcript; panels and cards keep the card-opacity treatment and its frost,
+  and in full-window mode every page (Git, Usage, Files, Worktrees, the expanded
+  terminal) and every dock card (Review, Explorer, session details) is one glass card:
+  `SurfaceExt::page_card` paints the contrast-floored card tint over a frosted
+  backdrop with the hairline drawn above the page, the page's own root paints
+  `Theme::page_canvas` (clear over glass, `background` otherwise), raised surfaces inside
+  it use `Theme::page_fill`, and a sticky header frosts the rows scrolling under it
+  (`page_sticky_frost`). Hero mode has no wallpaper behind a page, so pages stay opaque,
   and the black overlay is resolved against the image's own dot extremes (not its cell
   averages) wherever text reads on the sharp picture. Edge fades — the transcript's
   bottom settle above the composer, the navigation rail's ends — **frost** what they

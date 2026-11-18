@@ -393,6 +393,74 @@ pub(crate) fn option_row(
     children
 }
 
+/// Where a list row stands: what the pane beside the list shows, the
+/// keyboard cursor, or neither. One mapping to fills for every list (Git's
+/// History / Graph / GitHub lists, the trees), so "selected" and "cursor"
+/// read the same everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowState {
+    Selected,
+    Cursor,
+    Rest,
+}
+
+impl RowState {
+    /// Selection wins over the cursor.
+    pub(crate) fn of(selected: bool, cursor: bool) -> Self {
+        if selected {
+            Self::Selected
+        } else if cursor {
+            Self::Cursor
+        } else {
+            Self::Rest
+        }
+    }
+
+    /// The fill the row holds at rest: `surface_selected` for the open row,
+    /// the quieter `overlay` for the keyboard cursor, nothing otherwise.
+    pub(crate) fn rest_fill(self, theme: &Theme) -> Option<gpui::Hsla> {
+        match self {
+            Self::Selected => Some(theme.surface_selected),
+            Self::Cursor => Some(theme.overlay),
+            Self::Rest => None,
+        }
+    }
+}
+
+/// A list row's interaction: the pointer cursor, `state`'s rest fill, and the
+/// hover wash fading in over it on `Motion::Interaction`. The caller owns the
+/// row's frame (padding, radius, columns), its id and its click; `name` keys
+/// the fade (use the row's id).
+pub(crate) fn list_row(
+    row: gpui::Stateful<gpui::Div>,
+    name: impl Into<gpui::SharedString>,
+    state: RowState,
+    theme: &Theme,
+) -> AnyElement {
+    crate::motion::hover(
+        row.cursor_pointer(),
+        name.into(),
+        theme,
+        crate::motion::Hover::over(state.rest_fill(theme), theme.hover_wash()),
+    )
+}
+
+#[cfg(test)]
+mod row_state_tests {
+    use super::RowState;
+    use crate::theme::{Theme, ThemeId};
+
+    #[test]
+    fn selection_wins_over_the_cursor_and_rest_paints_nothing() {
+        let theme = Theme::for_id(ThemeId::ALL[0]);
+        assert_eq!(RowState::of(true, true), RowState::Selected);
+        assert_eq!(RowState::of(false, true), RowState::Cursor);
+        assert_eq!(RowState::Selected.rest_fill(&theme), Some(theme.surface_selected));
+        assert_eq!(RowState::Cursor.rest_fill(&theme), Some(theme.overlay));
+        assert_eq!(RowState::Rest.rest_fill(&theme), None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

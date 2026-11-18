@@ -126,6 +126,19 @@ impl Hover {
         }
     }
 
+    /// Hold the hovered look at rest while `held` — a menu row under the
+    /// keyboard cursor reads exactly as the pointer's hover.
+    pub(crate) fn held(self, held: bool) -> Self {
+        if !held {
+            return self;
+        }
+        Self {
+            rest_fill: self.hover_fill.or(self.rest_fill),
+            ink: self.ink.map(|(_, hover)| (hover, hover)),
+            ..self
+        }
+    }
+
     /// The same treatment with the ink lifting as well, for a control whose
     /// label inherits its colour from the control (a quiet text button).
     pub(crate) fn with_ink(self, rest: Hsla, hover: Hsla) -> Self {

@@ -7,8 +7,8 @@
 //! caller supplies localized text and the action, and keeps any outer margin.
 
 use gpui::{
-    div, AnyElement, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled,
+    div, AnyElement, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement,
+    SharedString, Styled,
 };
 
 use crate::theme::{
@@ -22,6 +22,10 @@ use crate::ui::style::control::TipExt;
 /// geometry: every tone has the same padding, radius and type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BannerTone {
+    /// Neutral progress or a fact (a setup script running).
+    Info,
+    /// Work finished as asked (a setup script that succeeded).
+    Success,
     /// Something is off but the surface still works (an inactive extension).
     Warning,
     /// An operation failed. The tint is the error role at low alpha, so the
@@ -32,8 +36,34 @@ pub(crate) enum BannerTone {
 impl BannerTone {
     fn glyph(self) -> &'static str {
         match self {
-            Self::Warning => "icons/info.svg",
+            Self::Info | Self::Warning => "icons/info.svg",
+            Self::Success => "icons/check.svg",
             Self::Error => "icons/circle-x.svg",
+        }
+    }
+
+    /// The card's fill, hairline and glyph ink. Only an error tints the card;
+    /// every other tone sits on the trough and speaks through its glyph.
+    fn colors(self, theme: &Theme) -> (Hsla, Hsla, Hsla) {
+        match self {
+            Self::Info => (theme.surface_secondary, theme.border, theme.text_muted),
+            Self::Success => (theme.surface_secondary, theme.border, theme.success),
+            Self::Warning => (theme.surface_secondary, theme.border, theme.warning),
+            Self::Error => (
+                theme.error.opacity(0.07),
+                theme.error.opacity(0.35),
+                theme.error,
+            ),
+        }
+    }
+
+    /// A strip's fill and ink: the tone itself carries the message.
+    fn strip_colors(self, theme: &Theme) -> (Hsla, Hsla) {
+        match self {
+            Self::Info => (theme.surface_secondary, theme.text_secondary),
+            Self::Success => (theme.success.opacity(0.12), theme.success),
+            Self::Warning => (theme.warning.opacity(0.12), theme.warning),
+            Self::Error => (theme.error.opacity(0.12), theme.error),
         }
     }
 }
@@ -51,6 +81,7 @@ impl BannerTone {
 pub(crate) struct Banner {
     tone: BannerTone,
     id: Option<SharedString>,
+    glyph: Option<AnyElement>,
     title: Option<SharedString>,
     lines: Vec<Line>,
     action: Option<AnyElement>,
@@ -61,10 +92,18 @@ impl Banner {
         Self {
             tone,
             id: None,
+            glyph: None,
             title: None,
             lines: Vec::new(),
             action: None,
         }
+    }
+
+    /// A leading glyph in place of the tone's (a live spinner while work
+    /// runs), sized `IconSize::Medium` by the caller.
+    pub(crate) fn glyph(mut self, glyph: impl IntoElement) -> Self {
+        self.glyph = Some(glyph.into_any_element());
+        self
     }
 
     /// An element id, also exposed as the banner's debug selector.
@@ -112,16 +151,30 @@ impl Banner {
         self
     }
 
+    /// A one-line notice across the top of a pane (Explorer's operation
+    /// errors): full-bleed, a hairline below, Small text in the tone's ink, no
+    /// glyph or card. `message` is localized by the caller.
+    pub(crate) fn strip(
+        tone: BannerTone,
+        message: impl Into<SharedString>,
+        theme: &Theme,
+    ) -> gpui::Div {
+        let (fill, ink) = tone.strip_colors(theme);
+        div()
+            .flex_none()
+            .px(DynamicSpacing::Base08.px(theme))
+            .py(DynamicSpacing::Base04.px(theme))
+            .border_b_1()
+            .border_color(theme.border)
+            .bg(fill)
+            .text_size(TextSize::Small.px(theme))
+            .text_color(ink)
+            .child(message.into())
+    }
+
     pub(crate) fn render(self, theme: &Theme) -> AnyElement {
         let theme = *theme;
-        let (fill, border, glyph_ink) = match self.tone {
-            BannerTone::Warning => (theme.surface_secondary, theme.border, theme.warning),
-            BannerTone::Error => (
-                theme.error.opacity(0.07),
-                theme.error.opacity(0.35),
-                theme.error,
-            ),
-        };
+        let (fill, border, glyph_ink) = self.tone.colors(&theme);
         let column = div()
             .flex_1()
             .min_w_0()
@@ -148,11 +201,9 @@ impl Banner {
             .flex()
             .items_start()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .child(icon(
-                self.tone.glyph(),
-                IconSize::Medium.px(&theme),
-                glyph_ink,
-            ))
+            .child(self.glyph.unwrap_or_else(|| {
+                icon(self.tone.glyph(), IconSize::Medium.px(&theme), glyph_ink).into_any_element()
+            }))
             .child(column)
             .children(self.action);
         match self.id {
@@ -207,4 +258,39 @@ pub(crate) fn truncated_line(
         .tip(text.clone())
         .child(text)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeId;
+
+    #[test]
+    fn only_an_error_tints_the_card_and_every_tone_has_its_glyph_ink() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            for tone in [BannerTone::Info, BannerTone::Success, BannerTone::Warning] {
+                assert_eq!(
+                    tone.colors(&theme).0,
+                    theme.surface_secondary,
+                    "{id:?} {tone:?}"
+                );
+            }
+            assert_eq!(BannerTone::Error.colors(&theme).2, theme.error);
+            assert_eq!(BannerTone::Success.colors(&theme).2, theme.success);
+            assert_eq!(BannerTone::Warning.colors(&theme).2, theme.warning);
+        }
+    }
+
+    #[test]
+    fn a_strip_carries_its_tone_in_the_ink() {
+        let theme = Theme::for_id(ThemeId::ALL[0]);
+        let mut strip = Banner::strip(BannerTone::Error, "Could not rename", &theme);
+        let style = strip.style();
+        assert_eq!(
+            style.text.as_ref().and_then(|text| text.color),
+            Some(theme.error)
+        );
+        assert_eq!(style.background, Some(theme.error.opacity(0.12).into()));
+    }
 }

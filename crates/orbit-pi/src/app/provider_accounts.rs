@@ -4,11 +4,12 @@
 //! signs in on its own row and all accounts are live in every session at once.
 //! Nothing here reads or copies a credential.
 use super::*;
-use crate::app::helpers::{
-    icon_button_frame, input_label, modal_footer, modal_header, ButtonVariant, ModalSubtitle,
-};
+use crate::app::helpers::{input_label, modal_footer, modal_header, ButtonVariant, ModalSubtitle};
 use crate::provider_accounts::{AccountProfile, CredentialKind};
 use crate::theme::tokens::{input, modal, panel, ButtonSize, DynamicSpacing, Radius, TextSize};
+use crate::ui::button::IconButton;
+use crate::ui::dialog::modal_button;
+use crate::ui::field::TextField;
 
 impl OrbitApp {
     /// One pass over the account store for the Settings controller. Rendering
@@ -530,12 +531,7 @@ impl OrbitApp {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_secondary),
                     )
-                    .child(
-                        input_field_frame(div(), &theme)
-                            .w_full()
-                            .bg(theme.background)
-                            .child(editor.label.clone()),
-                    )
+                    .child(TextField::new(editor.label.clone(), theme.background).render(&theme))
                     .when(editor.rename.is_none(), |field| {
                         field.child(
                             div()
@@ -559,17 +555,14 @@ impl OrbitApp {
             );
         }
 
-        let cancel = button_frame(
-            div().id("provider-account-close"),
-            &theme,
-            ButtonSize::Large,
+        let cancel = modal_button(
+            "provider-account-close",
+            tr!("settings.cancel"),
+            ButtonVariant::Secondary,
+            &self.modal_cancel_focus,
         )
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_mouse_up(MouseButton::Left, {
+        .size(ButtonSize::Large)
+        .on_click(&theme, {
             let this = this.clone();
             move |_, _, cx| {
                 this.update(cx, |app, cx| {
@@ -577,25 +570,26 @@ impl OrbitApp {
                     cx.notify();
                 });
             }
-        })
-        .child(
-            div()
-                .text_color(theme.text_secondary)
-                .child(tr!("settings.cancel")),
-        );
-        let create = self.provider_button_sized(
-            "provider-account-create".into(),
-            &if editor.rename.is_some() {
+        });
+        let create = modal_button(
+            "provider-account-create",
+            if editor.rename.is_some() {
                 tr!("accounts.save_name")
             } else {
                 tr!("accounts.create")
             },
             ButtonVariant::Primary,
-            ButtonSize::Large,
-            theme,
-            this.clone(),
-            ProviderAction::SaveAccount,
-        );
+            &self.modal_confirm_focus,
+        )
+        .size(ButtonSize::Large)
+        .on_click(&theme, {
+            let this = this.clone();
+            move |_, window, cx| {
+                this.update(cx, |app, cx| {
+                    app.apply_provider_action(ProviderAction::SaveAccount, window, cx)
+                });
+            }
+        });
 
         let card = modal_card(&theme)
             .w_full()
@@ -670,24 +664,14 @@ fn account_icon_button(
     action: ProviderAction,
 ) -> AnyElement {
     let debug = id.clone();
-    icon_button_frame(
-        div().id(ElementId::Name(id.into())),
-        &theme,
-        ButtonSize::Default,
-    )
-    .debug_selector(move || debug.clone())
-    .tip(tip)
-    .cursor_pointer()
-    .hover_state(&theme)
-    .child(icon(
-        glyph,
-        ButtonSize::Default.icon_size().px(&theme),
-        color,
-    ))
-    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-        cx.stop_propagation();
-        let action = action.clone();
-        this.update(cx, |app, cx| app.apply_provider_action(action, window, cx));
-    })
-    .into_any_element()
+    IconButton::new(ElementId::Name(id.into()), glyph)
+        .ink(color)
+        .tip(tip)
+        .on_mouse_up(&theme, move |_, window, cx| {
+            cx.stop_propagation();
+            let action = action.clone();
+            this.update(cx, |app, cx| app.apply_provider_action(action, window, cx));
+        })
+        .debug_selector(move || debug.clone())
+        .into_any_element()
 }

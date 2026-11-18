@@ -57,8 +57,8 @@ use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::button::IconButton;
 use crate::ui::tab::{tab_strip, Tab};
 use crate::app::{
-    button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, ControlExt,
-    PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+    button_frame, icon, nerd_font_family, press, refresh_glyph, ControlExt,
+    TipExt,
 };
 use crate::motion::Hover;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
@@ -2122,36 +2122,31 @@ impl TerminalPanel {
         // the Review pane does (the app mounts it as the column). The glyph
         // shows what the next click does, as Review's toggle does.
         let full_width = self.full_width;
-        header = header.child(crate::motion::hover(
-            icon_button_frame(div().id("terminal-full-width"), &theme, ButtonSize::Default)
-                .group(BUTTON_GROUP)
-                .tip(if full_width {
-                    tr!("terminal.restore_width")
+        header = header.child(
+            IconButton::new(
+                "terminal-full-width",
+                if full_width {
+                    "icons/arrow-shrink.svg"
                 } else {
-                    tr!("terminal.full_width")
-                })
-                .cursor_pointer()
-                .pressed_state(&theme, PressedRamp::Wash)
-                .on_click(
+                    "icons/arrow-expand.svg"
+                },
+            )
+            .ink(if full_width {
+                theme.text_primary
+            } else {
+                theme.text_secondary
+            })
+            .tip(if full_width {
+                tr!("terminal.restore_width")
+            } else {
+                tr!("terminal.full_width")
+            })
+            .faded(&theme, |el| {
+                el.on_click(
                     cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.toggle_full_width(cx)),
                 )
-                .child(icon(
-                    if full_width {
-                        "icons/arrow-shrink.svg"
-                    } else {
-                        "icons/arrow-expand.svg"
-                    },
-                    ButtonSize::Default.icon_size().px(&theme),
-                    if full_width {
-                        theme.text_primary
-                    } else {
-                        theme.text_secondary
-                    },
-                )),
-            "terminal-full-width-hover",
-            &theme,
-            Hover::wash(&theme),
-        ));
+            }),
+        );
         header
             // Restart reads as the primary action once the shell has exited,
             // and only ever touches the active tab.

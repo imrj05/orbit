@@ -10,10 +10,11 @@
 //! object drives every panel on the page (§10).
 
 use crate::app::{
-    button_frame, context_menu_separator, icon_button_frame, menu_header, picker_entry,
-    refresh_glyph, ControlExt, PressedRamp, StatefulControlExt, TipExt,
+    button_frame, context_menu_separator, menu_header, picker_entry, refresh_glyph, ControlExt,
+    PressedRamp, StatefulControlExt,
 };
 use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
@@ -1091,22 +1092,15 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
         .flex()
         .items_center()
         .child(
-            icon_button_frame(div().id("usage-cal-prev"), &theme, ButtonSize::Default)
+            IconButton::new("usage-cal-prev", "icons/chevron-left.svg")
                 .tip(tr!("usage.previous_month"))
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_down(MouseButton::Left, {
+                .on_mouse_down(&theme, {
                     let entity = cx.entity();
                     let prev = local_month_start(first - 86_400_000);
                     move |_, _, cx| {
                         entity.update(cx, |page, cx| page.set_calendar_month(prev, cx));
                     }
-                })
-                .child(icon(
-                    "icons/chevron-left.svg",
-                    ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_muted,
-                )),
+                }),
         )
         .child(
             div()
@@ -1119,22 +1113,15 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                 .child(dt.format("%B %Y").to_string()),
         )
         .child(
-            icon_button_frame(div().id("usage-cal-next"), &theme, ButtonSize::Default)
+            IconButton::new("usage-cal-next", "icons/chevron-right.svg")
                 .tip(tr!("usage.next_month"))
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_down(MouseButton::Left, {
+                .on_mouse_down(&theme, {
                     let entity = cx.entity();
                     let next = next_bucket(first, Granularity::Month);
                     move |_, _, cx| {
                         entity.update(cx, |page, cx| page.set_calendar_month(next, cx));
                     }
-                })
-                .child(icon(
-                    "icons/chevron-right.svg",
-                    ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_muted,
-                )),
+                }),
         );
 
     let weekdays = div()
@@ -1273,20 +1260,12 @@ pub fn toggle_chip(
     .text_color(theme.text_primary)
     .child(label.into())
     .child(
-        icon_button_frame(
-            div().id(ElementId::Name(SharedString::from(clear_id))),
-            &theme,
-            ButtonSize::None,
-        )
-        .tip(tr!("usage.clear_filter"))
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .on_mouse_down(MouseButton::Left, on_clear)
-        .child(icon(
-            "icons/x.svg",
-            ButtonSize::None.icon_size().px(&theme),
-            theme.text_primary,
-        )),
+        IconButton::new(ElementId::Name(SharedString::from(clear_id)), "icons/x.svg")
+            .size(ButtonSize::None)
+            .variant(IconButtonVariant::Glass)
+            .ink(theme.text_primary)
+            .tip(tr!("usage.clear_filter"))
+            .on_mouse_down(&theme, on_clear),
     )
     .into_any_element()
 }

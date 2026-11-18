@@ -1,8 +1,8 @@
 # Plan — UI component layer
 
 **Status (2026-11-18):** Phases 1–5 partly landed, Phases 6–7 not started.
-Work is on the `feat/sidebar-toolbar` branch (§6.8–§6.9 uncommitted). Start at
-**Resume here** below; §6.2–§6.9 is the per-pass log (what moved, the checks
+Work is on the `feat/sidebar-toolbar` branch (§6.10–§6.13 uncommitted). Start at
+**Resume here** below; §6.2–§6.13 is the per-pass log (what moved, the checks
 that ran and every declared pixel change).
 
 ## Resume here
@@ -14,67 +14,54 @@ that ran and every declared pixel change).
 | Interaction states, press, tooltip | `ui/style/control.rs` | ✅ done |
 | Material (frost) | `ui/style/surface.rs` | ✅ done |
 | Button (6 variants, loading, disabled, faded) | `ui/button.rs` `Button`, `ButtonVariant` | ✅ owner; ~20 wrappers migrated |
-| Icon button (ghost/glass, open, faded, glyph) | `ui/button.rs` `IconButton` | 🟡 19 sites; **74 `icon_button_frame` sites left** |
-| Segmented control | `ui/button.rs` `segmented_segment`, `settings_segment`, `active_segment` | ✅ recipes |
-| Trigger chip (quiet / outlined) | `ui/chip.rs` `ChipButton` | 🟡 Usage filters + composer access/workflow; model/thinking chips left |
-| Badge | `ui/chip.rs` `Badge` | ✅ owner; Git refs + provider badges |
-| Pill | `ui/chip.rs` `Pill` (bare / faced) | 🟡 MCP status, composer queue count; Explorer save-state chip left |
-| Banner / error card | `ui/banner.rs` `Banner`, `error_state` | 🟡 owner; `error_banner` (view), Git `failure_banner`, Explorer notice strip, worktree setup banner left |
+| Icon button (ghost/glass, open, faded, glyph) | `ui/button.rs` `IconButton` | ✅ 74 more sites moved; 19 `icon_button_frame` sites left, each a commented bespoke control (send/stop, jump-to-latest, updater pill, open-in split, action-filled, copy-acknowledge, pager, account mark) |
+| Segmented control | `ui/button.rs` `ButtonGroup`, `SegmentFill`, `segmented_segment` | ✅ all 11 segmented controls; `settings_segment` / `active_segment` deleted |
+| Link | `ui/button.rs` `LinkButton` | ✅ updater changelog link, transcript tool URL |
+| Trigger chip (quiet / outlined) | `ui/chip.rs` `ChipButton` (+ size, leading mark, disabled, shrink) | ✅ Usage filters + composer access/workflow/model/thinking |
+| Badge | `ui/chip.rs` `Badge` (+ `Framed`, leading glyph) | ✅ owner; Git refs, provider badges, Explorer save state |
+| Pill | `ui/chip.rs` `Pill` (bare / faced) | ✅ MCP status, composer queue count (the save-state chip proved to be a `Badge`) |
+| Banner / error card | `ui/banner.rs` `Banner` (Info/Success/Warning/Error, glyph, `strip`), `error_state` | ✅ run error (via `error_state`), Git failure, Explorer notice strip, worktree setup |
 | Empty / error / spinner / refresh | `ui/feedback.rs` | ✅ owner (+ action slot) |
 | Progress bar | `ui/feedback.rs` `progress_bar` | ✅ 3 meters |
 | Skeleton | `ui/feedback.rs` `skeleton_bar` | ✅ Usage (the only loading shape) |
 | Toast card | `ui/toast.rs` `ToastCard`, `kind_glyph` | ✅ ordinary toasts; plugin-update prompt card still local |
-| Menu cursor | `ui/menu.rs` `MenuState` (Home/End, skip disabled, reconcile) | 🟡 5 menus (add, access, workflow, Work in, extension select); `PanelMenu`, `TextMenu`, sidebar menus still hand-roll |
+| Menu cursor | `ui/menu.rs` `MenuState`, `MenuCursor` (hidden until a key, ignored by `==`), `MenuKey` | ✅ 9 menus: add, access, workflow, Work in, extension select, Explorer row menu, transcript text menu, sidebar session + workspace menus (Shift-F10 / Menu key open the row menus) |
 | Menu frame + hint | `ui/menu.rs` `context_menu_*`, `menu_hint` | ✅ |
 | Popover shell + dismissal | `ui/popover.rs` `popover_list`, `popover_picker`, `dismiss_on_outside`, `DismissGuard` | ✅ `on_mouse_down_out` only in `ui/` |
-| Dropdown (trigger ↔ menu) | `ui/popover.rs` `dropdown_below/above` | 🟡 9 menus; 10 direct `anchored_popover` calls left (pointer menus, composer column menus) |
-| Modal | `ui/dialog.rs` `modal_card/scrim/header/footer`, `ModalFocus`, `focus_ring` | 🟡 7 headers/footers; 6 modals restore + trap Tab; modal buttons not tab stops; updater/worktree/extension headers differ |
-| Rows | `ui/row.rs` `PickerRow`, `picker_entry`, `option_row`, `nav_row`, `setting_row` | 🟡 sidebar + pickers; Git (23 row fns), Usage tables, Explorer tree left |
+| Dropdown (trigger ↔ menu) | `ui/popover.rs` `dropdown_below/above`, `column_menu` | ✅ 11 dropdowns + 6 column menus; 2 pointer menus use `anchored_popover_at`; no direct `anchored_popover` outside `ui/` |
+| Modal | `ui/dialog.rs` `modal_card/scrim/footer`, `ModalHeader` (+ `modal_header`), `modal_button`, `ModalFocus`, `focus_ring` | ✅ every modal header; footer buttons are Tab stops (Enter/Space press them) in all six ring-managed form modals |
+| Rows | `ui/row.rs` `PickerRow`, `picker_entry`, `option_row`, `nav_row`, `setting_row`, `RowState`, `list_row` | ✅ sidebar + pickers; Usage on `table_row`; trees on `TreeRow` (fills from `RowState`); Git's History/Graph/GitHub rows on `list_row` |
 | Resize handle | `ui/resize.rs` | ✅ all 5 |
 | Window chrome | `ui/chrome.rs` | ✅ moved (no API change) |
 | Glyphs (file, provider, images) | `ui/glyph.rs`, `ui/icon.rs` (+ chevrons) | ✅ moved |
-| Card / section | `ui/card.rs` | 🟡 Usage only |
-| Field frame / label / search | `ui/field.rs` `input_field_frame`, `input_label`, `picker_search_frame`, `search_field` | 🟡 `search_field` at 20 sites (⌘F bar keeps the frame); no `TextField` / `FormRow` |
+| Card / section | `ui/card.rs`, `SurfaceExt::card_surface` | ✅ titled board (Usage) + the card treatment at 13 sites (transcript activity/ask/subagent cards, composer strips, queue bar, Settings board) |
+| Field frame / label / search / form | `ui/field.rs` `input_field_frame`, `input_label`, `picker_search_frame`, `search_field`, `TextField` (+ `multiline`), `FormRow`, `form_label` | ✅ `search_field` at 20 sites; `TextField` at 21; `FormRow` for the worktree, subagent and bug-report forms. 8 raw frames left, each with a real difference (icon inside, margins + strong border, top-aligned multi-line, fixed-height panel field) |
 | Switch, keycap, tooltip view | `ui/switch.rs`, `ui/kbd.rs`, `ui/tooltip.rs` | ✅ moved |
-| Tab / tab strip | `ui/tab.rs` `Tab`, `tab_strip` | 🟡 terminal + file viewer; Settings / Usage tabs left |
+| Tab / tab strip | `ui/tab.rs` `Tab`, `tab_strip` | ✅ terminal + file viewer. Usage's "tabs" are a segmented control (now on `segmented_segment`); Settings uses nav rows |
 | VirtualList | `ui/list.rs` `virtual_list` | ✅ all 7 `list()` sites (transcript, sidebar, Review diff + tree, Explorer, viewer, scroller test) |
 | Table / TableRow | `ui/table.rs` `data_table`, `Column`, `SortState`, `TableHandlers`, `table_row`, cells | ✅ the grid moved out of `usage/table.rs`; all five Usage tables and their rows (only Usage has a data table) |
 | TreeRow | `ui/tree.rs` `TreeRow`, `TreeNode`, `TreeRowState`, `indent` | ✅ Explorer project tree + Review changed-files tree |
-| DiffRow | — | ⬜ need design (paint-only, streaming contract) |
+| DiffRow | `ui/diff.rs` `DiffRow`, `DiffTone`, `DiffGutter` | ✅ Review unified + split rows, transcript edit diffs; one wash set |
 | Lightbox | `ui/lightbox.rs` `lightbox` | ✅ |
 | Avatar | `ui/avatar.rs` `Avatar`, `initials` | ✅ Git (photo + monogram); GitHub login lookup stays in `git_panel` |
-| StatusBar, nav Rail | — | ⬜ not started (one site each; Rail is transcript-only) |
+| StatusBar | `ui/status_bar.rs` `StatusBar`, `status_item`, `status_button`, `status_message` | ✅ the composer status row |
+| Navigation rail | `ui/rail.rs` `tick_width`, `tick_ink`, `tick_bar`, `edge_fade`, `side_card` | ✅ transcript turn rail (state, scroll and hint lifetime stay in the transcript) |
 | `app/helpers.rs` deletion (Phase 6) | — | ⬜ 462 lines left (was 1,391), 33 files import it |
 | One-owner guard, `DESIGN.md` / `INTENT.md` (Phase 7) | — | ⬜ |
 
 ### Next, in order
 
-1. **Icon buttons (74 left).** `rg -n 'icon_button_frame\(' crates/orbit-pi/src
-   -g '!ui/*'`. Most fade their hover (`IconButton::faded`), carry an open
-   state (`.open`), or use a `.tooltip(|..| Tooltip::new(x))` closure that is
-   just `.tip(x)`. Bespoke chrome (open-in split button, updater pill) may stay
-   with a one-line comment saying why.
-2. **Model / thinking chips** (`app/view.rs::model_chip`, `thinking_chip`):
-   need `ChipButton` to take a leading element (provider mark) and a compact
-   mode.
-3. **Remaining banners**: `app/view.rs::error_banner`,
-   `git_panel/mod.rs::failure_banner`, `explorer/panel.rs::notice_banner`
-   (a strip, may need `BannerTone` + a `Strip` layout), worktree setup banner.
-4. ~~**`ToastCard`**~~ — done (§6.8). The plugin-update prompt card in
-   `app/toast_ui.rs` could share its surface next.
-5. **Menus on `MenuState`**: `explorer/panel.rs` `PanelMenu`,
-   `transcript_view.rs` `TextMenu`, sidebar session/workspace menus.
-6. **Fields**: `search_field` is done (§6.8); `TextField` / `FormRow` over
-   `input_field_frame` remain; placeholders stay `with_placeholder_key`.
-7. **Phase 4 data**: `Table` and `TreeRow` are done (§6.9). Left: `ListRow`
-   against Git's row functions, Settings / Usage tabs onto `ui/tab.rs`, and
-   `DiffRow`.
-8. **Phase 6**: classify what is left in `app/helpers.rs` (UI → `ui/`,
+1. ~~**Keyboard routes for pointer menus**~~ — done (§6.11).
+2. ~~**Modals**~~ — done (§6.13).
+3. ~~Popovers, `DiffRow`, `StatusBar`, `Rail`, `LinkButton`, `ButtonGroup`,
+   modal headers and Tab stops~~ — done (§6.13). Every element family in §4
+   now has an owner under `ui/`.
+4. **Phase 6**: classify what is left in `app/helpers.rs` (UI → `ui/`,
    formatting → `app/format.rs`), switch imports from `app::helpers` /
    `crate::app::{…}` re-exports to `crate::ui::…`, delete the file.
-9. **Phase 7**: a one-owner guard (each family's defining file), `DESIGN.md`
+5. **Phase 7**: a one-owner guard (each family's defining file), `DESIGN.md`
    §Components, an `INTENT.md` `D#` decision, `README.md`.
-10. **Manual pass** (never done yet): `bacon run` in one light, one dark
+6. **Manual pass** (never done yet): `bacon run` in one light, one dark
     non-blue-accent and the Operational palette; check sidebar rows/drag,
     composer chips, menus (pointer + keyboard), modals (Tab/Escape/focus
     return), resize handles, Usage filters and meters.
@@ -1025,6 +1012,161 @@ guards (hover budget 227 → 221: the Usage row hovers moved into
   (were `usage-col-handle-<column>`).
 - **`num_font`** moved to `ui/style/text.rs` (tabular, lining figures);
   Review and the transcript import it from there, Usage re-exports it.
+
+## 6.10 Adoption pass: built components onto their remaining sites (2026-11-18)
+
+Verified: `cargo clippy -p orbit-pi --all-targets -- -D warnings` clean; the
+**full** `cargo test -p orbit-pi --bin orbit-pi` (2150 passed, 9 ignored); the
+six guards (hover budget 221 → 185); `git diff --check`. rustfmt ran only on
+files formatted at `HEAD`. **Not verified:** a manual `bacon run` pass.
+
+- **`IconButton`** gains `on_mouse_down`. 55 call sites moved (Git panel,
+  transcript footers and code copy, composer attach/queue/error actions,
+  Review toggles and file steps, session details, MCP, Usage, sidebar,
+  remote hosts/sessions, Explorer, search, terminal, worktrees, provider
+  accounts, custom UI, toast prompt). Reveal-on-row-hover, extra borders and
+  focus stay as chains on the returned element. The 19 left are named
+  bespoke controls, each with a `// Bespoke:` comment.
+- **`ChipButton`** gains `size`, `leading` (a caller-built mark), `disabled`
+  (shared disabled treatment, never open, no hover or handler) and `shrink`;
+  the composer's model and thinking chips use it.
+- **`Badge`** gains `BadgeFill::Framed` and a leading glyph; Explorer's
+  save-state chip is a badge.
+- **`Banner`** gains `Info` / `Success` tones, a caller glyph (a spinner) and
+  `Banner::strip`; Git's failure banner, Explorer's notice strip and the
+  worktree setup banner use it. Tested: tone colours, strip ink.
+- **Explorer row menu on `MenuState`**: one `MenuItem` list feeds pointer and
+  keyboard (`run_menu_item`); arrows/Home/End walk it, Enter/Space run the
+  highlighted item, Shift-F10 or the Menu key opens it on the cursor row.
+  Tested: layout invariants and a keyboard open → wrap → Enter round trip.
+- **`column_menu`** (`ui/popover.rs`): the placement six composer-column
+  menus spelled out.
+- **`SurfaceExt::card_surface`**: the frosted-card chain (corner + frost +
+  fill), adopted at 13 sites including `ui/card.rs` itself.
+- **`modal_header`** at three more dialogs (remote key, server clone,
+  worktree).
+- Usage's segmented control uses `segmented_segment` (same radius).
+
+**Declared pixel changes:** converted icon buttons that dimmed by opacity or
+had no press now take the shared wash press; the sidebar/worktree "more"
+buttons and the idle generate-title button gain the ghost hover; disabled
+icon buttons show the not-allowed cursor; the queue-edit save glyph disables
+to `text_disabled` (was muted at 50%); the composer "+" and Git sync caret
+glyphs take primary ink while open. Git's failure banner is the shared
+`Banner` (Default-size title, 12px padding, `circle-x`, `error` at 7%/35%,
+copy/dismiss in the action slot); the Explorer strip pads `Base08`/`Base04`
+(was 10/5px); the worktree setup banner puts its glyph beside the column
+(lines indent under the title) with 12px padding (was 16). Explorer's
+save-state chip is 18px (was 20) with XSmall medium text. The worktree
+dialog's header gains the hairline and the modal headline size.
+
+Left in this bucket: keyboard routes for the transcript text menu and the
+sidebar session/workspace menus; modal buttons as tab stops; the updater,
+extension and custom-UI headers; Git's row functions (`ListRow`); the Git
+label popover and sidebar layout menu placements.
+
+## 6.11 Keyboard routes for the pointer menus (2026-11-18)
+
+Verified: clippy `-D warnings` clean; the full `cargo test -p orbit-pi --bin
+orbit-pi` (2156 passed, 9 ignored); the six guards; `git diff --check`.
+**Not verified:** a manual pass with the keyboard in the running app.
+
+- **`MenuCursor` / `MenuKey`** (`ui/menu.rs`): a pointer-openable menu's
+  cursor — hidden until the first key, which shows it on the first entry
+  that can act; disabled entries are skipped; `MenuCursor::keyed` for a menu
+  opened from the keyboard. Its `PartialEq` always matches, so menus that
+  compare themselves to decide a toggle-close still do. Tested.
+- **`Hover::held`** (`motion/interactive.rs`): holds a row's hover look at
+  rest, so the keyboard cursor reads exactly as the pointer's hover.
+- **Transcript text menu**: takes focus with its own handle when it opens
+  (the transcript has no keyboard owner) and returns it to the opener on
+  every close. Arrows / Home / End / Enter / Space / Escape drive it; chords
+  such as ⌘C pass through. Copy Selection is skipped while nothing is
+  selected. Its actions already have keys (⌘C, ⇧⌘C), so no open key was
+  added. Tested: skip, wrap, Enter copies, focus returns.
+- **Sidebar session and workspace menus**: `session_menu_items` /
+  `workspace_menu_items` list each entry with whether it can act;
+  `run_row_menu_item` calls the same handlers the rows' clicks call. While a
+  menu is open the sidebar's own up/down/home/end/enter actions drive it.
+  New **`SidebarOpenRowMenu`** (Shift-F10, the Menu key; `Sidebar` context)
+  opens the cursor row's menu under the row with its first enabled entry
+  lit. The delete confirmation and the icon picker keep their own controls:
+  Enter never confirms a delete, Escape cancels it. Tested: open, End/Home,
+  arrows drive the menu not the rows, Enter runs Copy Path, Enter on the
+  confirmation does nothing.
+
+## 6.12 Fields, forms and list rows (2026-11-18)
+
+Verified: clippy `-D warnings` clean; the full `cargo test -p orbit-pi --bin
+orbit-pi` (2158 passed, 9 ignored); the six guards; `git diff --check`.
+**Not verified:** a manual look at the forms and Git lists.
+
+- **`TextField`** (`ui/field.rs`): the field frame at full width on a
+  caller-chosen fill with the input filling the row; `.multiline(min_h)`
+  stretches the input column to the box (the shim Git and the bug report each
+  carried as `items_stretch` / `stretch` is gone). 21 sites.
+- **`FormRow`** / **`form_label`**: label (Small, medium, secondary) with an
+  optional action at its right and hint below, the control, an optional help
+  line. `worktree_field` is now a thin wrapper (its `worktree_field_label`
+  is gone); the subagent and bug-report fields use it. Tested.
+- **`RowState`** / **`list_row`** (`ui/row.rs`): the selected / cursor / rest
+  fill and the faded hover wash every list row shares; Git's History, Graph
+  and GitHub rows use it (`row_rest` is gone) and `TreeRow` takes its fills
+  from it. The row frame stays the caller's — the GitHub cards and the
+  commit rows have different geometry on purpose. Tested.
+- **Decided, not built:** `LinkButton` (only two inline text links exist —
+  the updater's changelog link and a transcript tool URL; every other
+  "open on GitHub" is already a `Button`), and `ButtonGroup` (above).
+
+**Declared pixel changes:** bug-report field labels take secondary ink
+(were primary), like every other form label; single-line fields now always
+wrap the input in a `flex_1 min_w_0` slot (no visible change expected).
+
+## 6.13 The last components (2026-11-18)
+
+Verified: clippy `-D warnings` clean; the full `cargo test -p orbit-pi --bin
+orbit-pi` (2164 passed, 9 ignored); the six guards (hover budget 185 → 177);
+`git diff --check`. **Not verified:** a manual pass in the running app.
+
+- **`LinkButton`**: inline accent-ink link, optional external arrow,
+  underline and grow/truncate, ink fading toward the accent. Updater
+  changelog link, transcript tool URL.
+- **`ButtonGroup`** (+ `SegmentFill::{Selected, Active}`): the whole
+  segmented control — geometry, rest face (or inset), chosen fill, medium
+  labels, disabled options, the hover and selection cross-fading together,
+  and the click. All 11 segmented controls (Settings ×6, subagent mode,
+  quota tabs, permissions, bug-report type, clone protocol, Usage).
+  `settings_segment` and `active_segment` are deleted. Tested.
+- **Popovers**: the Git label menu and the sidebar options menu are
+  `dropdown_below`; nothing outside `ui/` calls `anchored_popover` now.
+- **`StatusBar`** (`ui/status_bar.rs`): the row, the leading/trailing split,
+  the wallpaper-protecting fill, and the item shapes. Tested.
+- **Navigation rail** (`ui/rail.rs`): tick fan-out, ink, bar, edge fades and
+  the side-card shell; tested. The transcript keeps the turn data, hover,
+  scrolling and the hint's lifetime.
+- **`DiffRow`** (`ui/diff.rs`): tone → edge / gutter / body washes and the
+  row anatomy, with a number gutter (Review) or a marker gutter
+  (transcript). Paint-only: the caller supplies the text runs and font.
+  Tested.
+- **Modals**: `ModalHeader` (eyebrow, subtitle, description, leading mark,
+  trailing control, optional hairline) now builds every header, including
+  the updater, extension and custom-UI ones. `Button::focus` +
+  `modal_button` make footer buttons Tab stops; the six ring-managed form
+  modals share `modal_cancel_focus` / `modal_confirm_focus` and their ring
+  runs fields → Cancel → Save (tested).
+
+**Declared pixel changes:** segmented controls all take medium labels and
+the cross-faded hover/selection (permissions segments gain the raised rest
+face; the quota tabs lose their 2px gaps and abut; no segment dims on
+press). The transcript tool URL fades its ink on hover. The Git label menu
+opens 5px under its trigger (was 2px). Transcript edit-diff washes use
+Review's strengths (body 20%/12%, gutter 15%/9%; were 18/12 and 24/15), and
+Review's unified code body pads 12px on the right (was 10). The extension
+dialog header uses the modal header gap and drops the description's extra
+bottom margin; the custom-UI header uses the modal headline, padding-based
+height (was a fixed 64px) and the standard hairline (was `border_subtle`).
+The MCP, remote-host and account editors' Cancel/Save are `Button`s
+(Secondary/Primary), and footer buttons show the focus ring when tabbed to.
 
 ## 6.1 Remaining owner work — actionable backlog
 

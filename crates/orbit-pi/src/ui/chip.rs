@@ -21,7 +21,7 @@ use crate::theme::{
 };
 use crate::ui::button::button_frame;
 use crate::ui::icon::{dropdown_chevron, icon};
-use crate::ui::style::control::{ControlExt, TipExt};
+use crate::ui::style::control::{ControlExt, StatefulControlExt, TipExt};
 
 /// How a badge carries its tone.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,6 +30,9 @@ pub(crate) enum BadgeFill {
     Solid(Hsla),
     /// A hairline in the tone, no face (git refs).
     Outline(Hsla),
+    /// A raised face inside a neutral hairline (a file's save state): the
+    /// tone lives in the ink, not the frame.
+    Framed { face: Hsla, edge: Hsla },
 }
 
 /// A one-line label at Compact height, `Radius::Small`, XSmall medium ink.
@@ -37,6 +40,7 @@ pub(crate) struct Badge {
     label: SharedString,
     ink: Hsla,
     fill: BadgeFill,
+    leading: Option<AnyElement>,
 }
 
 impl Badge {
@@ -45,15 +49,28 @@ impl Badge {
             label: label.into(),
             ink,
             fill,
+            leading: None,
         }
     }
 
-    pub(crate) fn render(self, theme: &Theme) -> AnyElement {
-        let label = self.label.clone();
-        self.frame(theme).child(label).into_any_element()
+    /// A glyph before the label (a lock on a read-only file), sized
+    /// `IconSize::Indicator`.
+    pub(crate) fn leading(mut self, leading: impl IntoElement) -> Self {
+        self.leading = Some(leading.into_any_element());
+        self
     }
 
-    fn frame(self, theme: &Theme) -> gpui::Div {
+    pub(crate) fn render(mut self, theme: &Theme) -> AnyElement {
+        let label = self.label.clone();
+        let leading = self.leading.take();
+        self.frame(theme)
+            .gap(DynamicSpacing::Base04.px(theme))
+            .children(leading)
+            .child(label)
+            .into_any_element()
+    }
+
+    fn frame(&self, theme: &Theme) -> gpui::Div {
         let el = div()
             .flex_none()
             .h(ButtonSize::Compact.height(theme))
@@ -68,6 +85,7 @@ impl Badge {
         match self.fill {
             BadgeFill::Solid(face) => el.bg(face),
             BadgeFill::Outline(edge) => el.border_1().border_color(edge),
+            BadgeFill::Framed { face, edge } => el.bg(face).border_1().border_color(edge),
         }
     }
 }
@@ -164,6 +182,9 @@ pub(crate) struct ChipButton {
     tip: Option<SharedString>,
     selector: Option<&'static str>,
     trailing: Option<AnyElement>,
+    leading: Option<AnyElement>,
+    disabled: bool,
+    shrink: bool,
 }
 
 impl ChipButton {
@@ -183,7 +204,40 @@ impl ChipButton {
             tip: None,
             selector: None,
             trailing: None,
+            leading: None,
+            disabled: false,
+            shrink: false,
         }
+    }
+
+    pub(crate) fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// A caller-built mark in place of [`Self::icon`] — a provider logo in
+    /// its brand tint. Size it to `size.icon_size()`.
+    pub(crate) fn leading(mut self, leading: impl IntoElement) -> Self {
+        self.leading = Some(leading.into_any_element());
+        self
+    }
+
+    /// The trigger cannot open now (a run is in flight): the shared disabled
+    /// treatment, disabled ink, no hover and no handler. A disabled chip is
+    /// never shown open.
+    pub(crate) fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        if disabled {
+            self.open = false;
+        }
+        self
+    }
+
+    /// Let the chip shrink inside its row (`min_w_0`, never wider than the
+    /// row) so a truncating label gives way first.
+    pub(crate) fn shrink(mut self) -> Self {
+        self.shrink = true;
+        self
     }
 
     /// A glyph after the label, before the caret — a lock on a read-only mode.
@@ -209,7 +263,7 @@ impl ChipButton {
     }
 
     pub(crate) fn open(mut self, open: bool) -> Self {
-        self.open = open;
+        self.open = open && !self.disabled;
         self
     }
 
@@ -232,11 +286,20 @@ impl ChipButton {
 
     fn frame(&self, theme: &Theme) -> gpui::Stateful<gpui::Div> {
         let open = self.open;
-        let mut el = button_frame(div().id(self.id.clone()), theme, self.size).cursor_pointer();
+        let mut el = button_frame(div().id(self.id.clone()), theme, self.size);
+        el = if self.disabled {
+            el.disabled_state(theme)
+        } else {
+            el.cursor_pointer()
+        };
+        if self.shrink {
+            el = el.min_w_0().max_w_full();
+        }
         if let Some(selector) = self.selector {
             el = el.debug_selector(move || selector.to_string());
         }
         el = match self.style {
+            _ if self.disabled => el,
             ChipStyle::Quiet => el.when_open(open, |el| {
                 el.bg(theme.surface_active).text_color(theme.text_primary)
             }),
@@ -268,12 +331,16 @@ impl ChipButton {
     fn content(self, el: gpui::Stateful<gpui::Div>, theme: &Theme) -> gpui::Stateful<gpui::Div> {
         let open = self.open;
         let quiet = self.style == ChipStyle::Quiet;
-        let icon_ink = if open && !quiet {
+        let icon_ink = if self.disabled {
+            theme.text_disabled
+        } else if open && !quiet {
             theme.text_primary
         } else {
             theme.text_muted
         };
-        let label_ink = if open {
+        let label_ink = if self.disabled {
+            theme.text_disabled
+        } else if open {
             theme.text_primary
         } else {
             theme.text_secondary
@@ -284,17 +351,19 @@ impl ChipButton {
             theme.text_muted
         };
         let caret_id = SharedString::from(format!("{}-caret-turn", self.id));
-        el.children(
-            self.icon
-                .map(|path| icon(path, self.size.icon_size().px(theme), icon_ink)),
-        )
+        let leading = self.leading.or_else(|| {
+            self.icon.map(|path| {
+                icon(path, self.size.icon_size().px(theme), icon_ink).into_any_element()
+            })
+        });
+        el.children(leading)
         .children(self.label.map(|label| {
             let mut text = div().text_color(label_ink);
             if let Some(selector) = self.selector {
                 text = text.debug_selector(move || format!("{selector}-label"));
             }
             let text = match self.label_max_w {
-                Some(width) => text.max_w(width).truncate(),
+                Some(width) => text.min_w_0().max_w(width).truncate(),
                 None => text,
             };
             text.child(label)
@@ -314,8 +383,9 @@ impl ChipButton {
         let quiet = self.style == ChipStyle::Quiet;
         let open = self.open;
         let name = self.id.clone();
+        let disabled = self.disabled;
         let el = self.content(el, theme);
-        if quiet {
+        if quiet && !disabled {
             crate::motion::hover(
                 el,
                 name,
@@ -332,7 +402,12 @@ impl ChipButton {
         theme: &Theme,
         handler: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     ) -> AnyElement {
-        let el = self.frame(theme).on_mouse_up(MouseButton::Left, handler);
+        let el = self.frame(theme);
+        let el = if self.disabled {
+            el
+        } else {
+            el.on_mouse_up(MouseButton::Left, handler)
+        };
         self.finish(el, theme)
     }
 
@@ -341,7 +416,12 @@ impl ChipButton {
         theme: &Theme,
         handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> AnyElement {
-        let el = self.frame(theme).on_mouse_down(MouseButton::Left, handler);
+        let el = self.frame(theme);
+        let el = if self.disabled {
+            el
+        } else {
+            el.on_mouse_down(MouseButton::Left, handler)
+        };
         self.finish(el, theme)
     }
 }
@@ -363,6 +443,21 @@ impl<T> WhenOpen for T {}
 mod tests {
     use super::*;
     use crate::theme::ThemeId;
+
+    #[test]
+    fn a_disabled_chip_is_never_open_and_takes_the_disabled_treatment() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let chip = ChipButton::new("c", ChipStyle::Quiet)
+                .disabled(true)
+                .open(true);
+            assert!(!chip.open, "{id:?}");
+            let mut frame = chip.frame(&theme);
+            let mut quiet = ChipButton::new("q", ChipStyle::Quiet).frame(&theme);
+            assert_ne!(frame.style().background, Some(theme.surface_active.into()));
+            assert_ne!(frame.style().background, quiet.style().background, "{id:?}");
+        }
+    }
 
     #[test]
     fn a_faced_pill_is_a_capsule_and_a_bare_one_has_no_frame() {

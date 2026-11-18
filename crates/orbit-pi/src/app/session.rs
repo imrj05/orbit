@@ -2,17 +2,17 @@ use super::composer_ops::CompletionIntent;
 use super::helpers::*;
 use super::mcp_ui::QuotaPopupTab;
 use super::*;
+use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
-use crate::app::helpers::{segmented_segment, SegmentPosition};
 use crate::context_meter::context_ring;
 use crate::quota::{canonical_provider, is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::theme::tokens::{
     panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
 use crate::ui::button::IconButton;
+use crate::ui::style::surface::SurfaceExt;
 use crate::ui::popover::PopoverExt;
 use crate::ui::popover::{dropdown_below, DropdownAlign};
-use crate::ui::tooltip::Tooltip;
 use gpui::{Div, Stateful};
 
 /// A workspace-relative `/`-separated path for the Files toolbar. Falls back
@@ -1959,17 +1959,6 @@ impl OrbitApp {
         }
         let generating = self.title_generating;
         let size = ButtonSize::Default;
-        let mut button = icon_button_frame(div().id("sess-generate-title"), &theme, size)
-            .group(BUTTON_GROUP)
-            .when(generating, |button| button.bg(theme.overlay));
-        if !generating {
-            button = button
-                .cursor_pointer()
-                .tip(tr!("session.generate_title"))
-                .on_click(move |_, _, cx| {
-                    this.update(cx, |app, cx| app.generate_session_title(cx));
-                });
-        }
         let glyph = if generating {
             crate::app::spinner(
                 "sess-generate-title-spinner",
@@ -1985,16 +1974,22 @@ impl OrbitApp {
             )
             .into_any_element()
         };
-        let button = press(button).child(glyph);
+        let button = IconButton::glyph("sess-generate-title", glyph).size(size);
         Some(if generating {
-            button.into_any_element()
+            // In flight: a held face behind the spinner, nothing to press.
+            button
+                .render(&theme)
+                .cursor_default()
+                .bg(theme.overlay)
+                .into_any_element()
         } else {
-            crate::motion::hover(
-                button,
-                "sess-generate-title",
-                &theme,
-                crate::motion::Hover::wash(&theme),
-            )
+            button
+                .tip(tr!("session.generate_title"))
+                .faded(&theme, |el| {
+                    el.on_click(move |_, _, cx| {
+                        this.update(cx, |app, cx| app.generate_session_title(cx));
+                    })
+                })
         })
     }
 
@@ -2431,32 +2426,19 @@ impl OrbitApp {
                 // beside the new title.
                 .children(rename_saved.then(|| Self::rename_check(theme, cx)))
                 .children(self.generate_title_button(theme, this.clone()))
-                .child(crate::motion::hover(
-                    press(
-                        icon_button_frame(
-                            div().id("sess-edit-title").group(BUTTON_GROUP),
-                            &theme,
-                            ButtonSize::Default,
-                        )
-                        .debug_selector(|| "sess-edit-title".into())
+                .child(
+                    IconButton::new("sess-edit-title", "icons/pencil.svg")
                         .tip(tr!("explorer.rename"))
-                        .cursor_pointer(),
-                    )
-                    .on_click({
-                        let this = this.clone();
-                        move |_, window, cx| {
-                            this.update(cx, |app, cx| app.begin_session_name_edit(window, cx));
-                        }
-                    })
-                    .child(icon(
-                        "icons/pencil.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_muted,
-                    )),
-                    "sess-edit-title",
-                    &theme,
-                    crate::motion::Hover::wash(&theme),
-                ))
+                        .faded(&theme, |el| {
+                            let this = this.clone();
+                            el.debug_selector(|| "sess-edit-title".into())
+                                .on_click(move |_, window, cx| {
+                                    this.update(cx, |app, cx| {
+                                        app.begin_session_name_edit(window, cx)
+                                    });
+                                })
+                        }),
+                )
             }
         });
 
@@ -2696,7 +2678,8 @@ impl OrbitApp {
             .child(div().flex_none().h(DynamicSpacing::Base08.px(&theme)));
 
         // The dock reads as a rounded card beside the chat, like the Explorer:
-        // a 12px gutter on the left, then a flat surface with a hairline.
+        // a 12px gutter on the left, then a flat surface with a hairline —
+        // glass over a full-window wallpaper, like the pages.
         div()
             .id("session-details-panel")
             .debug_selector(|| "session-details-panel".into())
@@ -2714,14 +2697,16 @@ impl OrbitApp {
                     .min_h_0()
                     .w_full()
                     .bg(theme.surface)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(panel::RADIUS.px(&theme))
                     .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .child(header)
-                    .child(body),
+                    .page_card(
+                        &theme,
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(header)
+                            .child(body),
+                    ),
             )
             .into_any_element()
     }
@@ -2933,64 +2918,31 @@ impl OrbitApp {
             theme,
         );
         let refresh_button =
-            icon_button_frame(div().id("quota-refresh"), &theme, ButtonSize::Medium)
-                .group(BUTTON_GROUP)
-                .cursor_pointer()
-                .hover_state(&theme)
-                .pressed_state(&theme, PressedRamp::Wash)
-                .tooltip({
-                    let label = tr!("common.refresh");
-                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                })
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
-                .child(refresh_icon);
+            IconButton::glyph("quota-refresh", refresh_icon)
+                .size(ButtonSize::Medium)
+                .tip(tr!("common.refresh"))
+                .on_mouse_up(&theme, cx.listener(Self::on_quota_refresh));
 
         // Two panes in one popover: the original provider quotas and the MCP
         // server list. A segmented control keeps the switch in the header
         // without adding a row (the body cap math below depends on this
         // header's height).
         let tab = self.quota_popup_tab;
-        let mut tabs = div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base02.px(&theme));
-        for (index, candidate) in QuotaPopupTab::ALL.into_iter().enumerate() {
-            let selected = tab == candidate;
-            tabs = tabs.child(
-                segmented_segment(
-                    div()
-                        .id(ElementId::Name(
-                            format!("quota-tab-{}", candidate.as_str()).into(),
-                        ))
-                        .debug_selector({
-                            let tab = candidate.as_str().to_string();
-                            move || format!("quota-tab-chip-{tab}")
-                        }),
-                    &theme,
-                    ButtonSize::Default,
-                    SegmentPosition::at(index, QuotaPopupTab::ALL.len()),
-                )
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .border_color(theme.border)
-                .when(selected, |chip| {
-                    chip.raised_flat(theme.surface_active)
-                        .text_color(theme.text_primary)
-                })
-                .when(!selected, |chip| {
-                    chip.raised_flat(theme.surface_elevated)
-                        .text_color(theme.text_secondary)
-                        .hover_state(&theme)
-                })
-                .on_mouse_up(MouseButton::Left, {
-                    let this = this.clone();
+        let mut tabs = ButtonGroup::new(SegmentFill::Active).size(ButtonSize::Default);
+        for candidate in QuotaPopupTab::ALL {
+            let this = this.clone();
+            tabs = tabs
+                .segment(
+                    ElementId::Name(format!("quota-tab-{}", candidate.as_str()).into()),
+                    tr!(candidate.label_key()),
+                    tab == candidate,
                     move |_, _, cx| {
                         this.update(cx, |app, cx| app.mcp_popup_tab(candidate, cx));
-                    }
-                })
-                .child(tr!(candidate.label_key())),
-            );
+                    },
+                )
+                .selector(format!("quota-tab-chip-{}", candidate.as_str()));
         }
+        let tabs = tabs.render(&theme);
 
         let header = div()
             .flex_none()
@@ -3133,20 +3085,11 @@ impl OrbitApp {
         // both Ollama ids share one card, so both store the same entry.
         let selector = id.to_string();
         let provider = provider.to_string();
-        icon_button_frame(
-            div().id(id).debug_selector(move || selector.clone()),
+        IconButton::new(id, path)
+            .size(ButtonSize::Compact)
+            .tip(label.clone())
+            .on_mouse_up(
             &theme,
-            ButtonSize::Compact,
-        )
-        .cursor_pointer()
-        .hover_state(&theme)
-        .pressed_state(&theme, PressedRamp::Wash)
-        .tooltip({
-            let label = label.clone();
-            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-        })
-        .on_mouse_up(
-            MouseButton::Left,
             cx.listener(
                 move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
                     this.hidden_quota_providers.toggle(&provider);
@@ -3155,11 +3098,7 @@ impl OrbitApp {
                 },
             ),
         )
-        .child(icon(
-            path,
-            ButtonSize::Compact.icon_size().px(&theme),
-            theme.text_muted,
-        ))
+        .debug_selector(move || selector.clone())
         .into_any_element()
     }
 

@@ -19,6 +19,7 @@ use crate::theme::{
     Theme,
 };
 use crate::ui::icon::{disclosure_chevron, icon};
+use crate::ui::row::RowState;
 use crate::ui::style::control::ControlExt;
 
 /// The left inset of a depth-0 directory row (its chevron's leading edge).
@@ -165,8 +166,13 @@ impl TreeRow {
             .gap(DynamicSpacing::Base06.px(theme));
         row = match self.state {
             TreeRowState::Editing => row.bg(theme.surface_active),
-            TreeRowState::Selected => row.cursor_pointer().bg(theme.surface_selected),
-            TreeRowState::Cursor => row.cursor_pointer().bg(theme.overlay),
+            // The list rows' state fills, so a tree and a list agree.
+            TreeRowState::Selected => row
+                .cursor_pointer()
+                .bg(RowState::Selected.rest_fill(theme).unwrap_or_default()),
+            TreeRowState::Cursor => row
+                .cursor_pointer()
+                .bg(RowState::Cursor.rest_fill(theme).unwrap_or_default()),
             TreeRowState::Rest => row.cursor_pointer().hover_state(theme),
         };
 

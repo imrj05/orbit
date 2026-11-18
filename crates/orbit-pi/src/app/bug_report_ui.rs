@@ -16,7 +16,8 @@ use super::*;
 use crate::git_panel::widgets::action_button;
 use crate::issue_message::ReportKind;
 use crate::theme::tokens::{input, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
-use crate::ui::button::active_segment;
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::field::{FormRow, TextField};
 use gpui::ClickEvent;
 
 /// The most screenshots one report may carry.
@@ -208,31 +209,20 @@ impl OrbitApp {
     /// names, and the draft prompt's framing.
     fn report_type_selector(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
         const KINDS: [ReportKind; 3] = [ReportKind::Bug, ReportKind::Feature, ReportKind::Other];
-        let mut row = div().flex().items_center();
-        for (ix, kind) in KINDS.iter().enumerate() {
-            let kind = *kind;
-            let selected = self.bug_report_kind == kind;
-            let seg = active_segment(
-                div().id(ElementId::Name(format!("bug-report-type-{ix}").into())),
-                &theme,
-                ButtonSize::Medium,
-                SegmentPosition::at(ix, KINDS.len()),
-                selected,
-            );
-            row = row.child(
-                press(seg)
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            this.bug_report_kind = kind;
-                            this.bug_report_error = None;
-                            cx.notify();
-                        }),
-                    )
-                    .child(tr!(report_kind_key(kind))),
+        let mut group = ButtonGroup::new(SegmentFill::Active);
+        for (ix, kind) in KINDS.iter().copied().enumerate() {
+            group = group.segment(
+                ElementId::Name(format!("bug-report-type-{ix}").into()),
+                tr!(report_kind_key(kind)),
+                self.bug_report_kind == kind,
+                cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                    this.bug_report_kind = kind;
+                    this.bug_report_error = None;
+                    cx.notify();
+                }),
             );
         }
-        row.into_any_element()
+        group.render(&theme).into_any_element()
     }
 
     /// The Screenshots row: an Add button plus a thumbnail chip per image.
@@ -680,45 +670,22 @@ fn bug_field(
     min_h: Pixels,
     action: Option<AnyElement>,
 ) -> AnyElement {
+    let row = FormRow::new(
+        label,
+        TextField::new(input, theme.surface_secondary)
+            .multiline(min_h)
+            .render(&theme),
+    );
+    let row = match action {
+        Some(action) => row.action(action),
+        None => row,
+    };
     div()
         .w_full()
         .px(DynamicSpacing::Base16.px(&theme))
         .py(DynamicSpacing::Base12.px(&theme))
-        .flex()
-        .flex_col()
-        .gap(DynamicSpacing::Base06.px(&theme))
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(
-                    div()
-                        .text_size(input::LABEL.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(label),
-                )
-                .children(action),
-        )
-        .child(
-            stretch(input_field_frame(div(), &theme))
-                .w_full()
-                .min_h(min_h.max(input::min_height(&theme)))
-                .bg(theme.surface_secondary)
-                .child(div().flex_1().min_w_0().flex().flex_col().child(input)),
-        )
+        .child(row.render(&theme))
         .into_any_element()
-}
-
-/// `input_field_frame` centers a one-line input; a multi-line field stretches
-/// its input column to the box instead. GPUI 0.2.2 has no `items_stretch`, so
-/// set the style directly (the same shim the Git page uses).
-fn stretch<E: Styled>(mut el: E) -> E {
-    el.style().align_items = Some(gpui::AlignItems::Stretch);
-    el
 }
 
 #[cfg(test)]

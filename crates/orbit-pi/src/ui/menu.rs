@@ -161,9 +161,101 @@ impl MenuState {
     }
 }
 
+/// A key that moves a menu's cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MenuKey {
+    Next,
+    Prev,
+    First,
+    Last,
+}
+
+/// The keyboard cursor of a menu that opens from the pointer too: hidden until
+/// the first key (a right-clicked menu stays quiet), then a [`MenuState`] that
+/// skips rows that cannot act.
+///
+/// It lives inside the menu's own state, and **equality ignores it**: a
+/// cursor is where the keyboard is, not which menu is open, so a toggle that
+/// compares menus still recognises the same menu after the cursor moved.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct MenuCursor {
+    state: MenuState,
+    keyed: bool,
+}
+
+impl PartialEq for MenuCursor {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl MenuCursor {
+    /// A cursor for a menu opened from the keyboard: shown at once, on the
+    /// first row that can act.
+    pub(crate) fn keyed(len: usize, enabled: impl Fn(usize) -> bool) -> Self {
+        let mut cursor = Self {
+            state: MenuState::default(),
+            keyed: true,
+        };
+        cursor.state.first(len, enabled);
+        cursor
+    }
+
+    /// The highlighted row, once the keyboard has shown the cursor.
+    pub(crate) fn highlighted(&self, len: usize) -> Option<usize> {
+        if self.keyed {
+            self.state.selected(len)
+        } else {
+            None
+        }
+    }
+
+    /// Move the cursor. The first key on a pointer-opened menu shows the
+    /// cursor on the first row that can act instead of moving past it.
+    pub(crate) fn step(&mut self, key: MenuKey, len: usize, enabled: impl Fn(usize) -> bool) {
+        if !self.keyed {
+            self.keyed = true;
+            self.state.first(len, enabled);
+            return;
+        }
+        match key {
+            MenuKey::Next => self.state.next_enabled(len, enabled),
+            MenuKey::Prev => self.state.prev_enabled(len, enabled),
+            MenuKey::First => self.state.first(len, enabled),
+            MenuKey::Last => self.state.last(len, enabled),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::MenuState;
+
+    #[test]
+    fn a_cursor_is_hidden_until_a_key_and_skips_disabled_rows() {
+        use super::{MenuCursor, MenuKey};
+        // Row 0 is a disabled "Move up" at the top of its list.
+        let enabled = |ix: usize| ix != 0;
+        let mut cursor = MenuCursor::default();
+        assert_eq!(cursor.highlighted(4), None);
+        cursor.step(MenuKey::Next, 4, enabled);
+        assert_eq!(
+            cursor.highlighted(4),
+            Some(1),
+            "first key shows the first enabled row"
+        );
+        cursor.step(MenuKey::Prev, 4, enabled);
+        assert_eq!(
+            cursor.highlighted(4),
+            Some(3),
+            "up wraps past the disabled row"
+        );
+        assert_eq!(MenuCursor::keyed(4, enabled).highlighted(4), Some(1));
+        assert!(
+            cursor == MenuCursor::default(),
+            "equality ignores the cursor"
+        );
+    }
 
     #[test]
     fn a_menu_hint_never_shrinks() {

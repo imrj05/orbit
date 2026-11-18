@@ -1,5 +1,7 @@
 use super::helpers::*;
 use super::*;
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::field::TextField;
 use crate::ui::field::search_field;
 use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::git_panel::widgets::check_box;
@@ -10,7 +12,6 @@ use crate::theme::tokens::{
     DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
 use crate::theme::MotionPreference;
-use crate::ui::button::settings_segment;
 use crate::ui::chip::{Badge, BadgeFill};
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::style::surface::SurfaceExt;
@@ -637,6 +638,9 @@ impl OrbitApp {
                     .h_full()
                     .flex_shrink_0()
                     .bg(theme.panel_fill(theme.surface))
+                    // Settings' nav is the session sidebar's twin: over a
+                    // full-window wallpaper it frosts the picture the same way.
+                    .frosted_pane(&theme.for_page())
                     .border_r_1()
                     .border_color(theme.border)
                     .flex()
@@ -4084,10 +4088,7 @@ impl OrbitApp {
                             .text_color(theme.text_secondary),
                     )
                     .child(
-                        input_field_frame(div(), &theme)
-                            .w_full()
-                            .bg(theme.background)
-                            .child(editor.key.clone()),
+                        TextField::new(editor.key.clone(), theme.background).render(&theme),
                     )
                     .child(
                         div()
@@ -4297,10 +4298,7 @@ impl OrbitApp {
                         .text_color(theme.text_secondary),
                 )
                 .child(
-                    input_field_frame(div(), &theme)
-                        .w_full()
-                        .bg(theme.background)
-                        .child(input),
+                    TextField::new(input, theme.background).render(&theme),
                 );
             if let Some(hint) = hint {
                 column = column.child(
@@ -4634,9 +4632,7 @@ impl OrbitApp {
         let last = rows.len().saturating_sub(1);
         let mut board = div()
             .w_full()
-            .bg(theme.card_fill(theme.surface_secondary))
-            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-            .rounded(panel::RADIUS.px(&theme))
+            .card_surface(&theme, theme.border, theme.card_fill(theme.surface_secondary))
             .flex()
             .flex_col();
         for (i, row) in rows.into_iter().enumerate() {
@@ -5711,52 +5707,17 @@ impl OrbitApp {
 
     /// Orbit-only preference; existing pi queues are left untouched.
     fn composer_send_mode_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let modes = [SendMode::FollowUp, SendMode::Steer];
-        div()
-            .flex()
-            .items_center()
-            .children(modes.into_iter().enumerate().map(|(index, mode)| {
-                let this = this.clone();
-                let active = mode == theme.ui.composer_send_mode;
-                let segment = segmented_segment(
-                    div().id(("composer-send-mode", index)),
-                    &theme,
-                    ButtonSize::Medium,
-                    SegmentPosition::at(index, modes.len()),
-                )
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .raised_flat(theme.surface_elevated)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| app.set_composer_send_mode(mode, cx));
-                })
-                .child(mode.label());
-                crate::motion::control(
-                    segment,
-                    format!("composer-send-mode-{index}"),
-                    &theme,
-                    crate::theme::tokens::Motion::Interaction,
-                    crate::theme::tokens::Motion::Interaction,
-                    if active { 1.0 } else { 0.0 },
-                    move |segment, hover, selected| {
-                        let fill = crate::motion::blend(
-                            crate::motion::blend(
-                                theme.surface_elevated,
-                                theme.surface_hover,
-                                hover,
-                            ),
-                            theme.surface_active,
-                            selected,
-                        );
-                        segment.bg(fill).text_color(crate::motion::blend(
-                            theme.text_secondary,
-                            theme.text_primary,
-                            selected,
-                        ))
-                    },
-                )
-            }))
-            .into_any_element()
+        let mut group = ButtonGroup::new(SegmentFill::Active);
+        for (index, mode) in [SendMode::FollowUp, SendMode::Steer].into_iter().enumerate() {
+            let this = this.clone();
+            group = group.segment(
+                ("composer-send-mode", index),
+                mode.label(),
+                mode == theme.ui.composer_send_mode,
+                move |_, _, cx| this.update(cx, |app, cx| app.set_composer_send_mode(mode, cx)),
+            );
+        }
+        group.render(&theme).into_any_element()
     }
 
     /// Settings → General → Closing the window (#131): keep running with the
@@ -5774,51 +5735,18 @@ impl OrbitApp {
             ),
             (CloseBehavior::Quit, tr!("settings.quit_on_close")),
         ];
-        let count = options.len();
         let current = theme.ui.close_behavior;
-        div()
-            .flex()
-            .items_center()
-            .children(
-                options
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (behavior, label))| {
-                        let this = this.clone();
-                        let active = behavior == current;
-                        let (fill, ink) = if active {
-                            (theme.surface_selected, theme.text_primary)
-                        } else {
-                            (theme.surface_elevated, theme.text_secondary)
-                        };
-                        let segment = segmented_segment(
-                            div().id(("close-behavior", index)),
-                            &theme,
-                            ButtonSize::Medium,
-                            SegmentPosition::at(index, count),
-                        )
-                        .font_weight(FontWeight::MEDIUM)
-                        .cursor_pointer()
-                        .border_color(theme.border)
-                        .raised_flat(fill)
-                        .text_color(ink)
-                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                            this.update(cx, |app, cx| app.set_close_behavior(behavior, cx));
-                        })
-                        .child(label);
-                        if active {
-                            segment.into_any_element()
-                        } else {
-                            crate::motion::hover(
-                                segment,
-                                format!("close-behavior-{index}"),
-                                &theme,
-                                Hover::fill(theme.surface_elevated, theme.surface_hover),
-                            )
-                        }
-                    }),
-            )
-            .into_any_element()
+        let mut group = ButtonGroup::new(SegmentFill::Selected);
+        for (index, (behavior, label)) in options.into_iter().enumerate() {
+            let this = this.clone();
+            group = group.segment(
+                ("close-behavior", index),
+                label,
+                behavior == current,
+                move |_, _, cx| this.update(cx, |app, cx| app.set_close_behavior(behavior, cx)),
+            );
+        }
+        group.render(&theme).into_any_element()
     }
 
     fn set_close_behavior(&mut self, behavior: crate::tray::CloseBehavior, cx: &mut Context<Self>) {
@@ -5840,56 +5768,20 @@ impl OrbitApp {
     /// cannot express `Full` — the state that stops the OS from overruling the
     /// user's own answer.
     fn motion_preference_control(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let options = MotionPreference::ALL;
         let active = theme.ui.motion;
-        let count = options.len();
-        div()
-            .flex()
-            .items_center()
-            .children(options.into_iter().enumerate().map(|(index, preference)| {
-                let this = this.clone();
-                let selected = preference == active;
-                let segment = segmented_segment(
-                    div().id(("motion-preference", index)),
-                    &theme,
-                    ButtonSize::Medium,
-                    SegmentPosition::at(index, count),
-                )
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .raised_flat(theme.surface_elevated)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| app.set_motion_preference(preference, cx));
-                })
-                .child(motion_preference_label(preference));
-                // Both states are the layer's: the hover wash and the chosen
-                // half cross-fade together instead of one winning outright.
-                crate::motion::control(
-                    segment,
-                    format!("motion-preference-{index}"),
-                    &theme,
-                    crate::theme::tokens::Motion::Interaction,
-                    crate::theme::tokens::Motion::Interaction,
-                    if selected { 1.0 } else { 0.0 },
-                    move |segment, hover, selected| {
-                        let fill = crate::motion::blend(
-                            crate::motion::blend(
-                                theme.surface_elevated,
-                                theme.surface_hover,
-                                hover,
-                            ),
-                            theme.surface_active,
-                            selected,
-                        );
-                        segment.bg(fill).text_color(crate::motion::blend(
-                            theme.text_secondary,
-                            theme.text_primary,
-                            selected,
-                        ))
-                    },
-                )
-            }))
-            .into_any_element()
+        let mut group = ButtonGroup::new(SegmentFill::Active);
+        for (index, preference) in MotionPreference::ALL.into_iter().enumerate() {
+            let this = this.clone();
+            group = group.segment(
+                ("motion-preference", index),
+                motion_preference_label(preference),
+                preference == active,
+                move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_motion_preference(preference, cx))
+                },
+            );
+        }
+        group.render(&theme).into_any_element()
     }
 
     /// Two-button segmented control for the follow-up delivery mode.
@@ -5923,36 +5815,17 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
-        let segments = [
+        let mut group = ButtonGroup::new(SegmentFill::Selected);
+        for (label, value_all, id) in [
             (tr!("settings.one_at_a_time"), false, ids[0]),
             (tr!("settings.all"), true, ids[1]),
-        ];
-        let count = segments.len();
-        // One segmented control: only its outer corners round, and the two
-        // halves share the hairline between them.
-        div()
-            .flex()
-            .items_center()
-            .children(
-                segments
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (label, value_all, id))| {
-                        let this = this.clone();
-                        let active = all == value_all;
-                        settings_segment(
-                            div().id(id),
-                            &theme,
-                            SegmentPosition::at(index, count),
-                            active,
-                        )
-                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                            this.update(cx, |app, cx| set(app, value_all, cx));
-                        })
-                        .child(label)
-                    }),
-            )
-            .into_any_element()
+        ] {
+            let this = this.clone();
+            group = group.segment(id, label, all == value_all, move |_, _, cx| {
+                this.update(cx, |app, cx| set(app, value_all, cx))
+            });
+        }
+        group.render(&theme).into_any_element()
     }
 
     /// Update the follow-up mode locally and push it to pi.
@@ -6645,15 +6518,15 @@ impl OrbitApp {
                 let (label, thumbnail) = match mode {
                     AppearanceMode::Light => (
                         tr!("settings.appearance_light"),
-                        palette_thumbnail(light).into_any_element(),
+                        palette_thumbnail(light, thumbnail_radius(&theme)).into_any_element(),
                     ),
                     AppearanceMode::Dark => (
                         tr!("settings.appearance_dark"),
-                        palette_thumbnail(dark).into_any_element(),
+                        palette_thumbnail(dark, thumbnail_radius(&theme)).into_any_element(),
                     ),
                     AppearanceMode::System => (
                         tr!("settings.appearance_system"),
-                        split_thumbnail(light, dark).into_any_element(),
+                        split_thumbnail(light, dark, thumbnail_radius(&theme)).into_any_element(),
                     ),
                 };
                 choice_card(
@@ -6743,7 +6616,8 @@ impl OrbitApp {
                     &theme,
                     id == selected,
                     px(PALETTE_THUMB_H),
-                    palette_thumbnail(prefs.apply(Theme::for_id(id))).into_any_element(),
+                    palette_thumbnail(prefs.apply(Theme::for_id(id)), thumbnail_radius(&theme))
+                        .into_any_element(),
                     id.label().to_string(),
                 )
                 .on_click(move |_, _, cx| {
@@ -7141,26 +7015,19 @@ impl OrbitApp {
                     app.set_wallpaper_mode(WallpaperMode::ALL[next], cx);
                 });
             })
-            .children(
-                WallpaperMode::ALL
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, mode)| {
-                        let this = this.clone();
-                        settings_segment(
-                            div().id(ElementId::Name(
-                                format!("wallpaper-placement-{}", mode.as_str()).into(),
-                            )),
-                            &theme,
-                            SegmentPosition::at(index, count),
-                            current == mode,
-                        )
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |app, cx| app.set_wallpaper_mode(mode, cx));
-                        })
-                        .child(wallpaper_mode_label(mode))
-                    }),
-            )
+            .child({
+                let mut group = ButtonGroup::new(SegmentFill::Selected);
+                for mode in WallpaperMode::ALL {
+                    let this = this.clone();
+                    group = group.segment(
+                        ElementId::Name(format!("wallpaper-placement-{}", mode.as_str()).into()),
+                        wallpaper_mode_label(mode),
+                        current == mode,
+                        move |_, _, cx| this.update(cx, |app, cx| app.set_wallpaper_mode(mode, cx)),
+                    );
+                }
+                group.render(&theme)
+            })
             .into_any_element()
     }
 
@@ -9559,11 +9426,20 @@ fn choice_card(
         )
 }
 
+/// The corner a thumbnail paints inside [`choice_card`]'s frame: the panel
+/// corner less the 1px hairline. The frame's `overflow_hidden` clips to a
+/// rectangle, not to its rounded corners, so a thumbnail whose fills reach
+/// the edge must round itself or its corners poke out past the frame.
+fn thumbnail_radius(theme: &Theme) -> Pixels {
+    (panel::RADIUS.px(theme) - px(1.)).max(px(0.))
+}
+
 /// A miniature workbench painted from one palette: sidebar with its selected
 /// row, a heading and body lines, and the composer with an accent send dot.
 /// The palette owns these colours — this is a picture of it, not chrome — so
 /// it reads the same whichever palette is painting the settings page.
-fn palette_thumbnail(p: Theme) -> Div {
+/// `radius` rounds its outer corners to sit inside the card's frame.
+fn palette_thumbnail(p: Theme, radius: Pixels) -> Div {
     let line = |width: f32, color: Hsla| {
         div()
             .h(px(3.))
@@ -9573,12 +9449,16 @@ fn palette_thumbnail(p: Theme) -> Div {
     };
     div()
         .size_full()
+        .rounded(radius)
         .bg(p.background)
         .flex()
         .child(
             div()
                 .w(gpui::relative(0.3))
                 .h_full()
+                // The sidebar's fill reaches the left edge: round its outer
+                // corners with the thumbnail's.
+                .rounded_l(radius)
                 .bg(p.surface)
                 .border_r_1()
                 .border_color(p.border)
@@ -9636,7 +9516,7 @@ fn palette_thumbnail(p: Theme) -> Div {
 
 /// The System card: the light palette on the left half, the dark one on the
 /// right, each clipped from a full-width thumbnail so the two halves line up.
-fn split_thumbnail(light: Theme, dark: Theme) -> Div {
+fn split_thumbnail(light: Theme, dark: Theme, radius: Pixels) -> Div {
     let half = |palette: Theme, left: bool| {
         let clip = div()
             .absolute()
@@ -9649,7 +9529,7 @@ fn split_thumbnail(light: Theme, dark: Theme) -> Div {
             .top_0()
             .h_full()
             .w(gpui::relative(2.))
-            .child(palette_thumbnail(palette));
+            .child(palette_thumbnail(palette, radius));
         if left {
             clip.left_0().child(picture.left_0())
         } else {
@@ -10166,5 +10046,35 @@ mod settings_search_tests {
     #[test]
     fn no_match_is_empty() {
         assert!(settings_search_hits("zzzzzz").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_corner_tests {
+    use super::*;
+    use crate::theme::ThemeId;
+    use gpui::AbsoluteLength;
+
+    fn radius_of(length: Option<AbsoluteLength>) -> Option<Pixels> {
+        match length? {
+            AbsoluteLength::Pixels(px) => Some(px),
+            _ => None,
+        }
+    }
+
+    /// The card frame clips to a rectangle, so the thumbnail must round its
+    /// own fills to the frame's inner corner or they poke out past it.
+    #[test]
+    fn a_theme_thumbnail_rounds_itself_inside_the_card_frame() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let radius = thumbnail_radius(&theme);
+            assert!(radius > px(0.) && radius < panel::RADIUS.px(&theme), "{id:?}");
+            let mut thumbnail = palette_thumbnail(theme, radius);
+            let corners = thumbnail.style().corner_radii.clone();
+            assert_eq!(radius_of(corners.top_left), Some(radius), "{id:?}");
+            assert_eq!(radius_of(corners.bottom_left), Some(radius), "{id:?}");
+            assert_eq!(radius_of(corners.bottom_right), Some(radius), "{id:?}");
+        }
     }
 }

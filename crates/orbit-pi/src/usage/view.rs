@@ -32,6 +32,8 @@
 //!
 //! Sections: Summary · Usage over time · Breakdown · Records · Daily activity.
 
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::ui::field::search_field;
 use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::ui::card::{card, section};
@@ -67,14 +69,14 @@ use crate::ui::table::{
 };
 use crate::app::{
     button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
-    icon_dyn, picker_entry, press, provider_mark_color, ControlExt, TipExt,
+    icon_dyn, picker_entry, press, provider_mark_color, ControlExt,
     BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, context_menu, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
+    context_menu, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
     Radius, TextSize,
 };
 use crate::theme::{self, Theme};
@@ -114,7 +116,7 @@ impl Render for UsagePage {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.background)
+            .bg(theme.page_canvas())
             .text_color(theme.text_primary)
             .font_family(theme::ui_font_family())
             .text_size(TextSize::Default.px(&theme))
@@ -960,7 +962,7 @@ impl UsagePage {
                 .rounded(panel::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border)
-                .bg(theme.surface_elevated)
+                .bg(theme.page_fill(theme.surface_elevated))
                 .flex()
                 .flex_col()
                 .overflow_hidden()
@@ -992,7 +994,7 @@ impl UsagePage {
                     .flex_1()
                     .min_w(px(150.))
                     .p(DynamicSpacing::Base12.px(&theme))
-                    .bg(theme.surface_elevated)
+                    .bg(theme.page_fill(theme.surface_elevated))
                     .flex()
                     .flex_col()
                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -4058,24 +4060,21 @@ fn open_session_cell(
         .items_center()
         .justify_center()
         .child(
-            icon_button_frame(div(), &theme, ButtonSize::Default)
-                .id(SharedString::from(format!("usage-open-{session}")))
-                .tip(tr!("usage.ctx_open_session"))
-                .cursor_pointer()
-                .opacity(0.)
-                .group_hover("usage-row", |style| style.opacity(1.))
-                .hover_on_glass(&theme)
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    // Do not let the row's own click handler also fire: this
-                    // is a jump to another surface, not a scope change.
-                    cx.stop_propagation();
-                    page.update(cx, |page, cx| page.open_session(window, cx, session));
-                })
-                .child(icon(
-                    "icons/arrow-up-right.svg",
-                    ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_muted,
-                )),
+            IconButton::new(
+                SharedString::from(format!("usage-open-{session}")),
+                "icons/arrow-up-right.svg",
+            )
+            .variant(IconButtonVariant::Glass)
+            .tip(tr!("usage.ctx_open_session"))
+            .on_mouse_down(&theme, move |_, window, cx| {
+                // Do not let the row's own click handler also fire: this
+                // is a jump to another surface, not a scope change.
+                cx.stop_propagation();
+                page.update(cx, |page, cx| page.open_session(window, cx, session));
+            })
+            // Revealed on row hover.
+            .opacity(0.)
+            .group_hover("usage-row", |style| style.opacity(1.)),
         )
         .into_any_element()
 }
@@ -4232,57 +4231,21 @@ where
     L: IntoElement,
 {
     let on_pick: SegmentPick<T> = Rc::new(on_pick);
-    let resting = if inset {
-        theme.background
-    } else {
-        theme.surface_elevated
-    };
-    let radius = button::RADIUS.px(&theme);
-    let many = options.len() > 1;
-    let last = options.len().saturating_sub(1);
-    let mut row = div().flex().items_center();
-    for (ix, option) in options.iter().copied().enumerate() {
-        let is_active = option == active;
-        let is_enabled = enabled(option);
+    // A metric with no source data stays visible but disabled, so the group
+    // keeps its shape as availability changes.
+    let mut group = ButtonGroup::new(SegmentFill::Active).inset(inset);
+    for option in options.iter().copied() {
         let handler = on_pick.clone();
-        row = row.child(
-            button_frame(div(), &theme, ButtonSize::Medium)
-                .id(SharedString::from(format!("{prefix}-{}", key(option))))
-                .rounded_none()
-                .border_1()
-                .border_color(theme.border)
-                // One control: only the outer corners round, and the segments
-                // share the hairline between them.
-                .when(!many, |tab| tab.rounded(radius))
-                .when(many && ix == 0, |tab| tab.rounded_l(radius))
-                .when(many && ix == last, |tab| tab.rounded_r(radius).border_l_0())
-                .when(many && ix > 0 && ix < last, |tab| tab.border_l_0())
-                .when(is_active, |tab| {
-                    tab.raised_flat(theme.surface_active)
-                        .text_color(theme.text_primary)
-                        .font_weight(FontWeight::MEDIUM)
-                        .cursor_pointer()
-                })
-                .when(!is_active && is_enabled, |tab| {
-                    tab.raised_flat(resting)
-                        .text_color(theme.text_secondary)
-                        .cursor_pointer()
-                        .hover_state(&theme)
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            handler(option, window, cx)
-                        })
-                })
-                // A metric with no source data stays visible but disabled, so
-                // the group keeps its shape as availability changes.
-                .when(!is_active && !is_enabled, |tab| {
-                    tab.bg(resting)
-                        .text_color(theme.text_disabled)
-                        .cursor_default()
-                })
-                .child(label(option)),
-        );
+        group = group
+            .segment(
+                SharedString::from(format!("{prefix}-{}", key(option))),
+                label(option),
+                option == active,
+                move |_, window, cx| handler(option, window, cx),
+            )
+            .disabled(option != active && !enabled(option));
     }
-    row.into_any_element()
+    group.render(&theme).into_any_element()
 }
 
 /// A search field, shared by the Sessions table and the Breakdown table so both
@@ -4347,6 +4310,8 @@ fn table_pager(
     let square = ButtonSize::Medium.height(&theme);
     let arrow = |key: &'static str, path: &'static str, target: usize, enabled: bool| {
         let on_page = on_page.clone();
+        // Bespoke: a pager step sharing the bordered square of the page
+        // numbers beside it, not a toolbar icon button.
         let frame = icon_button_frame(div(), &theme, ButtonSize::Medium)
             .id(SharedString::from(format!("{id}-{key}")))
             .border_1()

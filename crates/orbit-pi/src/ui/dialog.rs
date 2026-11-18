@@ -57,43 +57,148 @@ pub(crate) enum ModalSubtitle {
 }
 
 /// A modal's header: the headline over an optional subtitle, with a hairline
-/// below. Callers localize the text.
+/// below. Callers localize the text. The shorthand for the common
+/// [`ModalHeader`].
 pub(crate) fn modal_header(
     theme: &Theme,
     title: impl Into<SharedString>,
     subtitle: Option<ModalSubtitle>,
 ) -> gpui::Div {
-    div()
-        .px(modal::header_padding_x(theme))
-        .pt(modal::header_padding_top(theme))
-        .pb(modal::header_padding_bottom(theme))
-        .flex_none()
-        .flex()
-        .flex_col()
-        .gap(modal::header_gap(theme))
-        .border_b_1()
-        .border_color(theme.border)
-        .child(
-            div()
-                .text_size(modal::HEADLINE.px(theme))
-                .line_height(modal::HEADLINE.line_height(theme))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_primary)
-                .child(title.into()),
-        )
-        .children(subtitle.map(|subtitle| {
-            match subtitle {
-                ModalSubtitle::Text(text) => div()
+    let header = ModalHeader::new(title);
+    match subtitle {
+        Some(subtitle) => header.subtitle(subtitle),
+        None => header,
+    }
+    .render(theme)
+}
+
+/// Every modal's header, Zed's `ModalHeader`: an optional eyebrow (where the
+/// dialog comes from), the headline, an optional subtitle and description,
+/// with an optional leading mark and trailing control (a close button) beside
+/// the text, and a hairline below unless the body continues the header.
+pub(crate) struct ModalHeader {
+    title: SharedString,
+    eyebrow: Option<SharedString>,
+    subtitle: Option<ModalSubtitle>,
+    description: Option<SharedString>,
+    leading: Option<gpui::AnyElement>,
+    trailing: Option<gpui::AnyElement>,
+    divider: bool,
+}
+
+impl ModalHeader {
+    pub(crate) fn new(title: impl Into<SharedString>) -> Self {
+        Self {
+            title: title.into(),
+            eyebrow: None,
+            subtitle: None,
+            description: None,
+            leading: None,
+            trailing: None,
+            divider: true,
+        }
+    }
+
+    /// A quiet line above the title: what is asking ("Question").
+    pub(crate) fn eyebrow(mut self, eyebrow: impl Into<SharedString>) -> Self {
+        self.eyebrow = Some(eyebrow.into());
+        self
+    }
+
+    pub(crate) fn subtitle(mut self, subtitle: ModalSubtitle) -> Self {
+        self.subtitle = Some(subtitle);
+        self
+    }
+
+    /// A paragraph under the title in secondary ink (a confirm's message).
+    /// Blank text is skipped.
+    pub(crate) fn description(mut self, description: impl Into<SharedString>) -> Self {
+        let description = description.into();
+        if !description.trim().is_empty() {
+            self.description = Some(description);
+        }
+        self
+    }
+
+    /// A mark before the text (an extension's icon tile).
+    pub(crate) fn leading(mut self, leading: impl gpui::IntoElement) -> Self {
+        self.leading = Some(leading.into_any_element());
+        self
+    }
+
+    /// A control after the text (a close button).
+    pub(crate) fn trailing(mut self, trailing: impl gpui::IntoElement) -> Self {
+        self.trailing = Some(trailing.into_any_element());
+        self
+    }
+
+    /// The hairline below; on by default. Off when the body reads as the
+    /// header's continuation (a question and its options).
+    pub(crate) fn divider(mut self, divider: bool) -> Self {
+        self.divider = divider;
+        self
+    }
+
+    pub(crate) fn render(self, theme: &Theme) -> gpui::Div {
+        let text = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(modal::header_gap(theme))
+            .children(self.eyebrow.map(|eyebrow| {
+                div()
                     .text_size(TextSize::Small.px(theme))
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_muted)
-                    .child(text),
-                ModalSubtitle::Id(id) => div()
-                    .font_family(theme::code_font_family())
-                    .text_size(theme.code_px(11.))
-                    .text_color(theme.text_muted)
-                    .child(id),
-            }
-        }))
+                    .child(eyebrow)
+            }))
+            .child(
+                div()
+                    .whitespace_normal()
+                    .text_size(modal::HEADLINE.px(theme))
+                    .line_height(modal::HEADLINE.line_height(theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .child(self.title),
+            )
+            .children(self.subtitle.map(|subtitle| {
+                match subtitle {
+                    ModalSubtitle::Text(text) => div()
+                        .text_size(TextSize::Small.px(theme))
+                        .text_color(theme.text_muted)
+                        .child(text),
+                    ModalSubtitle::Id(id) => div()
+                        .font_family(theme::code_font_family())
+                        .text_size(theme.code_px(11.))
+                        .text_color(theme.text_muted)
+                        .child(id),
+                }
+            }))
+            .children(self.description.map(|description| {
+                div()
+                    .whitespace_normal()
+                    .text_size(TextSize::Default.px(theme))
+                    .text_color(theme.text_secondary)
+                    .child(description)
+            }));
+        let frame = div()
+            .px(modal::header_padding_x(theme))
+            .pt(modal::header_padding_top(theme))
+            .pb(modal::header_padding_bottom(theme))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base12.px(theme))
+            .children(self.leading)
+            .child(text)
+            .children(self.trailing);
+        if self.divider {
+            frame.border_b_1().border_color(theme.border)
+        } else {
+            frame
+        }
+    }
 }
 
 /// A modal's footer: actions at the trailing edge (Cancel, then the primary),
@@ -110,6 +215,20 @@ pub(crate) fn modal_footer(theme: &Theme) -> gpui::Div {
         .gap(modal::footer_gap(theme))
         .border_t_1()
         .border_color(theme.border)
+}
+
+/// A modal footer's button as a keyboard stop: a [`Button`] tracking `focus`,
+/// so the modal's Tab ring can reach it and Enter / Space press it. Finish it
+/// with `.size(…)` if needed and `.on_click(…)`.
+pub(crate) fn modal_button(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    variant: crate::ui::button::ButtonVariant,
+    focus: &FocusHandle,
+) -> crate::ui::button::Button {
+    crate::ui::button::Button::new(id, variant)
+        .label(label)
+        .focus(focus)
 }
 
 /// The control to hand focus back to when a modal surface closes
@@ -250,5 +369,21 @@ mod tests {
         // Gone: report once.
         assert_eq!(focus.closed_with(false, |_| ()), Some(()));
         assert_eq!(focus.closed_with(false, |_| ()), None);
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+    use crate::theme::ThemeId;
+    use gpui::Styled;
+
+    #[test]
+    fn a_header_draws_its_hairline_unless_the_body_continues_it() {
+        let theme = Theme::for_id(ThemeId::ALL[0]);
+        let mut ruled = ModalHeader::new("Add server").render(&theme);
+        let mut open = ModalHeader::new("Question").divider(false).render(&theme);
+        assert_eq!(ruled.style().border_color, Some(theme.border));
+        assert!(open.style().border_color.is_none());
     }
 }

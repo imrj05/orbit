@@ -192,8 +192,9 @@ fn the_remote_host_editor_returns_focus_to_its_opener(cx: &mut gpui::TestAppCont
     });
 }
 
-/// Tab and Shift-Tab walk the modal's own fields and wrap, instead of leaving
-/// for the workbench behind the scrim.
+/// Tab and Shift-Tab walk the modal's own fields, then its footer (Cancel,
+/// then Save), and wrap, instead of leaving for the workbench behind the
+/// scrim.
 #[gpui::test]
 fn tab_cycles_inside_an_open_form_modal(cx: &mut gpui::TestAppContext) {
     let (app, cx) = open_app(cx);
@@ -211,6 +212,16 @@ fn tab_cycles_inside_an_open_form_modal(cx: &mut gpui::TestAppContext) {
             .into_iter()
             .find(|(_, field)| field.read(cx).focus_handle(cx).is_focused(window))
             .map(|(name, _)| name)
+            .or_else(|| {
+                let app = app.read(cx);
+                if app.modal_cancel_focus.is_focused(window) {
+                    Some("cancel")
+                } else if app.modal_confirm_focus.is_focused(window) {
+                    Some("save")
+                } else {
+                    None
+                }
+            })
         })
     };
 
@@ -222,16 +233,24 @@ fn tab_cycles_inside_an_open_form_modal(cx: &mut gpui::TestAppContext) {
     cx.run_until_parked();
     assert_eq!(
         focused_field(&app, cx),
-        Some("name"),
-        "Shift-Tab wraps to the last field"
+        Some("save"),
+        "Shift-Tab wraps to the footer's primary action"
     );
 
-    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("shift-tab shift-tab");
+    cx.run_until_parked();
+    assert_eq!(
+        focused_field(&app, cx),
+        Some("name"),
+        "then up through Cancel"
+    );
+
+    cx.simulate_keystrokes("tab tab tab");
     cx.run_until_parked();
     assert_eq!(
         focused_field(&app, cx),
         Some("ssh"),
-        "Tab wraps to the first field"
+        "Tab passes Cancel and Save, then wraps to the first field"
     );
 }
 

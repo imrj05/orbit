@@ -8,13 +8,12 @@
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window};
 
 use crate::app::helpers::empty_state_glyph;
-use crate::app::{button_frame, icon, icon_button_frame, press, ControlExt, BUTTON_GROUP};
+use crate::app::{button_frame, icon, press, ControlExt, BUTTON_GROUP};
 use crate::git::RefKind;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::Theme;
-use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::button::{Button, ButtonVariant, IconButton};
 use crate::ui::chip::{Badge, BadgeFill};
-use crate::ui::tooltip::Tooltip;
 
 /// The color for a `git status` porcelain badge byte.
 pub fn status_color(badge: char, theme: Theme) -> Hsla {
@@ -92,27 +91,13 @@ pub fn row_button(
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let label = tr!(tip_key);
-    press(
-        icon_button_frame(
-            div().id(gpui::ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Default,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .hover_state(&theme),
-    )
-    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-    .on_click(move |event, window, cx| {
-        cx.stop_propagation();
-        listener(event, window, cx);
-    })
-    .child(icon(
-        icon_path,
-        ButtonSize::Default.icon_size().px(&theme),
-        theme.text_muted,
-    ))
-    .into_any_element()
+    IconButton::new(gpui::ElementId::Name(id.into()), icon_path)
+        .tip(label)
+        .on_click(&theme, move |event, window, cx| {
+            cx.stop_propagation();
+            listener(event, window, cx);
+        })
+        .into_any_element()
 }
 
 /// A small ref badge (`main`, `origin/main`, `v1.2.0`), colored by kind.

@@ -18,6 +18,7 @@ use crate::motion::Hover;
 use crate::remote_hosts::{self, ProbeFailure, RemoteHost};
 use crate::remote_sessions::{self, RemoteSession};
 use crate::theme::tokens::{list_item, ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::ui::button::IconButton;
 
 /// What a server's list is doing, beside the sessions it last returned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -359,33 +360,24 @@ pub(super) fn render_remote_host_row(
                         .text_color(theme.text_secondary)
                         .child(name.to_string()),
                 )
-                .child(crate::motion::hover(
-                    icon_button_frame(
-                        div().id(ElementId::Name(
-                            format!("remote-host-refresh-{name}").into(),
-                        )),
-                        &theme,
-                        ButtonSize::Compact,
-                    )
-                    .tip(tr!("remote_sessions.refresh"))
-                    .cursor_pointer()
-                    .opacity(0.)
-                    .group_hover("remote-host-row", |button| button.opacity(1.))
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        cx.stop_propagation();
-                        refresh.update(cx, |app, cx| {
-                            app.refresh_remote_host_sessions(&refresh_name, cx)
-                        });
-                    })
-                    .child(icon(
+                .child(
+                    IconButton::new(
+                        ElementId::Name(format!("remote-host-refresh-{name}").into()),
                         "icons/refresh.svg",
-                        ButtonSize::Compact.icon_size().px(&theme),
-                        theme.text_muted,
-                    )),
-                    format!("remote-host-refresh-{name}"),
-                    &theme,
-                    Hover::wash(&theme),
-                ))
+                    )
+                    .size(ButtonSize::Compact)
+                    .tip(tr!("remote_sessions.refresh"))
+                    .faded(&theme, |el| {
+                        el.opacity(0.)
+                            .group_hover("remote-host-row", |button| button.opacity(1.))
+                            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                refresh.update(cx, |app, cx| {
+                                    app.refresh_remote_host_sessions(&refresh_name, cx)
+                                });
+                            })
+                    }),
+                )
                 .child(trailing),
             id,
             &theme,

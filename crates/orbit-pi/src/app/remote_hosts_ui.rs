@@ -18,6 +18,10 @@ use super::mcp_ui::mcp_text_button;
 use super::*;
 use crate::remote_hosts::{self, RemoteHost};
 use crate::theme::tokens::{input, modal, panel, ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::ui::button::ButtonVariant;
+use crate::ui::button::IconButton;
+use crate::ui::dialog::modal_button;
+use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
 
 /// How many `~/.ssh/config` aliases the form offers at once.
@@ -711,27 +715,20 @@ impl OrbitApp {
         let switch_name = name.clone();
         let menu_name = name.clone();
         let menu_this = this.clone();
-        let more = icon_button_frame(
-            div().id(ElementId::Name(format!("remote-host-more-{name}").into())),
-            &theme,
-            ButtonSize::Default,
+        let more = IconButton::new(
+            ElementId::Name(format!("remote-host-more-{name}").into()),
+            "icons/more.svg",
         )
-        .relative()
+        .open(menu_open)
+        .ink(theme.text_secondary)
         .tip(tr!("remote_hosts.more"))
-        .cursor_pointer()
-        .when(menu_open, |button| button.bg(theme.surface_active))
-        .pressed_state(&theme, PressedRamp::Wash)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        .on_mouse_up(&theme, move |_, _, cx| {
             cx.stop_propagation();
             menu_this.update(cx, |app, cx| {
                 app.toggle_remote_host_menu(menu_name.clone(), cx)
             });
         })
-        .child(icon(
-            "icons/more.svg",
-            ButtonSize::Default.icon_size().px(&theme),
-            theme.text_secondary,
-        ))
+        .relative()
         .children(menu_open.then(|| remote_host_menu(&name, theme, this.clone())));
 
         let header = div()
@@ -934,12 +931,7 @@ impl OrbitApp {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_secondary),
                     )
-                    .child(
-                        input_field_frame(div(), &theme)
-                            .w_full()
-                            .bg(theme.background)
-                            .child(input),
-                    )
+                    .child(TextField::new(input, theme.background).render(&theme))
                     .children(hint.map(|hint| {
                         div()
                             .text_size(TextSize::Small.px(&theme))
@@ -1061,39 +1053,28 @@ impl OrbitApp {
                 }
             },
         );
-        let cancel = button_frame(
-            div().id("remote-host-editor-cancel"),
-            &theme,
-            ButtonSize::Large,
+        let cancel = modal_button(
+            "remote-host-editor-cancel",
+            tr!("remote_hosts.cancel"),
+            ButtonVariant::Secondary,
+            &self.modal_cancel_focus,
         )
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
-        .on_mouse_up(MouseButton::Left, {
+        .size(ButtonSize::Large)
+        .on_click(&theme, {
             let this = this.clone();
             move |_, _, cx| this.update(cx, |app, cx| app.remote_host_editor_close(cx))
-        })
-        .child(
-            div()
-                .text_color(theme.text_secondary)
-                .child(tr!("remote_hosts.cancel")),
-        );
-        let save = button_frame(
-            div().id("remote-host-editor-save"),
-            &theme,
-            ButtonSize::Large,
+        });
+        let save = modal_button(
+            "remote-host-editor-save",
+            tr!("remote_hosts.save"),
+            ButtonVariant::Primary,
+            &self.modal_confirm_focus,
         )
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM)
-        .raised(theme.action, &theme)
-        .text_color(theme.action_fg)
-        .pressed_state(&theme, PressedRamp::Action)
-        .on_mouse_up(MouseButton::Left, {
+        .size(ButtonSize::Large)
+        .on_click(&theme, {
             let this = this.clone();
             move |_, _, cx| this.update(cx, |app, cx| app.remote_host_editor_save(cx))
-        })
-        .child(tr!("remote_hosts.save"));
+        });
 
         let footer = modal_footer(&theme)
             .child(test)

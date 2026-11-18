@@ -22,10 +22,12 @@ use super::helpers::*;
 use super::*;
 use crate::motion::Hover;
 use crate::theme::tokens::{
-    context_menu, input, modal, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
-    Radius, RaisedExt, TextSize,
+    context_menu, modal, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
+    RaisedExt, TextSize,
 };
 use crate::ui::banner::{Banner, BannerTone};
+use crate::ui::button::IconButton;
+use crate::ui::field::{form_label, FormRow, TextField};
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::worktree::{self, Worktree, WorktreeError, WorktreeManager};
 use crate::worktree_setup;
@@ -1435,10 +1437,9 @@ impl OrbitApp {
     /// The Settings field for a worktree text input (fixed width so the two
     /// rows align).
     fn settings_text_field(&self, input: &Entity<ComposerInput>, theme: &Theme) -> AnyElement {
-        input_field_frame(div(), theme)
+        TextField::new(input.clone(), theme.background)
+            .render(theme)
             .w(px(240.))
-            .bg(theme.background)
-            .child(input.clone())
             .into_any_element()
     }
 
@@ -1526,7 +1527,7 @@ impl OrbitApp {
             .w_full()
             .flex()
             .flex_col()
-            .bg(theme.background)
+            .bg(theme.page_canvas())
             .text_color(theme.text_primary)
             .font_family(theme::ui_font_family())
             .child(self.worktrees_header(theme, this.clone(), cx))
@@ -1843,85 +1844,35 @@ impl OrbitApp {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let mut card = div()
-            .w_full()
-            .min_w_0()
-            .bg(theme.surface_secondary)
-            .border_1()
-            .border_color(theme.border)
-            .rounded(panel::RADIUS.px(&theme))
-            .px(DynamicSpacing::Base16.px(&theme))
-            .py(DynamicSpacing::Base12.px(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base08.px(&theme));
-
-        let (glyph, glyph_color, title) = match &state.outcome {
-            None => (
-                "icons/loader.svg",
-                theme.text_muted,
-                tr!("worktree.setup.running"),
-            ),
-            Some(outcome) if outcome.success => (
-                "icons/check.svg",
-                theme.success,
-                tr!("worktree.setup.succeeded"),
-            ),
-            Some(_) => (
-                "icons/circle-x.svg",
-                theme.error,
-                tr!("worktree.setup.failed"),
-            ),
+        let (tone, title) = match &state.outcome {
+            None => (BannerTone::Info, tr!("worktree.setup.running")),
+            Some(outcome) if outcome.success => {
+                (BannerTone::Success, tr!("worktree.setup.succeeded"))
+            }
+            Some(_) => (BannerTone::Error, tr!("worktree.setup.failed")),
         };
-        card = card.child(
+        let mut banner = Banner::new(tone).title(title).line(
             div()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(if state.outcome.is_none() {
-                    spinner(
-                        "worktree-setup-spin",
-                        IconSize::Medium.px(&theme),
-                        glyph_color,
-                        theme,
-                    )
-                } else {
-                    icon(glyph, IconSize::Medium.px(&theme), glyph_color).into_any_element()
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(DynamicSpacing::Base02.px(&theme))
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_primary)
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .truncate()
-                                .child(tr!(
-                                    "worktree.setup.script_label",
-                                    name = name.clone(),
-                                    script = state.script.to_string_lossy()
-                                )),
-                        ),
-                ),
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
+                .truncate()
+                .child(tr!(
+                    "worktree.setup.script_label",
+                    name = name.clone(),
+                    script = state.script.to_string_lossy()
+                )),
         );
+        if state.outcome.is_none() {
+            banner = banner.glyph(spinner(
+                "worktree-setup-spin",
+                IconSize::Medium.px(&theme),
+                theme.text_muted,
+                theme,
+            ));
+        }
         if let Some(outcome) = &state.outcome {
             if !outcome.success {
-                card = card.child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .child(outcome.summary()),
-                );
+                banner = banner.detail(outcome.summary());
             }
             let mut actions = div()
                 .flex()
@@ -1962,10 +1913,10 @@ impl OrbitApp {
                 this.clone(),
                 |app, cx| app.dismiss_worktree_setup(cx),
             ));
-            card = card.child(actions);
+            banner = banner.line(actions);
             if state.expanded {
                 let output = outcome.output();
-                card = card.child(
+                banner = banner.line(
                     div()
                         .id("worktree-setup-output")
                         .max_h(px(220.))
@@ -1986,7 +1937,7 @@ impl OrbitApp {
                 );
             }
         }
-        Some(card.into_any_element())
+        Some(banner.render(&theme))
     }
 
     /// The page-level error banner, with the raw Git text preserved.
@@ -2052,7 +2003,7 @@ impl OrbitApp {
                 .debug_selector(|| "worktree-howto-card".to_string())
                 .w_full()
                 .min_w_0()
-                .bg(theme.surface_secondary)
+                .bg(theme.page_fill(theme.surface_secondary))
                 .border_1()
                 .border_color(theme.border)
                 .rounded(panel::RADIUS.px(&theme))
@@ -2235,31 +2186,22 @@ impl OrbitApp {
                 let menu_this = this.clone();
                 let path_for_menu = path.clone();
                 let row_menu = menu_open.clone();
-                icon_button_frame(
-                    div().id(ElementId::Name(
-                        format!("worktree-more-{}", path.to_string_lossy()).into(),
-                    )),
-                    &theme,
-                    ButtonSize::Compact,
+                IconButton::new(
+                    ElementId::Name(format!("worktree-more-{}", path.to_string_lossy()).into()),
+                    "icons/more.svg",
                 )
-                .group(BUTTON_GROUP)
-                .relative()
+                .size(ButtonSize::Compact)
                 .tip(tr!("sidebar.more_actions"))
-                .cursor_pointer()
-                .opacity(if row_menu.is_some() { 1.0 } else { 0.0 })
-                .group_hover("worktree-row", |style| style.opacity(1.))
-                .pressed_state(&theme, PressedRamp::Wash)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                .on_mouse_up(&theme, move |_, _, cx| {
                     cx.stop_propagation();
                     button_this.update(cx, |app, cx| {
                         app.toggle_worktree_menu(path_for_menu.clone(), None, cx)
                     });
                 })
-                .child(icon(
-                    "icons/more.svg",
-                    ButtonSize::Compact.icon_size().px(&theme),
-                    theme.text_muted,
-                ))
+                .relative()
+                // Revealed on row hover, or while its menu is open.
+                .opacity(if row_menu.is_some() { 1.0 } else { 0.0 })
+                .group_hover("worktree-row", |style| style.opacity(1.))
                 .children(row_menu.map(|menu| worktree_row_menu(&menu, worktree, theme, menu_this)))
             });
         crate::motion::hover(
@@ -2333,22 +2275,11 @@ impl OrbitApp {
         modal_card(&theme)
             .w(px(520.))
             .max_h(px(560.))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::Large.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(title),
-                    ),
-            )
+            .child(crate::ui::dialog::modal_header(&theme, title, None))
             .child(
                 div()
                     .id("worktree-dialog-body")
+                    .pt(modal::header_padding_bottom(&theme))
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -2422,19 +2353,13 @@ impl OrbitApp {
                     &theme,
                     tr!("working_folder.clone_url"),
                     None,
-                    input_field_frame(div(), &theme)
-                        .w_full()
-                        .bg(theme.background)
-                        .child(self.clone_url_input.clone()),
+                    TextField::new(self.clone_url_input.clone(), theme.background).render(&theme),
                 ))
                 .child(worktree_field(
                     &theme,
                     tr!("working_folder.clone_name"),
                     None,
-                    input_field_frame(div(), &theme)
-                        .w_full()
-                        .bg(theme.background)
-                        .child(self.clone_name_input.clone()),
+                    TextField::new(self.clone_name_input.clone(), theme.background).render(&theme),
                 ))
                 .child(worktree_field(
                     &theme,
@@ -2517,20 +2442,17 @@ impl OrbitApp {
             &theme,
             tr!("worktree.field.name"),
             Some(&tr!("worktree.field.name_hint")),
-            input_field_frame(div(), &theme)
-                .w_full()
-                .bg(theme.background)
-                .child(self.worktree_name_input.clone()),
+            TextField::new(self.worktree_name_input.clone(), theme.background).render(&theme),
         );
         let mode = self.worktree_branch_mode;
         let mut branch_section = div()
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .child(worktree_field_label(
-                &theme,
+            .child(form_label(
                 tr!("worktree.field.branch"),
-                Some(&tr!("worktree.field.branch_hint")),
+                Some(tr!("worktree.field.branch_hint").into()),
+                &theme,
             ))
             .child(
                 div()
@@ -2563,16 +2485,12 @@ impl OrbitApp {
         if mode == WorktreeBranchMode::New {
             branch_section = branch_section
                 .child(
-                    input_field_frame(div(), &theme)
-                        .w_full()
-                        .bg(theme.background)
-                        .child(self.worktree_branch_input.clone()),
+                    TextField::new(self.worktree_branch_input.clone(), theme.background)
+                        .render(&theme),
                 )
                 .child(
-                    input_field_frame(div(), &theme)
-                        .w_full()
-                        .bg(theme.background)
-                        .child(self.worktree_start_input.clone()),
+                    TextField::new(self.worktree_start_input.clone(), theme.background)
+                        .render(&theme),
                 )
                 .child(
                     div()
@@ -2829,10 +2747,7 @@ impl OrbitApp {
             &theme,
             tr!("worktree.field.new_name"),
             Some(&tr!("worktree.field.rename_hint")),
-            input_field_frame(div(), &theme)
-                .w_full()
-                .bg(theme.background)
-                .child(self.worktree_field_input.clone()),
+            TextField::new(self.worktree_field_input.clone(), theme.background).render(&theme),
         );
         let footer = worktree_dialog_footer(
             theme,
@@ -2867,10 +2782,7 @@ impl OrbitApp {
             &theme,
             tr!("worktree.field.destination"),
             Some(&tr!("worktree.field.move_hint")),
-            input_field_frame(div(), &theme)
-                .w_full()
-                .bg(theme.background)
-                .child(self.worktree_field_input.clone()),
+            TextField::new(self.worktree_field_input.clone(), theme.background).render(&theme),
         );
         let footer = worktree_dialog_footer(
             theme,
@@ -3619,16 +3531,11 @@ impl OrbitApp {
             );
         }
         popup = popup.child(working_folder_keyboard_hints(&theme));
-        Some(
-            anchored_popover(
-                Corner::BottomLeft,
-                point(px(0.), -popover::MENU_OFFSET),
-                popup,
-                "anchored_popover-in-9",
-                &theme,
-            )
-            .into_any_element(),
-        )
+        Some(crate::ui::popover::column_menu(
+            popup,
+            "anchored_popover-in-9",
+            &theme,
+        ))
     }
 
     /// One row of the picker: this device, or a remote host. Both are two-line
@@ -3986,34 +3893,13 @@ fn worktree_field(
     hint: Option<&str>,
     control: impl IntoElement,
 ) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(input::gap(theme))
-        .child(worktree_field_label(theme, label, hint))
-        .child(control)
-        .into_any_element()
-}
-
-fn worktree_field_label(theme: &Theme, label: String, hint: Option<&str>) -> AnyElement {
-    let mut column = div()
-        .flex()
-        .flex_col()
-        .gap(DynamicSpacing::Base02.px(theme))
-        .child(
-            input_label(label, theme)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_secondary),
-        );
-    if let Some(hint) = hint {
-        column = column.child(
-            div()
-                .text_size(TextSize::XSmall.px(theme))
-                .text_color(theme.text_muted)
-                .child(hint.to_string()),
-        );
+    let row = FormRow::new(label, control);
+    match hint {
+        Some(hint) => row.hint(hint.to_string()),
+        None => row,
     }
-    column.into_any_element()
+    .render(theme)
+    .into_any_element()
 }
 
 /// A dialog footer: Cancel on the left, the primary action on the right.

@@ -21,6 +21,9 @@ use super::ssh_auth_ui::AuthThen;
 use super::*;
 use crate::remote_hosts::{self, ListedModel, ProbeFailure, RemoteHost};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::ui::button::ButtonVariant;
+use crate::ui::dialog::modal_button;
+use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
 
 /// One host's provider listing.
@@ -839,12 +842,7 @@ impl OrbitApp {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_secondary),
             )
-            .child(
-                input_field_frame(div(), &theme)
-                    .w_full()
-                    .bg(theme.background)
-                    .child(editor.input.clone()),
-            )
+            .child(TextField::new(editor.input.clone(), theme.background).render(&theme))
             .child(
                 div()
                     .text_size(TextSize::Small.px(&theme))
@@ -887,26 +885,34 @@ impl OrbitApp {
                 )
             }))
             .child(div().flex_1())
-            .child(mcp_text_button(
-                "remote-key-cancel".into(),
-                tr!("remote_hosts.cancel"),
-                theme,
-                false,
-                this.clone(),
-                |app, _, cx| app.close_remote_key_editor(cx),
-            ))
-            .child(mcp_text_button(
-                "remote-key-save".into(),
-                if editor.saving {
-                    tr!("providers_remote.key_saving")
-                } else {
-                    tr!("remote_hosts.save")
-                },
-                theme,
-                true,
-                this.clone(),
-                |app, _, cx| app.save_remote_key(false, cx),
-            ));
+            .child({
+                let this = this.clone();
+                modal_button(
+                    "remote-key-cancel",
+                    tr!("remote_hosts.cancel"),
+                    ButtonVariant::Secondary,
+                    &self.modal_cancel_focus,
+                )
+                .on_click(&theme, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.close_remote_key_editor(cx))
+                })
+            })
+            .child({
+                let this = this.clone();
+                modal_button(
+                    "remote-key-save",
+                    if editor.saving {
+                        tr!("providers_remote.key_saving")
+                    } else {
+                        tr!("remote_hosts.save")
+                    },
+                    ButtonVariant::Primary,
+                    &self.modal_confirm_focus,
+                )
+                .on_click(&theme, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.save_remote_key(false, cx))
+                })
+            });
 
         let card = modal_card(&theme)
             .debug_selector(|| "remote-key-dialog".to_string())
@@ -920,28 +926,14 @@ impl OrbitApp {
             .on_action(
                 cx.listener(|app, _: &crate::PickerConfirm, _, cx| app.save_remote_key(false, cx)),
             )
-            .child(
-                div()
-                    .px(crate::theme::tokens::modal::header_padding_x(&theme))
-                    .pt(crate::theme::tokens::modal::header_padding_top(&theme))
-                    .pb(crate::theme::tokens::modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(crate::theme::tokens::modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(crate::theme::tokens::modal::HEADLINE.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(tr!(
-                                "providers_remote.key_title",
-                                host = editor.host.name.clone()
-                            )),
-                    ),
-            )
+            .child(crate::ui::dialog::modal_header(
+                &theme,
+                tr!(
+                    "providers_remote.key_title",
+                    host = editor.host.name.clone()
+                ),
+                None,
+            ))
             .child(
                 div()
                     .id("remote-key-body")

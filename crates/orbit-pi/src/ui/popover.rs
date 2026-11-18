@@ -181,6 +181,27 @@ pub(crate) fn dropdown_below(
         .into_any_element()
 }
 
+/// A menu that opens upward out of a column of controls (the composer's
+/// access, workflow, add, model and thinking menus, the "Work in" picker and
+/// the `@`/`/` autocomplete): the menu is the column's first child, painted
+/// [`popover::MENU_OFFSET`] above the trigger below it, snapped to the window.
+/// Unlike [`dropdown_above`] it needs no zero-size anchor, because the column
+/// already places it.
+pub(crate) fn column_menu(
+    menu: impl IntoElement + 'static,
+    id: impl Into<SharedString>,
+    theme: &Theme,
+) -> AnyElement {
+    anchored_popover(
+        Corner::BottomLeft,
+        gpui::point(gpui::px(0.), -crate::theme::tokens::popover::MENU_OFFSET),
+        menu,
+        id,
+        theme,
+    )
+    .into_any_element()
+}
+
 /// [`dropdown_below`]'s twin for a trigger near the bottom of the window (the
 /// composer, a commit bar): the menu sits `gap` above the trigger's top edge.
 pub(crate) fn dropdown_above(

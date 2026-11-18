@@ -41,8 +41,8 @@ use gpui::{
 use std::time::{Duration, Instant};
 
 use crate::app::{
-    button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_surface,
-    provider_mark_color, ControlExt, ModelEntry, PressedRamp, StatefulControlExt, TipExt,
+    button_frame, icon, icon_dyn, picker_entry, picker_surface, provider_mark_color, ControlExt,
+    ModelEntry, PressedRamp, StatefulControlExt, TipExt,
 };
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
@@ -55,6 +55,7 @@ use crate::theme::tokens::{
     TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::button::IconButton;
 use crate::ui::field::search_field;
 use crate::ui::popover::PopoverExt;
 
@@ -1363,30 +1364,24 @@ fn favorite_button(
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    icon_button_frame(div(), &theme, ButtonSize::Default)
+    IconButton::new("model-favorite", "icons/star.svg")
+        .ink(if favorited {
+            theme.accent_text
+        } else {
+            theme.text_muted
+        })
         .tip(if favorited {
             tr!("model_selector.unfavorite")
         } else {
             tr!("model_selector.favorite")
         })
-        .cursor_pointer()
-        .group_hover("picker-row", |s| s.opacity(1.))
-        .when(!favorited, |button| button.opacity(0.))
-        .hover_state(&theme)
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+        .on_mouse_down(&theme, move |_, window, cx| {
             // Keep the row's own click (model selection) from also firing.
             cx.stop_propagation();
             on_click(window, cx);
         })
-        .child(icon(
-            "icons/star.svg",
-            ButtonSize::Default.icon_size().px(&theme),
-            if favorited {
-                theme.accent_text
-            } else {
-                theme.text_muted
-            },
-        ))
+        .group_hover("picker-row", |s| s.opacity(1.))
+        .when(!favorited, |button| button.opacity(0.))
         .into_any_element()
 }
 

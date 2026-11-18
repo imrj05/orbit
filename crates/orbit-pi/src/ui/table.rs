@@ -244,7 +244,7 @@ pub(crate) fn data_table(
         .min_w(px(total_w))
         .flex()
         .items_center()
-        .bg(theme.surface_secondary)
+        .bg(theme.page_fill(theme.surface_secondary))
         .border_b_1()
         .border_color(theme.border);
     for (ix, column) in columns.iter().enumerate() {

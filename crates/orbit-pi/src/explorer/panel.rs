@@ -21,13 +21,16 @@ use gpui::{
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
+use crate::ui::banner::{Banner, BannerTone};
+use crate::ui::button::IconButton;
 use crate::ui::list::virtual_list;
 use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::style::surface::SurfaceExt;
 use crate::app::{
     anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
     context_menu_surface, empty_state, file_badge, file_glyph, icon,
-    icon_button_frame, nerd_font_family, press, ControlExt, EmptyFill, TipExt,
+    nerd_font_family, press, ControlExt, EmptyFill, TipExt,
     BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
@@ -35,7 +38,7 @@ use crate::git;
 use crate::platform;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, panel, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt,
+    context_menu, input, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt,
     TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
@@ -80,6 +83,60 @@ struct PanelMenu {
     is_dir: bool,
     expanded: bool,
     position: gpui::Point<Pixels>,
+    /// The keyboard cursor over [`menu_items`]. Painted only once the menu is
+    /// driven from the keyboard (`keyed`), so a pointer-opened menu stays
+    /// quiet until an arrow key is pressed.
+    highlight: crate::ui::menu::MenuState,
+    keyed: bool,
+}
+
+/// One action in the row context menu. The list is the single source for the
+/// pointer and the keyboard: both run [`ProjectPanel::run_menu_item`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuItem {
+    Toggle,
+    NewFile,
+    NewFolder,
+    Open,
+    Rename,
+    Delete,
+    OpenDefault,
+    Reveal,
+    CopyPath,
+    CopyRelativePath,
+}
+
+/// The menu for a row, top to bottom; `None` is a separator.
+fn menu_layout(is_dir: bool) -> Vec<Option<MenuItem>> {
+    use MenuItem::*;
+    let mut layout = if is_dir {
+        vec![
+            Some(Toggle),
+            None,
+            Some(NewFile),
+            Some(NewFolder),
+            None,
+            Some(Rename),
+            Some(Delete),
+            None,
+        ]
+    } else {
+        vec![Some(Open), None, Some(Rename), Some(Delete), None]
+    };
+    layout.extend([
+        Some(OpenDefault),
+        Some(Reveal),
+        None,
+        Some(CopyPath),
+        Some(CopyRelativePath),
+    ]);
+    layout
+}
+
+/// The actionable entries of [`menu_layout`], in order: what the keyboard
+/// cursor walks.
+fn menu_items(is_dir: bool) -> Vec<MenuItem> {
+    menu_layout(is_dir).into_iter().flatten().collect()
 }
 
 /// A file operation the panel asks the app to perform. Paths and names are
@@ -437,7 +494,7 @@ impl ProjectPanel {
 
     // ── keyboard ───────────────────────────────────────────────────────
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // The inline prompt owns the keyboard while it is open (Enter/Escape
         // are bound to the `ExplorerEntry` context); don't also drive the tree.
         if self.entry.is_some() {
@@ -445,6 +502,17 @@ impl ProjectPanel {
         }
         let key = event.keystroke.key.as_str();
         let platform = event.keystroke.modifiers.platform;
+        // An open row menu owns the keyboard (Escape below still closes it).
+        if key != "escape" && self.menu_key(key, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
+        // The keyboard route to the pointer's context menu.
+        if (key == "f10" && event.keystroke.modifiers.shift) || key == "menu" {
+            self.open_menu_at_cursor(cx);
+            cx.stop_propagation();
+            return;
+        }
         // Escape first: close the row menu, or clear a non-empty filter, and
         // keep the key from falling through to the global abort action.
         if key == "escape" {
@@ -523,8 +591,109 @@ impl ProjectPanel {
             is_dir,
             expanded,
             position,
+            highlight: crate::ui::menu::MenuState::default(),
+            keyed: false,
         });
         cx.notify();
+    }
+
+    /// Open the context menu on the cursor row from the keyboard (Shift-F10
+    /// or the Menu key), under the row, with its first entry highlighted.
+    fn open_menu_at_cursor(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.cursor else { return };
+        let Some(row) = self.rows.get(index).cloned() else {
+            return;
+        };
+        let bounds = self
+            .list
+            .bounds_for_item(index)
+            .unwrap_or_else(|| self.list.viewport_bounds());
+        let position = gpui::point(bounds.left() + px(24.), bounds.bottom());
+        self.open_menu(row, position, cx);
+        if let Some(menu) = self.menu.as_mut() {
+            menu.keyed = true;
+        }
+    }
+
+    /// Keys while the row menu is open. Returns whether the key was the
+    /// menu's (it always is: an open menu owns the keyboard).
+    fn menu_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(menu) = self.menu.as_mut() else {
+            return false;
+        };
+        let len = menu_items(menu.is_dir).len();
+        match key {
+            "down" => menu.highlight.next(len),
+            "up" => menu.highlight.prev(len),
+            "home" => menu.highlight.first(len, |_| true),
+            "end" => menu.highlight.last(len, |_| true),
+            "enter" | "space" => {
+                let item = menu
+                    .keyed
+                    .then(|| menu.highlight.selected(len))
+                    .flatten()
+                    .and_then(|ix| menu_items(menu.is_dir).get(ix).copied());
+                if let Some(item) = item {
+                    self.run_menu_item(item, window, cx);
+                }
+                return true;
+            }
+            _ => return true,
+        }
+        // The first arrow shows the cursor where it already is (the first
+        // entry) instead of skipping past it.
+        if !menu.keyed {
+            menu.keyed = true;
+            menu.highlight.first(len, |_| true);
+        }
+        cx.notify();
+        true
+    }
+
+    /// Run one menu action — the same path for a click and for Enter.
+    fn run_menu_item(&mut self, item: MenuItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self.menu.as_ref() else {
+            return;
+        };
+        let relative = menu.path.clone();
+        let is_dir = menu.is_dir;
+        let target = self.menu_target_path();
+        match item {
+            MenuItem::Delete => {
+                // The confirmation replaces the menu; it dismisses itself.
+                self.request_delete(relative, is_dir, cx);
+                return;
+            }
+            _ => self.dismiss_menu(cx),
+        }
+        match item {
+            MenuItem::Toggle => self.toggle_dir(relative, cx),
+            MenuItem::NewFile => self.start_new_file_in(relative, window, cx),
+            MenuItem::NewFolder => self.start_new_folder_in(relative, window, cx),
+            MenuItem::Open => self.open_file(relative, cx),
+            MenuItem::Rename => self.start_rename(relative, is_dir, window, cx),
+            MenuItem::OpenDefault => {
+                if let Some(target) = target {
+                    platform::open_path_default(&target);
+                }
+            }
+            MenuItem::Reveal => {
+                if let Some(target) = target {
+                    platform::reveal_in_file_manager(&target);
+                }
+            }
+            MenuItem::CopyPath => {
+                if let Some(target) = target {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                        target.to_string_lossy().to_string(),
+                    ));
+                }
+            }
+            MenuItem::CopyRelativePath => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(relative));
+            }
+            MenuItem::Delete => {}
+        }
     }
 
     fn dismiss_menu(&mut self, cx: &mut Context<Self>) {
@@ -894,37 +1063,13 @@ impl ProjectPanel {
     /// All Folders, and the hidden-files toggle (checked while shown).
     fn header_menu(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let open = self.header_menu_open;
-        let button = press(
-            icon_button_frame(
-                div().id("explorer-more").group(BUTTON_GROUP),
-                &theme,
-                ButtonSize::Default,
-            )
-            .debug_selector(|| "explorer-more".into())
+        let button = IconButton::new("explorer-more", "icons/more.svg")
+            .open(open)
             .tip(tr!("sidebar.more_actions"))
-            .cursor_pointer()
-            .when(open, |button| button.bg(theme.surface_active)),
-        )
-        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_header_menu(cx)))
-        .child(icon(
-            "icons/more.svg",
-            ButtonSize::Default.icon_size().px(&theme),
-            if open {
-                theme.text_primary
-            } else {
-                theme.text_muted
-            },
-        ));
-        let button = if open {
-            button.into_any_element()
-        } else {
-            crate::motion::hover(
-                button,
-                "explorer-more",
-                &theme,
-                crate::motion::Hover::wash(&theme),
-            )
-        };
+            .faded(&theme, |el| {
+                el.debug_selector(|| "explorer-more".into())
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_header_menu(cx)))
+            });
         let popup = open.then(|| {
             let menu = context_menu_surface(div().id("explorer-header-menu"), &theme)
                 .w(px(220.))
@@ -942,6 +1087,7 @@ impl ProjectPanel {
                     "icons/refresh.svg",
                     tr!("common.refresh"),
                     None,
+                    false,
                     cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.header_menu_open = false;
                         this.mark_stale(cx);
@@ -952,6 +1098,7 @@ impl ProjectPanel {
                     "icons/collapse-all.svg",
                     tr!("explorer.collapse_all"),
                     None,
+                    false,
                     cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.header_menu_open = false;
                         this.collapse_all(cx);
@@ -971,6 +1118,7 @@ impl ProjectPanel {
                         tr!("explorer.show_hidden")
                     },
                     None,
+                    false,
                     cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.header_menu_open = false;
                         this.show_hidden = !this.show_hidden;
@@ -1026,7 +1174,7 @@ impl ProjectPanel {
                     .items_center()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .rounded(input::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary)
+                    .bg(theme.page_fill(theme.surface_secondary))
                     .border_1()
                     .border_color(if focused {
                         theme.focus_ring
@@ -1100,7 +1248,9 @@ impl ProjectPanel {
             .flex()
             .flex_col()
             .on_key_down(
-                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key_down(event, cx)),
+                cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    this.on_key_down(event, window, cx)
+                }),
             )
             .on_action(cx.listener(Self::on_entry_confirm))
             .on_action(cx.listener(Self::on_entry_cancel))
@@ -1158,20 +1308,7 @@ impl ProjectPanel {
             .as_ref()
             .and_then(|entry| entry.error.clone())
             .or_else(|| self.notice.clone())?;
-        Some(
-            div()
-                .flex_none()
-                .px(px(10.))
-                .py(px(5.))
-                .border_b_1()
-                .border_color(theme.border)
-                .bg(theme.error.opacity(0.12))
-                .text_size(TextSize::Small.px(&theme))
-                .line_height(theme.ui_px(15.))
-                .text_color(theme.error)
-                .child(message)
-                .into_any_element(),
-        )
+        Some(Banner::strip(BannerTone::Error, message, &theme).into_any_element())
     }
 
     fn footer(&self, theme: Theme, _cx: &mut Context<Self>) -> AnyElement {
@@ -1315,10 +1452,12 @@ impl ProjectPanel {
         if self.menu_dismissed_at.is_recent() {
             return None;
         }
-        let target = self.menu_target_path()?;
-        let relative = menu.path.clone();
         let is_dir = menu.is_dir;
         let expanded = menu.expanded;
+        let highlighted = menu
+            .keyed
+            .then(|| menu.highlight.selected(menu_items(is_dir).len()))
+            .flatten();
         let mut popup = context_menu_surface(div().id("explorer-context-menu"), &theme)
             .w(px(220.))
             .flex()
@@ -1326,179 +1465,39 @@ impl ProjectPanel {
             .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.dismiss_menu(cx);
             }));
-
-        if is_dir {
-            // A directory's first action is its expand/collapse toggle.
-            let (label, icon_path) = if expanded {
-                (tr!("explorer.collapse"), "icons/chevron-down.svg")
-            } else {
-                (tr!("explorer.expand"), "icons/chevron-right.svg")
+        let mut index = 0;
+        for entry in menu_layout(is_dir) {
+            let Some(item) = entry else {
+                popup = popup.child(separator(theme));
+                continue;
             };
-            popup = popup
-                .child(menu_row(
-                    theme,
-                    icon_path,
-                    label,
-                    None,
-                    cx.listener({
-                        let relative = relative.clone();
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.dismiss_menu(cx);
-                            this.toggle_dir(relative.clone(), cx);
-                        }
-                    }),
-                ))
-                .child(separator(theme))
-                .child(menu_row(
-                    theme,
-                    "icons/file-plus.svg",
-                    tr!("explorer.new_file"),
-                    None,
-                    cx.listener({
-                        let dir = relative.clone();
-                        move |this, _: &ClickEvent, window, cx| {
-                            this.dismiss_menu(cx);
-                            this.start_new_file_in(dir.clone(), window, cx);
-                        }
-                    }),
-                ))
-                .child(menu_row(
-                    theme,
-                    "icons/folder-plus.svg",
-                    tr!("explorer.new_folder"),
-                    None,
-                    cx.listener({
-                        let dir = relative.clone();
-                        move |this, _: &ClickEvent, window, cx| {
-                            this.dismiss_menu(cx);
-                            this.start_new_folder_in(dir.clone(), window, cx);
-                        }
-                    }),
-                ))
-                .child(separator(theme))
-                .child(menu_row(
-                    theme,
-                    "icons/pencil.svg",
-                    tr!("explorer.rename"),
-                    None,
-                    cx.listener({
-                        let relative = relative.clone();
-                        move |this, _: &ClickEvent, window, cx| {
-                            this.dismiss_menu(cx);
-                            this.start_rename(relative.clone(), true, window, cx);
-                        }
-                    }),
-                ))
-                .child(menu_row(
-                    theme,
-                    "icons/trash.svg",
-                    tr!("explorer.delete"),
-                    None,
-                    cx.listener({
-                        let relative = relative.clone();
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.request_delete(relative.clone(), true, cx);
-                        }
-                    }),
-                ))
-                .child(separator(theme));
-        } else {
-            popup = popup
-                .child(menu_row(
-                    theme,
-                    "icons/file.svg",
-                    tr!("explorer.open"),
-                    None,
-                    cx.listener({
-                        let relative = relative.clone();
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.dismiss_menu(cx);
-                            this.open_file(relative.clone(), cx);
-                        }
-                    }),
-                ))
-                .child(separator(theme))
-                .child(menu_row(
-                    theme,
-                    "icons/pencil.svg",
-                    tr!("explorer.rename"),
-                    None,
-                    cx.listener({
-                        let relative = relative.clone();
-                        move |this, _: &ClickEvent, window, cx| {
-                            this.dismiss_menu(cx);
-                            this.start_rename(relative.clone(), false, window, cx);
-                        }
-                    }),
-                ))
-                .child(menu_row(
-                    theme,
-                    "icons/trash.svg",
-                    tr!("explorer.delete"),
-                    None,
-                    cx.listener({
-                        let relative = relative.clone();
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.request_delete(relative.clone(), false, cx);
-                        }
-                    }),
-                ))
-                .child(separator(theme));
-        }
-        popup = popup
-            .child(menu_row(
+            let (icon_path, label) = match item {
+                MenuItem::Toggle if expanded => ("icons/chevron-down.svg", tr!("explorer.collapse")),
+                MenuItem::Toggle => ("icons/chevron-right.svg", tr!("explorer.expand")),
+                MenuItem::NewFile => ("icons/file-plus.svg", tr!("explorer.new_file")),
+                MenuItem::NewFolder => ("icons/folder-plus.svg", tr!("explorer.new_folder")),
+                MenuItem::Open => ("icons/file.svg", tr!("explorer.open")),
+                MenuItem::Rename => ("icons/pencil.svg", tr!("explorer.rename")),
+                MenuItem::Delete => ("icons/trash.svg", tr!("explorer.delete")),
+                MenuItem::OpenDefault => ("icons/arrow-up-right.svg", tr!("explorer.open_default")),
+                MenuItem::Reveal => ("icons/folder.svg", tr!("explorer.reveal")),
+                MenuItem::CopyPath => ("icons/copy.svg", tr!("explorer.copy_path")),
+                MenuItem::CopyRelativePath => {
+                    ("icons/copy.svg", tr!("explorer.copy_relative_path"))
+                }
+            };
+            popup = popup.child(menu_row(
                 theme,
-                "icons/arrow-up-right.svg",
-                tr!("explorer.open_default"),
+                icon_path,
+                label,
                 None,
-                cx.listener({
-                    let target = target.clone();
-                    move |this, _: &ClickEvent, _, cx| {
-                        platform::open_path_default(&target);
-                        this.dismiss_menu(cx);
-                    }
-                }),
-            ))
-            .child(menu_row(
-                theme,
-                "icons/folder.svg",
-                tr!("explorer.reveal"),
-                None,
-                cx.listener({
-                    let target = target.clone();
-                    move |this, _: &ClickEvent, _, cx| {
-                        platform::reveal_in_file_manager(&target);
-                        this.dismiss_menu(cx);
-                    }
-                }),
-            ))
-            .child(separator(theme))
-            .child(menu_row(
-                theme,
-                "icons/copy.svg",
-                tr!("explorer.copy_path"),
-                None,
-                cx.listener({
-                    let text = target.to_string_lossy().to_string();
-                    move |this, _: &ClickEvent, _, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
-                        this.dismiss_menu(cx);
-                    }
-                }),
-            ))
-            .child(menu_row(
-                theme,
-                "icons/copy.svg",
-                tr!("explorer.copy_relative_path"),
-                None,
-                cx.listener({
-                    let text = relative.clone();
-                    move |this, _: &ClickEvent, _, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
-                        this.dismiss_menu(cx);
-                    }
+                highlighted == Some(index),
+                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.run_menu_item(item, window, cx);
                 }),
             ));
+            index += 1;
+        }
         Some(
             // Place the menu at the pointer (window coordinates), flipping it
             // above/left when it would overflow the window — the default
@@ -1620,18 +1619,10 @@ fn ghost_icon(
     label: String,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    crate::motion::hover(
-        press(
-            icon_button_frame(div().id(id).group(BUTTON_GROUP), theme, ButtonSize::Default)
-                .tip(label)
-                .cursor_pointer(),
-        )
-        .on_click(listener)
-        .child(icon(path, ButtonSize::Default.icon_size().px(theme), color)),
-        id,
-        theme,
-        crate::motion::Hover::wash(theme),
-    )
+    IconButton::new(id, path)
+        .ink(color)
+        .tip(label)
+        .faded(theme, |el| el.on_click(listener))
 }
 
 fn separator(theme: Theme) -> AnyElement {
@@ -1644,6 +1635,7 @@ fn menu_row(
     icon_path: &'static str,
     label: String,
     hint: Option<String>,
+    highlighted: bool,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     context_menu_entry(
@@ -1653,6 +1645,8 @@ fn menu_row(
         &theme,
     )
     .cursor_pointer()
+    // The keyboard cursor reads as the pointer's hover.
+    .when(highlighted, |row| row.bg(theme.surface_hover))
     .hover_state(&theme)
     .on_click(listener)
     .child(icon(
@@ -1741,22 +1735,25 @@ impl Render for ProjectPanel {
             // The dock reads as a rounded card, like the Git/Usage cards in
             // the main column. The popups stay outside this clipped shell so
             // they are not cut off at its corners.
+            // Over a full-window wallpaper the card is glass, like the pages.
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .w_full()
                     .bg(theme.surface)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(panel::RADIUS.px(&theme))
                     .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .child(self.header(theme, cx))
-                    .child(self.filter_row(theme, window, cx))
-                    .child(self.tree(theme, cx))
-                    .child(self.footer(theme, cx)),
+                    .page_card(
+                        &theme,
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(self.header(theme, cx))
+                            .child(self.filter_row(theme, window, cx))
+                            .child(self.tree(theme, cx))
+                            .child(self.footer(theme, cx)),
+                    ),
             )
             .children(self.context_menu(theme, cx))
             .children(self.delete_prompt(theme, cx))
@@ -1811,6 +1808,66 @@ mod tests {
             !cx.update(|_, app| panel.read(app).header_menu_open),
             "closing the panel closes its menu"
         );
+    }
+
+    #[test]
+    fn the_row_menu_lists_each_action_once_with_separators_between_groups() {
+        for is_dir in [true, false] {
+            let layout = menu_layout(is_dir);
+            assert!(layout.first().unwrap().is_some(), "starts with an action");
+            assert!(layout.last().unwrap().is_some(), "ends with an action");
+            assert!(
+                layout.windows(2).all(|pair| pair[0].is_some() || pair[1].is_some()),
+                "no doubled separators"
+            );
+            let items = menu_items(is_dir);
+            let mut unique = items.clone();
+            unique.dedup();
+            assert_eq!(unique.len(), items.len());
+        }
+        assert_eq!(menu_items(true)[0], MenuItem::Toggle);
+        assert_eq!(menu_items(false)[0], MenuItem::Open);
+        assert!(!menu_items(false).contains(&MenuItem::NewFile));
+    }
+
+    /// The pointer's context menu has a keyboard route: Shift-F10 opens it on
+    /// the cursor row, arrows walk it (wrapping), and Enter runs the same
+    /// action a click would.
+    #[gpui::test]
+    fn the_row_menu_opens_and_runs_from_the_keyboard(cx: &mut gpui::TestAppContext) {
+        let root = std::env::temp_dir().join("orbit-explorer-panel-menu-keys");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, app| app.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let open: OpenHandler = Rc::new(|_, _, _| {});
+        let op: FileOpHandler = Rc::new(|_, _| {});
+        let panel = cx.update(|_, app| {
+            app.new(|cx| ProjectPanel::new(open, op, Rc::new(|_: &mut App| {}), cx))
+        });
+        let snapshot = walk::snapshot(&root, false);
+        cx.update(|window, app| {
+            panel.update(app, |panel, cx| {
+                panel.open = true;
+                panel.workspace = Some(root.clone());
+                panel.index = TreeIndex::build(snapshot, HashMap::new());
+                panel.stale = false;
+                panel.refresh_rows(cx);
+                panel.cursor = Some(0);
+                panel.open_menu_at_cursor(cx);
+                let menu = panel.menu.as_ref().expect("Shift-F10 opens the menu");
+                assert!(menu.keyed, "a keyboard-opened menu shows its cursor");
+                assert_eq!(menu.highlight.selected(menu_items(false).len()), Some(0));
+                // Up from the first entry wraps to the last: Copy Relative Path.
+                panel.menu_key("up", window, cx);
+                panel.menu_key("enter", window, cx);
+                assert!(panel.menu.is_none(), "running an action closes the menu");
+            });
+        });
+        let copied = cx.update(|_, app| app.read_from_clipboard().and_then(|item| item.text()));
+        assert_eq!(copied.as_deref(), Some("main.rs"));
     }
 
     #[test]

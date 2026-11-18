@@ -135,6 +135,8 @@ impl OrbitApp {
         let this = cx.entity().clone();
         let path = Rc::from(path.as_path());
 
+        // Bespoke: the two halves of the header's open-in split button, which
+        // share one chip's frame and round only its outer corners.
         let primary = icon_button_frame(div().id("header-open-in"), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
             .tip(tr!("open_in.open_in_app", app = preferred_label))

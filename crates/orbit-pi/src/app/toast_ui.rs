@@ -212,23 +212,12 @@ impl OrbitApp {
             );
         }
 
-        let close_button = press(icon_button_frame(
-            div()
-                .id(ElementId::Name("plugin-update-close".into()))
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| this.skip_plugin_updates(cx)),
-                ),
-            &theme,
-            toast_tokens::CLOSE_BUTTON,
-        ))
-        .child(icon(
-            "icons/x.svg",
-            toast_tokens::CLOSE_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ));
+        let close_button = crate::ui::button::IconButton::new("plugin-update-close", "icons/x.svg")
+            .size(toast_tokens::CLOSE_BUTTON)
+            .on_mouse_up(
+                &theme,
+                cx.listener(|this, _, _, cx| this.skip_plugin_updates(cx)),
+            );
 
         let this = cx.entity();
         let skip_button = press(button_frame(

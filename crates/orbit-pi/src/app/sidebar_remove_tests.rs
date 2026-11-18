@@ -137,6 +137,7 @@ fn archiving_a_workspace_archives_only_its_sessions(cx: &mut gpui::TestAppContex
                 confirm_delete: false,
                 can_move_up: false,
                 can_move_down: true,
+                cursor: Default::default(),
             });
             app.on_workspace_archive_sessions(cx);
 

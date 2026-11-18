@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 use crate::theme::tokens::{
-    context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+    context_menu, picker, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::ui::popover::{popover_list, PopoverExt};
 
@@ -587,16 +587,11 @@ impl OrbitApp {
             .dismiss_on_outside(cx.listener(Self::on_autocomplete_outside_down))
             .child(list);
 
-        Some(
-            anchored_popover(
-                Corner::BottomLeft,
-                point(px(0.), -popover::MENU_OFFSET),
-                popup,
-                "anchored_popover-in-4",
-                &theme,
-            )
-            .into_any_element(),
-        )
+        Some(crate::ui::popover::column_menu(
+            popup,
+            "anchored_popover-in-4",
+            &theme,
+        ))
     }
 
     /// The attachment tray above the input: every queued image, file, and

@@ -392,7 +392,8 @@ actions!(
         SidebarConfirm,
         SidebarClose,
         SidebarMoveRowUp,
-        SidebarMoveRowDown
+        SidebarMoveRowDown,
+        SidebarOpenRowMenu
     ]
 );
 
@@ -663,6 +664,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // what dragging a header or a session row does (issue #143).
         KeyBinding::new("alt-up", SidebarMoveRowUp, Some("Sidebar")),
         KeyBinding::new("alt-down", SidebarMoveRowDown, Some("Sidebar")),
+        // Shift-F10 / the Menu key open the cursor row's context menu — the
+        // keyboard route to what a right-click opens.
+        KeyBinding::new("shift-f10", SidebarOpenRowMenu, Some("Sidebar")),
+        KeyBinding::new("menu", SidebarOpenRowMenu, Some("Sidebar")),
         // `j`/`k` move the row cursor too, but only while no text field is
         // focused: the sidebar's search input sits inside this context, and a
         // plain letter binding would otherwise swallow what the user types.

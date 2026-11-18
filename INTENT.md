@@ -605,6 +605,22 @@ renderers without the pass, and macOS Reduce Transparency / Increase Contrast
 (read with Reduce Motion at launch and on window activation) keep the opaque
 card. Structural panes and the composer still frost only over a wallpaper.
 
+Glass pages over a full-window wallpaper: the feature pages (Git, Usage, Files,
+Worktrees, the expanded terminal) and the dock cards (Review, Explorer, session
+details) frame themselves with `SurfaceExt::page_card` — the panel radius, the
+contrast-floored `card_fill(surface_secondary)` tint, a frost at `GLASS_BLUR`
+and the hairline ring painted after the page. Each page root paints
+`Theme::page_canvas` (transparent over glass; previously an opaque `background`
+that hid the glass entirely), raised surfaces inside it — diff file headers, the
+commit box, history detail cards, usage boards, table headers — use
+`Theme::page_fill`, and the Review diff's sticky section / file headers frost
+the rows under them (`page_sticky_frost`, falling back to the page's composited
+appearance when Glass panes is off). `Theme::for_page` scopes all of it to
+full-window mode: hero wallpaper is never behind a page, so those pages, and
+every page without a wallpaper, resolve to their opaque palette fills exactly
+as before. The terminal grid keeps its own opaque background (ANSI owns its
+colours). Settings' nav column frosts like the session sidebar.
+
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
 The default interface face and saved font preferences remain unchanged.

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Frosted glass pages.** With a full-window wallpaper, the Git, Usage, Files and
+  Worktrees pages, the expanded terminal, and the Review, Explorer and session-details
+  docks are now frosted glass cards: the picture blurs softly behind them, their inner
+  cards and headers are translucent on the glass, and the Review diff's sticky headers
+  frost the code scrolling under them. Previously each page painted an opaque canvas over
+  its card, so the wallpaper never showed through. Hero wallpaper and no wallpaper keep
+  the opaque pages.
+
 - **Remote sessions in the sidebar.** Each enabled remote host entry gets a group under your
   projects listing the sessions that ran in its folder on that server, newest first; clicking
   one resumes it **on the server** (the session's own model and Plan/Build/Ask mode kept). The

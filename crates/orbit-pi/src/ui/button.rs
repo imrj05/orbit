@@ -166,6 +166,7 @@ pub(crate) struct Button {
     loading: bool,
     fade: bool,
     tip: Option<SharedString>,
+    focus: Option<gpui::FocusHandle>,
 }
 
 impl Button {
@@ -181,7 +182,18 @@ impl Button {
             loading: false,
             fade: false,
             tip: None,
+            focus: None,
         }
+    }
+
+    /// Make the button a keyboard stop: it tracks `focus`, shows the focus
+    /// treatment the frame inherits, and Enter / Space run its `on_click`
+    /// (GPUI fires a focused element's click listeners on those keys). Wire
+    /// the handler with [`Self::on_click`] — a mouse-up or mouse-down
+    /// handler is pointer-only.
+    pub(crate) fn focus(mut self, focus: &gpui::FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
     }
 
     /// A tooltip that stays available while the button is disabled or busy,
@@ -238,8 +250,11 @@ impl Button {
     pub(crate) fn render(self, theme: &Theme) -> Stateful<Div> {
         let can_act = self.can_act();
         let id = self.id;
-        let el = button_frame(div().id(ElementId::Name(id.clone())), theme, self.size)
+        let mut el = button_frame(div().id(ElementId::Name(id.clone())), theme, self.size)
             .group(BUTTON_GROUP);
+        if let Some(focus) = &self.focus {
+            el = el.track_focus(focus);
+        }
         let el = if self.variant == ButtonVariant::Ghost {
             el
         } else {
@@ -430,49 +445,6 @@ pub(crate) fn segmented_segment<E: Styled + InteractiveElement>(
         SegmentPosition::First => el.rounded_l(radius),
         SegmentPosition::Last => el.rounded_r(radius).border_l_0(),
         SegmentPosition::Middle => el.border_l_0(),
-    }
-}
-
-/// Active/rest treatment for outlined segments. Callers own events and labels.
-/// Unlike `settings_segment`, the active fill is `surface_active` and the
-/// frame keeps its default font weight and flat background.
-pub(crate) fn active_segment<E: Styled + StatefulInteractiveElement>(
-    el: E,
-    theme: &Theme,
-    size: ButtonSize,
-    position: SegmentPosition,
-    selected: bool,
-) -> E {
-    let el = segmented_segment(el, theme, size, position)
-        .cursor_pointer()
-        .border_color(theme.border);
-    if selected {
-        el.bg(theme.surface_active).text_color(theme.text_primary)
-    } else {
-        el.bg(theme.surface_elevated)
-            .text_color(theme.text_secondary)
-            .hover_state(theme)
-    }
-}
-
-/// Selected/rest treatment for medium settings segments. Callers own events and labels.
-pub(crate) fn settings_segment<E: Styled + StatefulInteractiveElement>(
-    el: E,
-    theme: &Theme,
-    position: SegmentPosition,
-    active: bool,
-) -> E {
-    let el = segmented_segment(el, theme, ButtonSize::Medium, position)
-        .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer()
-        .border_color(theme.border);
-    if active {
-        el.raised_flat(theme.surface_selected)
-            .text_color(theme.text_primary)
-    } else {
-        el.raised_flat(theme.surface_elevated)
-            .text_color(theme.text_secondary)
-            .hover_state(theme)
     }
 }
 
@@ -667,6 +639,20 @@ impl IconButton {
         }
     }
 
+    pub(crate) fn on_mouse_down(
+        self,
+        theme: &Theme,
+        handler: impl Fn(&MouseDownEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> Stateful<Div> {
+        let enabled = !self.disabled;
+        let el = self.render(theme);
+        if enabled {
+            el.on_mouse_down(MouseButton::Left, handler)
+        } else {
+            el
+        }
+    }
+
     /// The button with its hover faded in on `Motion::Interaction` instead of
     /// swapped on one frame, and the `open` fill held under the pointer.
     /// `attach` adds the caller's handler and any extras (a reveal-on-row-hover
@@ -705,15 +691,347 @@ fn faded_icon_hover(theme: &Theme, variant: IconButtonVariant, open: bool) -> Ho
     }
 }
 
+/// Which fill marks the chosen segment of a [`ButtonGroup`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SegmentFill {
+    /// `surface_selected` — a persistent preference (Settings rows).
+    Selected,
+    /// `surface_active` — a mode or view switch (a dialog's type picker,
+    /// a popover's tabs).
+    Active,
+}
+
+type SegmentHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>;
+
+struct Segment {
+    id: ElementId,
+    label: AnyElement,
+    selected: bool,
+    enabled: bool,
+    selector: Option<SharedString>,
+    on_select: SegmentHandler,
+}
+
+/// A segmented control: options that abut as one bordered control, exactly
+/// one chosen. The group owns the geometry (only its outer corners round,
+/// neighbours share a hairline), the resting face, the chosen fill, the
+/// medium label, disabled options and how both states move — the hover wash
+/// and the chosen fill cross-fade together on `Motion::Interaction`, so a
+/// click reads as one transition. Callers own the labels (localized) and what
+/// choosing does.
+///
+/// ```ignore
+/// ButtonGroup::new(SegmentFill::Selected)
+///     .segment("mode-plan", tr!("subagents_ui.mode_plan"), mode == Plan, on_plan)
+///     .segment("mode-build", tr!("subagents_ui.mode_build"), mode == Build, on_build)
+///     .render(&theme)
+/// ```
+pub(crate) struct ButtonGroup {
+    fill: SegmentFill,
+    size: ButtonSize,
+    inset: bool,
+    segments: Vec<Segment>,
+}
+
+impl ButtonGroup {
+    pub(crate) fn new(fill: SegmentFill) -> Self {
+        Self {
+            fill,
+            size: ButtonSize::Medium,
+            inset: false,
+            segments: Vec::new(),
+        }
+    }
+
+    pub(crate) fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// Rest on the canvas instead of a raised face, for a group sitting in a
+    /// card (Usage's metric switch).
+    pub(crate) fn inset(mut self, inset: bool) -> Self {
+        self.inset = inset;
+        self
+    }
+
+    /// One option. `on_select` runs on a click; it is not attached to the
+    /// chosen option or a disabled one.
+    pub(crate) fn segment(
+        mut self,
+        id: impl Into<ElementId>,
+        label: impl IntoElement,
+        selected: bool,
+        on_select: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.segments.push(Segment {
+            id: id.into(),
+            label: label.into_any_element(),
+            selected,
+            enabled: true,
+            selector: None,
+            on_select: Box::new(on_select),
+        });
+        self
+    }
+
+    /// Disable the last added option: it keeps its place (the group keeps
+    /// its shape as availability changes) but cannot be chosen.
+    pub(crate) fn disabled(mut self, disabled: bool) -> Self {
+        if let Some(segment) = self.segments.last_mut() {
+            segment.enabled = !disabled;
+        }
+        self
+    }
+
+    /// A test selector for the last added option.
+    pub(crate) fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        if let Some(segment) = self.segments.last_mut() {
+            segment.selector = Some(selector.into());
+        }
+        self
+    }
+
+    fn chosen_fill(&self, theme: &Theme) -> Hsla {
+        match self.fill {
+            SegmentFill::Selected => theme.surface_selected,
+            SegmentFill::Active => theme.surface_active,
+        }
+    }
+
+    fn resting_fill(&self, theme: &Theme) -> Hsla {
+        if self.inset {
+            theme.background
+        } else {
+            theme.surface_elevated
+        }
+    }
+
+    pub(crate) fn render(self, theme: &Theme) -> Div {
+        let count = self.segments.len();
+        let chosen = self.chosen_fill(theme);
+        let resting = self.resting_fill(theme);
+        let size = self.size;
+        let theme = *theme;
+        let mut row = div().flex().flex_none().items_center();
+        for (index, segment) in self.segments.into_iter().enumerate() {
+            let name = match &segment.id {
+                ElementId::Name(name) => name.clone(),
+                other => SharedString::from(format!("{other}")),
+            };
+            let mut el = segmented_segment(
+                div().id(segment.id),
+                &theme,
+                size,
+                SegmentPosition::at(index, count),
+            )
+            .border_color(theme.border)
+            .font_weight(FontWeight::MEDIUM)
+            .child(segment.label);
+            if let Some(selector) = segment.selector {
+                el = el.debug_selector(move || selector.to_string());
+            }
+            if !segment.enabled {
+                row = row.child(
+                    el.bg(resting)
+                        .text_color(theme.text_disabled)
+                        .cursor_default(),
+                );
+                continue;
+            }
+            let el = if segment.selected {
+                el.cursor_default()
+            } else {
+                el.cursor_pointer().on_click(segment.on_select)
+            };
+            row = row.child(crate::motion::control(
+                el,
+                name,
+                &theme,
+                crate::theme::tokens::Motion::Interaction,
+                crate::theme::tokens::Motion::Interaction,
+                if segment.selected { 1.0 } else { 0.0 },
+                move |el, hover, selected| {
+                    let fill = crate::motion::blend(
+                        crate::motion::blend(resting, theme.surface_hover, hover),
+                        chosen,
+                        selected,
+                    );
+                    el.bg(fill).text_color(crate::motion::blend(
+                        theme.text_secondary,
+                        theme.text_primary,
+                        selected,
+                    ))
+                },
+            ));
+        }
+        row
+    }
+}
+
+/// An inline text link: accent ink that deepens toward the accent under the
+/// pointer, an optional trailing "opens elsewhere" arrow, and no frame — it
+/// sits in a line of text or a meta row, not in a toolbar. Anything framed is
+/// a [`Button`]; a link is for navigation (a URL, a page), never a command.
+///
+/// ```ignore
+/// LinkButton::new("update-changelog-link", tr!("updater_ui.view_changelog"))
+///     .external()
+///     .size(TextSize::Small)
+///     .on_click(&theme, move |_, _, cx| cx.open_url(&url))
+/// ```
+pub(crate) struct LinkButton {
+    id: ElementId,
+    label: SharedString,
+    external: bool,
+    underline: bool,
+    grow: bool,
+    size: Option<crate::theme::tokens::TextSize>,
+}
+
+impl LinkButton {
+    pub(crate) fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            external: false,
+            underline: false,
+            grow: false,
+            size: None,
+        }
+    }
+
+    /// The trailing arrow: the link leaves the app (a browser page).
+    pub(crate) fn external(mut self) -> Self {
+        self.external = true;
+        self
+    }
+
+    /// Underline the label, for a link that is the line's whole content (a
+    /// fetched URL) and would otherwise read as plain accent text.
+    pub(crate) fn underline(mut self) -> Self {
+        self.underline = true;
+        self
+    }
+
+    /// Take the row's remaining width and truncate the label past it.
+    pub(crate) fn grow(mut self) -> Self {
+        self.grow = true;
+        self
+    }
+
+    /// The label size; it inherits the line's size when unset. A medium
+    /// weight goes with an explicit size (a standalone link).
+    pub(crate) fn size(mut self, size: crate::theme::tokens::TextSize) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    fn frame(&self, theme: &Theme) -> Stateful<Div> {
+        let mut el = div()
+            .id(self.id.clone())
+            .flex()
+            .items_center()
+            .gap(crate::theme::tokens::DynamicSpacing::Base04.px(theme))
+            .cursor_pointer()
+            .text_color(theme.accent_text);
+        el = if self.grow {
+            el.flex_1().min_w_0()
+        } else {
+            el.flex_none()
+        };
+        if let Some(size) = self.size {
+            el = el.text_size(size.px(theme)).font_weight(FontWeight::MEDIUM);
+        }
+        el
+    }
+
+    pub(crate) fn on_click(
+        self,
+        theme: &Theme,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> AnyElement {
+        let name = match &self.id {
+            ElementId::Name(name) => name.clone(),
+            other => SharedString::from(format!("{other}")),
+        };
+        let mut label = div().min_w_0().truncate().child(self.label.clone());
+        if self.underline {
+            label = label.underline();
+        }
+        let el = self
+            .frame(theme)
+            .on_click(handler)
+            .child(label)
+            .children(self.external.then(|| {
+                icon(
+                    "icons/arrow-up-right.svg",
+                    crate::theme::tokens::IconSize::XSmall.px(theme),
+                    theme.accent_text,
+                )
+            }));
+        crate::motion::hover(el, name, theme, Hover::ink(theme.accent_text, theme.accent))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::ThemeId;
-    use gpui::{div, prelude::FluentBuilder, Fill};
+    use gpui::{div, Fill};
 
     fn background(button: Button, theme: &Theme) -> Option<Fill> {
         let mut el = button.render(theme);
         el.style().background.clone()
+    }
+
+    #[test]
+    fn a_button_group_chooses_its_fill_role_and_rests_inset_on_request() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let settings = ButtonGroup::new(SegmentFill::Selected);
+            let mode = ButtonGroup::new(SegmentFill::Active).inset(true);
+            assert_eq!(
+                settings.chosen_fill(&theme),
+                theme.surface_selected,
+                "{id:?}"
+            );
+            assert_eq!(mode.chosen_fill(&theme), theme.surface_active, "{id:?}");
+            assert_eq!(
+                settings.resting_fill(&theme),
+                theme.surface_elevated,
+                "{id:?}"
+            );
+            assert_eq!(mode.resting_fill(&theme), theme.background, "{id:?}");
+        }
+        let group = ButtonGroup::new(SegmentFill::Active)
+            .segment("a", "A", true, |_, _, _| {})
+            .segment("b", "B", false, |_, _, _| {})
+            .disabled(true);
+        assert!(group.segments[0].enabled);
+        assert!(
+            !group.segments[1].enabled,
+            "disabled() marks the last segment"
+        );
+    }
+
+    #[test]
+    fn a_link_is_accent_ink_and_grows_only_when_asked() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let link = LinkButton::new("l", "Changelog");
+            let mut quiet = link.frame(&theme);
+            assert_eq!(
+                quiet.style().text.as_ref().and_then(|text| text.color),
+                Some(theme.accent_text),
+                "{id:?}"
+            );
+            assert_eq!(quiet.style().flex_shrink, Some(0.), "{id:?}");
+            let mut grown = LinkButton::new("g", "https://example.com")
+                .grow()
+                .frame(&theme);
+            assert_eq!(grown.style().flex_grow, Some(1.), "{id:?}");
+        }
     }
 
     #[test]
@@ -837,96 +1155,5 @@ mod tests {
         assert!(ButtonVariant::Ghost.fade(&theme).is_some());
         assert!(ButtonVariant::Danger.fade(&theme).is_none());
         assert!(ButtonVariant::Tinted.fade(&theme).is_none());
-    }
-
-    #[test]
-    fn active_segment_preserves_state_and_geometry_for_both_sizes() {
-        for theme in [
-            Theme::dark(),
-            Theme::for_id(crate::theme::ThemeId::Operational),
-        ] {
-            for size in [ButtonSize::Default, ButtonSize::Medium] {
-                for position in [
-                    SegmentPosition::Only,
-                    SegmentPosition::First,
-                    SegmentPosition::Middle,
-                    SegmentPosition::Last,
-                ] {
-                    for selected in [false, true] {
-                        let mut actual =
-                            active_segment(div().id("actual"), &theme, size, position, selected);
-                        let radius = button::radius(size).px(&theme);
-                        let expected = button_frame(div().id("expected"), &theme, size)
-                            .rounded_none()
-                            .border_1();
-                        let mut expected = match position {
-                            SegmentPosition::Only => expected.rounded(radius),
-                            SegmentPosition::First => expected.rounded_l(radius),
-                            SegmentPosition::Middle => expected.border_l_0(),
-                            SegmentPosition::Last => expected.rounded_r(radius).border_l_0(),
-                        }
-                        .cursor_pointer()
-                        .border_color(theme.border)
-                        .bg(if selected {
-                            theme.surface_active
-                        } else {
-                            theme.surface_elevated
-                        })
-                        .text_color(if selected {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        });
-                        assert_eq!(
-                            actual.style(),
-                            expected.style(),
-                            "{size:?}, {position:?}, selected={selected}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn settings_segment_preserves_selected_and_resting_styles() {
-        for theme in [
-            Theme::dark(),
-            Theme::for_id(crate::theme::ThemeId::Operational),
-        ] {
-            for position in [
-                SegmentPosition::Only,
-                SegmentPosition::First,
-                SegmentPosition::Middle,
-                SegmentPosition::Last,
-            ] {
-                for active in [false, true] {
-                    let mut actual = settings_segment(div().id("actual"), &theme, position, active);
-                    let mut expected = segmented_segment(
-                        div().id("expected"),
-                        &theme,
-                        ButtonSize::Medium,
-                        position,
-                    )
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .border_color(theme.border)
-                    .when(active, |el| {
-                        el.raised_flat(theme.surface_selected)
-                            .text_color(theme.text_primary)
-                    })
-                    .when(!active, |el| {
-                        el.raised_flat(theme.surface_elevated)
-                            .text_color(theme.text_secondary)
-                            .hover_state(&theme)
-                    });
-                    assert_eq!(
-                        actual.style(),
-                        expected.style(),
-                        "{position:?}, active={active}"
-                    );
-                }
-            }
-        }
     }
 }

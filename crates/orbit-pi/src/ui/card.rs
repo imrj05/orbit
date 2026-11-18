@@ -5,7 +5,7 @@
 
 use gpui::{div, prelude::*, AnyElement, FontWeight, IntoElement, SharedString};
 
-use crate::theme::tokens::{panel, DynamicSpacing, TextSize};
+use crate::theme::tokens::{DynamicSpacing, TextSize};
 use crate::theme::Theme;
 use crate::ui::style::surface::SurfaceExt;
 
@@ -53,10 +53,12 @@ pub(crate) fn card(
         .id(SharedString::from(id))
         .flex_none()
         .w_full()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
         // The fill stays translucent behind wallpaper even without backdrop blur.
-        .bg(theme.card_fill(theme.surface_elevated))
+        .card_surface(
+            &theme,
+            theme.border,
+            theme.card_fill(theme.surface_elevated),
+        )
         .flex()
         .flex_col()
         .child(

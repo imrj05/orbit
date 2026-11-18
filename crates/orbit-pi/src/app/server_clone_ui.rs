@@ -13,7 +13,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::helpers::*;
-use super::mcp_ui::mcp_text_button;
 use super::remote_ui::TaskPlace;
 use super::ssh_auth_ui::AuthThen;
 use super::*;
@@ -21,7 +20,10 @@ use crate::git_panel::widgets::check_box;
 use crate::remote_hosts::{self, ProbeFailure, RemoteHost};
 use crate::server_clone::{self, CloneProtocol, CloneResult, ProjectSource};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
-use crate::ui::button::active_segment;
+use crate::ui::button::ButtonVariant;
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::dialog::modal_button;
+use crate::ui::field::TextField;
 
 /// Each dialog opening gets its own number, so a result for one that was
 /// closed (or reopened) lands nowhere.
@@ -568,12 +570,7 @@ impl OrbitApp {
         body = body
             .child(hosts)
             .child(label(tr!("server_clone.folder", host = host_name.clone())))
-            .child(
-                input_field_frame(div(), &theme)
-                    .w_full()
-                    .bg(theme.background)
-                    .child(dialog.folder.clone()),
-            );
+            .child(TextField::new(dialog.folder.clone(), theme.background).render(&theme));
 
         if let SourceState::Ready(source) = &dialog.source {
             body = body
@@ -616,23 +613,29 @@ impl OrbitApp {
             }))
             .child(div().flex_1())
             .children((!busy).then(|| {
-                mcp_text_button(
-                    "server-clone-cancel".into(),
+                let this = this.clone();
+                modal_button(
+                    "server-clone-cancel",
                     tr!("remote_hosts.cancel"),
-                    theme,
-                    false,
-                    this.clone(),
-                    |app, _, cx| app.close_server_clone(cx),
+                    ButtonVariant::Secondary,
+                    &self.modal_cancel_focus,
                 )
+                .on_click(&theme, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.close_server_clone(cx))
+                })
             }))
-            .child(mcp_text_button(
-                "server-clone-submit".into(),
-                submit_label,
-                theme,
-                true,
-                this.clone(),
-                |app, _, cx| app.server_clone_submit(cx),
-            ));
+            .child({
+                let this = this.clone();
+                modal_button(
+                    "server-clone-submit",
+                    submit_label,
+                    ButtonVariant::Primary,
+                    &self.modal_confirm_focus,
+                )
+                .on_click(&theme, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.server_clone_submit(cx))
+                })
+            });
 
         let card = modal_card(&theme)
             .debug_selector(|| "server-clone-dialog".to_string())
@@ -646,31 +649,19 @@ impl OrbitApp {
             .on_action(
                 cx.listener(|app, _: &crate::PickerConfirm, _, cx| app.server_clone_submit(cx)),
             )
-            .child(
-                div()
-                    .px(crate::theme::tokens::modal::header_padding_x(&theme))
-                    .pt(crate::theme::tokens::modal::header_padding_top(&theme))
-                    .pb(crate::theme::tokens::modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(crate::theme::tokens::modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(crate::theme::tokens::modal::HEADLINE.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(tr!("server_clone.title")),
-                    )
-                    .child(muted(match &dialog.source {
+            .child(crate::ui::dialog::modal_header(
+                &theme,
+                tr!("server_clone.title"),
+                Some(crate::ui::dialog::ModalSubtitle::Text(
+                    match &dialog.source {
                         SourceState::Ready(source) => {
                             tr!("server_clone.subtitle", project = source.name.clone())
                         }
                         _ => tr!("server_clone.subtitle_plain"),
-                    })),
-            )
+                    }
+                    .into(),
+                )),
+            ))
             .child(
                 div()
                     .id("server-clone-body")
@@ -727,30 +718,21 @@ impl OrbitApp {
         if source.switchable() {
             const PROTOCOLS: [(CloneProtocol, &str); 2] =
                 [(CloneProtocol::Ssh, "SSH"), (CloneProtocol::Https, "HTTPS")];
-            let mut segments = div().flex_none().flex().items_center();
-            for (ix, (protocol, name)) in PROTOCOLS.iter().enumerate() {
-                let protocol = *protocol;
-                let selected = dialog.protocol == protocol;
+            let mut segments = ButtonGroup::new(SegmentFill::Active).size(ButtonSize::Default);
+            for (ix, (protocol, name)) in PROTOCOLS.iter().copied().enumerate() {
                 let pick = this.clone();
-                let seg = active_segment(
-                    div().id(ElementId::Name(
-                        format!("server-clone-protocol-{ix}").into(),
-                    )),
-                    &theme,
-                    ButtonSize::Default,
-                    SegmentPosition::at(ix, PROTOCOLS.len()),
-                    selected,
-                )
-                .debug_selector(move || format!("server-clone-protocol-{ix}"));
-                segments = segments.child(
-                    press(seg)
-                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                segments = segments
+                    .segment(
+                        ElementId::Name(format!("server-clone-protocol-{ix}").into()),
+                        name,
+                        dialog.protocol == protocol,
+                        move |_, _, cx| {
                             pick.update(cx, |app, cx| app.server_clone_set_protocol(protocol, cx));
-                        })
-                        .child(*name),
-                );
+                        },
+                    )
+                    .selector(format!("server-clone-protocol-{ix}"));
             }
-            row = row.child(segments);
+            row = row.child(segments.render(&theme));
         }
         row.into_any_element()
     }

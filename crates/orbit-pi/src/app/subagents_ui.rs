@@ -21,8 +21,10 @@ use crate::theme::tokens::{
     button, input, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
 use crate::ui::banner::{truncated_line, Banner, BannerTone};
-use crate::ui::button::{settings_segment, Button, ButtonVariant, IconButton};
+use crate::ui::button::{Button, ButtonVariant, IconButton};
+use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::search_field;
+use crate::ui::field::{FormRow, TextField};
 
 /// One Skills-page-style dispatch point for every Subagents control.
 #[derive(Clone)]
@@ -1200,31 +1202,27 @@ impl OrbitApp {
             "ask" => tr!("subagents_ui.mode_ask_hint"),
             _ => tr!("subagents_ui.mode_inherit_hint"),
         };
-        let segments = div()
-            .flex()
-            .items_center()
-            .children(modes.into_iter().enumerate().map(|(index, mode)| {
-                let this = this.clone();
-                let active = editor.mode == mode;
-                let label = match mode {
-                    "plan" => tr!("subagents_ui.mode_plan"),
-                    "build" => tr!("subagents_ui.mode_build"),
-                    "ask" => tr!("subagents_ui.mode_ask"),
-                    _ => tr!("subagents_ui.inherit"),
-                };
-                settings_segment(
-                    div().id(("subagent-mode", index)),
-                    theme,
-                    SegmentPosition::at(index, modes.len()),
-                    active,
-                )
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        let mut segments = ButtonGroup::new(SegmentFill::Selected);
+        for (index, mode) in modes.into_iter().enumerate() {
+            let this = this.clone();
+            let label = match mode {
+                "plan" => tr!("subagents_ui.mode_plan"),
+                "build" => tr!("subagents_ui.mode_build"),
+                "ask" => tr!("subagents_ui.mode_ask"),
+                _ => tr!("subagents_ui.inherit"),
+            };
+            segments = segments.segment(
+                ("subagent-mode", index),
+                label,
+                editor.mode == mode,
+                move |_, _, cx| {
                     this.update(cx, |app, cx| {
                         app.apply_subagent_action(SubagentAction::SetMode(mode), cx)
                     });
-                })
-                .child(label)
-            }));
+                },
+            );
+        }
+        let segments = segments.render(theme);
         let row = div()
             .px(DynamicSpacing::Base16.px(theme))
             .py(DynamicSpacing::Base12.px(theme))
@@ -1418,12 +1416,7 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .gap(input::gap(theme))
-            .child(
-                input_field_frame(div(), theme)
-                    .w_full()
-                    .bg(theme.background)
-                    .child(editor.prompt.clone()),
-            )
+            .child(TextField::new(editor.prompt.clone(), theme.background).render(theme))
             .child(
                 div()
                     .text_size(TextSize::XSmall.px(theme))
@@ -1901,38 +1894,27 @@ impl OrbitApp {
         hint_color: Hsla,
         trailing: Option<AnyElement>,
     ) -> AnyElement {
+        let help = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(theme))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(TextSize::XSmall.px(theme))
+                    .text_color(hint_color)
+                    .whitespace_normal()
+                    .child(hint),
+            )
+            .children(trailing);
         div()
             .px(DynamicSpacing::Base16.px(theme))
             .py(DynamicSpacing::Base12.px(theme))
-            .flex()
-            .flex_col()
-            .gap(input::gap(theme))
             .child(
-                input_label(label, theme)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary),
-            )
-            .child(
-                input_field_frame(div(), theme)
-                    .w_full()
-                    .bg(theme.background)
-                    .child(input),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(theme))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(TextSize::XSmall.px(theme))
-                            .text_color(hint_color)
-                            .whitespace_normal()
-                            .child(hint),
-                    )
-                    .children(trailing),
+                FormRow::new(label, TextField::new(input, theme.background).render(theme))
+                    .help(help)
+                    .render(theme),
             )
             .into_any_element()
     }

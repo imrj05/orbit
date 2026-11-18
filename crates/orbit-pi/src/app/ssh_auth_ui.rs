@@ -18,12 +18,14 @@
 //! the folder picker (which checks the host before spawning pi there).
 
 use super::helpers::*;
-use super::mcp_ui::mcp_text_button;
 use super::remote_hosts_ui::HostCheck;
 use super::remote_providers_ui::RemoteModels;
 use super::*;
 use crate::remote_hosts::{self, ProbeFailure, RemoteHost};
 use crate::theme::tokens::{input, modal, panel, DynamicSpacing, TextSize};
+use crate::ui::button::ButtonVariant;
+use crate::ui::dialog::modal_button;
+use crate::ui::field::TextField;
 use orbit_rpc::remote::HostKeyProblem;
 
 /// Password tries per connection before Orbit stops asking.
@@ -597,11 +599,9 @@ impl OrbitApp {
                             .text_color(theme.text_secondary),
                     )
                     .child(
-                        input_field_frame(div(), &theme)
-                            .debug_selector(|| "remote-password-field".to_string())
-                            .w_full()
-                            .bg(theme.background)
-                            .child(prompt.input.clone()),
+                        TextField::new(prompt.input.clone(), theme.background)
+                            .render(&theme)
+                            .debug_selector(|| "remote-password-field".to_string()),
                     ),
             )
             .child(
@@ -625,22 +625,30 @@ impl OrbitApp {
         }
 
         let footer = modal_footer(&theme)
-            .child(mcp_text_button(
-                "remote-password-cancel".into(),
-                tr!("remote_hosts.cancel"),
-                theme,
-                false,
-                this.clone(),
-                |app, _, cx| app.remote_password_cancel(cx),
-            ))
-            .child(mcp_text_button(
-                "remote-password-connect".into(),
-                tr!("remote_hosts.connect"),
-                theme,
-                true,
-                this.clone(),
-                |app, _, cx| app.remote_password_submit(cx),
-            ));
+            .child({
+                let this = this.clone();
+                modal_button(
+                    "remote-password-cancel",
+                    tr!("remote_hosts.cancel"),
+                    ButtonVariant::Secondary,
+                    &self.modal_cancel_focus,
+                )
+                .on_click(&theme, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.remote_password_cancel(cx))
+                })
+            })
+            .child({
+                let this = this.clone();
+                modal_button(
+                    "remote-password-connect",
+                    tr!("remote_hosts.connect"),
+                    ButtonVariant::Primary,
+                    &self.modal_confirm_focus,
+                )
+                .on_click(&theme, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.remote_password_submit(cx))
+                })
+            });
 
         let card = modal_card(&theme)
             .debug_selector(|| "remote-password-dialog".to_string())

@@ -26,6 +26,8 @@ use super::*;
 use crate::permissions::{Action, Rule, Rules, Scope, Target};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, Radius, TextSize};
 use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::field::TextField;
 
 /// The inline "add a pattern" form for one family. Only one is open at a time.
 pub(super) struct PatternEditor {
@@ -603,12 +605,7 @@ impl OrbitApp {
                         }
                     }),
             )
-            .child(
-                input_field_frame(div(), &theme)
-                    .w_full()
-                    .bg(theme.background)
-                    .child(editor.pattern.clone()),
-            )
+            .child(TextField::new(editor.pattern.clone(), theme.background).render(&theme))
             .child(
                 div()
                     .w_full()
@@ -705,40 +702,20 @@ where
             }),
         )
     }));
-    let count = choices.len();
-    let segments = choices
-        .into_iter()
-        .enumerate()
-        .map(|(ix, (choice, label))| {
-            let is_selected = choice == selected;
-            let pick = on_pick.clone();
-            let id = format!("{id}-{ix}");
-            segmented_segment(
-                div()
-                    .id(ElementId::Name(id.clone().into()))
-                    .debug_selector(move || format!("{id}-segment")),
-                &theme,
-                ButtonSize::Medium,
-                SegmentPosition::at(ix, count),
+    let mut group = ButtonGroup::new(SegmentFill::Active);
+    for (ix, (choice, label)) in choices.into_iter().enumerate() {
+        let pick = on_pick.clone();
+        let id = format!("{id}-{ix}");
+        group = group
+            .segment(
+                ElementId::Name(id.clone().into()),
+                label,
+                choice == selected,
+                move |_, _, cx| pick(choice, cx),
             )
-            .border_color(theme.border)
-            .when(is_selected, |segment| segment.bg(theme.surface_active))
-            .text_color(if is_selected {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            })
-            .cursor_pointer()
-            .when(!is_selected, |segment| segment.hover_state(&theme))
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| pick(choice, cx))
-            .child(label)
-        });
-    div()
-        .flex_none()
-        .flex()
-        .items_center()
-        .children(segments)
-        .into_any_element()
+            .selector(format!("{id}-segment"));
+    }
+    group.render(&theme).into_any_element()
 }
 
 /// A quiet text button: the shared ghost variant at Compact size.

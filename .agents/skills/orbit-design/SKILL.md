@@ -283,8 +283,9 @@ shipped tokens or instructions to add abstractions prematurely:
 
 ## Apple-inspired materials: opt-in exploration only
 
-Opaque chrome is the default; the wallpaper-glass chat composer is an explicit
-exception, not a whole-app glassmorphism interface. The one shipped `floating`
+Opaque chrome is the default; the wallpaper-glass chat composer and the
+full-window glass pages are explicit exceptions, not a whole-app glassmorphism
+interface. The one shipped `floating`
 material: in dark palettes, layers built on `elevation_2` / `elevation_3` frost
 the workbench behind them even with no wallpaper (`Theme::floating_glass_sigma`,
 `FLOATING_GLASS_BLUR`, and a per-palette tint from `floating_glass_alpha`: the
@@ -292,8 +293,15 @@ lowest alpha above `FLOATING_GLASS_MIN_ALPHA` that keeps text contrast over
 black and white backdrops). Light palettes, unsupported renderers and the OS Reduce
 Transparency / Increase Contrast preferences keep the opaque card. Do not give a
 floating surface its own blur value or override its fill after the elevation
-helper; structural panes, transcript cards and the composer stay wallpaper-only. If the user asks for material exploration, first present the
-tradeoff and obtain approval before changing that contract or the default.
+helper; structural panes, transcript cards and the composer stay wallpaper-only.
+Pages and dock cards are glass over a **full-window** wallpaper (approved
+2026-11-18): frame a page or dock with `SurfaceExt::page_card`, paint the page
+root with `Theme::page_canvas`, raised surfaces inside it with
+`Theme::page_fill`, and give a sticky band over scrolling rows
+`page_sticky_frost`. Do not nest another blur inside a page beyond the shared
+`card_surface` boards. Hero mode and no-wallpaper pages stay opaque. If the user
+asks for further material exploration, first present the tradeoff and obtain
+approval before changing that contract or the default.
 
 A possible **experimental** material system could have semantic roles such as
 `opaque`, `floating` and `overlay`, not arbitrary per-component blur values.

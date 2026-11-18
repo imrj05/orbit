@@ -24,7 +24,7 @@ use std::{
 };
 
 use gpui::{
-    canvas, deferred, div, img, linear_color_stop, linear_gradient, point, prelude::*, px,
+    canvas, deferred, div, img, point, prelude::*, px,
     relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
     DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
     Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
@@ -110,19 +110,14 @@ const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 /// 120–160 and 160–220 bands.
 const COPY_REST_OPACITY: f32 = 0.45;
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
-const NAVIGATION_RAIL_WIDTH: f32 = 44.0;
-const NAVIGATION_RAIL_TICK_WIDTH: f32 = 32.0;
-const NAVIGATION_RAIL_TICK_HEIGHT: f32 = 2.0;
-const NAVIGATION_RAIL_TURN_HEIGHT: f32 = 12.0;
-const NAVIGATION_RAIL_INACTIVE_OPACITY: f32 = 0.45;
-/// Tick width by emphasis distance from the hovered turn.
-const NAVIGATION_RAIL_EMPHASIS_SCALE: [f32; 4] = [1.0, 0.68, 0.44, 0.25];
+const NAVIGATION_RAIL_WIDTH: f32 = crate::ui::rail::WIDTH;
+const NAVIGATION_RAIL_TURN_HEIGHT: f32 = crate::ui::rail::STOP_HEIGHT;
 /// The rail caps at 80% of the viewport and hides below an 872px transcript
 /// container.
 const NAVIGATION_RAIL_MAX_HEIGHT: f32 = 0.8;
 const NAVIGATION_RAIL_MIN_MAIN_WIDTH: f32 = 1040.0;
 const CHANGED_FILES_PREVIEW_LIMIT: usize = 3;
-const NAVIGATION_RAIL_CONTENT_GAP: f32 = 12.0;
+const NAVIGATION_RAIL_CONTENT_GAP: f32 = crate::ui::rail::CARD_GAP;
 const NAVIGATION_RAIL_PREVIEW_WIDTH: f32 = 320.0;
 const NAVIGATION_RAIL_PREVIEW_MAX_HEIGHT: f32 = 126.0;
 /// Detail JSON/outputs are truncated to keep one virtualized row bounded.
@@ -420,6 +415,118 @@ impl Selection {
 struct TextMenu {
     position: gpui::Point<Pixels>,
     message_text: String,
+    /// The menu takes keyboard focus while open (the transcript itself has no
+    /// keyboard owner), so arrows, Enter and Escape reach it.
+    focus: gpui::FocusHandle,
+    /// What held focus when the menu opened; every close hands it back.
+    restore: Option<gpui::FocusHandle>,
+    /// The keyboard cursor over [`TextMenuItem::ALL`], painted only once a key
+    /// has moved it (a pointer-opened menu stays quiet).
+    highlight: crate::ui::menu::MenuState,
+    keyed: bool,
+}
+
+/// The text menu's actions, top to bottom: one list for pointer and keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextMenuItem {
+    CopySelection,
+    CopyMessage,
+}
+
+impl TextMenuItem {
+    const ALL: [Self; 2] = [Self::CopySelection, Self::CopyMessage];
+
+    /// Copy Selection only acts while there is a selection.
+    fn enabled(self, has_selection: bool) -> bool {
+        match self {
+            Self::CopySelection => has_selection,
+            Self::CopyMessage => true,
+        }
+    }
+}
+
+/// Close the text menu and give focus back to whatever held it before.
+fn close_text_menu(state: &TextSelectionState, window: &mut Window) {
+    let restore = state.borrow_mut().menu.take().and_then(|menu| menu.restore);
+    if let Some(restore) = restore {
+        window.focus(&restore);
+    }
+    window.refresh();
+}
+
+/// Run one text-menu action — the click path and the Enter path.
+fn run_text_menu_item(
+    state: &TextSelectionState,
+    item: TextMenuItem,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let text = {
+        let state = state.borrow();
+        match item {
+            TextMenuItem::CopySelection => state.selected_text(),
+            TextMenuItem::CopyMessage => state.menu.as_ref().map(|menu| menu.message_text.clone()),
+        }
+    };
+    if let Some(text) = text {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+    close_text_menu(state, window);
+}
+
+/// The keys the open text menu answers.
+const TEXT_MENU_KEYS: [&str; 7] = ["escape", "up", "down", "home", "end", "enter", "space"];
+
+/// Keys while the text menu is open. Disabled entries are skipped.
+fn text_menu_key(state: &TextSelectionState, key: &str, window: &mut Window, cx: &mut App) {
+    if key == "escape" {
+        close_text_menu(state, window);
+        return;
+    }
+    let has_selection = state.borrow().selected_text().is_some();
+    let enabled = |ix: usize| TextMenuItem::ALL[ix].enabled(has_selection);
+    let len = TextMenuItem::ALL.len();
+    let run = {
+        let mut guard = state.borrow_mut();
+        let Some(menu) = guard.menu.as_mut() else {
+            return;
+        };
+        let was_keyed = menu.keyed;
+        match key {
+            "down" | "up" | "home" | "end" if !was_keyed => {
+                // The first key shows the cursor on the first entry that can act.
+                menu.keyed = true;
+                menu.highlight.first(len, enabled);
+                None
+            }
+            "down" => {
+                menu.highlight.next_enabled(len, enabled);
+                None
+            }
+            "up" => {
+                menu.highlight.prev_enabled(len, enabled);
+                None
+            }
+            "home" => {
+                menu.highlight.first(len, enabled);
+                None
+            }
+            "end" => {
+                menu.highlight.last(len, enabled);
+                None
+            }
+            "enter" | "space" if was_keyed => menu
+                .highlight
+                .selected(len)
+                .filter(|ix| enabled(*ix))
+                .map(|ix| TextMenuItem::ALL[ix]),
+            _ => None,
+        }
+    };
+    match run {
+        Some(item) => run_text_menu_item(state, item, window, cx),
+        None => window.refresh(),
+    }
 }
 
 /// Shared text-selection state — one per transcript, cloned into every text
@@ -1002,7 +1109,7 @@ fn register_text_selection(
 ) {
     window.on_mouse_event({
         let state = state.clone();
-        move |event: &MouseDownEvent, phase, window, _| {
+        move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Capture || !hitbox.is_hovered(window) {
                 return;
             }
@@ -1030,9 +1137,23 @@ fn register_text_selection(
                         .get(message_ix)
                         .map(ChatMessage::text)
                         .unwrap_or_default();
+                    let focus = cx.focus_handle();
+                    // A menu re-opened over an open one keeps the original
+                    // opener to return to.
+                    let restore = state
+                        .borrow()
+                        .menu
+                        .as_ref()
+                        .map(|menu| menu.restore.clone())
+                        .unwrap_or_else(|| window.focused(cx));
+                    window.focus(&focus);
                     state.borrow_mut().menu = Some(TextMenu {
                         position: event.position,
                         message_text,
+                        focus,
+                        restore,
+                        highlight: crate::ui::menu::MenuState::default(),
+                        keyed: false,
                     });
                     window.refresh();
                 }
@@ -1087,52 +1208,60 @@ fn register_text_selection(
 /// `Copy Message` (the clicked message's full text). Wears the branch
 /// selector's picker shell, like every other dropdown in the app.
 fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme) -> AnyElement {
-    let selected = state.borrow().selected_text();
-    let copy_selection = selected.clone();
-    let close = state.clone();
-    let copy_selection_item = selection_menu_item(
-        "transcript-copy-selection",
-        "icons/copy.svg",
-        tr!("transcript.copy_selection"),
-        selected.is_some(),
-        theme,
-        move |window, cx| {
-            if let Some(text) = copy_selection.clone() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-            }
-            close.borrow_mut().menu = None;
-            cx.stop_propagation();
-            window.refresh();
-        },
-    );
-    let copy_message = menu.message_text.clone();
-    let close = state.clone();
-    let copy_message_item = selection_menu_item(
-        "transcript-copy-message",
-        "icons/chat.svg",
-        tr!("transcript.copy_message"),
-        true,
-        theme,
-        move |window, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(copy_message.clone()));
-            close.borrow_mut().menu = None;
-            cx.stop_propagation();
-            window.refresh();
-        },
-    );
+    let has_selection = state.borrow().selected_text().is_some();
+    let highlighted = menu
+        .keyed
+        .then(|| menu.highlight.selected(TextMenuItem::ALL.len()))
+        .flatten();
+    let items = TextMenuItem::ALL.iter().enumerate().map(|(ix, item)| {
+        let (id, icon_path, label) = match item {
+            TextMenuItem::CopySelection => (
+                "transcript-copy-selection",
+                "icons/copy.svg",
+                tr!("transcript.copy_selection"),
+            ),
+            TextMenuItem::CopyMessage => (
+                "transcript-copy-message",
+                "icons/chat.svg",
+                tr!("transcript.copy_message"),
+            ),
+        };
+        let item = *item;
+        let run = state.clone();
+        selection_menu_item(
+            id,
+            icon_path,
+            label,
+            item.enabled(has_selection),
+            highlighted == Some(ix),
+            theme,
+            move |window, cx| {
+                cx.stop_propagation();
+                run_text_menu_item(&run, item, window, cx);
+            },
+        )
+    });
     let dismiss = state.clone();
+    let keys = state.clone();
     anchored_popover_at(
         menu.position,
         popover_list(div().id("transcript-text-menu"), &theme)
+            .track_focus(&menu.focus)
+            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                let modified = event.keystroke.modifiers.modified();
+                // Only the menu's own keys stop here; a chord (⌘C) still
+                // reaches its binding.
+                if !modified && TEXT_MENU_KEYS.contains(&key) {
+                    cx.stop_propagation();
+                    text_menu_key(&keys, key, window, cx);
+                }
+            })
             .w(px(220.))
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .dismiss_on_outside(move |_, window, _| {
-                dismiss.borrow_mut().menu = None;
-                window.refresh();
-            })
-            .child(copy_selection_item)
-            .child(copy_message_item),
+            .dismiss_on_outside(move |_, window, _| close_text_menu(&dismiss, window))
+            .children(items),
         "anchored_popover_at-in-1",
         &theme,
     )
@@ -1143,12 +1272,15 @@ fn selection_menu_item(
     icon_path: &'static str,
     label: String,
     enabled: bool,
+    highlighted: bool,
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     picker_entry(div().id(id), &theme)
         .h(picker::entry_height(&theme))
         .flex_none()
+        // The keyboard cursor reads as the pointer's hover.
+        .when(highlighted, |item| item.bg(theme.surface_hover))
         .text_color(if enabled {
             theme.text_secondary
         } else {
@@ -1707,19 +1839,10 @@ fn render_navigation_rail(
         .copied()
         .enumerate()
         .map(|(turn_pos, user_ix)| {
-            let distance = emphasized_pos.map(|pos| pos.abs_diff(turn_pos));
-            let scale = distance
-                .and_then(|d| NAVIGATION_RAIL_EMPHASIS_SCALE.get(d))
-                .copied()
-                .unwrap_or(0.25);
+            let width =
+                crate::ui::rail::tick_width(emphasized_pos.map(|pos| pos.abs_diff(turn_pos)));
             let prominent = emphasized_turn == Some(user_ix) || active_turn == Some(user_ix);
-            let width = NAVIGATION_RAIL_TICK_WIDTH * scale;
-            let color = if prominent {
-                theme.text_primary
-            } else {
-                theme.text_muted.opacity(NAVIGATION_RAIL_INACTIVE_OPACITY)
-            };
-            (user_ix, width, color)
+            (user_ix, width, crate::ui::rail::tick_ink(prominent, &theme))
         })
         .collect();
 
@@ -1788,18 +1911,12 @@ fn render_navigation_rail(
                                 cx.refresh_windows();
                             }
                         })
-                        .child(
-                            div()
-                                .id(ElementId::NamedInteger(
-                                    "nav-tick-bar".into(),
-                                    user_ix as u64,
-                                ))
-                                .h(px(NAVIGATION_RAIL_TICK_HEIGHT))
-                                .w(px(width))
-                                .rounded_full()
-                                .bg(color)
-                                .hover_inverse(&theme),
-                        )
+                        .child(crate::ui::rail::tick_bar(
+                            ElementId::NamedInteger("nav-tick-bar".into(), user_ix as u64),
+                            width,
+                            color,
+                            &theme,
+                        ))
                 })),
         )
         .when(!at_top, |rail| rail.child(render_rail_fade(true, theme)))
@@ -1863,26 +1980,7 @@ fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
     // The page's own fill, for the same reason the transcript's bottom fade
     // uses it: over a wallpaper an opaque palette stop would print a band.
     let (clear, page) = crate::message_scroller::fade_stops(theme);
-    let base = div()
-        .absolute()
-        .left_0()
-        .right_0()
-        .h(px(20.))
-        .bg(linear_gradient(
-            180.,
-            linear_color_stop(clear, 0.),
-            linear_color_stop(page, 1.),
-        ));
-    if top {
-        // Solid at the top edge, fading down: flip the stop order.
-        base.top_0().bg(linear_gradient(
-            180.,
-            linear_color_stop(page, 0.),
-            linear_color_stop(clear, 1.),
-        ))
-    } else {
-        base.bottom_0()
-    }
+    crate::ui::rail::edge_fade(top, clear, page)
 }
 
 /// Rail hover card: the turn's number, the turn's prompt, and a
@@ -1896,14 +1994,9 @@ fn render_rail_preview(
     turn_number: usize,
     turn_total: usize,
 ) -> impl IntoElement {
-    div()
-        .absolute()
-        .left(px(NAVIGATION_RAIL_WIDTH + NAVIGATION_RAIL_CONTENT_GAP))
-        .top(top)
-        .w(px(NAVIGATION_RAIL_PREVIEW_WIDTH))
+    crate::ui::rail::side_card(top, px(NAVIGATION_RAIL_PREVIEW_WIDTH), &theme)
         .max_h(px(NAVIGATION_RAIL_PREVIEW_MAX_HEIGHT))
         .overflow_hidden()
-        .elevation_2(&theme)
         .px(px(15.))
         .py(DynamicSpacing::Base12.px(&theme))
         .flex()
@@ -1953,13 +2046,8 @@ fn render_rail_hint(
     rail_hint_dismissed: Rc<Cell<bool>>,
     rail_hint_shown_at: Rc<Cell<Option<Instant>>>,
 ) -> impl IntoElement {
-    div()
+    crate::ui::rail::side_card(px(0.), px(216.), &theme)
         .id(ElementId::Name("rail-hint".into()))
-        .absolute()
-        .left(px(NAVIGATION_RAIL_WIDTH + NAVIGATION_RAIL_CONTENT_GAP))
-        .top_0()
-        .w(px(216.))
-        .elevation_2(&theme)
         .px(px(13.))
         .py(px(10.))
         .flex()
@@ -2147,9 +2235,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.border, frosted_transcript_fill(theme))
         .child(header);
     if expanded {
         card = card.child(
@@ -3420,9 +3506,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.border, frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -3756,12 +3840,10 @@ fn render_subagent_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(panel::RADIUS.px(&theme))
         // The same quiet hairline as every activity card: a failure is said
         // by the child's glyph and the error line under the rows, so the
         // frame does not shout it a third time.
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.border, frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -4483,6 +4565,8 @@ fn render_subagent_detail(
             .get(&copy_key)
             .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
         let full = report.to_string();
+        // Bespoke: the copied acknowledgement owns this button's hover (the
+        // success tint holds through it), which `IconButton` does not model.
         let copy = icon_button_frame(
             div().id(ElementId::NamedInteger(
                 "copy-subagent-report".into(),
@@ -4672,9 +4756,7 @@ fn render_activity_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.border, frosted_transcript_fill(theme))
         .child(
             div()
                 .id(ElementId::NamedInteger(
@@ -4748,34 +4830,20 @@ fn render_activity_card(
                         // that opens the browser without toggling the card
                         // (the row's own click expands the detail).
                         row.child(
-                            div()
-                                .id(ElementId::NamedInteger(
+                            crate::ui::button::LinkButton::new(
+                                ElementId::NamedInteger(
                                     "tool-link".into(),
                                     (key.0 as u64) << 16 | key.1 as u64,
-                                ))
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .items_center()
-                                .gap(DynamicSpacing::Base04.px(&theme))
-                                .cursor_pointer()
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_color(theme.accent_text)
-                                        .underline()
-                                        .child(display_url(&url).to_string()),
-                                )
-                                .child(glyph(
-                                    "icons/arrow-up-right.svg",
-                                    IconSize::XSmall.px(&theme),
-                                    theme.accent_text,
-                                ))
-                                .on_click(move |_, _, cx| {
-                                    cx.open_url(&url);
-                                    cx.stop_propagation();
-                                }),
+                                ),
+                                display_url(&url).to_string(),
+                            )
+                            .external()
+                            .underline()
+                            .grow()
+                            .on_click(&theme, move |_, _, cx| {
+                                cx.open_url(&url);
+                                cx.stop_propagation();
+                            }),
                         )
                     } else {
                         let mut preview = div()
@@ -5371,6 +5439,8 @@ fn render_detail_section(
         copy_label.opacity(label_to).into_any_element()
     };
     let copied_wash = theme.success.opacity(0.10);
+    // Bespoke: the copied acknowledgement owns this button's hover (the
+    // success tint holds through it), which `IconButton` does not model.
     let copy_button = icon_button_frame(
         div().id(ElementId::NamedInteger(
             "copy-activity-section".into(),
@@ -5910,73 +5980,21 @@ fn render_edit_diff_row(
         "diff-line".into(),
         ((key.0 as u64) << 34) | ((key.1 as u64) << 18) | line_ix as u64,
     );
-    let (body_bg, gutter_bg, edge, marker_color, marker) = match row.kind {
-        DiffRowKind::Addition => (
-            Some(theme.success.opacity(diff_body_wash(theme))),
-            Some(theme.success.opacity(diff_gutter_wash(theme))),
-            Some(theme.success),
-            theme.success,
-            "+",
-        ),
-        DiffRowKind::Deletion => (
-            Some(theme.error.opacity(diff_body_wash(theme))),
-            Some(theme.error.opacity(diff_gutter_wash(theme))),
-            Some(theme.error),
-            theme.error,
-            "-",
-        ),
-        _ => (None, None, None, theme.text_muted, ""),
+    let (tone, marker) = match row.kind {
+        DiffRowKind::Addition => (crate::ui::diff::DiffTone::Addition, "+"),
+        DiffRowKind::Deletion => (crate::ui::diff::DiffTone::Deletion, "-"),
+        _ => (crate::ui::diff::DiffTone::Context, ""),
     };
-    div()
-        .w_full()
-        .min_w_0()
+    crate::ui::diff::DiffRow::new(tone, marker, diff_row_text(row, line_id, theme))
+        .gutter(crate::ui::diff::DiffGutter::Marker { width: px(24.) })
         .min_h(px(EDIT_DIFF_ROW_HEIGHT))
-        .flex()
+        .render(&theme)
+        .w_full()
         .font_family(theme::code_font_family())
         .text_size(theme.code_px(EDIT_DIFF_TEXT_SIZE))
         .line_height(theme.code_px(18.))
-        .when_some(edge, |row, edge| row.border_l_2().border_color(edge))
-        .child(
-            div()
-                .w(px(24.))
-                .flex_none()
-                .flex()
-                .items_start()
-                .justify_center()
-                .text_color(marker_color)
-                .when_some(gutter_bg, |gutter, bg| gutter.bg(bg))
-                .child(marker),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .pr(DynamicSpacing::Base12.px(&theme))
-                .overflow_hidden()
-                // A long line wraps to the next row instead of being clipped —
-                // the diff must stay readable at any pane width.
-                .whitespace_normal()
-                .when_some(body_bg, |body, bg| body.bg(bg))
-                .text_color(theme.code_text)
-                .child(diff_row_text(row, line_id, theme)),
-        )
+        .text_color(theme.code_text)
         .into_any_element()
-}
-
-fn diff_body_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.18
-    } else {
-        0.12
-    }
-}
-
-fn diff_gutter_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.24
-    } else {
-        0.15
-    }
 }
 
 /// Syntax-colored text for one diff row (tokens are already per-line); the
@@ -6051,28 +6069,26 @@ fn render_message_footer(
     export_response: Option<ResponseExporter>,
 ) -> impl IntoElement {
     let response_text = copy_text.clone();
-    let button = icon_button_frame(
-        div().id(ElementId::NamedInteger("copy-response".into(), ix as u64)),
-        &theme,
-        FOOTER_BUTTON,
+    let button = IconButton::glyph(
+        ElementId::NamedInteger("copy-response".into(), ix as u64),
+        glyph(
+            if copied {
+                "icons/check.svg"
+            } else {
+                "icons/copy.svg"
+            },
+            FOOTER_BUTTON.icon_size().px(&theme),
+            if copied {
+                theme.success
+            } else {
+                theme.text_muted
+            },
+        ),
     )
+    .size(FOOTER_BUTTON)
+    .variant(IconButtonVariant::Glass)
     .tip(tr!("transcript.copy_message"))
-    .cursor_pointer()
-    .hover_on_glass(&theme)
-    .child(glyph(
-        if copied {
-            "icons/check.svg"
-        } else {
-            "icons/copy.svg"
-        },
-        FOOTER_BUTTON.icon_size().px(&theme),
-        if copied {
-            theme.success
-        } else {
-            theme.text_muted
-        },
-    ))
-    .on_click(move |_, _, cx| {
+    .on_click(&theme, move |_, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
         copied_at.borrow_mut().insert(ix, Instant::now());
         cx.refresh_windows();
@@ -6088,89 +6104,65 @@ fn render_message_footer(
     // than behind a hover-only rail (DESIGN.md: never hide a state-changing
     // action behind hover).
     let rewind_button = rewind.map(|opener| {
-        icon_button_frame(
-            div().id(ElementId::NamedInteger("rewind-turn".into(), ix as u64)),
-            &theme,
-            FOOTER_BUTTON,
+        IconButton::glyph(
+            ElementId::NamedInteger("rewind-turn".into(), ix as u64),
+            glyph(
+                if align_right {
+                    "icons/rotate-ccw.svg"
+                } else {
+                    "icons/git-fork.svg"
+                },
+                FOOTER_BUTTON.icon_size().px(&theme),
+                theme.text_muted,
+            ),
         )
-        .debug_selector(move || format!("rewind-turn-{ix}"))
+        .size(FOOTER_BUTTON)
+        .variant(IconButtonVariant::Glass)
         .tip(if align_right {
             tr!("transcript.rewind_to_here")
         } else {
             tr!("transcript.fork_conversation")
         })
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .child(glyph(
-            if align_right {
-                "icons/rotate-ccw.svg"
-            } else {
-                "icons/git-fork.svg"
-            },
-            FOOTER_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_click(move |_, window, cx| opener(ix, window, cx))
+        .on_click(&theme, move |_, window, cx| opener(ix, window, cx))
+        .debug_selector(move || format!("rewind-turn-{ix}"))
     });
     // Regenerate is a response action and always says what it does: pi forks
     // the conversation into a new session and sends the prompt again there.
     let regenerate_button = regenerate.map(|opener| {
-        icon_button_frame(
-            div().id(ElementId::NamedInteger(
-                "regenerate-response".into(),
-                ix as u64,
-            )),
-            &theme,
-            FOOTER_BUTTON,
+        IconButton::glyph(
+            ElementId::NamedInteger("regenerate-response".into(), ix as u64),
+            glyph("icons/refresh.svg", FOOTER_BUTTON.icon_size().px(&theme), theme.text_muted),
         )
-        .debug_selector(move || format!("regenerate-response-{ix}"))
+        .size(FOOTER_BUTTON)
+        .variant(IconButtonVariant::Glass)
         .tip(tr!("transcript.regenerate"))
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .child(glyph(
-            "icons/refresh.svg",
-            FOOTER_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_click(move |_, window, cx| opener(ix, window, cx))
+        .on_click(&theme, move |_, window, cx| opener(ix, window, cx))
+        .debug_selector(move || format!("regenerate-response-{ix}"))
     });
     let pdf_text = response_text.clone();
     let pdf_button = export_response.clone().map(|export| {
-        icon_button_frame(
-            div().id(ElementId::NamedInteger(
-                "export-response-pdf".into(),
-                ix as u64,
-            )),
-            &theme,
-            FOOTER_BUTTON,
+        IconButton::glyph(
+            ElementId::NamedInteger("export-response-pdf".into(), ix as u64),
+            glyph("icons/file.svg", FOOTER_BUTTON.icon_size().px(&theme), theme.text_muted),
         )
-        .debug_selector(move || format!("export-response-pdf-{ix}"))
+        .size(FOOTER_BUTTON)
+        .variant(IconButtonVariant::Glass)
         .tip(tr!("transcript.export_response_pdf"))
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .child(glyph(
-            "icons/file.svg",
-            FOOTER_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_click(move |_, window, cx| export(pdf_text.clone(), true, ix, window, cx))
+        .on_click(&theme, move |_, window, cx| export(pdf_text.clone(), true, ix, window, cx))
+        .debug_selector(move || format!("export-response-pdf-{ix}"))
     });
     let export_button = export_response.map(|export| {
-        icon_button_frame(
-            div().id(ElementId::NamedInteger("export-response".into(), ix as u64)),
-            &theme,
-            FOOTER_BUTTON,
+        IconButton::glyph(
+            ElementId::NamedInteger("export-response".into(), ix as u64),
+            glyph("icons/arrow-down.svg", FOOTER_BUTTON.icon_size().px(&theme), theme.text_muted),
         )
-        .debug_selector(move || format!("export-response-{ix}"))
+        .size(FOOTER_BUTTON)
+        .variant(IconButtonVariant::Glass)
         .tip(tr!("transcript.export_response_markdown"))
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .child(glyph(
-            "icons/arrow-down.svg",
-            FOOTER_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_click(move |_, window, cx| export(response_text.clone(), false, ix, window, cx))
+        .on_click(&theme, move |_, window, cx| {
+            export(response_text.clone(), false, ix, window, cx)
+        })
+        .debug_selector(move || format!("export-response-{ix}"))
     });
     if align_right {
         // Right-aligned footer: timestamp first, then actions.
@@ -8664,31 +8656,26 @@ fn code_copy_button(
         .borrow()
         .get(&(ix, block_key, CODE_COPY_SECTION))
         .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-    icon_button_frame(
-        div().id(ElementId::NamedInteger(
-            "copy-code".into(),
-            (ix as u64) << 32 | block_key as u64,
-        )),
-        &theme,
-        CODE_COPY_BUTTON,
+    IconButton::glyph(
+        ElementId::NamedInteger("copy-code".into(), (ix as u64) << 32 | block_key as u64),
+        glyph(
+            if copied {
+                "icons/check.svg"
+            } else {
+                "icons/copy.svg"
+            },
+            CODE_COPY_BUTTON.icon_size().px(&theme),
+            if copied {
+                theme.success
+            } else {
+                theme.text_muted
+            },
+        ),
     )
+    .size(CODE_COPY_BUTTON)
+    .variant(IconButtonVariant::Glass)
     .tip(tr!("transcript.copy_code"))
-    .cursor_pointer()
-    .hover_on_glass(&theme)
-    .child(glyph(
-        if copied {
-            "icons/check.svg"
-        } else {
-            "icons/copy.svg"
-        },
-        CODE_COPY_BUTTON.icon_size().px(&theme),
-        if copied {
-            theme.success
-        } else {
-            theme.text_muted
-        },
-    ))
-    .on_click(move |_, _, cx| {
+    .on_click(&theme, move |_, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
         copied_sections
             .borrow_mut()
@@ -9378,9 +9365,7 @@ pub(crate) fn render_changed_files(
     let mut card = div()
         .w_full()
         .min_w_0()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(theme.card_fill(theme.background))
+        .card_surface(&theme, theme.border, theme.card_fill(theme.background))
         .overflow_hidden()
         .child(header)
         .child(rows);
@@ -11152,6 +11137,51 @@ mod tests {
                 theme,
             ))
         }
+    }
+
+    /// The right-click text menu has a keyboard path: with nothing selected
+    /// the cursor skips the disabled Copy Selection, Enter copies the message,
+    /// and closing hands focus back to whatever held it.
+    #[gpui::test]
+    fn the_text_menu_runs_from_the_keyboard_and_returns_focus(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let opener = cx.update(|window, cx| {
+            let opener = cx.focus_handle();
+            window.focus(&opener);
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            selection.borrow_mut().menu = Some(TextMenu {
+                position: gpui::point(px(10.), px(10.)),
+                message_text: "the whole message".to_string(),
+                focus,
+                restore: Some(opener.clone()),
+                highlight: crate::ui::menu::MenuState::default(),
+                keyed: false,
+            });
+            opener
+        });
+        cx.update(|window, cx| {
+            // Enter before any arrow does nothing: a pointer-opened menu has
+            // no cursor yet.
+            text_menu_key(&selection, "enter", window, cx);
+            assert!(selection.borrow().menu.is_some());
+            text_menu_key(&selection, "down", window, cx);
+            let menu = selection.borrow().menu.clone().expect("still open");
+            assert_eq!(
+                menu.highlight.selected(TextMenuItem::ALL.len()),
+                Some(1),
+                "Copy Selection is disabled without a selection"
+            );
+            text_menu_key(&selection, "up", window, cx);
+            let menu = selection.borrow().menu.clone().expect("still open");
+            assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(1));
+            text_menu_key(&selection, "enter", window, cx);
+        });
+        assert!(selection.borrow().menu.is_none(), "running an item closes the menu");
+        let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+        assert_eq!(copied.as_deref(), Some("the whole message"));
+        assert!(cx.update(|window, _| opener.is_focused(window)), "focus returns to the opener");
     }
 
     #[gpui::test]

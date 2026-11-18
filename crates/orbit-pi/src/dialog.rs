@@ -21,6 +21,7 @@ use crate::app::{modal_card, modal_scrim, PressedRamp, StatefulControlExt};
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{button, input, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
+use crate::ui::dialog::ModalHeader;
 
 /// Card width — a question plus its options without owning the window.
 const CARD_W: f32 = 560.;
@@ -360,44 +361,14 @@ impl Render for Dialog {
             .on_action(cx.listener(Self::on_last));
 
         // ── header: origin, title, and (confirm) the message body ──
-        // Zed's `ModalHeader` insets, with its Small headline for the title.
-        let mut header = div()
-            .px(modal::header_padding_x(&theme))
-            .pt(modal::header_padding_top(&theme))
-            .pb(modal::header_padding_bottom(&theme))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base04.px(&theme))
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_muted)
-                    .child(tr!("dialog.question")),
-            )
-            .child(
-                div()
-                    .whitespace_normal()
-                    .text_size(modal::HEADLINE.px(&theme))
-                    .line_height(modal::HEADLINE.line_height(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(SharedString::from(self.request.title.clone())),
-            );
+        // The body continues the question, so no hairline between them.
+        let mut header = ModalHeader::new(SharedString::from(self.request.title.clone()))
+            .eyebrow(tr!("dialog.question"))
+            .divider(false);
         if let Some(body) = self.request.body.clone() {
-            if !body.trim().is_empty() {
-                header = header.child(
-                    // Zed's header description closes with `mb_2`.
-                    div()
-                        .mb(theme.rems(0.5))
-                        .whitespace_normal()
-                        .text_size(TextSize::Default.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .child(SharedString::from(body)),
-                );
-            }
+            header = header.description(body);
         }
+        let header = header.render(&theme);
         card = card.child(header);
 
         // ── body: options, buttons, or a text field ──

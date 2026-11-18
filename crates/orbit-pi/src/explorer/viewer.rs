@@ -23,6 +23,7 @@ use gpui::{
     Timer, Window,
 };
 
+use crate::ui::chip::{Badge, BadgeFill};
 use crate::ui::list::virtual_list;
 use crate::ui::button::IconButton;
 use crate::ui::tab::{tab_strip, Tab as TabButton};
@@ -32,7 +33,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
 use crate::theme::tokens::RaisedExt;
-use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Files above this are not previewed. Two megabytes is far past any source
@@ -934,27 +935,24 @@ impl FileViewer {
                 ),
             }
         };
-        div()
-            .flex_none()
-            .h(px(20.))
-            .px(DynamicSpacing::Base06.px(&theme))
-            .rounded(Radius::Small.px(&theme))
-            .bg(theme.surface_elevated)
-            .border_1()
-            .border_color(theme.border)
-            .font_family(theme::ui_font_family())
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base04.px(&theme))
-            .when(!tab.editable(), |el| {
-                el.child(icon(
-                    "icons/lock.svg",
-                    IconSize::Indicator.px(&theme),
-                    theme.text_muted,
-                ))
-            })
-            .child(div().text_color(color).child(label))
-            .into_any_element()
+        let badge = Badge::new(
+            label,
+            color,
+            BadgeFill::Framed {
+                face: theme.surface_elevated,
+                edge: theme.border,
+            },
+        );
+        let badge = if tab.editable() {
+            badge
+        } else {
+            badge.leading(icon(
+                "icons/lock.svg",
+                IconSize::Indicator.px(&theme),
+                theme.text_muted,
+            ))
+        };
+        badge.render(&theme)
     }
 
     fn body(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1350,7 +1348,7 @@ impl Render for FileViewer {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(theme.background)
+            .bg(theme.page_canvas())
             .child(self.tab_strip(theme, cx))
             .child(self.toolbar(theme, cx))
             .child(self.body(theme, cx))

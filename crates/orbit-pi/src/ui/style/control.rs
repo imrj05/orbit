@@ -198,13 +198,6 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
         self.hover(move |style| style.bg(edge))
     }
 
-    /// A row wash whose ink steps to the accent's readable role — a link row.
-    fn hover_accent_ink(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
-        let ink = theme.accent_text;
-        self.hover(move |style| style.bg(fill).text_color(ink))
-    }
-
     /// An inverse fill: the ink colour as a background, for a small sample or
     /// swatch that previews the foreground it would paint.
     fn hover_inverse(self, theme: &Theme) -> Self {

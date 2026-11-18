@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 
 use super::helpers::*;
 use super::*;
+use crate::ui::button::ButtonVariant;
+use crate::ui::dialog::modal_button;
 use crate::ui::field::search_field;
 use crate::ui::button::IconButton;
 use crate::ui::chip::Pill;
@@ -1057,24 +1059,26 @@ impl OrbitApp {
         let search = search_field(self.mcp_filter.clone(), &theme)
             .w_full();
 
-        let refresh = icon_button_frame(div().id("mcp-refresh"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .tip(tr!("mcp.refresh"))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
-            })
-            .child(refresh_glyph(
+        let refresh = IconButton::glyph(
+            "mcp-refresh",
+            refresh_glyph(
                 "mcp-refresh-spin",
                 ButtonSize::Large.icon_size().px(&theme),
                 self.mcp.is_probing(),
                 theme.text_secondary,
                 theme,
-            ));
+            ),
+        )
+        .size(ButtonSize::Large)
+        .tip(tr!("mcp.refresh"))
+        .on_mouse_up(&theme, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
+        })
+        // Outlined to sit beside the labelled Add button at the same weight.
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, &theme);
 
         let add = button_frame(div().id("mcp-add"), &theme, ButtonSize::Large)
             .cursor_pointer()
@@ -2324,33 +2328,28 @@ impl OrbitApp {
             );
         }
 
-        let cancel = button_frame(div().id("mcp-editor-cancel"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_close(cx))
-            })
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(tr!("mcp.cancel")),
-            );
-        let save = button_frame(div().id("mcp-editor-save"), &theme, ButtonSize::Large)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_save(cx))
-            })
-            .child(tr!("mcp.save"));
+        let cancel = modal_button(
+            "mcp-editor-cancel",
+            tr!("mcp.cancel"),
+            ButtonVariant::Secondary,
+            &self.modal_cancel_focus,
+        )
+        .size(ButtonSize::Large)
+        .on_click(&theme, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_close(cx))
+        });
+        let save = modal_button(
+            "mcp-editor-save",
+            tr!("mcp.save"),
+            ButtonVariant::Primary,
+            &self.modal_confirm_focus,
+        )
+        .size(ButtonSize::Large)
+        .on_click(&theme, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_save(cx))
+        });
 
         let card = modal_card(&theme)
             .w_full()
