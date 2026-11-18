@@ -23,6 +23,7 @@ use crate::composer::ComposerInput;
 use crate::rewind::{self, ForkPoint};
 use crate::theme::tokens::{input, list, picker, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
+use crate::ui::popover::PopoverExt;
 
 const CARD_W: f32 = 460.;
 /// Rows visible before the list scrolls.
@@ -450,14 +451,13 @@ impl Render for RewindPicker {
             .debug_selector(|| "rewind-layer".to_string())
             .absolute()
             .inset_0()
-            .occlude()
             .bg(theme.scrim())
             .px(DynamicSpacing::Base24.px(&theme))
             .py(DynamicSpacing::Base24.px(&theme))
             .flex()
             .items_center()
             .justify_center()
-            .on_mouse_down_out(cx.listener(Self::on_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_outside_down))
             // The dialog entrance: the card fades in on the Layout role.
             .child(crate::motion::enter(
                 card,

@@ -450,7 +450,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         command(
             CommandId::AbortRun,
             Agent,
-            "icons/stop.svg",
+            "icons/stop-run.svg",
             "command_palette.abort_run",
             "abort stop cancel run agent working",
         ),
@@ -563,7 +563,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             command(
                 CommandId::ToggleSidebar,
                 Panels,
-                "icons/layout-left.svg",
+                "icons/sidebar-toggle.svg",
                 "command_palette.show_sidebar",
                 "toggle show hide left sidebar sessions history",
             ),
@@ -575,7 +575,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         command(
             CommandId::ToggleSidePanel,
             Panels,
-            "icons/panel-right.svg",
+            "icons/sidebar-toggle-right.svg",
             "command_palette.show_side_panel",
             "toggle show hide right panel review git diff",
         ),

@@ -32,12 +32,14 @@
 //!
 //! Sections: Summary · Usage over time · Breakdown · Records · Daily activity.
 
-use crate::ui::style::surface::SurfaceExt;
+use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
+use crate::ui::card::{card, section};
+use crate::ui::popover::{popover_list, PopoverExt};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, relative, Animation, AnimationExt, AnyElement, App,
+    anchored, deferred, div, prelude::*, px, AnyElement, App,
     Context, Corner, ElementId, Entity, Font, FontFeatures, FontWeight, Hsla, IntoElement,
     MouseButton, Pixels, Render, SharedString, Stateful, Window,
 };
@@ -62,21 +64,21 @@ use super::table::{
     cell_shell, data_table, empty_cell, status_badge, text_cell, two_line_cell, Column,
     FailureSort, SortState, TableHandlers, TableKind, FILL_SLACK, HEADER_H, ROW_H,
 };
-use crate::ui::tooltip::Tooltip;
 use crate::app::{
     button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
-    icon_dyn, picker_entry, picker_search_frame, picker_surface, press, provider_mark_color,
-    ControlExt, TipExt, BUTTON_GROUP,
+    icon_dyn, picker_entry, picker_search_frame, press, provider_mark_color, ControlExt, TipExt,
+    BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
-    Motion, Radius, TextSize,
+    Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::transcript_view::activity_icon;
+use crate::ui::tooltip::Tooltip;
 
 /// Inner column width for a data surface (§58): wide enough for a full table,
 /// narrow enough that the eye does not have to travel a metre.
@@ -4213,15 +4215,10 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
 /// The menu shell, on the branch selector's picker metrics
 /// ([`picker_surface`]), dismissed by an outside click.
 fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyElement>) -> AnyElement {
-    picker_surface(div().id("usage-row-menu"), &theme)
-        .py(picker::list_padding_y(&theme))
-        .flex()
-        .flex_col()
-        .gap(DynamicSpacing::Base01.px(&theme))
+    popover_list(div().id("usage-row-menu"), &theme)
         .overflow_hidden()
-        .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_down_out(move |_, _, cx| {
+        .dismiss_on_outside(move |_, _, cx| {
             page.update(cx, |page, cx| page.close_context_menu(cx));
         })
         .children(items)
@@ -4253,108 +4250,6 @@ fn context_separator(theme: Theme) -> AnyElement {
 }
 
 // ── shared pieces ─────────────────────────────────────────────────────────
-
-/// A top-level band on the canvas: a semantic title, a one-line description,
-/// optional meta, a hairline, then the content. Used for every secondary
-/// section so the page reads as hairlines and whitespace rather than a stack
-/// of boxes (DESIGN.md: hairlines over boxes). The summary metric board is
-/// the one place that keeps a card.
-fn section(
-    id: &'static str,
-    title: &str,
-    description: Option<&str>,
-    meta: Option<String>,
-    right: Option<AnyElement>,
-    content: AnyElement,
-    theme: Theme,
-) -> AnyElement {
-    card(
-        id,
-        title,
-        description,
-        meta,
-        right,
-        div()
-            .w_full()
-            .px(DynamicSpacing::Base12.px(&theme))
-            .pt(DynamicSpacing::Base12.px(&theme))
-            .pb(DynamicSpacing::Base12.px(&theme))
-            .child(content)
-            .into_any_element(),
-        theme,
-        false,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn card(
-    id: &'static str,
-    title: &str,
-    description: Option<&str>,
-    meta: Option<String>,
-    right: Option<AnyElement>,
-    content: AnyElement,
-    theme: Theme,
-    clip: bool,
-) -> AnyElement {
-    let mut root = div()
-        .id(SharedString::from(id))
-        .flex_none()
-        .w_full()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        // Translucent whenever a wallpaper is behind the column, whatever the
-        // renderer can do with it: the frost is the extra, not the condition.
-        .bg(theme.card_fill(theme.surface_elevated))
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .flex_none()
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base12.px(&theme))
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base04.px(&theme))
-                .border_b_1()
-                .border_color(theme.border)
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .child(
-                            div()
-                                .text_size(TextSize::Large.px(&theme))
-                                .line_height(theme.ui_px(20.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_primary)
-                                .child(title.to_string()),
-                        )
-                        .children(meta.map(|meta| {
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(meta)
-                        }))
-                        .child(div().flex_1())
-                        .children(right),
-                )
-                .children(description.map(|description| {
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(16.))
-                        .text_color(theme.text_muted)
-                        .child(description.to_string())
-                })),
-        )
-        .child(content);
-    if clip {
-        root = root.overflow_hidden();
-    }
-    root.into_any_element()
-}
 
 /// A segmented control's selection callback, boxed so one segment's handler
 /// can be cloned into every option.
@@ -4789,34 +4684,14 @@ fn legend_bar(
     theme: Theme,
     reduced_motion: bool,
 ) -> AnyElement {
-    let fraction = if fraction.is_finite() {
-        fraction.clamp(0.0, 1.0) as f32
-    } else {
-        0.0
-    };
-    let fill = div()
-        .h_full()
-        .w(relative(fraction))
-        .rounded(Radius::Full.px(&theme))
-        .bg(fill);
-    let fill = if reduced_motion {
-        fill.into_any_element()
-    } else {
-        fill.with_animation(
-            ElementId::Name(format!("{id}-reveal").into()),
-            Animation::new(Motion::Layout.duration(&theme)).with_easing(Motion::Layout.easing()),
-            move |fill, progress| fill.w(relative(fraction * progress)),
-        )
-        .into_any_element()
-    };
-    div()
-        .w_full()
-        .h(px(6.))
-        .rounded(Radius::Full.px(&theme))
-        .bg(theme.surface_secondary)
-        .overflow_hidden()
-        .child(fill)
-        .into_any_element()
+    progress_bar(
+        &theme,
+        fraction as f32,
+        fill,
+        ProgressSize::Large,
+        ProgressTrack::Solid,
+        (!reduced_motion).then(|| ElementId::Name(format!("{id}-reveal").into())),
+    )
 }
 
 /// The name cell of a breakdown table: the row's label, with its secondary

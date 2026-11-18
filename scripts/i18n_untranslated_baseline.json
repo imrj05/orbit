@@ -261,6 +261,7 @@
   "context_meter.conversation",
   "context_meter.tokens_of",
   "context_meter.total",
+  "dialog.question",
   "git_accounts.scope_global",
   "git_accounts.ssh",
   "git_accounts.version",

@@ -307,7 +307,7 @@ fn worktree_advanced_button_click_toggles_the_menu_closed(cx: &mut gpui::TestApp
             // A click outside the menu (the button sits outside the occluded
             // popup) dismisses it on mouse-down and stamps the gesture...
             app.worktree_advanced_open = false;
-            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.menu_dismissed_at.arm();
             // ...so the same click's mouse-up must not reopen it.
             app.toggle_worktree_advanced(cx);
             assert!(
@@ -316,7 +316,7 @@ fn worktree_advanced_button_click_toggles_the_menu_closed(cx: &mut gpui::TestApp
             );
 
             // A later, deliberate click opens it again.
-            app.menu_dismissed_at = None;
+            app.menu_dismissed_at.clear();
             app.toggle_worktree_advanced(cx);
             assert!(app.worktree_advanced_open, "a later click reopens the menu");
         });
@@ -1279,7 +1279,7 @@ fn the_gesture_guard_does_not_swallow_the_keyboard_shortcut(cx: &mut gpui::TestA
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             // A chip or row menu was just dismissed with the mouse.
-            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.menu_dismissed_at.arm();
             app.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx);
             assert!(
                 app.command_palette.is_some(),
@@ -1288,7 +1288,7 @@ fn the_gesture_guard_does_not_swallow_the_keyboard_shortcut(cx: &mut gpui::TestA
 
             // The pointer path still guards the same gesture.
             app.command_palette = None;
-            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.menu_dismissed_at.arm();
             app.toggle_command_palette(window, cx);
             assert!(
                 app.command_palette.is_none(),

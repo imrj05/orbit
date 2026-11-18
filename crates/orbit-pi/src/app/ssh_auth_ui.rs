@@ -42,6 +42,10 @@ pub(crate) enum AuthThen {
     ProviderList(String),
     /// The "Add to a server" dialog (this opening of it) before its clone.
     AddToServer(u64),
+    /// A sidebar server group's refresh (this host entry's name).
+    SessionList(String),
+    /// Opening a remote session from the sidebar (its path on the host).
+    ResumeSession(String),
 }
 
 /// Where an install was started, and so where its result and the check
@@ -222,6 +226,11 @@ impl OrbitApp {
             self.fetch_remote_models(host, attempt, cx);
             return;
         }
+        // A session list retried with a password is the list itself again.
+        if matches!(then, AuthThen::SessionList(_)) {
+            self.fetch_remote_sessions(host, attempt, true, cx);
+            return;
+        }
         match &then {
             AuthThen::ProviderList(_) => {}
             AuthThen::EditorTest(_) => {
@@ -237,8 +246,12 @@ impl OrbitApp {
             AuthThen::StartTask => {
                 self.set_status(tr!("remote.connecting", host = host.name.clone()));
             }
-            // The dialog's own button says it is connecting.
-            AuthThen::AddToServer(_) => {}
+            AuthThen::ResumeSession(_) => {
+                self.set_status(tr!("remote.connecting", host = host.name.clone()));
+            }
+            // The dialog's own button says it is connecting; a list is
+            // redirected above.
+            AuthThen::AddToServer(_) | AuthThen::SessionList(_) => {}
         }
         cx.notify();
         let secret = self.remote_secret(&host);
@@ -267,6 +280,7 @@ impl OrbitApp {
             AuthThen::StartTask => true,
             AuthThen::ProviderList(name) => self.remote_model_lists.contains_key(name),
             AuthThen::AddToServer(generation) => self.server_clone_waiting(*generation),
+            AuthThen::SessionList(_) | AuthThen::ResumeSession(_) => true,
         }
     }
 
@@ -358,6 +372,17 @@ impl OrbitApp {
                         *generation,
                         tr!("remote_hosts.pi_missing_with_command", command = command),
                     ),
+                    AuthThen::SessionList(name) => self.remote_sessions_failed(
+                        name,
+                        tr!("remote_hosts.pi_missing_with_command", command = command),
+                    ),
+                    AuthThen::ResumeSession(_) => {
+                        self.set_status(String::new());
+                        self.toast_error(tr!(
+                            "remote.connect_failed",
+                            error = tr!("remote_hosts.pi_missing_with_command", command = command)
+                        ));
+                    }
                 }
                 cx.notify();
             }
@@ -389,6 +414,9 @@ impl OrbitApp {
             // A listing finishes in `finish_remote_model_list`, never here.
             AuthThen::ProviderList(_) => {}
             AuthThen::AddToServer(generation) => self.server_clone_connected(generation, cx),
+            AuthThen::ResumeSession(path) => self.resume_remote_session_on(host, path, cx),
+            // A list finishes in `finish_remote_sessions`, never here.
+            AuthThen::SessionList(_) => {}
         }
         cx.notify();
     }
@@ -421,6 +449,11 @@ impl OrbitApp {
                     .insert(name.clone(), RemoteModels::Failed(message));
             }
             AuthThen::AddToServer(generation) => self.server_clone_failed(*generation, message),
+            AuthThen::SessionList(name) => self.remote_sessions_failed(name, message),
+            AuthThen::ResumeSession(_) => {
+                self.set_status(String::new());
+                self.toast_error(tr!("remote.connect_failed", error = message));
+            }
         }
         cx.notify();
     }
@@ -445,6 +478,11 @@ impl OrbitApp {
                     .insert(name.clone(), RemoteModels::Failed(message));
             }
             AuthThen::AddToServer(generation) => self.server_clone_failed(*generation, message),
+            AuthThen::SessionList(name) => self.remote_sessions_failed(name, message),
+            AuthThen::ResumeSession(_) => {
+                self.set_status(String::new());
+                self.toast_error(tr!("remote.connect_failed", error = message));
+            }
         }
         cx.notify();
     }
@@ -586,16 +624,7 @@ impl OrbitApp {
             );
         }
 
-        let footer = div()
-            .flex_none()
-            .px(modal::footer_padding(&theme))
-            .py(modal::footer_padding(&theme))
-            .flex()
-            .items_center()
-            .justify_end()
-            .gap(modal::footer_gap(&theme))
-            .border_t_1()
-            .border_color(theme.border)
+        let footer = modal_footer(&theme)
             .child(mcp_text_button(
                 "remote-password-cancel".into(),
                 tr!("remote_hosts.cancel"),
@@ -620,23 +649,11 @@ impl OrbitApp {
             .key_context("Picker")
             .on_action(cx.listener(Self::remote_password_confirm_action))
             .on_action(cx.listener(Self::remote_password_cancel_action))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(modal::HEADLINE.px(&theme))
-                            .line_height(modal::HEADLINE.line_height(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(tr!("remote_hosts.password_title")),
-                    ),
-            )
+            .child(modal_header(
+                &theme,
+                tr!("remote_hosts.password_title"),
+                None,
+            ))
             .child(
                 div()
                     .px(modal::section_padding_x(&theme, false))

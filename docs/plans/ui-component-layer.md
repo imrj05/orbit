@@ -1,10 +1,118 @@
 # Plan — UI component layer
 
-**Status:** **Phase 1a landed; Phases 1b and 2 partially implemented, verification pending.** `ui/` exists and the interaction
-seam moved into it (`ui/style/control.rs`, re-exported so no call site changed),
-the shared tooltip moved out of the `usage/` page, and
-`scripts/check_ui_layers.py` enforces the dependency direction. Phase 2's first
-navigation controls and the switch move are implemented but unverified; later work remains proposed.
+**Status (2026-11-18):** Phases 1–5 partly landed, Phases 6–7 not started.
+Everything below is uncommitted on the `feat/sidebar-toolbar` branch. Start at
+**Resume here** below; §6.2–§6.7 is the per-pass log (what moved, the checks
+that ran and every declared pixel change).
+
+## Resume here
+
+### Where it stands
+
+| Family | Owner | State |
+|---|---|---|
+| Interaction states, press, tooltip | `ui/style/control.rs` | ✅ done |
+| Material (frost) | `ui/style/surface.rs` | ✅ done |
+| Button (6 variants, loading, disabled, faded) | `ui/button.rs` `Button`, `ButtonVariant` | ✅ owner; ~20 wrappers migrated |
+| Icon button (ghost/glass, open, faded, glyph) | `ui/button.rs` `IconButton` | 🟡 19 sites; **74 `icon_button_frame` sites left** |
+| Segmented control | `ui/button.rs` `segmented_segment`, `settings_segment`, `active_segment` | ✅ recipes |
+| Trigger chip (quiet / outlined) | `ui/chip.rs` `ChipButton` | 🟡 Usage filters + composer access/workflow; model/thinking chips left |
+| Badge | `ui/chip.rs` `Badge` | ✅ owner; Git refs + provider badges |
+| Pill | — | ⬜ not started |
+| Banner / error card | `ui/banner.rs` `Banner`, `error_state` | 🟡 owner; `error_banner` (view), Git `failure_banner`, Explorer notice strip, worktree setup banner left |
+| Empty / error / spinner / refresh | `ui/feedback.rs` | ✅ owner (+ action slot) |
+| Progress bar | `ui/feedback.rs` `progress_bar` | ✅ 3 meters |
+| Skeleton | — | ⬜ (`usage/view.rs::skeleton` is the only one) |
+| Toast card | — | ⬜ blocked: `app/toast_ui.rs` had parallel uncommitted work |
+| Menu cursor | `ui/menu.rs` `MenuState` (Home/End, skip disabled, reconcile) | 🟡 5 menus (add, access, workflow, Work in, extension select); `PanelMenu`, `TextMenu`, sidebar menus still hand-roll |
+| Menu frame + hint | `ui/menu.rs` `context_menu_*`, `menu_hint` | ✅ |
+| Popover shell + dismissal | `ui/popover.rs` `popover_list`, `popover_picker`, `dismiss_on_outside`, `DismissGuard` | ✅ `on_mouse_down_out` only in `ui/` |
+| Dropdown (trigger ↔ menu) | `ui/popover.rs` `dropdown_below/above` | 🟡 9 menus; 10 direct `anchored_popover` calls left (pointer menus, composer column menus) |
+| Modal | `ui/dialog.rs` `modal_card/scrim/header/footer`, `ModalFocus`, `focus_ring` | 🟡 7 headers/footers; 6 modals restore + trap Tab; modal buttons not tab stops; updater/worktree/extension headers differ |
+| Rows | `ui/row.rs` `PickerRow`, `picker_entry`, `option_row`, `nav_row`, `setting_row` | 🟡 sidebar + pickers; Git (23 row fns), Usage tables, Explorer tree left |
+| Resize handle | `ui/resize.rs` | ✅ all 5 |
+| Window chrome | `ui/chrome.rs` | ✅ moved (no API change) |
+| Glyphs (file, provider, images) | `ui/glyph.rs`, `ui/icon.rs` (+ chevrons) | ✅ moved |
+| Card / section | `ui/card.rs` | 🟡 Usage only |
+| Field frame / label | `ui/field.rs` | 🟡 frame only; no `TextField` / `SearchField` |
+| Switch, keycap, tooltip view | `ui/switch.rs`, `ui/kbd.rs`, `ui/tooltip.rs` | ✅ moved |
+| Table, TabStrip, TreeRow, VirtualList, DiffRow | — | ⬜ need design (sort, drag, virtualization) |
+| Lightbox, StatusBar, Avatar, nav Rail | — | ⬜ not started |
+| `app/helpers.rs` deletion (Phase 6) | — | ⬜ 462 lines left (was 1,391), 33 files import it |
+| One-owner guard, `DESIGN.md` / `INTENT.md` (Phase 7) | — | ⬜ |
+
+### Next, in order
+
+1. **Icon buttons (74 left).** `rg -n 'icon_button_frame\(' crates/orbit-pi/src
+   -g '!ui/*'`. Most fade their hover (`IconButton::faded`), carry an open
+   state (`.open`), or use a `.tooltip(|..| Tooltip::new(x))` closure that is
+   just `.tip(x)`. Bespoke chrome (open-in split button, updater pill) may stay
+   with a one-line comment saying why.
+2. **Model / thinking chips** (`app/view.rs::model_chip`, `thinking_chip`):
+   need `ChipButton` to take a leading element (provider mark) and a compact
+   mode.
+3. **Remaining banners**: `app/view.rs::error_banner`,
+   `git_panel/mod.rs::failure_banner`, `explorer/panel.rs::notice_banner`
+   (a strip, may need `BannerTone` + a `Strip` layout), worktree setup banner.
+4. **`ToastCard`**: split `app/toast_ui.rs::toast_card` into a pure
+   `ui/toast.rs` card (glyph, title, body, dismiss, progress) and keep timing in
+   `toast.rs`. Check `git status app/toast_ui.rs` first.
+5. **Menus on `MenuState`**: `explorer/panel.rs` `PanelMenu`,
+   `transcript_view.rs` `TextMenu`, sidebar session/workspace menus.
+6. **Fields**: `TextField` / `SearchField` over `ui/field.rs` +
+   `picker_search_frame` (still in `helpers.rs`); placeholders stay
+   `with_placeholder_key`.
+7. **Phase 4 data**: design `ListRow`/`TableRow`/`Table` against Git's row
+   functions and `usage/table.rs`; `TabStrip` from `terminal.rs::tab_chip` and
+   Settings tabs; `TreeRow` from `explorer/tree.rs`. `VirtualList` must keep
+   `h_full` inside `flex_1 min_h_0`.
+8. **Phase 6**: classify what is left in `app/helpers.rs` (UI → `ui/`,
+   formatting → `app/format.rs`), switch imports from `app::helpers` /
+   `crate::app::{…}` re-exports to `crate::ui::…`, delete the file.
+9. **Phase 7**: a one-owner guard (each family's defining file), `DESIGN.md`
+   §Components, an `INTENT.md` `D#` decision, `README.md`.
+10. **Manual pass** (never done yet): `bacon run` in one light, one dark
+    non-blue-accent and the Operational palette; check sidebar rows/drag,
+    composer chips, menus (pointer + keyboard), modals (Tab/Escape/focus
+    return), resize handles, Usage filters and meters.
+
+### How to work on it
+
+- **Small cohorts, no restyle.** A migration must not move pixels; if it does,
+  list it as a declared change in that pass's §6.x entry and in `CHANGELOG.md`
+  when a user would notice.
+- **Codemods convert only exact matches.** The ones used here (chain parser:
+  match the frame's exact call list, else skip) are in the session scratchpad
+  and are not kept; re-create from the pattern if useful. Report the skip
+  count — it is the honest size of what is left.
+- **`ui/*` must not import a surface** (`scripts/check_ui_layers.py`).
+  `crate::platform` and `crate::mentions` are allowed.
+- **Hover ratchet**: `scripts/check_hovers.py` fails when a file's one-frame
+  hover count changes; after moving hovers *into* a `ui/` owner (total down),
+  run `python3 scripts/check_hovers.py --update`.
+- **rustfmt** only files whose `HEAD` version was already formatted (the
+  repo is not fully formatted; do not reformat other people's code).
+- **Parallel work**: another session was editing `app/remote_sessions_ui.rs`,
+  `remote_sessions.rs`, `events.rs`, `toast_ui.rs`. Leave those files alone
+  unless they are committed; `remote_sessions_ui.rs` has two copies of the
+  `nav_row` frame/fill to adopt later.
+
+### Verify a cohort
+
+```sh
+cargo check -p orbit-pi --all-targets
+cargo test -p orbit-pi --bin orbit-pi -- ui:: popup_layout focus_return sidebar composer   # + the touched surfaces
+python3 scripts/check_ui_layers.py && python3 scripts/check_states.py && \
+python3 scripts/check_motion.py && python3 scripts/check_keyboard.py && \
+python3 scripts/check_i18n.py && python3 scripts/check_hovers.py
+cargo clippy -p orbit-pi --all-targets -- -D warnings
+git diff --check
+```
+
+Last full run (2026-11-18): 921 focused tests, six guards and clippy clean.
+
+---
+
 The document is the inventory and the plan for giving
 every UI element in `crates/orbit-pi` exactly one named owner. It builds on
 `docs/design-system-audit.md` (which finished the *vocabulary*: colour roles,
@@ -513,8 +621,12 @@ handlers remain at the call sites. `ui/button.rs` also owns `SegmentPosition`
 and `segmented_segment`, re-exported through `app/helpers.rs` for existing
 callers. A shared medium settings-segment recipe preserves the selected and
 resting treatment for delivery mode, design system, appearance mode and
-subagent mode; their labels, keyboard and pointer handlers remain local. Other
-segmented controls retain their distinct treatments. `ui/switch.rs` now owns the existing switch
+subagent mode; their labels, keyboard and pointer handlers remain local. A
+separate size-parameterized active/rest recipe preserves the bug-report type and
+server-clone protocol segments, including their existing pointer handlers. It
+keeps the active fill and default weight distinct from settings segments; other
+segmented controls retain their distinct treatments. The new recipe's state and
+geometry tests have not been run. `ui/switch.rs` now owns the existing switch
 and its knob-travel test; `app/helpers.rs` re-exports `switch` unchanged, and
 the existing keyboard test remains at the compatibility path. `ui/icon.rs` now
 owns the shared tinted SVG icon primitives and hover group, re-exported by
@@ -524,16 +636,32 @@ regression test for SVG flex shrinking remains in `app/backdrop_layout_tests.rs`
 `IconButton` API or completion of the phase. `cargo check -p orbit-pi`
 passes after the switch move; the segmented-control migration has not had
 Cargo checks or tests run; the icon move likewise has not had Cargo checks or
-tests run. Switch tests and manual visual/glass verification remain pending.
+tests run. `ui/kbd.rs` now owns the existing keycap renderer; shortcut parsing
+and the working-folder legend remain in `app/helpers.rs`. This move preserves
+the existing rendering; `cargo check -p orbit-pi` and the working-folder hint
+test pass. Manual visual verification remains pending. Switch tests and manual
+visual/glass verification remain pending.
 
 `Button`, `IconButton`, `ButtonGroup`, `LinkButton`, `Chip`, `ChipButton`,
-`Badge`, `Pill`, `Kbd`, `Switch` (moved), `Icon`.
+`Badge`, `Pill`, `Kbd` (keycap moved), `Switch` (moved), `Icon`.
 Migrate the 44 `*_button` defs and the 27 chip / 11 badge / 6 pill defs.
 **Acceptance:** zero `*_button` definitions outside `ui/`; `primary` resolves in
 one place; every migrated surface renders identically (spot check: settings,
 composer, sidebar, git panel, transcript footer).
 
 ### Phase 3 — `Menu`, `Dropdown`, `Popover`, `Modal`
+**Partial:** `ui/menu.rs` provides pure highlight navigation, used by the
+composer's add and access menus. It also owns the existing context-menu surface,
+entry and separator helpers, re-exported through `app/helpers.rs`; positioning,
+row content, focus and dismissal remain local. `ui/popover.rs` owns the existing
+anchoring and entrance helpers; `ui/dialog.rs` owns the existing modal card and
+scrim. These are frame moves, not a dropdown, focus trap or dismissal host.
+Unit tests cover highlight
+navigation for empty, wrap, single-item and changing list lengths. `cargo check
+-p orbit-pi`, the menu-state tests, and the popup-layout tests pass. Manual
+interaction and visual verification remain pending. Other menus and the planned
+components remain unmigrated.
+
 Build `MenuState` first (pure, unit-tested like `command_palette.rs`'s scoring),
 then `Menu`/`MenuItem`, then `Dropdown`, then `Modal` (header/body/footer + focus
 trap) and `Popover` (merging `picker_surface` + `context_menu_surface`).
@@ -543,6 +671,10 @@ no menu next/prev logic outside `ui/menu.rs`; focus restore tested per migrated
 dialog; `app/popup_layout_tests.rs` geometry assertions still pass.
 
 ### Phase 4 — Containers and rows
+**Partial:** `ui/card.rs` owns the existing Usage card and section recipes, and
+`ui/row.rs` owns the existing settings-row composition. Other surfaces and the
+broader container/list APIs remain unmigrated; visual verification is pending.
+
 `Card`, `Section`, `MetricBoard`, `ListRow`, `NavRow`, `TableRow`, `Table`,
 `TabStrip`, `TreeRow`, `VirtualList`, `PageHeader`, `SectionHeader`.
 Migrate the 31 card / 43 section / 95 row defs, starting with the surfaces that
@@ -552,6 +684,11 @@ repeat most: settings, usage, git panel, sidebar, transcript.
 `overflow_y_scroll`; scroll behaviour unchanged in a manual pass.
 
 ### Phase 5 — Fields, feedback, banner
+**Partial:** `ui/field.rs` owns the existing input frame and label, and
+`ui/feedback.rs` owns the existing empty/error states and spinner recipes.
+Compatibility exports preserve existing callers. The planned action slot and
+remaining feedback components are not implemented; visual verification is pending.
+
 `TextField`, `SearchField`, `FieldLabel`, `FormRow`; `EmptyState` (add the
 resolving-action slot the audit asked for), `ErrorState`, `Banner`, `Skeleton`,
 `Progress`, `Spinner`, `ToastCard`.
@@ -572,6 +709,377 @@ defining file. Update `DESIGN.md` §Components with the component names, fold th
 result into `INTENT.md` (D# decision: components live in `ui/`, surfaces may not
 re-implement an element), and update `README.md`/`CHANGELOG.md` per the repo's
 shipping rule.
+
+---
+
+## 6.2 Landed in the component pass (2026-11-17)
+
+Verified: `cargo check -p orbit-pi --all-targets` warning-free; focused
+`cargo test` runs over `ui::`, settings, MCP, worktrees, subagents, Git, Usage,
+permissions, providers, dialogs, sidepane, explorer, i18n and theme;
+`check_ui_layers.py`, `check_states.py`, `check_motion.py`,
+`check_keyboard.py`, `check_i18n.py`. **Not verified:** a manual `bacon run`
+pass of the migrated surfaces across palettes.
+
+- **`Button` (Phase 2).** `ButtonVariant::{Primary, Secondary, Outline, Tinted,
+  Danger, Ghost}` — the variant → fill/hairline/ink/hover/press map lives only in
+  `ui/button.rs`. `Button` owns size, label, leading icon or element, tooltip,
+  `loading` (spinner, keeps width, cannot act) and `disabled` (shared disabled
+  state; a ghost stays flat). Handlers go through `on_click` / `on_mouse_up` /
+  `on_mouse_down` / `faded(…)` and are attached only while the button can act;
+  `faded` cross-fades the hover on `Motion::Interaction`. `press` moved to
+  `ui/style/control.rs`. Migrated: permissions, subagents (enum removed), MCP,
+  updater dialog, Git action bar, provider cards (`ProviderButtonStyle`
+  removed), worktree + clone dialogs, plugins, skills, runtime, retention,
+  provider model fetch (now a real `.loading`), Usage text buttons.
+  "Primary" now means the action fill everywhere; the worktree/clone accent
+  wash is the separately named `Tinted`.
+- **Declared pixel changes** (rule 7): primary buttons that had no edge gain a
+  transparent 1px border (2px wider, aligned with their secondary siblings);
+  primary press is the colour ramp only (no extra dim); Git's disabled action
+  uses `disabled_state` (`border_subtle` edge); Usage's disabled text button
+  inks `text_disabled`; retention/plugin/runtime/permissions-primary labels are
+  medium weight; clone-dialog secondary gains the press dim; provider badges
+  are 18px (Compact) instead of 20px; Worktrees' error banner uses the shared
+  12px inset, `error @ 0.07` wash and Base04 line gap; `error_state`'s glyph is
+  `circle-x`.
+- **`Badge` (Phase 2).** One geometry (Compact height, `Radius::Small`, XSmall
+  medium), `BadgeFill::{Solid, Outline}`, caller-owned tone. Migrated: Git ref
+  badges, provider badges.
+- **`MenuState` (Phase 3).** Adds `highlighted`, `first`/`last`,
+  `next_enabled`/`prev_enabled` (plain `next`/`prev` delegate) and `reconcile`.
+  The composer workflow menu, worktree "Work in" menu and extension select
+  dialog dropped their hand-rolled wrap arithmetic; the latter two gained
+  Home/End, and "Work in" Enter reconciles against rows that changed while open.
+- **`Banner` (Phase 5).** `BannerTone::{Warning, Error}` with title, detail,
+  hint, custom lines and an action; `error_state` renders through it. Migrated:
+  Worktrees error, inactive-subagents notice.
+- **`EmptyState` action slot (Phase 5).** `empty_state_with_action`; Review's
+  "Changes unavailable" offers Retry.
+
+Not yet owned (still per surface): `IconButton` beyond the frame recipes,
+`Chip`/`ChipButton`/`Pill`, `Dropdown`/`Popover` host/`Modal` focus trap,
+remaining banners (`error_banner`, Git `failure_banner`, Explorer notice strip,
+worktree setup), `ListRow`/`NavRow`/`Table`/`TabStrip`/`VirtualList`, fields,
+toasts, chrome. Wrappers like `provider_button` that bind a surface action and
+only pick a variant are intended to stay (§6.1 cross-cutting gates).
+
+## 6.3 Overlay pass (2026-11-18)
+
+Verified: clippy `-D warnings` on all targets; focused `cargo test` over
+`ui::`, popup layout, focus return, session details, rewind, Explorer, Git,
+Usage, sidebar, worktrees, pickers, MCP, remote, provider accounts, server
+clone and dialogs; all six repo guards. A new focus-return test was checked
+to fail with the restore removed. **Not verified:** a manual pointer and
+keyboard pass of the migrated menus and modals.
+
+- **`DismissGuard`** replaces 9 hand-copied timestamp fields
+  (`menu_dismissed_at` on the app, side pane, Explorer and Git panel, plus
+  Git's sync/commit-model/branch-more and Explorer's header and Usage's chip
+  guards) and ~30 copies of the 200 ms check. `swallows()` consumes the arm
+  (a trigger's click), `is_recent()` does not (a surface that must not repaint
+  under the dismissing click). Declared timing change: Explorer's context-menu
+  window goes from 150 ms and Usage's chip window from 250 ms to the shared
+  200 ms (`CLICK_THROUGH`).
+- **`PopoverExt::dismiss_on_outside`** — the plan's Phase 3 acceptance:
+  `on_mouse_down_out` now appears only in `ui/popover.rs`. All 41 sites already
+  paired it with `.occlude()`; the pair became one call, so hit testing is
+  unchanged. `picker_surface` moved here from `app/helpers.rs` (re-exported).
+- **`ModalFocus`** gives six modals that left focus wherever it fell the
+  capture-on-open / restore-the-frame-after-close contract: MCP editor, remote
+  host editor, provider account editor, remote key, add-to-a-server, SSH
+  password. `ReturnFocus` moved from `app.rs` (re-exported). The clone dialog's
+  Tab cycle uses the shared `focus_ring`; from outside the ring, Tab now enters
+  at the first stop rather than the second.
+
+- **Tab ring (2026-11-18).** Those six modals now trap Tab / Shift-Tab in their
+  painted fields (`OrbitApp::modal_fields` + `ui::dialog::focus_ring`). Before
+  this, Tab inside a modal field resolved to the composer's
+  `AutocompleteAccept` and did nothing. The four Settings-painted modals own
+  the keyboard (and restore it) only while Settings is open. Tests drive real
+  Tab/Shift-Tab keystrokes and were checked to fail with the ring removed.
+- **`modal_header` / `modal_footer`** (`ui/dialog.rs`, `ModalSubtitle::{Text,
+  Id}`): 7 headers and 7 footers (remote host, MCP, SSH password, account,
+  provider usage, provider key, provider editor) were byte-identical copies and
+  now call these. Declared change: the account editor's footer gap is the
+  shared 4px (`modal::footer_gap`) instead of 8px. Not migrated because they
+  differ visibly: the updater (no hairlines), the worktree dialog (`Large`
+  title), the extension dialog (eyebrow line).
+
+- **`popover_list` / `popover_picker`** (`ui/popover.rs`): the two popover
+  shells. A list is the surface + `picker::list_padding_y` + a `Base01` row gap
+  in a column; a picker is the surface in a clipped column. 25 popovers now
+  start from one of them (9 lists, 16 pickers) with identical styles, so no
+  pixel change; widths stay with the caller. Two outliers keep
+  `picker_surface` (the sidebar options popover, which does not clip, and the
+  worktree Advanced popover, which has no column).
+- The extension dialog's eyebrow is localized (`dialog.question`).
+
+Still per surface: the `Dropdown` trigger/anchor pairing (each trigger still
+owns its open flag and anchor), and focusable modal *buttons* (only the clone
+dialog's buttons are tab stops; the rings above cover fields).
+
+## 6.4 Rows pass (2026-11-18)
+
+Verified: clippy `-D warnings`; focused tests over `ui::`, popup layout,
+sidebar, Explorer, Review, composer, model/branch/workspace pickers and
+worktrees; the six guards. **Not verified:** a manual look at the moved rows.
+
+- **`picker_entry` + `PickerRow`** (with `EntryMarkLike`) moved from
+  `app/helpers.rs` to `ui/row.rs` unchanged and re-exported, so the 61 picker
+  rows and 8 `PickerRow` bodies now have their owner in the UI layer.
+- **`option_row`** (`ui/row.rs`): the access-mode and workflow-mode pickers
+  carried byte-identical 59-line copies of one row (glyph tile, name over a
+  wrapping description, check on the choice in force); both now call it.
+- **`menu_hint`** (`ui/menu.rs`): the trailing shortcut / disabled-reason hint
+  copied in the composer add menu, Review's source menu and Explorer's context
+  menu. Declared change: the add menu's hint gains `flex_none`, so under a
+  narrow window the label truncates before the shortcut does.
+
+- **`NavRow`** (`ui/row.rs`, 2026-11-18): `nav_row(el, theme, NavRowHeight,
+  cursor)` is the navigation-row frame — full width, `Header` (Default) or
+  `Item` (Medium) minimum height, list-item corners, a centered row, and a 1px
+  hairline reserved in every state that turns `focus_ring` on the keyboard
+  cursor. `nav_row_fill(theme, selected, cursor)` is the one fill rule (the open
+  row holds `surface_selected` at rest and under the pointer; the cursor rests
+  on the wash; other rows fade it in) for `motion::hover`. It is a style seam,
+  not a wrapper struct, because these rows chain drag, drop, scroll-wheel and
+  right-click handlers. The sidebar's project header, session row, "Show more"
+  and "Show less" now use it; "Show more/less" move from a fixed to a minimum
+  height (same pixels for their one-line content). Padding and gap stay with
+  each row on purpose. Tests pin geometry-independence of the cursor in every
+  palette and the fill rule. **Follow-up:** `app/remote_sessions_ui.rs` (new,
+  from parallel work) carries two more copies of this frame and fill and should
+  adopt `nav_row` / `nav_row_fill`.
+
+What remains in Phase 4 is mostly not copy-paste: the sidebar's 26 row
+functions, Git's 23 and the Usage tables each carry surface-specific state,
+drag/reorder and virtualization. They need `ListRow`/`NavRow`/`TableRow`
+designed against those behaviours, not extracted mechanically.
+
+## 6.5 Controls pass (2026-11-18)
+
+Verified: clippy `-D warnings`; 848 focused tests (composer layout, Usage,
+subagents, terminal, context meter, Explorer, session, transcript, MCP, `ui::`);
+the six guards. **Not verified:** a manual look at the migrated controls.
+
+- **`IconButton`** (`ui/button.rs`): `IconButton::new(id, icon)` or
+  `IconButton::glyph(id, element)` with size, `IconButtonVariant::{Ghost,
+  Glass}`, ink, tooltip and `disabled`, attaching its handler only while it can
+  act. 13 sites use it (a strict codemod converted the 12 whose chains were
+  exactly the shared treatment; the Subagents limit stepper is the first
+  disabled user). Declared change: converted buttons that had no press
+  feedback gain the shared wash press, and the stepper's hover is the shared
+  wash instead of the overlay. The remaining ~74 `icon_button_frame` sites
+  fade their hover, wrap in `press()`, carry an open state, or are bespoke
+  chrome (open-in split button, updater pill); they need `IconButton` to grow a
+  faded mode and an `open` state before they move.
+- **`ChipButton`** (`ui/chip.rs`): trigger chips in two named styles —
+  `Quiet` (composer: no frame, faded open fill, turning caret) and
+  `Outlined { inset }` (Usage filters: hairline, raised face, static caret) —
+  with icon, label (+ truncation width), trailing glyph, open, caret and tooltip.
+  Usage's `filters::chip` (10 chips) and the composer's access and workflow
+  chips use it; test selectors are kept (`<selector>-label`).
+- **`disclosure_chevron` / `dropdown_chevron`** moved from `app/helpers.rs` to
+  `ui/icon.rs` with their tests.
+- Hover ratchet rebaselined: 240 → 229 one-frame hovers, the increase confined
+  to the new owners that absorbed the call-site hovers.
+
+Deferred on purpose: `ToastCard` (`app/toast_ui.rs` has uncommitted work from
+a parallel session), the model/thinking chips (they carry provider marks and a
+compact mode), and the families listed in §6.1.
+
+## 6.6 Dropdown and faded icon buttons (2026-11-18)
+
+Verified: clippy `-D warnings`; 547 focused tests including popup layout,
+pickers, Git, Explorer, sidebar and composer; the six guards. **Not verified:**
+a manual pass of the moved menus and buttons.
+
+- **`IconButton`** gains `open` (active fill, primary ink) and
+  `faded(theme, attach)`: the hover fades on `Motion::Interaction`, an open
+  button holds `surface_active` under the pointer, and `attach` adds the
+  caller's handler and extras (reveal-on-row-hover opacity, an anchored popover
+  child). The sidebar's sort/options button, the project header's
+  reveal-on-hover "new session" button and the session-details close button use
+  it. Declared: the close button presses with the shared wash instead of the
+  opacity dim.
+- **`dropdown_below` / `dropdown_above`** (`ui/popover.rs`, `DropdownAlign::{Start,
+  End}`): the trigger-to-menu pairing — a zero-size anchor at the trigger's
+  bottom (or top) corner and the anchored, snapped, entering menu `gap` away.
+  Nine menus that spelled this out now call it (open-in, quota, workspace /
+  branch / remote pickers, Explorer header, three Git menus). Same corner,
+  offset and snap, so no pixel change. The composer's mode menus keep their
+  column layout (their menu is a sibling above the chip, not an anchored child).
+  The trigger keeps its open flag and `DismissGuard`: a `Dropdown` that also
+  owns open state would need the state in the UI layer, which GPUI 0.2.2 makes
+  an entity per dropdown — not worth it while each owner already has the flag.
+
+## 6.7 Handles, progress, chrome and glyphs (2026-11-18)
+
+Verified: clippy `-D warnings`; 921 focused tests (`ui::`, helpers, devicons,
+sidebar, Review, Explorer, Git, terminal, Usage, Settings, session, context
+meter, popup and backdrop layout, composer); the six guards. **Not verified:**
+a manual drag of each handle and a look at the moved chrome.
+
+- **`ResizeHandle`** (`ui/resize.rs`): `resize_handle(id, theme, ResizeAxis,
+  ResizeLook::{Wash, Seam, Border, Divider})` owns the axis cursor and how a
+  grab strip answers the pointer; position, width and the drag payload stay
+  with the surface. All five handles use it: the Review and Explorer dock
+  edges (`Wash`, previously byte-identical copies), the sidebar edge (`Seam`),
+  Git's list/detail divider (`Border`) and the terminal splitter (`Divider`).
+  Hover groups are now named after the handle's id.
+- **`progress_bar`** (`ui/feedback.rs`, `ProgressSize::{Small, Medium,
+  Large}` = 4/5/6px, `ProgressTrack::{Solid, Glass}`, optional `Motion::Layout`
+  reveal): the quota popover meter, Settings' provider quota meter and Usage's
+  legend bar. Non-finite fractions draw an empty bar. The context meter's
+  stacked multi-slice bar is a different control and stays.
+- **`ui/chrome.rs`**: the top bar's glass chip, lift, header icon/ghost buttons,
+  the app-drawn caption buttons and the drag strip, moved from `app/helpers.rs`
+  unchanged (re-exported).
+- **`ui/glyph.rs`**: embedded images, devicon file glyphs, tiles and badges,
+  and provider tints, moved from `app/helpers.rs` with their tests.
+- `app/helpers.rs` is 462 lines (from 1,391 at the start of this work); what
+  remains is mostly domain formatting (`session_display_title`, runtime
+  text), the star banner, the picker search frame, `menu_header` and the
+  working-folder legend — Phase 6 material.
+
+## 6.1 Remaining owner work — actionable backlog
+
+> The checkboxes below are the original backlog and acceptance criteria. Current
+> state per family is the **Resume here** table at the top; several items are
+> partly done and stay unticked until their acceptance criteria are met.
+
+This is a **proposed backlog**, not a list of shipped components. The current
+`ui/` files include moved helpers and recipes, not necessarily the full owners
+named below. Existing surface functionality must keep working throughout each
+migration; moving a frame alone does not satisfy an ownership task. Confirm the
+current call sites before each landing, since this inventory is a snapshot.
+Each task needs relevant automated tests, the applicable §7 checks and a recorded
+manual pass; do not remove compatibility exports until their callers migrate.
+
+### Controls and identity (Phase 2)
+
+- [ ] Complete `Button`, `IconButton`, `ButtonGroup` and `LinkButton` over the
+  existing frames, navigation/quiet icon and segment recipes. Centralize variants,
+  sizing, loading and disabled behavior, while leaving surface actions and localized
+  labels with callers. **Accept:** primary has one treatment; disabled/loading
+  cannot invoke an action; pointer and existing Enter/Space routes, focus indication,
+  selected segments, tooltips and shortcuts survive migration. Test state and
+  activation behavior; spot-check settings, composer, sidebar, git and transcript.
+- [ ] Add `Chip`, `ChipButton`, `Badge` and `Pill` ownership for the existing
+  attachment, status and trigger shapes. **Accept:** distinguish static status
+  from actionable triggers; preserve removal, disabled/selected states, accessible
+  keyboard routes, labels and tooltip behavior; migrate representative callers and
+  test their actions rather than treating decorative badges as buttons.
+- [ ] Complete `Kbd`/`Shortcut` around the moved keycap renderer and shared
+  shortcut formatting, without changing the working-folder legend. Complete
+  `Icon`, `FileGlyph`, `ProviderMark` and `Avatar` around the existing SVG helpers;
+  surface/domain data and brand choices remain inputs. **Accept:** key sequences,
+  fallbacks, tint, sizing and SVG flex behavior are unchanged; test formatting and
+  missing-glyph fallback and visually check transcript, menus and file rows.
+- [ ] Keep the moved `Switch` owner; migrate compatibility imports and verify its
+  existing toggle, disabled, focus and keyboard behavior with switch tests and a
+  manual settings pass. It is not evidence that the other controls are complete.
+
+### Overlay hosts and navigation (Phase 3)
+
+- [ ] Extend the partial `MenuState` beyond index next/prev: home/end, selection,
+  disabled-item skipping and reconciliation when items change. Build `Menu`,
+  `MenuItem`, `MenuHeader` and `MenuSeparator` over the moved recipes. **Accept:**
+  empty/all-disabled menus are safe; pointer and keyboard select the same enabled
+  action; arrows wrap, Home/End and Enter work, Escape dismisses, highlighted rows
+  scroll into view, and submenu/checked/danger/disabled-reason content survives.
+  Unit-test each transition and changing lists; manually exercise pointer and
+  keyboard context menus including a keyboard route to pointer-anchored menus.
+- [ ] Build `Dropdown` and a `Popover` host over the moved anchoring/entrance
+  helpers, retaining trigger ownership and menu contents as separate inputs.
+  **Accept:** viewport snapping, outside-click and Escape dismissal, click-through
+  suppression and trigger focus restoration work for pointer and keyboard; opening
+  a second popup and dismissing a stale one cannot steal focus. Test dismissal,
+  restore and geometry; manually check edge-of-window placement and scrolling.
+  Keep popover lists bounded and scrollable; do not use `uniform_list` in a
+  deferred anchored popover or nest a virtual list in an outer scroller.
+- [ ] Build `Modal` on the moved scrim/card with header/body/footer, focus trap,
+  initial focus, Escape/outside dismissal where the dialog permits it, and focus
+  restoration. Preserve destructive confirmations and extension responses,
+  including cancel semantics. **Accept:** Tab/Shift-Tab stay within the open
+  modal, closing returns focus to the invoking control, and a rejected or cancelled
+  operation never looks successful. Test each migrated dialog's focus return and
+  cancellation; exercise dialog and nested overlay flows manually.
+- [ ] Compose the existing command palette as `Palette` from modal and row
+  owners without replacing its search/state model. **Accept:** existing shortcuts,
+  ranking, sections, keyboard selection, dismissal and focus return are unchanged;
+  test search/selection and manually open it from both keyboard and sidebar.
+- [ ] Consolidate `Tooltip` hosting around the existing `ui/tooltip.rs` and
+  `TipExt`, preserving delayed display, positioning, dismissal and localized text.
+  **Accept:** one host contract serves usage and ordinary controls without
+  stealing focus or intercepting clicks; manually check pointer/focus and window
+  edges. Do not claim a focus-triggered tooltip unless implemented and tested.
+
+### Containers, navigation and data (Phase 4)
+
+- [ ] Complete `Card`, `Section`, `Pane`, `MetricBoard`/`MetricCell`,
+  `PageHeader` and `SectionHeader` beyond the Usage-only recipes. **Accept:**
+  callers supply content, headers and metrics; shared geometry and material are
+  resolved once, nested cards are avoided, and settings/usage/git retain their
+  visual hierarchy. Compare glass on/off and light/dark without changing geometry.
+- [ ] Complete `ListRow`, `NavRow` and `TableRow` beyond `setting_row`; add
+  `TabStrip`/`Tab`, `TreeRow`, and the transcript navigation `Rail`. **Accept:**
+  density, slots, selection, disclosure and trailing-action reveal have shared
+  ownership while surface state/actions stay local; pointer and existing keyboard
+  routes, focus, tab selection and tree expand/collapse remain intact. Test
+  navigation and disclosure; manually check sidebar, explorer, terminal tabs and
+  transcript rail with long labels and at small window sizes.
+- [ ] Implement `VirtualList` and `Table` (header/columns/sort) around existing
+  state and data sources, not a replacement for them. **Accept:** definite list
+  height (`h_full` within `flex_1 min_h_0`), no outer scroll wrapper, virtualized
+  rows, unchanged sort/selection and keyboard behavior, and nonzero measured
+  height. Preserve transcript bottom alignment, tail-follow, remeasurement and
+  jump-to-latest, and sidebar/tree scroll positions. Test geometry and sort, then
+  manually scroll large sidebar, tree, usage table and streaming transcript; record
+  before/after frame evidence using `scripts/read-perf.py` for the streaming path.
+- [ ] Give `DiffRow`/hunk headers a shared paint-only owner without moving diff
+  parsing or syntax highlighting into `ui/`. **Accept:** unchanged hunk navigation,
+  copy/selection and streaming layout; no highlighting-driven reflow. Test the
+  relevant diff model/render behavior and manually inspect Review and transcript.
+
+### Fields, feedback and remaining chrome (Phases 4–5)
+
+- [ ] Complete `TextField`, `SearchField`, `FieldLabel` and `FormRow` over the
+  moved frame/label; add `ComposerFrame` without replacing `ComposerInput` or
+  `FileViewer` entities. **Accept:** input, selection, IME behavior as currently
+  supported, submit/escape and focus routes remain intact; translated placeholders
+  resolve at paint time and validation/help text stays associated with its field.
+  Test field actions and language switching; manually check forms and composer.
+- [ ] Complete `EmptyState`/`ErrorState` from the moved helpers with optional
+  resolving actions; create `Banner`, `Skeleton`, `Progress`, `Spinner` and
+  `ToastCard` owners around existing feedback recipes and the existing toast
+  model. **Accept:** errors retain what happened, detail and actionable next step;
+  empty actions actually invoke their callbacks; toast TTL/dedupe/dismissal and
+  progress values remain truthful; reduce motion is honored. Test actions,
+  toast lifecycle and motion-off behavior; manually inspect empty, error, loading
+  and notification states, including keyboard dismissal where supported.
+- [ ] Add `Lightbox`, `ResizeHandle`, `StatusBar` and window/title-bar chrome
+  owners for the existing surface behavior, not new visual designs. **Accept:**
+  lightbox close/Escape and focus return, splitter pointer resizing and persisted
+  sizes, status actions, platform window controls and title-bar drag/double-click
+  retain their existing behavior. Test state/persistence and focus where feasible;
+  manually exercise the platform-specific flows and record untested platforms.
+
+### Cross-cutting completion gates
+
+- [ ] For each owner, resolve theme/material at paint through §3.4, preserve
+  glass-off geometry and platform blur limitations, and use existing interaction,
+  motion and localization contracts. Never import a surface into `ui/`; keep
+  wallpaper, charts, terminal rendering and long-lived entities in their existing
+  owners. Extract only where real reuse justifies it; document a named exception
+  rather than forcing a unique surface into a generic wrapper.
+- [ ] Finish migrations in small cohorts: test behavior and run the appropriate
+  guards, manually compare affected surfaces, then remove superseded duplicate
+  ownership and compatibility exports. Phase 6 must classify domain helpers
+  before removing `app/helpers.rs`; Phase 7 adds guards and shipping docs only
+  after implementation and verification. Scope the zero-duplicate checks to
+  reusable owners, not unrelated surface-specific actions or state machines.
 
 ---
 

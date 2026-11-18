@@ -20,7 +20,8 @@ use crate::subagents;
 use crate::theme::tokens::{
     button, input, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
-use crate::ui::button::settings_segment;
+use crate::ui::banner::{truncated_line, Banner, BannerTone};
+use crate::ui::button::{settings_segment, Button, ButtonVariant, IconButton};
 
 /// One Skills-page-style dispatch point for every Subagents control.
 #[derive(Clone)]
@@ -189,71 +190,32 @@ impl OrbitApp {
             _ => status.reason.clone(),
         };
 
-        let mut column = div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base02.px(&theme))
-            .child(
-                div()
-                    .text_size(TextSize::Default.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(tr!("subagents_ui.inactive_title")),
-            )
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_secondary)
-                    .child(tr!("subagents_ui.inactive_body")),
-            );
+        let mut banner = Banner::new(BannerTone::Warning)
+            .id("subagents-inactive")
+            .title(tr!("subagents_ui.inactive_title"))
+            .detail(tr!("subagents_ui.inactive_body"));
         if !detail.trim().is_empty() {
             // Truncated like every other path in the workbench: the full value
             // is the tooltip, and the file is reachable from Plugins either way.
-            column = column.child(
-                div()
-                    // A tooltip needs an id to keep its hover state.
-                    .id("subagents-inactive-detail")
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .truncate()
-                    .tip(detail.clone())
-                    .child(detail),
-            );
+            banner = banner.line(truncated_line("subagents-inactive-detail", detail, &theme));
         }
+        let banner = banner
+            .action(self.subagent_button(
+                "subagents-inactive-plugins",
+                tr!("subagents_ui.open_plugins"),
+                ButtonVariant::Secondary,
+                theme,
+                this,
+                SubagentAction::OpenPlugins,
+            ))
+            .render(&theme);
 
         Some(
             div()
-                .id("subagents-inactive")
-                .debug_selector(|| "subagents-inactive".to_string())
-                // No `w_full`: the column stretches it, and full width plus
-                // the side margins would push its right edge off the page.
+                // The page's side margins; the banner fills what is left.
                 .mx(DynamicSpacing::Base16.px(&theme))
                 .mt(DynamicSpacing::Base12.px(&theme))
-                .bg(theme.surface_secondary)
-                .border_1()
-                .border_color(theme.border)
-                .rounded(Radius::XLarge.px(&theme))
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base12.px(&theme))
-                .flex()
-                .items_start()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(icon(
-                    "icons/info.svg",
-                    IconSize::Medium.px(&theme),
-                    theme.warning,
-                ))
-                .child(column)
-                .child(self.subagent_button(
-                    "subagents-inactive-plugins",
-                    tr!("subagents_ui.open_plugins"),
-                    SubagentButtonKind::Secondary,
-                    theme,
-                    this,
-                    SubagentAction::OpenPlugins,
-                ))
+                .child(banner)
                 .into_any_element(),
         )
     }
@@ -2164,28 +2126,11 @@ impl OrbitApp {
         } else {
             "icons/minus.svg"
         };
-        let color = if enabled {
-            theme.text_secondary
-        } else {
-            theme.text_disabled
-        };
-        let button = icon_button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .child(icon(
-            glyph,
-            ButtonSize::Medium.icon_size().px(&theme),
-            color,
-        ));
-        if !enabled {
-            return button.cursor_not_allowed().into_any_element();
-        }
-        button
-            .cursor_pointer()
-            .hover_overlay(&theme)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        IconButton::new(ElementId::Name(id.into()), glyph)
+            .size(ButtonSize::Medium)
+            .ink(theme.text_secondary)
+            .disabled(!enabled)
+            .on_mouse_up(&theme, move |_, _, cx| {
                 let delta = if plus { 1 } else { -1 };
                 this.update(cx, |app, cx| {
                     app.apply_subagent_action(SubagentAction::SetLimit(limit, delta), cx)
@@ -2202,7 +2147,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SubagentAction,
     ) -> AnyElement {
-        self.subagent_button(id, label, SubagentButtonKind::Primary, theme, this, action)
+        self.subagent_button(id, label, ButtonVariant::Primary, theme, this, action)
     }
 
     fn subagent_secondary_button(
@@ -2213,14 +2158,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SubagentAction,
     ) -> AnyElement {
-        self.subagent_button(
-            id,
-            label,
-            SubagentButtonKind::Secondary,
-            theme,
-            this,
-            action,
-        )
+        self.subagent_button(id, label, ButtonVariant::Secondary, theme, this, action)
     }
 
     fn subagent_danger_button(
@@ -2231,50 +2169,21 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SubagentAction,
     ) -> AnyElement {
-        self.subagent_button(id, label, SubagentButtonKind::Danger, theme, this, action)
+        self.subagent_button(id, label, ButtonVariant::Danger, theme, this, action)
     }
 
     fn subagent_button(
         &self,
         id: &'static str,
         label: String,
-        kind: SubagentButtonKind,
+        kind: ButtonVariant,
         theme: Theme,
         this: Entity<OrbitApp>,
         action: SubagentAction,
     ) -> AnyElement {
-        let base = button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM);
-        let button = match kind {
-            SubagentButtonKind::Primary => base
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .raised(theme.action, &theme)
-                .text_color(theme.action_fg)
-                .hover_action(&theme)
-                .pressed_state(&theme, PressedRamp::Action),
-            SubagentButtonKind::Secondary => base
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.text_secondary)
-                .hover_state(&theme),
-            SubagentButtonKind::Danger => base
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.error)
-                .hover_danger_soft(&theme),
-        };
-        press(button)
-            .child(div().child(label))
-            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+        Button::new(id, kind)
+            .label(label)
+            .on_mouse_up(&theme, move |_, window, cx| {
                 let action = action.clone();
                 this.update(cx, |app, cx| {
                     if matches!(action, SubagentAction::ConfirmDiscard) {
@@ -2966,14 +2875,6 @@ impl OrbitApp {
     }
 }
 
-/// The three button weights the Subagents page uses.
-#[derive(Clone, Copy)]
-enum SubagentButtonKind {
-    Primary,
-    Secondary,
-    Danger,
-}
-
 /// A deleted user agent's bytes, kept until the page reloads or another agent
 /// is deleted, so Undo restores the exact file.
 pub(super) struct SubagentUndo {
@@ -3025,7 +2926,11 @@ fn detail_badge(glyph: &'static str, theme: &Theme) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
-        .child(icon(glyph, IconSize::Medium.px(theme), theme.text_secondary))
+        .child(icon(
+            glyph,
+            IconSize::Medium.px(theme),
+            theme.text_secondary,
+        ))
 }
 
 /// A failed save, delete or config write, pinned under the detail header.

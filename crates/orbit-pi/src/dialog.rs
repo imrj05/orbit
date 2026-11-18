@@ -172,7 +172,7 @@ pub struct Dialog {
     focus: FocusHandle,
     /// Highlighted option (select) or the focused button (confirm: 0 = no,
     /// 1 = yes; the affirmative is the default).
-    highlighted: usize,
+    highlighted: crate::ui::menu::MenuState,
     /// Confirm state: the affirmative is preselected.
     confirmed: bool,
     /// Text field for `input` / `editor`.
@@ -206,7 +206,7 @@ impl Dialog {
         Self {
             request,
             focus: cx.focus_handle(),
-            highlighted: 0,
+            highlighted: crate::ui::menu::MenuState::default(),
             confirmed: true,
             input,
             scroll: ScrollHandle::new(),
@@ -258,7 +258,7 @@ impl Dialog {
             return;
         }
         let response = match &self.request.kind {
-            DialogKind::Select { options } => match options.get(self.highlighted) {
+            DialogKind::Select { options } => match options.get(self.highlighted.highlighted()) {
                 Some(option) => DialogResponse::Value(option.clone()),
                 // Nothing to pick (an empty list) — treat as a dismissal.
                 None => DialogResponse::Cancelled,
@@ -279,7 +279,7 @@ impl Dialog {
     fn on_next(&mut self, _: &crate::DialogNext, _: &mut Window, cx: &mut Context<Self>) {
         if let DialogKind::Select { options } = &self.request.kind {
             if !options.is_empty() {
-                self.highlighted = (self.highlighted + 1) % options.len();
+                self.highlighted.next(options.len());
                 self.reveal_highlighted();
                 cx.notify();
             }
@@ -289,10 +289,26 @@ impl Dialog {
     fn on_prev(&mut self, _: &crate::DialogPrev, _: &mut Window, cx: &mut Context<Self>) {
         if let DialogKind::Select { options } = &self.request.kind {
             if !options.is_empty() {
-                self.highlighted = (self.highlighted + options.len() - 1) % options.len();
+                self.highlighted.prev(options.len());
                 self.reveal_highlighted();
                 cx.notify();
             }
+        }
+    }
+
+    fn on_first(&mut self, _: &crate::DialogFirst, _: &mut Window, cx: &mut Context<Self>) {
+        if let DialogKind::Select { options } = &self.request.kind {
+            self.highlighted.first(options.len(), |_| true);
+            self.reveal_highlighted();
+            cx.notify();
+        }
+    }
+
+    fn on_last(&mut self, _: &crate::DialogLast, _: &mut Window, cx: &mut Context<Self>) {
+        if let DialogKind::Select { options } = &self.request.kind {
+            self.highlighted.last(options.len(), |_| true);
+            self.reveal_highlighted();
+            cx.notify();
         }
     }
 
@@ -303,7 +319,7 @@ impl Dialog {
     /// Scroll so the keyboard highlight stays visible (options are few, but a
     /// select may carry more than fit).
     fn reveal_highlighted(&self) {
-        let top = self.highlighted as f32 * OPTION_H;
+        let top = self.highlighted.highlighted() as f32 * OPTION_H;
         let bottom = top + OPTION_H;
         let scroll_top = f32::from(self.scroll.offset().y);
         let max_h = LIST_MAX_H;
@@ -339,7 +355,9 @@ impl Render for Dialog {
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
-            .on_action(cx.listener(Self::on_prev));
+            .on_action(cx.listener(Self::on_prev))
+            .on_action(cx.listener(Self::on_first))
+            .on_action(cx.listener(Self::on_last));
 
         // ── header: origin, title, and (confirm) the message body ──
         // Zed's `ModalHeader` insets, with its Small headline for the title.
@@ -356,7 +374,7 @@ impl Render for Dialog {
                     .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_muted)
-                    .child(SharedString::from("Question")),
+                    .child(tr!("dialog.question")),
             )
             .child(
                 div()
@@ -488,7 +506,7 @@ impl Dialog {
             .flex()
             .flex_col();
         for (ix, option) in options.iter().enumerate() {
-            let highlighted = ix == self.highlighted;
+            let highlighted = ix == self.highlighted.highlighted();
             let this = this.clone();
             list = list.child(
                 div()
@@ -512,8 +530,8 @@ impl Dialog {
                         let this = this.clone();
                         move |_, _, cx| {
                             this.update(cx, |dialog, cx| {
-                                if dialog.highlighted != ix {
-                                    dialog.highlighted = ix;
+                                if dialog.highlighted.highlighted() != ix {
+                                    dialog.highlighted.highlight(ix);
                                     cx.notify();
                                 }
                             });
@@ -523,7 +541,7 @@ impl Dialog {
                         let this = this.clone();
                         move |_, window, cx| {
                             this.update(cx, |dialog, cx| {
-                                dialog.highlighted = ix;
+                                dialog.highlighted.highlight(ix);
                                 dialog.on_confirm(&crate::DialogConfirm, window, cx);
                             });
                         }

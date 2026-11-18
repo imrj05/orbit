@@ -11,9 +11,11 @@
 
 use crate::app::{
     button_frame, context_menu_separator, icon_button_frame, menu_header, picker_entry,
-    picker_search_frame, picker_surface, press, refresh_glyph, ControlExt, PressedRamp,
-    StatefulControlExt, TipExt, BUTTON_GROUP,
+    picker_search_frame, refresh_glyph, ControlExt, PressedRamp, StatefulControlExt, TipExt,
 };
+use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::popover::{popover_picker, PopoverExt};
 use chrono::Datelike;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
@@ -29,7 +31,7 @@ use super::page::{BucketSort, ExportFormat, MenuKind, SessionSort, UsagePage, PA
 use super::table::FailureSort;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, list, picker, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
+    context_menu, input, list, picker, popover, ButtonSize, DynamicSpacing, TextSize,
 };
 use crate::theme::Theme;
 use crate::{app::icon, composer::ComposerInput};
@@ -102,66 +104,14 @@ pub fn chip(
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let foreground = if active {
-        theme.text_primary
-    } else {
-        theme.text_secondary
-    };
-    let resting = if inset {
-        theme.background
-    } else {
-        theme.surface_elevated
-    };
-    let leading_color = if active {
-        theme.text_primary
-    } else {
-        theme.text_muted
-    };
-    button_frame(
-        div().id(ElementId::Name(SharedString::from(id))),
-        &theme,
-        TRIGGER_SIZE,
-    )
-    .border_1()
-    .border_color(if active {
-        theme.border_strong
-    } else {
-        theme.border
-    })
-    .raised(
-        if active {
-            theme.surface_active
-        } else {
-            resting
-        },
-        &theme,
-    )
-    .cursor_pointer()
-    .hover_state_open(&theme, active)
-    .on_mouse_down(MouseButton::Left, on_click)
-    .children(icon_path.map(|path| {
-        icon(
-            path,
-            ButtonSize::Medium.icon_size().px(&theme),
-            leading_color,
-        )
-    }))
-    .child(
-        div()
-            .max_w(px(180.))
-            .truncate()
-            .text_color(foreground)
-            .child(label),
-    )
-    .child(icon(
-        "icons/chevron-down.svg",
-        IconSize::XSmall.px(&theme),
-        if active {
-            theme.text_primary
-        } else {
-            theme.text_muted
-        },
-    ))
+    let mut chip = ChipButton::new(id, ChipStyle::Outlined { inset })
+        .label(label)
+        .label_max_w(px(180.))
+        .open(active);
+    if let Some(path) = icon_path {
+        chip = chip.icon(path);
+    }
+    chip.on_mouse_down(&theme, on_click)
 }
 
 /// An on/off control in a chip's geometry: the same hairline and active fill
@@ -232,14 +182,10 @@ fn panel(
     page: Entity<UsagePage>,
 ) -> AnyElement {
     let dismiss_click = page.clone();
-    picker_surface(div().id(ElementId::Name(SharedString::from(id))), &theme)
+    popover_picker(div().id(ElementId::Name(SharedString::from(id))), &theme)
         .when_some(width, |menu, width| menu.w(px(width)))
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .occlude()
         .key_context("Picker")
-        .on_mouse_down_out(move |_, _, cx| {
+        .dismiss_on_outside(move |_, _, cx| {
             dismiss_click.update(cx, |page, cx| page.dismiss_menus(cx));
         })
         .on_action({
@@ -1361,41 +1307,26 @@ pub fn text_button(
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let color = if enabled {
-        theme.text_secondary
-    } else {
-        theme.text_muted
-    };
-    button_frame(
-        div().id(ElementId::Name(SharedString::from(id))),
-        &theme,
-        TRIGGER_SIZE,
-    )
-    .group(BUTTON_GROUP)
-    .text_color(color)
-    .when(enabled, |button| {
-        press(button)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_mouse_down(MouseButton::Left, on_click)
-    })
-    .children(icon_path.map(|path| {
-        if icon_active {
+    let mut button = Button::new(id, ButtonVariant::Ghost)
+        .size(TRIGGER_SIZE)
+        .label(label.to_string())
+        .disabled(!enabled);
+    if let Some(path) = icon_path {
+        button = if icon_active {
             // The leading glyph is the refresh affordance: turn it in
             // place instead of swapping in a loader, matching the popover.
-            refresh_glyph(
+            button.leading(refresh_glyph(
                 ElementId::Name(SharedString::from(format!("{id}-spin"))),
-                ButtonSize::Medium.icon_size().px(&theme),
+                TRIGGER_SIZE.icon_size().px(&theme),
                 true,
-                color,
+                ButtonVariant::Ghost.ink(&theme),
                 theme,
-            )
+            ))
         } else {
-            icon(path, ButtonSize::Medium.icon_size().px(&theme), color).into_any_element()
-        }
-    }))
-    .child(label.to_string())
-    .into_any_element()
+            button.icon(path)
+        };
+    }
+    button.on_mouse_down(&theme, on_click).into_any_element()
 }
 
 /// Options for the workspace dimension, ranked by request count. The second

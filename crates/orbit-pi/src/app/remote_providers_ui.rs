@@ -21,6 +21,7 @@ use super::ssh_auth_ui::AuthThen;
 use super::*;
 use crate::remote_hosts::{self, ListedModel, ProbeFailure, RemoteHost};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::ui::popover::{popover_picker, PopoverExt};
 
 /// One host's provider listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,7 +231,8 @@ impl OrbitApp {
                 .with_masked(true)
                 .with_placeholder_key("providers_remote.key_placeholder")
         });
-        window.focus(&input.read(cx).focus_handle(cx));
+        let target = input.read(cx).focus_handle(cx);
+        self.remote_key_editor_focus.open(&target, window, cx);
         self.remote_key_editor = Some(RemoteKeyEditor {
             host,
             provider: None,
@@ -1037,16 +1039,12 @@ fn machine_menu(
         ));
     }
     let dismiss = this.clone();
-    let popup = picker_surface(div(), &theme)
+    let popup = popover_picker(div(), &theme)
         .debug_selector(|| "providers-machine-menu".to_string())
         .w(px(300.))
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .occlude()
-        .on_mouse_down_out(move |_, _, cx| {
+        .dismiss_on_outside(move |_, _, cx| {
             dismiss.update(cx, |app, cx| {
-                app.menu_dismissed_at = Some(std::time::Instant::now());
+                app.menu_dismissed_at.arm();
                 app.providers_machine_menu = false;
                 cx.notify();
             })

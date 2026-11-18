@@ -154,10 +154,7 @@ mod tests {
     fn order(groups: &[(&str, &[&str])]) -> SessionOrder {
         let mut order = SessionOrder::default();
         for (label, paths) in groups {
-            order.set_group(
-                label,
-                paths.iter().map(PathBuf::from).collect::<Vec<_>>(),
-            );
+            order.set_group(label, paths.iter().map(PathBuf::from).collect::<Vec<_>>());
         }
         order
     }
@@ -181,14 +178,18 @@ mod tests {
             ("orbit", &["/s/a.jsonl", "/s/b.jsonl"]),
             ("waku", &["/s/c.jsonl"]),
         ]);
-        order.set_group("orbit", vec![PathBuf::from("/s/b.jsonl"), PathBuf::from("/s/a.jsonl")]);
+        order.set_group(
+            "orbit",
+            vec![PathBuf::from("/s/b.jsonl"), PathBuf::from("/s/a.jsonl")],
+        );
         assert_eq!(
             order.group("orbit"),
-            Some(
-                [PathBuf::from("/s/b.jsonl"), PathBuf::from("/s/a.jsonl")].as_slice()
-            )
+            Some([PathBuf::from("/s/b.jsonl"), PathBuf::from("/s/a.jsonl")].as_slice())
         );
-        assert_eq!(order.group("waku"), Some([PathBuf::from("/s/c.jsonl")].as_slice()));
+        assert_eq!(
+            order.group("waku"),
+            Some([PathBuf::from("/s/c.jsonl")].as_slice())
+        );
     }
 
     #[test]
@@ -211,9 +212,7 @@ mod tests {
         assert_eq!(reloaded, order);
         assert_eq!(
             reloaded.group("orbit"),
-            Some(
-                [PathBuf::from("/s/b.jsonl"), PathBuf::from("/s/a.jsonl")].as_slice()
-            )
+            Some([PathBuf::from("/s/b.jsonl"), PathBuf::from("/s/a.jsonl")].as_slice())
         );
     }
 

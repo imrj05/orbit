@@ -25,6 +25,7 @@ use super::helpers::*;
 use super::*;
 use crate::permissions::{Action, Rule, Rules, Scope, Target};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, Radius, TextSize};
+use crate::ui::button::{Button, ButtonVariant};
 
 /// The inline "add a pattern" form for one family. Only one is open at a time.
 pub(super) struct PatternEditor {
@@ -740,29 +741,21 @@ where
         .into_any_element()
 }
 
-/// A quiet text button: no fill, no border, focusable frame.
+/// A quiet text button: the shared ghost variant at Compact size.
 fn ghost_button(id: String, label: &str, theme: Theme) -> gpui::Stateful<gpui::Div> {
-    button_frame(
-        div().id(ElementId::Name(id.into())),
-        &theme,
-        ButtonSize::Compact,
-    )
-    .rounded(Radius::Small.px(&theme))
-    .text_color(theme.text_secondary)
-    .cursor_pointer()
-    .hover_state(&theme)
-    .pressed_state(&theme, PressedRamp::Wash)
-    .child(label.to_string())
+    Button::new(id, ButtonVariant::Ghost)
+        .size(ButtonSize::Compact)
+        .label(label.to_string())
+        .render(&theme)
+        .rounded(Radius::Small.px(&theme))
 }
 
 /// The one filled action on the page.
 fn primary_button(id: &'static str, label: &str, theme: Theme) -> gpui::Stateful<gpui::Div> {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
+    Button::new(id, ButtonVariant::Primary)
+        .label(label.to_string())
+        .render(&theme)
         .rounded(Radius::Medium.px(&theme))
-        .raised(theme.action, &theme)
-        .text_color(theme.action_fg)
-        .cursor_pointer()
-        .child(label.to_string())
 }
 
 /// A one-line consequence a row cannot show by itself.

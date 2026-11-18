@@ -18,6 +18,7 @@ use super::mcp_ui::mcp_text_button;
 use super::*;
 use crate::remote_hosts::{self, RemoteHost};
 use crate::theme::tokens::{input, modal, panel, ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::ui::popover::{popover_picker, PopoverExt};
 
 /// How many `~/.ssh/config` aliases the form offers at once.
 const MAX_ALIAS_SUGGESTIONS: usize = 8;
@@ -240,7 +241,8 @@ impl OrbitApp {
             text(|h| h.name.clone()),
             cx,
         );
-        window.focus(&ssh.read(cx).focus_handle(cx));
+        let target = ssh.read(cx).focus_handle(cx);
+        self.remote_host_editor_focus.open(&target, window, cx);
         self.remote_host_remove_confirm = None;
         self.remote_host_editor = Some(RemoteHostEditor {
             original: host.map(|host| host.name),
@@ -1093,15 +1095,7 @@ impl OrbitApp {
         })
         .child(tr!("remote_hosts.save"));
 
-        let footer = div()
-            .flex_none()
-            .px(modal::footer_padding(&theme))
-            .py(modal::footer_padding(&theme))
-            .flex()
-            .items_center()
-            .gap(modal::footer_gap(&theme))
-            .border_t_1()
-            .border_color(theme.border)
+        let footer = modal_footer(&theme)
             .child(test)
             .child(
                 div()
@@ -1159,32 +1153,13 @@ impl OrbitApp {
             .key_context("Picker")
             .on_action(cx.listener(Self::remote_host_editor_cancel))
             .on_action(cx.listener(Self::remote_host_editor_confirm))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(modal::HEADLINE.px(&theme))
-                            .line_height(modal::HEADLINE.line_height(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(tr!("remote_hosts.editor_subtitle")),
-                    ),
-            )
+            .child(modal_header(
+                &theme,
+                title,
+                Some(ModalSubtitle::Text(
+                    tr!("remote_hosts.editor_subtitle").into(),
+                )),
+            ))
             .child(
                 div()
                     .id("remote-host-editor-body")
@@ -1290,15 +1265,11 @@ fn remote_host_menu(name: &str, theme: Theme, this: Entity<OrbitApp>) -> AnyElem
             this.clone(),
             Box::new(move |app, _, cx| app.remote_host_request_remove(remove.clone(), cx)),
         ));
-    let popup = picker_surface(div(), &theme)
+    let popup = popover_picker(div(), &theme)
         .w(px(220.))
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .occlude()
-        .on_mouse_down_out(move |_, _, cx| {
+        .dismiss_on_outside(move |_, _, cx| {
             this.update(cx, |app, cx| {
-                app.menu_dismissed_at = Some(std::time::Instant::now());
+                app.menu_dismissed_at.arm();
                 app.remote_host_menu = None;
                 cx.notify();
             })

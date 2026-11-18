@@ -4,7 +4,9 @@
 //! signs in on its own row and all accounts are live in every session at once.
 //! Nothing here reads or copies a credential.
 use super::*;
-use crate::app::helpers::{icon_button_frame, input_label};
+use crate::app::helpers::{
+    icon_button_frame, input_label, modal_footer, modal_header, ButtonVariant, ModalSubtitle,
+};
 use crate::provider_accounts::{AccountProfile, CredentialKind};
 use crate::theme::tokens::{input, modal, panel, ButtonSize, DynamicSpacing, Radius, TextSize};
 
@@ -174,7 +176,7 @@ impl OrbitApp {
         let add = self.provider_button(
             format!("provider-account-add-{}", view.id),
             &tr!("accounts.add"),
-            ProviderButtonStyle::Ghost,
+            ButtonVariant::Secondary,
             theme,
             this.clone(),
             ProviderAction::AddAccount {
@@ -355,7 +357,13 @@ impl OrbitApp {
                             .flex()
                             .items_center()
                             .gap(DynamicSpacing::Base04.px(&theme))
-                            .child(div().flex_none().size(px(6.)).rounded_full().bg(status_color))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(6.))
+                                    .rounded_full()
+                                    .bg(status_color),
+                            )
                             .child(
                                 div()
                                     .min_w_0()
@@ -394,12 +402,15 @@ impl OrbitApp {
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.error)
                     .whitespace_normal()
-                    .child(tr!("accounts.remove_confirm_live", name = profile.label.clone())),
+                    .child(tr!(
+                        "accounts.remove_confirm_live",
+                        name = profile.label.clone()
+                    )),
             )
             .child(self.provider_button(
                 format!("provider-account-remove-confirm-{id}"),
                 &tr!("settings.remove"),
-                ProviderButtonStyle::Danger,
+                ButtonVariant::Danger,
                 theme,
                 this.clone(),
                 ProviderAction::ConfirmRemoveAccount { id: id.clone() },
@@ -407,7 +418,7 @@ impl OrbitApp {
             .child(self.provider_button(
                 format!("provider-account-remove-cancel-{id}"),
                 &tr!("settings.cancel"),
-                ProviderButtonStyle::Ghost,
+                ButtonVariant::Secondary,
                 theme,
                 this,
                 ProviderAction::CancelRemoveAccount,
@@ -447,7 +458,8 @@ impl OrbitApp {
                 None => input,
             }
         });
-        window.focus(&label.read(cx).focus_handle(cx));
+        let target = label.read(cx).focus_handle(cx);
+        self.account_editor_focus.open(&target, window, cx);
         self.account_editor = Some(AccountEditor {
             provider_id: provider,
             provider_name: name,
@@ -578,7 +590,7 @@ impl OrbitApp {
             } else {
                 tr!("accounts.create")
             },
-            ProviderButtonStyle::Primary,
+            ButtonVariant::Primary,
             ButtonSize::Large,
             theme,
             this.clone(),
@@ -591,57 +603,22 @@ impl OrbitApp {
             .max_h(relative(1.))
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(modal::HEADLINE.px(&theme))
-                            .line_height(modal::HEADLINE.line_height(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(if editor.rename.is_some() {
-                                tr!("accounts.rename_for", name = editor.provider_name)
-                            } else {
-                                tr!("accounts.add_for", name = editor.provider_name)
-                            }),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme::code_font_family())
-                            .text_size(theme.code_px(11.))
-                            .text_color(theme.text_muted)
-                            .child(editor.provider_id.clone()),
-                    ),
-            )
+            .child(modal_header(
+                &theme,
+                if editor.rename.is_some() {
+                    tr!("accounts.rename_for", name = editor.provider_name)
+                } else {
+                    tr!("accounts.add_for", name = editor.provider_name)
+                },
+                Some(ModalSubtitle::Id(editor.provider_id.clone().into())),
+            ))
             .child(
                 div()
                     .px(modal::section_padding_x(&theme, false))
                     .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .px(modal::footer_padding(&theme))
-                    .py(modal::footer_padding(&theme))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(cancel)
-                    .child(create),
-            );
+            .child(modal_footer(&theme).child(cancel).child(create));
 
         let scrim = match theme.mode {
             ThemeMode::Dark => Hsla {
@@ -693,16 +670,24 @@ fn account_icon_button(
     action: ProviderAction,
 ) -> AnyElement {
     let debug = id.clone();
-    icon_button_frame(div().id(ElementId::Name(id.into())), &theme, ButtonSize::Default)
-        .debug_selector(move || debug.clone())
-        .tip(tip)
-        .cursor_pointer()
-        .hover_state(&theme)
-        .child(icon(glyph, ButtonSize::Default.icon_size().px(&theme), color))
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-            cx.stop_propagation();
-            let action = action.clone();
-            this.update(cx, |app, cx| app.apply_provider_action(action, window, cx));
-        })
-        .into_any_element()
+    icon_button_frame(
+        div().id(ElementId::Name(id.into())),
+        &theme,
+        ButtonSize::Default,
+    )
+    .debug_selector(move || debug.clone())
+    .tip(tip)
+    .cursor_pointer()
+    .hover_state(&theme)
+    .child(icon(
+        glyph,
+        ButtonSize::Default.icon_size().px(&theme),
+        color,
+    ))
+    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+        cx.stop_propagation();
+        let action = action.clone();
+        this.update(cx, |app, cx| app.apply_provider_action(action, window, cx));
+    })
+    .into_any_element()
 }

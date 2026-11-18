@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::git_panel::widgets::check_box;
 use crate::motion::Hover;
 use crate::quota::note_should_render;
@@ -9,6 +10,8 @@ use crate::theme::tokens::{
 };
 use crate::theme::MotionPreference;
 use crate::ui::button::settings_segment;
+use crate::ui::chip::{Badge, BadgeFill};
+use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::style::surface::SurfaceExt;
 use gpui::{canvas, Bounds, DispatchPhase, Div, Hitbox, HitboxBehavior, MouseMoveEvent, Stateful};
 
@@ -2080,42 +2083,32 @@ impl OrbitApp {
             PluginButtonSize::Compact => ButtonSize::Medium,
             PluginButtonSize::Toolbar => ButtonSize::Large,
         };
-        let icon_size = button_size.icon_size().px(&theme);
-        let spin_id = ElementId::Name(format!("{id}-spin").into());
-        let base = button_frame(div().id(ElementId::Name(id.into())), &theme, button_size)
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM);
-        let (button, icon_color) = if primary {
-            (
-                base.raised(theme.action, &theme)
-                    .text_color(theme.action_fg)
-                    .hover_action(&theme)
-                    .pressed_state(&theme, PressedRamp::Action),
-                theme.action_fg,
-            )
+        let variant = if primary {
+            ButtonVariant::Primary
         } else {
-            (
-                base.border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .text_color(theme.text_secondary)
-                    .hover_state(&theme),
-                theme.text_secondary,
-            )
+            ButtonVariant::Secondary
         };
-        press(button)
-            .when_some(icon_path, move |button, path| {
-                if spinning {
-                    // Refresh turns its own glyph in place; the synchronous
-                    // reload still reads as a deliberate action.
-                    button.child(refresh_glyph(spin_id, icon_size, true, icon_color, theme))
-                } else {
-                    button.child(icon(path, icon_size, icon_color))
-                }
-            })
-            .child(div().child(label.to_string()))
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        let spin_id = ElementId::Name(format!("{id}-spin").into());
+        let mut button = Button::new(id, variant)
+            .size(button_size)
+            .label(label.to_string());
+        if let Some(path) = icon_path {
+            button = if spinning {
+                // Refresh turns its own glyph in place; the synchronous
+                // reload still reads as a deliberate action.
+                button.leading(refresh_glyph(
+                    spin_id,
+                    button_size.icon_size().px(&theme),
+                    true,
+                    variant.ink(&theme),
+                    theme,
+                ))
+            } else {
+                button.icon(path)
+            };
+        }
+        button
+            .on_mouse_up(&theme, move |_, _, cx| {
                 let action = action.clone();
                 this.update(cx, |app, cx| app.apply_plugin_action(action, cx));
             })
@@ -2475,7 +2468,7 @@ impl OrbitApp {
                     .child(self.provider_button(
                         "providers-apply".into(),
                         &tr!("settings.restart_pi"),
-                        ProviderButtonStyle::Primary,
+                        ButtonVariant::Primary,
                         theme,
                         this.clone(),
                         ProviderAction::Restart,
@@ -2873,7 +2866,7 @@ impl OrbitApp {
                         .child(self.provider_button(
                             format!("provider-auth-open-{}", view.id),
                             &tr!("auth.open_page"),
-                            ProviderButtonStyle::Primary,
+                            ButtonVariant::Primary,
                             theme,
                             this.clone(),
                             ProviderAction::AuthOpenUrl(open),
@@ -2881,7 +2874,7 @@ impl OrbitApp {
                         .child(self.provider_button(
                             format!("provider-auth-copy-{}", view.id),
                             &tr!("auth.copy_code"),
-                            ProviderButtonStyle::Ghost,
+                            ButtonVariant::Secondary,
                             theme,
                             this.clone(),
                             ProviderAction::AuthCopy(device.user_code.clone()),
@@ -2890,7 +2883,7 @@ impl OrbitApp {
                 buttons = buttons.child(self.provider_button(
                     format!("provider-auth-cancel-{}", view.id),
                     &tr!("git_panel.cancel"),
-                    ProviderButtonStyle::Ghost,
+                    ButtonVariant::Secondary,
                     theme,
                     this.clone(),
                     ProviderAction::AuthCancel,
@@ -2900,7 +2893,7 @@ impl OrbitApp {
                 buttons = buttons.child(self.provider_button(
                     format!("provider-auth-done-{}", view.id),
                     &tr!("common.done"),
-                    ProviderButtonStyle::Primary,
+                    ButtonVariant::Primary,
                     theme,
                     this.clone(),
                     ProviderAction::AuthDismiss,
@@ -2911,7 +2904,7 @@ impl OrbitApp {
                     .child(self.provider_button(
                         format!("provider-auth-retry-{}", view.id),
                         &tr!("view.try_again"),
-                        ProviderButtonStyle::Primary,
+                        ButtonVariant::Primary,
                         theme,
                         this.clone(),
                         ProviderAction::AuthStart {
@@ -2923,7 +2916,7 @@ impl OrbitApp {
                     .child(self.provider_button(
                         format!("provider-auth-dismiss-{}", view.id),
                         "Dismiss",
-                        ProviderButtonStyle::Ghost,
+                        ButtonVariant::Secondary,
                         theme,
                         this.clone(),
                         ProviderAction::AuthDismiss,
@@ -3043,15 +3036,14 @@ impl OrbitApp {
                 } else {
                     theme.success
                 };
-                row = row.child(
-                    div()
-                        .w_full()
-                        .h(px(4.))
-                        .rounded_full()
-                        .overflow_hidden()
-                        .bg(theme.overlay_strong)
-                        .child(div().h_full().rounded_full().bg(tint).w(relative(fraction))),
-                );
+                row = row.child(progress_bar(
+                    &theme,
+                    fraction,
+                    tint,
+                    ProgressSize::Small,
+                    ProgressTrack::Glass,
+                    None,
+                ));
             }
             if let Some(resets_at) = window.resets_at {
                 row = row.child(
@@ -3336,7 +3328,7 @@ impl OrbitApp {
         // of unconnected providers, and a filled button on each one made the
         // list a wall of calls to action. `lead` still decides which method
         // is lifted into the row head.
-        let style = |_lead: bool| ProviderButtonStyle::Ghost;
+        let style = |_lead: bool| ButtonVariant::Secondary;
         let edit_key = |primary: bool| {
             let update = view.credential_kind() == Some("api_key");
             self.provider_button(
@@ -3425,7 +3417,7 @@ impl OrbitApp {
             bar.push(self.provider_button(
                 format!("provider-remove-confirm-{}", view.id),
                 &tr!("settings.remove"),
-                ProviderButtonStyle::Danger,
+                ButtonVariant::Danger,
                 theme,
                 this.clone(),
                 ProviderAction::ConfirmRemove {
@@ -3435,7 +3427,7 @@ impl OrbitApp {
             bar.push(self.provider_button(
                 format!("provider-remove-cancel-{}", view.id),
                 &tr!("git_panel.cancel"),
-                ProviderButtonStyle::Ghost,
+                ButtonVariant::Secondary,
                 theme,
                 this.clone(),
                 ProviderAction::CancelRemove,
@@ -3451,7 +3443,7 @@ impl OrbitApp {
                 } else {
                     tr!("settings.models")
                 },
-                ProviderButtonStyle::Ghost,
+                ButtonVariant::Secondary,
                 theme,
                 this.clone(),
                 ProviderAction::Configure {
@@ -3462,7 +3454,7 @@ impl OrbitApp {
                 bar.push(self.provider_button(
                     format!("provider-usage-{}", view.id),
                     &tr!("session.usage"),
-                    ProviderButtonStyle::Ghost,
+                    ButtonVariant::Secondary,
                     theme,
                     this.clone(),
                     ProviderAction::ShowUsage {
@@ -3484,7 +3476,7 @@ impl OrbitApp {
                 bar.push(self.provider_button(
                     format!("provider-signout-{}", view.id),
                     &tr!("settings.disconnect"),
-                    ProviderButtonStyle::Ghost,
+                    ButtonVariant::Secondary,
                     theme,
                     this.clone(),
                     ProviderAction::SignOut {
@@ -3496,7 +3488,7 @@ impl OrbitApp {
                 bar.push(self.provider_button(
                     format!("provider-remove-{}", view.id),
                     &tr!("settings.remove"),
-                    ProviderButtonStyle::Danger,
+                    ButtonVariant::Danger,
                     theme,
                     this.clone(),
                     ProviderAction::Remove {
@@ -3828,22 +3820,7 @@ impl OrbitApp {
         bg: Hsla,
         theme: Theme,
     ) -> AnyElement {
-        div()
-            .h(DynamicSpacing::Base20.px(&theme))
-            .px(DynamicSpacing::Base06.px(&theme))
-            .rounded(Radius::Small.px(&theme))
-            .flex_none()
-            .flex()
-            .items_center()
-            .bg(bg)
-            .child(
-                div()
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(fg)
-                    .child(label.to_string()),
-            )
-            .into_any_element()
+        Badge::new(label.to_string(), fg, BadgeFill::Solid(bg)).render(&theme)
     }
 
     /// A provider-card action button. One closure per card would be a lot of
@@ -3853,7 +3830,7 @@ impl OrbitApp {
         &self,
         id: String,
         label: &str,
-        style: ProviderButtonStyle,
+        style: ButtonVariant,
         theme: Theme,
         this: Entity<OrbitApp>,
         action: ProviderAction,
@@ -3869,7 +3846,7 @@ impl OrbitApp {
         &self,
         id: String,
         label: &str,
-        style: ProviderButtonStyle,
+        style: ButtonVariant,
         size: ButtonSize,
         theme: Theme,
         this: Entity<OrbitApp>,
@@ -3877,52 +3854,20 @@ impl OrbitApp {
     ) -> AnyElement {
         let action_id = id.clone();
         let icon_path = Self::provider_action_icon(&action);
-        let mut button = button_frame(
-            div()
-                .id(ElementId::Name(id.into()))
-                .debug_selector(move || format!("provider-action-{action_id}")),
-            &theme,
-            size,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM);
-        button = match style {
-            ProviderButtonStyle::Primary => button
-                .raised(theme.action, &theme)
-                .text_color(theme.action_fg)
-                .hover_action(&theme)
-                .pressed_state(&theme, PressedRamp::Action),
-            ProviderButtonStyle::Ghost => button
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.text_secondary)
-                .hover_state(&theme),
-            ProviderButtonStyle::Danger => button
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.error)
-                .hover_danger_soft(&theme),
-        };
-        let icon_color = match style {
-            ProviderButtonStyle::Primary => theme.action_fg,
-            ProviderButtonStyle::Danger => theme.error,
-            ProviderButtonStyle::Ghost => theme.text_secondary,
-        };
-        press(button)
-            .when_some(icon_path, |button, path| {
-                button.child(icon(path, IconSize::XSmall.px(&theme), icon_color))
-            })
-            .child(div().child(label.to_string()))
-            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+        let mut button = Button::new(id, style).size(size).label(label.to_string());
+        if let Some(path) = icon_path {
+            // Provider actions keep their compact 12px glyph at every frame size.
+            button = button.leading(icon(path, IconSize::XSmall.px(&theme), style.ink(&theme)));
+        }
+        button
+            .on_mouse_up(&theme, move |_, window, cx| {
                 // A button may sit inside a clickable row (the provider row's
                 // head); the press is the button's alone.
                 cx.stop_propagation();
                 let action = action.clone();
                 this.update(cx, |app, cx| app.apply_provider_action(action, window, cx));
             })
+            .debug_selector(move || format!("provider-action-{action_id}"))
             .into_any_element()
     }
 
@@ -4074,33 +4019,11 @@ impl OrbitApp {
             .max_w(px(460.))
             .max_h(relative(1.))
             .on_action(cx.listener(Self::provider_editor_cancel))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(modal::HEADLINE.px(&theme))
-                            .line_height(modal::HEADLINE.line_height(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(tr!("settings.usage_for", name = view.name)),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme::code_font_family())
-                            .text_size(theme.code_px(11.))
-                            .text_color(theme.text_muted)
-                            .child(view.id.clone()),
-                    ),
-            )
+            .child(modal_header(
+                &theme,
+                tr!("settings.usage_for", name = view.name),
+                Some(ModalSubtitle::Id(view.id.clone().into())),
+            ))
             .child(
                 div()
                     .id("provider-usage-body")
@@ -4111,18 +4034,7 @@ impl OrbitApp {
                     .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .px(modal::footer_padding(&theme))
-                    .py(modal::footer_padding(&theme))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(close),
-            );
+            .child(modal_footer(&theme).child(close));
 
         let scrim = match theme.mode {
             ThemeMode::Dark => Hsla {
@@ -4230,7 +4142,7 @@ impl OrbitApp {
                     .child(self.provider_button(
                         format!("provider-key-signin-{id}"),
                         &tr!("settings.sign_in"),
-                        ProviderButtonStyle::Ghost,
+                        ButtonVariant::Secondary,
                         theme,
                         this_signin,
                         ProviderAction::SignIn { id, name },
@@ -4273,7 +4185,7 @@ impl OrbitApp {
         let save = self.provider_button_sized(
             "provider-key-save".into(),
             &tr!("settings.save_key"),
-            ProviderButtonStyle::Primary,
+            ButtonVariant::Primary,
             ButtonSize::Large,
             theme,
             this.clone(),
@@ -4286,33 +4198,11 @@ impl OrbitApp {
             .max_h(relative(1.))
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(modal::HEADLINE.px(&theme))
-                            .line_height(modal::HEADLINE.line_height(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(tr!("settings.api_key_for", name = editor.provider_name)),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme::code_font_family())
-                            .text_size(theme.code_px(11.))
-                            .text_color(theme.text_muted)
-                            .child(editor.provider_id.clone()),
-                    ),
-            )
+            .child(modal_header(
+                &theme,
+                tr!("settings.api_key_for", name = editor.provider_name),
+                Some(ModalSubtitle::Id(editor.provider_id.clone().into())),
+            ))
             .child(
                 div()
                     .id("provider-key-body")
@@ -4323,20 +4213,7 @@ impl OrbitApp {
                     .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .px(modal::footer_padding(&theme))
-                    .py(modal::footer_padding(&theme))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(modal::footer_gap(&theme))
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(cancel)
-                    .child(save),
-            );
+            .child(modal_footer(&theme).child(cancel).child(save));
 
         let scrim = match theme.mode {
             ThemeMode::Dark => Hsla {
@@ -4384,45 +4261,25 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
-        let button = button_frame(
-            div().id("provider-fetch-models"),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.surface_elevated)
-        .text_color(if fetching {
-            theme.text_muted
-        } else {
-            theme.text_secondary
-        })
-        .when(!fetching, |button| {
-            button
-                .cursor_pointer()
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| app.provider_fetch_models(cx));
-                })
-        })
-        .tip(tr!("settings.fetch_models_hint"))
-        .child(icon(
-            "icons/refresh.svg",
-            ButtonSize::Medium.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .child(if fetching {
+        let label = if fetching {
             tr!("settings.fetching_models")
         } else {
             tr!("settings.fetch_models")
-        });
+        };
         div()
             .flex()
-            .child(crate::motion::hover(
-                button,
-                "provider-fetch-models",
-                &theme,
-                Hover::fill(theme.surface_elevated, theme.surface_hover),
-            ))
+            .child(
+                Button::new("provider-fetch-models", ButtonVariant::Secondary)
+                    .label(label)
+                    .icon("icons/refresh.svg")
+                    .tip(tr!("settings.fetch_models_hint"))
+                    .loading(fetching)
+                    .faded(&theme, move |button| {
+                        button.on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            this.update(cx, |app, cx| app.provider_fetch_models(cx));
+                        })
+                    }),
+            )
             .into_any_element()
     }
 
@@ -4614,36 +4471,15 @@ impl OrbitApp {
             .max_h(px(560.))
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(modal::HEADLINE.px(&theme))
-                            .line_height(modal::HEADLINE.line_height(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(if editing {
-                                tr!("settings.configure_provider")
-                            } else {
-                                tr!("settings.add_provider")
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(subtitle),
-                    ),
-            )
+            .child(modal_header(
+                &theme,
+                if editing {
+                    tr!("settings.configure_provider")
+                } else {
+                    tr!("settings.add_provider")
+                },
+                Some(ModalSubtitle::Text(subtitle.into())),
+            ))
             .child(
                 div()
                     .id("provider-editor-body")
@@ -4715,20 +4551,7 @@ impl OrbitApp {
                         }),
                 )
         };
-        card = card.child(
-            div()
-                .flex_none()
-                .px(modal::footer_padding(&theme))
-                .py(modal::footer_padding(&theme))
-                .flex()
-                .items_center()
-                .justify_end()
-                .gap(modal::footer_gap(&theme))
-                .border_t_1()
-                .border_color(theme.border)
-                .child(cancel)
-                .child(save),
-        );
+        card = card.child(modal_footer(&theme).child(cancel).child(save));
 
         let scrim = match theme.mode {
             ThemeMode::Dark => Hsla {
@@ -4859,59 +4682,7 @@ impl OrbitApp {
         meta: Option<&str>,
         control: Option<AnyElement>,
     ) -> AnyElement {
-        div()
-            .w_full()
-            .flex_none()
-            .min_h(ButtonSize::Large.height(&theme) + DynamicSpacing::Base08.px(&theme))
-            .px(DynamicSpacing::Base16.px(&theme))
-            .py(DynamicSpacing::Base12.px(&theme))
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base16.px(&theme))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(DynamicSpacing::Base03.px(&theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::Default.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(title.to_string()),
-                    )
-                    .children(desc.map(|d| {
-                        div()
-                            .min_w_0()
-                            .text_size(TextSize::Default.px(&theme))
-                            .text_color(theme.text_secondary)
-                            // A long localised sentence wraps inside the row
-                            // instead of running under the control (#131).
-                            .whitespace_normal()
-                            .child(d.to_string())
-                    }))
-                    .children(meta.map(|m| {
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .truncate()
-                            .child(m.to_string())
-                    })),
-            )
-            // A control keeps its intrinsic size but may never claim the
-            // whole row: the title shares the width, so a long control (a
-            // path, a version string) truncates instead of squeezing the
-            // title down to one letter per line.
-            .children(control.map(|c| {
-                div()
-                    .flex_none()
-                    .min_w_0()
-                    .max_w(gpui::relative(0.6))
-                    .child(c)
-            }))
-            .into_any_element()
+        crate::ui::row::setting_row(theme, title, desc, meta, control)
     }
 
     /// Connection state: green dot + "Connected" / red dot + "Not running".
@@ -6399,18 +6170,12 @@ impl OrbitApp {
     /// Settings → Privacy: run the policy immediately (the same pass the
     /// launch hook runs) and report the result as a toast.
     fn retention_run_button(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        button_frame(div().id("session-retention-run"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .text_color(theme.text_secondary)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        Button::new("session-retention-run", ButtonVariant::Secondary)
+            .size(ButtonSize::Large)
+            .label(tr!("settings.session_retention_run"))
+            .on_mouse_up(&theme, move |_, _, cx| {
                 this.update(cx, |app, cx| app.run_session_retention(cx));
             })
-            .child(tr!("settings.session_retention_run"))
             .into_any_element()
     }
 
@@ -6585,41 +6350,20 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        let button = button_frame(div().id(id), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM);
-        // The hover is a fade on the Interaction role, not a swap: primary
-        // buttons cross-fade `action` → `action_hover`, secondary ones fade the
-        // raised fill into the wash.
-        let (button, hover) = if primary {
-            (
-                button
-                    .raised(theme.action, &theme)
-                    .text_color(theme.action_fg)
-                    .pressed_state(&theme, PressedRamp::Action),
-                crate::motion::Hover::fill(theme.action, theme.action_hover),
-            )
+        let variant = if primary {
+            ButtonVariant::Primary
         } else {
-            (
-                button
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .text_color(theme.text_secondary),
-                crate::motion::Hover::fill(theme.surface_elevated, theme.surface_hover),
-            )
+            ButtonVariant::Secondary
         };
-        crate::motion::hover(
-            press(button)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        // The hover is a fade on the Interaction role, not a swap.
+        Button::new(format!("runtime-button-{id}"), variant)
+            .size(ButtonSize::Large)
+            .label(label.to_string())
+            .faded(&theme, move |button| {
+                button.on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, action);
                 })
-                .child(label.to_string()),
-            format!("runtime-button-{id}"),
-            &theme,
-            hover,
-        )
+            })
     }
 
     // ── Appearance ─────────────────────────────────────────────────────
@@ -8140,11 +7884,8 @@ impl OrbitApp {
                             // A dismissal from this same click's mouse-down
                             // must not immediately re-open (see
                             // `toggle_workspace_menu`).
-                            const GESTURE: Duration = Duration::from_millis(200);
-                            if let Some(dismissed) = app.menu_dismissed_at.take() {
-                                if dismissed.elapsed() < GESTURE {
-                                    return;
-                                }
+                            if app.menu_dismissed_at.swallows() {
+                                return;
                             }
                             if app.settings_select == Some(kind) {
                                 app.settings_select = None;
@@ -8379,16 +8120,12 @@ impl OrbitApp {
         // An explicit width, not `min_w`: the list below is `w_full`, and a
         // percentage width inside an auto-width parent resolves to 0, which
         // laid every option row out at a negative width — an empty panel.
-        let popup = picker_surface(
+        let popup = popover_picker(
             div().debug_selector(|| "settings-select-popup".to_string()),
             &theme,
         )
         .w(px(360.))
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .occlude()
-        .on_mouse_down_out({
+        .dismiss_on_outside({
             let this = this.clone();
             move |_: &MouseDownEvent, _, cx: &mut App| {
                 this.update(cx, |app, cx| {
@@ -8396,7 +8133,7 @@ impl OrbitApp {
                         // Arm the click-through guard so this same click's
                         // mouse-up on the chip cannot immediately re-open
                         // the dropdown.
-                        app.menu_dismissed_at = Some(Instant::now());
+                        app.menu_dismissed_at.arm();
                         cx.notify();
                     }
                 });

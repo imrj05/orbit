@@ -3,7 +3,7 @@
 
 The design system's motion contract says hover, press and selection fade on
 `Motion::Interaction` (`motion::hover`). The `ControlExt` hover treatments in
-`app/helpers.rs` (`hover_state`, `hover_quiet`, `hover_bordered`, …) swap their
+`ui/style/control.rs` (`hover_state`, `hover_quiet`, `hover_bordered`, …) swap their
 fill on one frame instead. Many call sites still use them; converting each
 takes care, because a faded hover needs a stable unique name and the exact
 fill pair it replaces. So this is a ratchet rather than a ban:
@@ -15,9 +15,9 @@ fill pair it replaces. So this is a ratchet rather than a ban:
 * A file **under** its budget converted one: lower the budget so the freed
   slot cannot be quietly spent again. `--update` rewrites the file.
 
-The treatment list is read from `app/helpers.rs` itself (every
+The treatment list is read from `ui/style/control.rs` itself (every
 `fn hover_*(self, …)`), so a treatment added there is counted from then on.
-Test files are not counted, and neither is `app/helpers.rs`, where the
+Test files are not counted, and neither is `ui/style/control.rs`, where the
 treatments are defined.
 
 Run from the repo root:
@@ -33,14 +33,14 @@ import re
 import sys
 
 ROOT = "crates/orbit-pi/src"
-HELPERS = "app/helpers.rs"
+HELPERS = "ui/style/control.rs"
 BUDGET = "scripts/hover_budget.json"
 
 TREATMENT_DEF = re.compile(r"\bfn\s+(hover_[a-z_]+)\s*\(\s*(?:mut\s+)?self\b")
 
 
 def treatments():
-    """The one-frame hover treatments `app/helpers.rs` defines."""
+    """The one-frame hover treatments `ui/style/control.rs` defines."""
     with open(os.path.join(ROOT, HELPERS), encoding="utf-8") as f:
         names = set(TREATMENT_DEF.findall(f.read()))
     if not names:

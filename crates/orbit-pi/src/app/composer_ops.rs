@@ -3,6 +3,7 @@ use super::*;
 use crate::theme::tokens::{
     context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
+use crate::ui::popover::{popover_list, PopoverExt};
 
 /// Why the completion gate was invoked. The gate behaves the same either way
 /// for a completion that changes the text; they differ only when accepting
@@ -580,15 +581,10 @@ impl OrbitApp {
             );
         }
         // Full width of the chat box, so long paths are never cut.
-        let popup = picker_surface(div(), &theme)
+        let popup = popover_list(div(), &theme)
             .w(px(CONTENT_MAX_W))
-            .py(picker::list_padding_y(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
             .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(Self::on_autocomplete_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_autocomplete_outside_down))
             .child(list);
 
         Some(
@@ -1034,11 +1030,8 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_add_menu(window, cx);
     }
@@ -1057,7 +1050,7 @@ impl OrbitApp {
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.add_menu_open = true;
-        self.add_menu_highlight = 0;
+        self.add_menu_highlight.highlight(0);
         // Focus the menu so ↑/↓/Enter/Escape dispatch to it.
         window.focus(&self.add_menu_focus);
         cx.notify();
@@ -1067,7 +1060,7 @@ impl OrbitApp {
     pub(super) fn close_add_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.add_menu_open {
             self.add_menu_open = false;
-            self.add_menu_highlight = 0;
+            self.add_menu_highlight.highlight(0);
             self.input.read(cx).focus(window);
             cx.notify();
         }
@@ -1079,7 +1072,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_menu_highlight = (self.add_menu_highlight + 1) % ADD_MENU_ITEMS.len();
+        self.add_menu_highlight.next(ADD_MENU_ITEMS.len());
         cx.notify();
     }
 
@@ -1089,8 +1082,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_menu_highlight =
-            (self.add_menu_highlight + ADD_MENU_ITEMS.len() - 1) % ADD_MENU_ITEMS.len();
+        self.add_menu_highlight.prev(ADD_MENU_ITEMS.len());
         cx.notify();
     }
 
@@ -1100,7 +1092,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_add_menu_item(self.add_menu_highlight, window, cx);
+        if let Some(ix) = self.add_menu_highlight.selected(ADD_MENU_ITEMS.len()) {
+            self.run_add_menu_item(ix, window, cx);
+        }
     }
 
     pub(super) fn on_add_menu_close(
@@ -1120,7 +1114,7 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         self.add_menu_open = false;
-        self.add_menu_highlight = 0;
+        self.add_menu_highlight.highlight(0);
         match ix {
             0 => self.attach_image(window, cx),
             1 => self.attach_file(window, cx),
@@ -1143,11 +1137,8 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_picker(kind, window, cx);
     }
@@ -1212,11 +1203,8 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_access_menu(window, cx);
     }
@@ -1242,10 +1230,12 @@ impl OrbitApp {
         self.autocomplete.borrow_mut().open = false;
         self.access_menu_open = true;
         self.workflow_menu_open = false;
-        self.access_menu_highlight = AccessMode::ALL
-            .iter()
-            .position(|mode| *mode == self.access_mode)
-            .unwrap_or(0);
+        self.access_menu_highlight.highlight(
+            AccessMode::ALL
+                .iter()
+                .position(|mode| *mode == self.access_mode)
+                .unwrap_or(0),
+        );
         // Focus the menu so ↑/↓/Enter/Escape dispatch to it.
         window.focus(&self.access_menu_focus);
         cx.notify();
@@ -1266,7 +1256,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.access_menu_highlight = (self.access_menu_highlight + 1) % AccessMode::ALL.len();
+        self.access_menu_highlight.next(AccessMode::ALL.len());
         cx.notify();
     }
 
@@ -1276,8 +1266,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.access_menu_highlight =
-            (self.access_menu_highlight + AccessMode::ALL.len() - 1) % AccessMode::ALL.len();
+        self.access_menu_highlight.prev(AccessMode::ALL.len());
         cx.notify();
     }
 
@@ -1287,7 +1276,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_access_menu_item(self.access_menu_highlight, window, cx);
+        if let Some(ix) = self.access_menu_highlight.selected(AccessMode::ALL.len()) {
+            self.run_access_menu_item(ix, window, cx);
+        }
     }
 
     pub(super) fn on_access_menu_close(
@@ -1341,11 +1332,8 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_workflow_menu(window, cx);
     }
@@ -1364,10 +1352,12 @@ impl OrbitApp {
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.workflow_menu_open = true;
-        self.workflow_menu_highlight = WorkflowMode::ALL
-            .iter()
-            .position(|mode| *mode == self.workflow_mode)
-            .unwrap_or(0);
+        self.workflow_menu_highlight.highlight(
+            WorkflowMode::ALL
+                .iter()
+                .position(|mode| *mode == self.workflow_mode)
+                .unwrap_or(0),
+        );
         window.focus(&self.workflow_menu_focus);
         cx.notify();
     }
@@ -1387,7 +1377,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.workflow_menu_highlight = (self.workflow_menu_highlight + 1) % WorkflowMode::ALL.len();
+        self.workflow_menu_highlight.next(WorkflowMode::ALL.len());
         cx.notify();
     }
 
@@ -1397,8 +1387,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.workflow_menu_highlight =
-            (self.workflow_menu_highlight + WorkflowMode::ALL.len() - 1) % WorkflowMode::ALL.len();
+        self.workflow_menu_highlight.prev(WorkflowMode::ALL.len());
         cx.notify();
     }
 
@@ -1408,7 +1397,7 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_workflow_menu_item(self.workflow_menu_highlight, window, cx);
+        self.run_workflow_menu_item(self.workflow_menu_highlight.highlighted(), window, cx);
     }
 
     pub(super) fn on_workflow_menu_close(

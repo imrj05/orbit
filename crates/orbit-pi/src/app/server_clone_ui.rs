@@ -21,6 +21,7 @@ use crate::git_panel::widgets::check_box;
 use crate::remote_hosts::{self, ProbeFailure, RemoteHost};
 use crate::server_clone::{self, CloneProtocol, CloneResult, ProjectSource};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::ui::button::active_segment;
 
 /// Each dialog opening gets its own number, so a result for one that was
 /// closed (or reopened) lands nowhere.
@@ -151,7 +152,8 @@ impl OrbitApp {
                 .with_max_lines(1)
                 .with_placeholder_key("server_clone.folder_placeholder")
         });
-        window.focus(&folder.read(cx).focus_handle(cx));
+        let target = folder.read(cx).focus_handle(cx);
+        self.server_clone_focus.open(&target, window, cx);
         let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
         self.server_clone = Some(ServerCloneDialog {
             generation,
@@ -730,24 +732,16 @@ impl OrbitApp {
                 let protocol = *protocol;
                 let selected = dialog.protocol == protocol;
                 let pick = this.clone();
-                let seg = segmented_segment(
+                let seg = active_segment(
                     div().id(ElementId::Name(
                         format!("server-clone-protocol-{ix}").into(),
                     )),
                     &theme,
                     ButtonSize::Default,
                     SegmentPosition::at(ix, PROTOCOLS.len()),
+                    selected,
                 )
-                .debug_selector(move || format!("server-clone-protocol-{ix}"))
-                .cursor_pointer()
-                .border_color(theme.border);
-                let seg = if selected {
-                    seg.bg(theme.surface_active).text_color(theme.text_primary)
-                } else {
-                    seg.bg(theme.surface_elevated)
-                        .text_color(theme.text_secondary)
-                        .hover_state(&theme)
-                };
+                .debug_selector(move || format!("server-clone-protocol-{ix}"));
                 segments = segments.child(
                     press(seg)
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {

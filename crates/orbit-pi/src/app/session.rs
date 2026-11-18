@@ -2,12 +2,16 @@ use super::composer_ops::CompletionIntent;
 use super::helpers::*;
 use super::mcp_ui::QuotaPopupTab;
 use super::*;
+use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::app::helpers::{segmented_segment, SegmentPosition};
 use crate::context_meter::context_ring;
 use crate::quota::{canonical_provider, is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::theme::tokens::{
     panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
+use crate::ui::button::IconButton;
+use crate::ui::popover::PopoverExt;
+use crate::ui::popover::{dropdown_below, DropdownAlign};
 use crate::ui::tooltip::Tooltip;
 use gpui::{Div, Stateful};
 
@@ -890,8 +894,10 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         // Only the main composer owns the completion menu — picker filter
-        // inputs share the `Composer` key context but must never reach it.
+        // inputs share the `Composer` key context but must never reach it. A
+        // field in a form modal takes Tab as the modal's focus ring instead.
         if !self.input.read(cx).focus_handle(cx).is_focused(window) {
+            self.modal_focus_step(false, window, cx);
             return;
         }
         // Tab can page IME candidates; moving focus here would drop the
@@ -1918,7 +1924,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu_dismissed_at = None;
+        self.menu_dismissed_at.clear();
         self.toggle_session_details(cx);
     }
 
@@ -2317,31 +2323,18 @@ impl OrbitApp {
                     .text_color(theme.text_primary)
                     .child(tr!("session.session_details")),
             )
-            .child(crate::motion::hover(
-                press(
-                    icon_button_frame(
-                        div().id("session-details-close").group(BUTTON_GROUP),
-                        &theme,
-                        ButtonSize::Default,
-                    )
+            .child(
+                IconButton::new("session-details-close", "icons/x.svg")
                     .tip(tr!("common.close"))
-                    .cursor_pointer(),
-                )
-                .on_click({
-                    let this = this.clone();
-                    move |_, _, cx| {
-                        this.update(cx, |app, cx| app.close_session_details(cx));
-                    }
-                })
-                .child(icon(
-                    "icons/x.svg",
-                    ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_muted,
-                )),
-                "session-details-close",
-                &theme,
-                crate::motion::Hover::wash(&theme),
-            ));
+                    .faded(&theme, |button| {
+                        button.on_click({
+                            let this = this.clone();
+                            move |_, _, cx| {
+                                this.update(cx, |app, cx| app.close_session_details(cx));
+                            }
+                        })
+                    }),
+            );
         // With no live session there is nothing to name; say so instead of
         // showing an empty rename field.
         let no_session = session_id.is_empty().then(|| {
@@ -3081,12 +3074,11 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .occlude()
             // Clicks inside the card (the refresh button) must not bubble to
             // the chip that toggles this popover.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out({
+            .dismiss_on_outside({
                 let this = this.clone();
                 move |_: &MouseDownEvent, _, cx: &mut App| {
                     this.update(cx, |app, cx| {
@@ -3094,7 +3086,7 @@ impl OrbitApp {
                             // Arm the click-through guard so this same
                             // click's mouse-up on the chip cannot
                             // immediately re-open the popover.
-                            app.menu_dismissed_at = Some(Instant::now());
+                            app.menu_dismissed_at.arm();
                             app.quota_popup_open = false;
                             cx.notify();
                         }
@@ -3105,19 +3097,14 @@ impl OrbitApp {
             .child(body);
 
         Some(
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), popover::MENU_OFFSET),
-                    popup,
-                    "anchored_popover-in-3",
-                    &theme,
-                ))
-                .into_any_element(),
+            dropdown_below(
+                DropdownAlign::End,
+                popover::MENU_OFFSET,
+                popup,
+                "anchored_popover-in-3",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 
@@ -3369,11 +3356,8 @@ impl OrbitApp {
     ) {
         // A dismissal from this same click's mouse-down must not
         // immediately re-open (see `toggle_workspace_menu`).
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_quota_popup(cx);
     }
@@ -3452,18 +3436,13 @@ impl OrbitApp {
                     ),
             )
             .child(
-                icon_button_frame(div().id(("sess-copy", ix)), &theme, ButtonSize::Compact)
+                IconButton::new(("sess-copy", ix), "icons/copy.svg")
+                    .size(ButtonSize::Compact)
+                    .ink(theme.text_muted)
                     .tip(tr!("common.copy"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click(move |_, _window, cx| {
+                    .on_click(&theme, move |_, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(v.clone()));
-                    })
-                    .child(icon(
-                        "icons/copy.svg",
-                        ButtonSize::Compact.icon_size().px(&theme),
-                        theme.text_muted,
-                    )),
+                    }),
             )
     }
 
@@ -4072,6 +4051,7 @@ impl OrbitApp {
         // since the list was last read.
         self.sessions = sessions::load_sessions();
         self.sync_session_menu(cx);
+        self.refresh_remote_sessions(false, cx);
         // The status bar's branch chip and every sidebar row's branch line.
         self.refresh_branch_status(cx);
         self.refresh_sidebar_branches(cx);
@@ -4355,21 +4335,14 @@ fn quota_provider_card(
         );
 
         if let Some(fraction) = window.fraction() {
-            row = row.child(
-                div()
-                    .w_full()
-                    .h(px(5.))
-                    .rounded_full()
-                    .overflow_hidden()
-                    .bg(theme.surface_secondary)
-                    .child(
-                        div()
-                            .h_full()
-                            .rounded_full()
-                            .bg(quota_tint(fraction, theme))
-                            .w(relative(fraction)),
-                    ),
-            );
+            row = row.child(progress_bar(
+                &theme,
+                fraction,
+                quota_tint(fraction, theme),
+                ProgressSize::Medium,
+                ProgressTrack::Solid,
+                None,
+            ));
         }
         if let Some(resets_at) = window.resets_at {
             row = row.child(

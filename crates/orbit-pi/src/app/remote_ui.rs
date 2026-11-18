@@ -55,7 +55,7 @@ impl OrbitApp {
                 self.extensions.spawn_remote(
                     &host.target()?,
                     secret.as_deref(),
-                    self.remote_launch_workflow().as_wire(),
+                    self.remote_launch_workflow().map(WorkflowMode::as_wire),
                 )
             }
             None => {
@@ -77,14 +77,17 @@ impl OrbitApp {
     /// for a session it has not started yet, so the launch carries the mode
     /// as `ORBIT_WORKFLOW_MODE` (the extension's fallback for exactly that
     /// moment): a New Task choice, the live mode when an existing session is
-    /// respawned, otherwise Build like any new local session.
-    pub(super) fn remote_launch_workflow(&self) -> WorkflowMode {
-        self.workflow_pending
-            .unwrap_or(if self.session_id.is_some() {
-                self.workflow_mode
-            } else {
-                WorkflowMode::default()
-            })
+    /// respawned, otherwise Build like any new local session. A session being
+    /// resumed from the sidebar gets none: its own store entry (or the mode
+    /// recorded in its file) decides, and a launch value would override that.
+    pub(super) fn remote_launch_workflow(&self) -> Option<WorkflowMode> {
+        if let Some(mode) = self.workflow_pending {
+            return Some(mode);
+        }
+        if self.session_id.is_some() {
+            return Some(self.workflow_mode);
+        }
+        (!self.remote_resuming).then(WorkflowMode::default)
     }
 
     /// Mirror a workflow change into the host's `~/.orbit-pi/workflow.json`,

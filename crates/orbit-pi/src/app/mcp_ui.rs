@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use super::helpers::*;
 use super::*;
+use crate::ui::button::IconButton;
 use crate::mcp::config::{self as mcp_config, SecretUpdate};
 use crate::mcp::manager::McpProbe;
 use crate::mcp::{
@@ -501,7 +502,8 @@ impl OrbitApp {
             oauth_text(&oauth.scope),
             cx,
         );
-        window.focus(&name.read(cx).focus_handle(cx));
+        let target = name.read(cx).focus_handle(cx);
+        self.mcp_editor_focus.open(&target, window, cx);
         self.mcp_editor = Some(McpEditor {
             original: server,
             kind,
@@ -2360,32 +2362,11 @@ impl OrbitApp {
             .max_h(relative(1.))
             .on_action(cx.listener(Self::mcp_editor_cancel))
             .on_action(cx.listener(Self::mcp_editor_confirm))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(modal::HEADLINE.px(&theme))
-                            .line_height(modal::HEADLINE.line_height(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(tr!("mcp.editor_subtitle")),
-                    ),
-            )
+            .child(modal_header(
+                &theme,
+                title,
+                Some(ModalSubtitle::Text(tr!("mcp.editor_subtitle").into())),
+            ))
             .child(
                 div()
                     .id("mcp-editor-body")
@@ -2396,20 +2377,7 @@ impl OrbitApp {
                     .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .px(modal::footer_padding(&theme))
-                    .py(modal::footer_padding(&theme))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(modal::footer_gap(&theme))
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(cancel)
-                    .child(save),
-            );
+            .child(modal_footer(&theme).child(cancel).child(save));
 
         let scrim = match theme.mode {
             ThemeMode::Dark => Hsla {
@@ -2533,23 +2501,19 @@ impl OrbitApp {
             .iter()
             .filter(|server| self.mcp.runtime(&server.name).status == McpServerStatus::Connected)
             .count();
-        let refresh = icon_button_frame(div().id("quota-mcp-refresh"), &theme, ButtonSize::Medium)
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .tip(tr!("mcp.refresh"))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
-            })
-            .child(refresh_glyph(
+        let refresh = IconButton::glyph("quota-mcp-refresh", refresh_glyph(
                 "quota-mcp-refresh-spin",
                 ButtonSize::Medium.icon_size().px(&theme),
                 self.mcp.is_probing(),
                 theme.text_secondary,
                 theme,
-            ));
+            ))
+.size(ButtonSize::Medium)
+.tip(tr!("mcp.refresh"))
+.on_mouse_up(&theme, {
+                let this = this.clone();
+                move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
+            });
         div()
             .flex()
             .items_center()
@@ -3086,31 +3050,14 @@ pub(super) fn mcp_text_button(
     this: Entity<OrbitApp>,
     action: impl Fn(&mut OrbitApp, &mut Window, &mut Context<OrbitApp>) + 'static,
 ) -> AnyElement {
-    let action = std::rc::Rc::new(action);
-    let mut button = button_frame(
-        div().id(ElementId::Name(id.into())),
-        &theme,
-        ButtonSize::Medium,
-    )
-    .cursor_pointer()
-    .font_weight(FontWeight::MEDIUM);
-    button = if primary {
-        button
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
+    let variant = if primary {
+        ButtonVariant::Primary
     } else {
-        button
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .hover_state(&theme)
+        ButtonVariant::Secondary
     };
-    press(button)
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+    Button::new(id, variant)
+        .label(label)
+        .on_mouse_up(&theme, move |_, window, cx| {
             this.update(cx, |app, cx| action(app, window, cx));
         })
         .into_any_element()

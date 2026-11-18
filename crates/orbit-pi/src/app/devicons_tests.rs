@@ -1,4 +1,4 @@
-use super::helpers::*;
+use crate::ui::glyph::dev_file_icon;
 
 #[test]
 fn dev_file_icons_carry_glyph_and_parsed_color() {

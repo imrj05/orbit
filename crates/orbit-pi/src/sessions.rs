@@ -672,7 +672,7 @@ fn message_time_in_line(line: &[u8]) -> Option<SystemTime> {
 
 /// Tolerant timestamp parser: RFC 3339 string, seconds, or milliseconds —
 /// matching the shapes pi writes on session entries.
-fn timestamp_millis(value: Option<&Value>) -> Option<i64> {
+pub(crate) fn timestamp_millis(value: Option<&Value>) -> Option<i64> {
     let value = value?;
     if let Some(text) = value.as_str() {
         return chrono::DateTime::parse_from_rfc3339(text)
@@ -907,17 +907,29 @@ mod tests {
     #[test]
     fn readable_prompt_reduces_an_expanded_skill_to_its_command() {
         let skill = "<skill name=\"apple-hig\" location=\"/Users/me/.agents/skills/apple-hig/SKILL.md\">\nReferences\n# Apple HIG\n</skill>\n\ncheck the attach button";
-        assert_eq!(readable_prompt(skill), "/skill:apple-hig check the attach button");
+        assert_eq!(
+            readable_prompt(skill),
+            "/skill:apple-hig check the attach button"
+        );
         // Nothing typed after the skill: show the command that was run.
-        assert_eq!(readable_prompt("<skill name=\"review\">body</skill>\n"), "/skill:review");
+        assert_eq!(
+            readable_prompt("<skill name=\"review\">body</skill>\n"),
+            "/skill:review"
+        );
     }
 
     #[test]
     fn readable_prompt_leaves_ordinary_text_alone() {
         assert_eq!(readable_prompt("hii"), "hii");
-        assert_eq!(readable_prompt("why does <skill> render raw?"), "why does <skill> render raw?");
+        assert_eq!(
+            readable_prompt("why does <skill> render raw?"),
+            "why does <skill> render raw?"
+        );
         assert_eq!(readable_prompt("<skills> list them"), "<skills> list them");
-        assert_eq!(readable_prompt("<div>markup</div> fix"), "<div>markup</div> fix");
+        assert_eq!(
+            readable_prompt("<div>markup</div> fix"),
+            "<div>markup</div> fix"
+        );
     }
 
     #[test]
@@ -933,7 +945,10 @@ mod tests {
         });
         fs::write(&path, format!("{header}\n{message}\n")).unwrap();
         let info = read_session(&path).unwrap();
-        assert_eq!(info.first_message, "/skill:apple-hig review the light mode UI");
+        assert_eq!(
+            info.first_message,
+            "/skill:apple-hig review the light mode UI"
+        );
         assert_eq!(info.title, "/skill:apple-hig review the light mode UI");
         let _ = fs::remove_dir_all(&dir);
     }

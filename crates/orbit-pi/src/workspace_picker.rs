@@ -16,12 +16,13 @@ use gpui::{
 };
 
 use crate::app::{
-    icon, menu_header, picker_entry, picker_row_height, picker_search_frame, picker_surface,
+    icon, menu_header, picker_entry, picker_row_height, picker_search_frame,
     working_folder_keyboard_hints, ControlExt, PickerRow, PressedRamp, StatefulControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{context_menu, input, list, picker};
 use crate::theme::{self, Theme};
+use crate::ui::popover::{popover_picker, PopoverExt};
 
 /// The popover caps at this width — wide enough for a two-line row (name over
 /// path, or a branch over its ref) and no wider, because a folder list is a
@@ -645,14 +646,10 @@ impl Render for WorkspacePicker {
 
         let browse_highlighted = self.highlighted == rows.len() + self.actions.len();
 
-        picker_surface(div(), &theme)
+        popover_picker(div(), &theme)
             .debug_selector(|| "workspace-picker-popup".to_string())
             .w(px(self.width))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(Self::on_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_outside_down))
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))

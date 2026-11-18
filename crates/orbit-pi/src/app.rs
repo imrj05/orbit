@@ -32,11 +32,11 @@ use std::{
 use base64::Engine as _;
 use gpui::{
     anchored, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
-    radians, relative, uniform_list, AnchoredPositionMode, Animation, AnimationExt, AnyElement,
-    App, ClickEvent, ClipboardItem, Context, Corner, CursorStyle, DragMoveEvent, ElementId, Entity,
+    relative, uniform_list, AnchoredPositionMode, Animation, AnimationExt, AnyElement,
+    App, ClickEvent, ClipboardItem, Context, Corner, DragMoveEvent, ElementId, Entity,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
-    PathPromptOptions, Pixels, Point, Render, Resource, ScrollHandle, ScrollStrategy, SharedString,
+    PathPromptOptions, Pixels, Point, Render, ScrollHandle, ScrollStrategy, SharedString,
     StatefulInteractiveElement, Subscription, TextAlign, Transformation, UniformListScrollHandle,
     Window,
 };
@@ -318,30 +318,7 @@ pub(crate) enum QuitPlan {
     Wait,
 }
 
-/// The control to hand focus back to when a modal surface closes
-/// (`DESIGN.md`: restore focus to the control that opened it).
-///
-/// Weak, because the opener can be torn down while the surface is up. Where
-/// focus finally goes is [`OrbitApp::return_focus`]'s call: it also turns away
-/// an opener that is still mounted but out of sight.
-#[derive(Default)]
-pub(crate) struct ReturnFocus(Option<gpui::WeakFocusHandle>);
-
-impl ReturnFocus {
-    /// Remember what holds focus now. A surface that already holds focus
-    /// (re-focused after a session switch) keeps its original opener.
-    pub(crate) fn capture(&mut self, surface: &FocusHandle, window: &Window, cx: &App) {
-        if surface.contains_focused(window, cx) {
-            return;
-        }
-        self.0 = window.focused(cx).map(|handle| handle.downgrade());
-    }
-
-    /// The remembered opener, if it is still alive. Clears the slot.
-    pub(crate) fn take(&mut self) -> Option<FocusHandle> {
-        self.0.take().and_then(|handle| handle.upgrade())
-    }
-}
+pub(crate) use crate::ui::dialog::{ModalFocus, ReturnFocus};
 
 pub struct OrbitApp {
     client: Option<PiClient>,
@@ -838,7 +815,7 @@ pub struct OrbitApp {
     /// hosts) is open.
     work_in_menu_open: bool,
     /// Highlighted row in the "Work in" picker.
-    work_in_menu_highlight: usize,
+    work_in_menu_highlight: crate::ui::menu::MenuState,
     work_in_scroll: ScrollHandle,
     /// The enabled remote hosts the open picker lists. Read from
     /// `remote-hosts.json` when the picker opens, never per frame.
@@ -932,7 +909,7 @@ pub struct OrbitApp {
     current_session_path: Option<PathBuf>,
     /// When the popup was dismissed by an outside mouse-down; guards against
     /// the same click's mouse-up immediately re-opening it via the chip.
-    menu_dismissed_at: Option<Instant>,
+    menu_dismissed_at: crate::ui::popover::DismissGuard,
     /// Live context-window usage from `get_session_stats`. `None` when pi
     /// hasn't advertised a window (no model) or the command isn't supported.
     context: Option<ContextUsage>,
@@ -1004,7 +981,7 @@ pub struct OrbitApp {
     /// Whether the composer's "+" add menu is open.
     add_menu_open: bool,
     /// Highlighted row in the add menu (arrow keys + hover move it).
-    add_menu_highlight: usize,
+    add_menu_highlight: crate::ui::menu::MenuState,
     /// Focus handle that carries the `AddMenu` key context while the menu
     /// is open (focus moves here so ↑/↓/Enter/Escape hit the menu, then
     /// returns to the composer).
@@ -1209,7 +1186,7 @@ pub struct OrbitApp {
     /// Whether the composer's access-mode picker popover is open.
     access_menu_open: bool,
     /// Highlighted row in the access-mode picker (arrow keys + hover move it).
-    access_menu_highlight: usize,
+    access_menu_highlight: crate::ui::menu::MenuState,
     /// Focus handle that carries the `AccessMenu` key context while the picker
     /// is open (focus moves here so ↑/↓/Enter/Escape hit it).
     access_menu_focus: FocusHandle,
@@ -1236,7 +1213,7 @@ pub struct OrbitApp {
     /// Whether the composer's workflow-mode picker popover is open.
     workflow_menu_open: bool,
     /// Highlighted row in the workflow-mode picker.
-    workflow_menu_highlight: usize,
+    workflow_menu_highlight: crate::ui::menu::MenuState,
     /// Focus handle that carries the `WorkflowMenu` key context while open.
     workflow_menu_focus: FocusHandle,
     /// `get_entries` cursor for the bridge's quota snapshots. Entry ids are
@@ -1265,6 +1242,8 @@ pub struct OrbitApp {
     provider_key_editor: Option<ProviderKeyEditor>,
     /// The open Add-account modal, if any.
     account_editor: Option<AccountEditor>,
+    /// Hands focus back to whatever opened `account_editor` once it closes.
+    account_editor_focus: ModalFocus,
     /// The open provider editor (add or edit), if any.
     provider_editor: Option<ProviderEditor>,
     /// Provider id awaiting inline remove confirmation.
@@ -1419,6 +1398,8 @@ pub struct OrbitApp {
     _mcp_filter_sub: Subscription,
     /// The MCP add/edit modal, if open.
     mcp_editor: Option<mcp_ui::McpEditor>,
+    /// Hands focus back to whatever opened `mcp_editor` once it closes.
+    mcp_editor_focus: ModalFocus,
     /// Focus handle carrying the `McpList` key context while the MCP page is
     /// open (↑/↓ move the row cursor, Enter edits, Space toggles).
     mcp_list_focus: FocusHandle,
@@ -1433,6 +1414,8 @@ pub struct OrbitApp {
     remote_hosts: Vec<crate::remote_hosts::RemoteHost>,
     remote_hosts_skipped: Vec<String>,
     remote_host_editor: Option<remote_hosts_ui::RemoteHostEditor>,
+    /// Hands focus back to whatever opened `remote_host_editor` once it closes.
+    remote_host_editor_focus: ModalFocus,
     remote_host_remove_confirm: Option<String>,
     /// The host card whose ⋯ menu is open.
     remote_host_menu: Option<String>,
@@ -1445,8 +1428,21 @@ pub struct OrbitApp {
     remote_provider_expanded: std::collections::HashSet<String>,
     /// The Add API key dialog for a host, while open.
     remote_key_editor: Option<remote_providers_ui::RemoteKeyEditor>,
+    /// Hands focus back to whatever opened `remote_key_editor` once it closes.
+    remote_key_editor_focus: ModalFocus,
     /// The "Add to a server" dialog, while open (`server_clone_ui.rs`).
     server_clone: Option<server_clone_ui::ServerCloneDialog>,
+    /// Each server's session list, keyed by ssh account (`user@host:port`),
+    /// shared by every host entry on that server (`remote_sessions_ui.rs`).
+    remote_session_lists: HashMap<String, Vec<crate::remote_sessions::RemoteSession>>,
+    remote_session_status: HashMap<String, remote_sessions_ui::RemoteListStatus>,
+    /// Server groups the user collapsed in the sidebar, by host entry name.
+    remote_sessions_collapsed: HashSet<String>,
+    /// Set while a remote session is being resumed, so its launch carries no
+    /// workflow mode (the session's own store entry decides).
+    remote_resuming: bool,
+    /// Hands focus back to whatever opened `server_clone` once it closes.
+    server_clone_focus: ModalFocus,
     remote_host_checks: std::collections::HashMap<String, remote_hosts_ui::HostCheck>,
     /// SSH passwords entered this run, keyed by ssh account
     /// (`RemoteHost::account_key`). Memory only: never written, dropped the
@@ -1454,6 +1450,8 @@ pub struct OrbitApp {
     remote_host_secrets: std::collections::HashMap<String, String>,
     /// The open SSH password dialog, and its focus hand-off.
     remote_password_prompt: Option<ssh_auth_ui::PasswordPrompt>,
+    /// Hands focus back to whatever opened `remote_password_prompt` once it closes.
+    remote_password_focus: ModalFocus,
     remote_password_focus_pending: bool,
     /// Focus the composer on the next frame (a remote task started from a
     /// background connection check, which has no window to focus with).
@@ -2515,7 +2513,7 @@ impl OrbitApp {
                 worktrees::WORKTREE_HOWTO_HINT_KEY,
             ),
             work_in_menu_open: false,
-            work_in_menu_highlight: 0,
+            work_in_menu_highlight: crate::ui::menu::MenuState::default(),
             work_in_scroll: ScrollHandle::new(),
             work_in_hosts: Vec::new(),
             work_in_menu_focus: cx.focus_handle(),
@@ -2562,7 +2560,7 @@ impl OrbitApp {
             worktree_setup: None,
             worktree_menu: None,
             current_session_path: None,
-            menu_dismissed_at: None,
+            menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
             context: None,
             context_stats_in_flight: None,
             context_stats_pending: false,
@@ -2591,7 +2589,7 @@ impl OrbitApp {
             open_in_menu_open: false,
             open_in_filter,
             add_menu_open: false,
-            add_menu_highlight: 0,
+            add_menu_highlight: crate::ui::menu::MenuState::default(),
             add_menu_focus: cx.focus_handle(),
             branch_picker: None,
             rewind_picker: None,
@@ -2665,7 +2663,7 @@ impl OrbitApp {
             pattern_editor: None,
             permission_agents: Vec::new(),
             access_menu_open: false,
-            access_menu_highlight: 0,
+            access_menu_highlight: crate::ui::menu::MenuState::default(),
             access_menu_focus: cx.focus_handle(),
             workflow_mode: WorkflowMode::default(),
             workflow_pending: None,
@@ -2673,7 +2671,7 @@ impl OrbitApp {
             default_model_armed: false,
             default_model_pushed: DefaultModelPushed::default(),
             workflow_menu_open: false,
-            workflow_menu_highlight: 0,
+            workflow_menu_highlight: crate::ui::menu::MenuState::default(),
             workflow_menu_focus: cx.focus_handle(),
             quota_entries_cursor: None,
             quota_entries_inflight: false,
@@ -2685,6 +2683,7 @@ impl OrbitApp {
             provider_metadata_loaded: false,
             provider_key_editor: None,
             account_editor: None,
+            account_editor_focus: ModalFocus::default(),
             provider_editor: None,
             provider_remove_confirm: None,
             provider_usage_open: None,
@@ -2732,12 +2731,14 @@ impl OrbitApp {
             mcp_filter: mcp_filter.clone(),
             _mcp_filter_sub: mcp_filter_sub,
             mcp_editor: None,
+            mcp_editor_focus: ModalFocus::default(),
             mcp_list_focus: cx.focus_handle(),
             mcp_focus_pending: false,
             mcp_remove_confirm: None,
             remote_hosts: Vec::new(),
             remote_hosts_skipped: Vec::new(),
             remote_host_editor: None,
+            remote_host_editor_focus: ModalFocus::default(),
             remote_host_remove_confirm: None,
             remote_host_menu: None,
             providers_machine: None,
@@ -2745,10 +2746,17 @@ impl OrbitApp {
             remote_model_lists: std::collections::HashMap::new(),
             remote_provider_expanded: std::collections::HashSet::new(),
             remote_key_editor: None,
+            remote_key_editor_focus: ModalFocus::default(),
             server_clone: None,
+            remote_session_lists: HashMap::new(),
+            remote_session_status: HashMap::new(),
+            remote_sessions_collapsed: HashSet::new(),
+            remote_resuming: false,
+            server_clone_focus: ModalFocus::default(),
             remote_host_checks: std::collections::HashMap::new(),
             remote_host_secrets: std::collections::HashMap::new(),
             remote_password_prompt: None,
+            remote_password_focus: ModalFocus::default(),
             remote_password_focus_pending: false,
             composer_focus_pending: false,
             mcp_cursor: None,
@@ -2899,6 +2907,9 @@ impl OrbitApp {
         // Check for a newer pi in the background; a newer release installs
         // itself through pi's own updater (see `pi_update_ui`).
         app.check_pi_update_on_launch(cx);
+        // Each remote host's sessions for the sidebar; a server that wants a
+        // password waits for its group's refresh button.
+        app.refresh_remote_sessions(false, cx);
         app.check_plugin_updates_on_launch(cx);
         // Route banner clicks back to their session (bundle builds only).
         notifications::init();
@@ -3364,6 +3375,17 @@ enum SideRow {
     },
     /// Collapse a workspace group back to the truncated list.
     ShowLess { label: String },
+    /// A remote host entry's group header (`remote_sessions_ui.rs`): its
+    /// name, how many of its server's sessions ran in its folder, whether it
+    /// is collapsed, and whether the list is loading or failed.
+    RemoteHost {
+        name: String,
+        count: usize,
+        collapsed: bool,
+        status: remote_sessions_ui::RemoteListStatus,
+    },
+    /// A session on a remote host; opening it resumes it there.
+    RemoteSession(Box<remote_sessions_ui::RemoteSessionRow>),
 }
 
 /// The value carried by a project-group drag: the header's group label (the
@@ -4377,13 +4399,6 @@ enum ProviderAction {
     Restart,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ProviderButtonStyle {
-    Primary,
-    Ghost,
-    Danger,
-}
-
 /// Live state of the active pi agent process, for Settings → Runtime.
 #[derive(Default)]
 struct RuntimeStatus {
@@ -4474,6 +4489,7 @@ mod plugin_update_ui;
 mod provider_accounts;
 mod remote_hosts_ui;
 mod remote_providers_ui;
+mod remote_sessions_ui;
 mod remote_ui;
 mod server_clone_ui;
 mod ssh_auth_ui;
@@ -4540,6 +4556,8 @@ mod process_exit_cleanup_tests;
 mod queue_edit_tests;
 #[cfg(test)]
 mod refresh_tests;
+#[cfg(test)]
+mod remote_sessions_ui_tests;
 #[cfg(test)]
 mod remote_ui_tests;
 #[cfg(test)]
@@ -4612,7 +4630,7 @@ pub(crate) use helpers::{
     file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header,
     modal_card, modal_scrim, nerd_font_family, picker_entry, picker_row_height,
     picker_search_frame, picker_surface, press, provider_mark_color, refresh_glyph,
-    running_spinner, spinner, working_folder_keyboard_hints, AccentWash, ControlExt, EmptyFill,
+    running_spinner, spinner, working_folder_keyboard_hints, ControlExt, EmptyFill,
     EntryMarkLike, PickerRow, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use sidebar::sessions_with_placeholder;

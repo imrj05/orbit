@@ -161,13 +161,8 @@ impl OrbitApp {
         // picker (mouse-down on the scrim) must not re-open it through the
         // button that happens to sit under the pointer (mouse-up). The palette
         // path is keyboard and needs no guard.
-        if turn.is_some() {
-            const GESTURE: Duration = Duration::from_millis(200);
-            if let Some(dismissed) = self.menu_dismissed_at.take() {
-                if dismissed.elapsed() < GESTURE {
-                    return;
-                }
-            }
+        if turn.is_some() && self.menu_dismissed_at.swallows() {
+            return;
         }
         // A fork mid-run would leave a live run writing into a session pi has
         // just replaced, so ask for the stop instead of guessing at it.
@@ -271,7 +266,7 @@ impl OrbitApp {
             if by_mouse {
                 // The same click's mouse-up must not re-open it through a
                 // footer button that happens to sit under the pointer.
-                self.menu_dismissed_at = Some(Instant::now());
+                self.menu_dismissed_at.arm();
             }
             self.rewind_preselect = None;
             self.rewind_fetch_id = None;

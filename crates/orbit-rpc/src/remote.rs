@@ -842,6 +842,104 @@ pub fn copy_files_script(dest: &str) -> Result<String> {
     ))
 }
 
+/// The JavaScript [`list_sessions_script`] runs with the host's Node: walk
+/// pi's session store (newest files first, at most `limit`), and print one
+/// JSON line per session with only what a sidebar row shows — the header's
+/// id and cwd, pi's latest `session_info` name, the first user message's
+/// text, and the newest user message's timestamp (the file's mtime when
+/// none is stamped). Drafts with no user message are skipped, like the local
+/// list does. Huge files are read head and tail only.
+/// No single quotes: it travels inside a single-quoted shell word.
+const LIST_SESSIONS_JS: &str = r#"const fs = require("fs");
+const path = require("path");
+const root = process.argv[1];
+const limit = Number(process.argv[2]) || 300;
+const HUGE = 16 * 1024 * 1024;
+const files = [];
+let groups = [];
+try { groups = fs.readdirSync(root, { withFileTypes: true }); } catch (error) { groups = []; }
+for (const group of groups) {
+  if (!group.isDirectory()) continue;
+  const dir = path.join(root, group.name);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (error) { names = []; }
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    const file = path.join(dir, name);
+    try {
+      const stat = fs.statSync(file);
+      if (stat.isFile()) files.push({ file, mtime: stat.mtimeMs, size: stat.size });
+    } catch (error) {}
+  }
+}
+files.sort((a, b) => b.mtime - a.mtime);
+const read = (entry) => {
+  if (entry.size <= HUGE) return fs.readFileSync(entry.file, "utf8");
+  const fd = fs.openSync(entry.file, "r");
+  try {
+    const head = Buffer.alloc(2 * 1024 * 1024);
+    const tail = Buffer.alloc(4 * 1024 * 1024);
+    fs.readSync(fd, head, 0, head.length, 0);
+    fs.readSync(fd, tail, 0, tail.length, entry.size - tail.length);
+    return head.toString("utf8") + "\n" + tail.toString("utf8");
+  } finally { fs.closeSync(fd); }
+};
+const text = (message) => {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const block = content.find((b) => b && b.type === "text" && typeof b.text === "string");
+    return block ? block.text : "";
+  }
+  return "";
+};
+for (const entry of files.slice(0, limit)) {
+  try {
+    const lines = read(entry).split("\n");
+    const header = JSON.parse(lines[0]);
+    if (!header || header.type !== "session" || typeof header.id !== "string" || typeof header.cwd !== "string") continue;
+    let first = null;
+    let name = null;
+    let time = null;
+    for (let i = 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      const info = line.includes("session_info");
+      if (!info && !(line.includes("message") && line.includes("user"))) continue;
+      let value;
+      try { value = JSON.parse(line); } catch (error) { continue; }
+      if (value.type === "session_info") {
+        name = typeof value.name === "string" && value.name.trim() ? value.name.trim() : null;
+      } else if (value.type === "message" && value.message && value.message.role === "user") {
+        if (first === null) first = text(value.message);
+        const stamp = value.timestamp !== undefined ? value.timestamp : value.message.timestamp;
+        if (stamp !== undefined) time = stamp;
+      }
+    }
+    if (!first || !first.trim()) continue;
+    console.log(JSON.stringify({
+      path: entry.file, id: header.id, cwd: header.cwd, name,
+      first: first.slice(0, 16000), time: time === null ? Math.round(entry.mtime) : time,
+    }));
+  } catch (error) {}
+}
+"#;
+
+/// What [`list_sessions_script`] prints first; one JSON object per line
+/// follows (see [`LIST_SESSIONS_JS`]).
+pub const LIST_SESSIONS_STARTED: &str = "orbit-sessions: started";
+
+/// List the newest `limit` sessions in the host's pi store
+/// (`$PI_CODING_AGENT_DIR/sessions`, default `~/.pi/agent/sessions`).
+/// Read-only. Runs with the Node that runs the host's pi.
+pub fn list_sessions_script(limit: usize) -> String {
+    format!(
+        "set -eu\nprintf '%s\\n' '{LIST_SESSIONS_STARTED}'\n{node}exec node -e {js} \"${{PI_CODING_AGENT_DIR:-$HOME/.pi/agent}}/sessions\" {limit}\n",
+        node = node_on_path(),
+        js = shell_quote(LIST_SESSIONS_JS),
+        limit = limit.max(1),
+    )
+}
+
 fn is_plain_file_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -1743,6 +1841,87 @@ mod tests {
         assert!(!outside.join("target").exists());
         assert!(!outside.join(".env").exists());
         assert!(!home.join("escape").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// List a sandboxed session store with this machine's Node: named and
+    /// unnamed sessions come back newest-first with the newest user message's
+    /// time, a draft and a non-session file are skipped, and `limit` holds.
+    #[cfg(unix)]
+    #[test]
+    fn the_session_list_reads_only_what_a_row_shows() {
+        let Some((home, path)) = script_sandbox("sessions") else {
+            return;
+        };
+        assert!(
+            !LIST_SESSIONS_JS.contains('\''),
+            "the JS travels in single quotes"
+        );
+        let store = home.join(".pi/agent/sessions/--srv-app--");
+        std::fs::create_dir_all(&store).unwrap();
+        let write = |name: &str, lines: &[serde_json::Value]| {
+            let text: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
+            std::fs::write(store.join(name), text.join("\n") + "\n").unwrap();
+            // Space the mtimes so the newest-first order is deterministic.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let header = |id: &str| serde_json::json!({"type": "session", "id": id, "cwd": "/srv/app"});
+        let user = |text: &str, at: &str| {
+            serde_json::json!({
+                "type": "message", "timestamp": at,
+                "message": {"role": "user", "content": [{"type": "text", "text": text}]}
+            })
+        };
+        write(
+            "a.jsonl",
+            &[
+                header("a"),
+                user("fix the build", "2026-01-01T10:00:00Z"),
+                serde_json::json!({"type": "session_info", "name": "Build fix"}),
+                user("and the tests", "2026-01-02T10:00:00Z"),
+                serde_json::json!({"type": "message", "message": {"role": "assistant", "content": "ok"}}),
+            ],
+        );
+        write("draft.jsonl", &[header("draft")]);
+        write("notes.txt", &[header("nope")]);
+        write(
+            "b.jsonl",
+            &[header("b"), user("hello there", "2026-01-03T10:00:00Z")],
+        );
+
+        let out = run_in(&home, &path, &list_sessions_script(300), None);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut lines = stdout.lines();
+        assert_eq!(lines.next(), Some(LIST_SESSIONS_STARTED));
+        let rows: Vec<serde_json::Value> =
+            lines.map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(rows.len(), 2, "{stdout}");
+        assert_eq!(rows[0]["id"], "b", "newest file first");
+        assert_eq!(rows[0]["name"], serde_json::Value::Null);
+        assert_eq!(rows[1]["id"], "a");
+        assert_eq!(rows[1]["name"], "Build fix");
+        assert_eq!(rows[1]["first"], "fix the build");
+        assert_eq!(
+            rows[1]["time"], "2026-01-02T10:00:00Z",
+            "the newest user message"
+        );
+        assert_eq!(rows[1]["cwd"], "/srv/app");
+        assert!(rows[1]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("/--srv-app--/a.jsonl"));
+
+        let one = run_in(&home, &path, &list_sessions_script(1), None);
+        assert_eq!(
+            String::from_utf8_lossy(&one.stdout).lines().count(),
+            2,
+            "limit holds"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 }

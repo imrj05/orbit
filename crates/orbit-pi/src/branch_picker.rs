@@ -14,7 +14,7 @@ use gpui::{
 use crate::app::helpers::text_width;
 use crate::app::{
     button_frame, icon, input_field_frame, menu_header, picker_entry, picker_search_frame,
-    picker_surface, ControlExt, PressedRamp, StatefulControlExt,
+    ControlExt, PressedRamp, StatefulControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
@@ -23,6 +23,7 @@ use crate::theme::tokens::{
     context_menu, input, list, list_item, picker, ButtonSize, DynamicSpacing, TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::popover::{popover_picker, PopoverExt};
 
 const POPOVER_W: f32 = 320.;
 /// Branch rows visible before the list scrolls.
@@ -291,15 +292,11 @@ impl Render for BranchPicker {
         if self.mode == Mode::Create {
             // The same picker surface as Browse, so switching modes never
             // swaps the popover's chrome.
-            return picker_surface(div(), &theme)
+            return popover_picker(div(), &theme)
                 .debug_selector(|| "branch-picker".to_string())
                 .w(px(POPOVER_W))
                 .py(DynamicSpacing::Base06.px(&theme))
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .occlude()
-                .on_mouse_down_out(cx.listener(Self::on_outside_down))
+                .dismiss_on_outside(cx.listener(Self::on_outside_down))
                 .on_action(cx.listener(Self::on_cancel))
                 .on_action(cx.listener(Self::on_confirm))
                 .child(
@@ -498,14 +495,10 @@ impl Render for BranchPicker {
             );
         }
 
-        picker_surface(div(), &theme)
+        popover_picker(div(), &theme)
             .debug_selector(|| "branch-picker".to_string())
             .w(px(POPOVER_W))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(Self::on_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_outside_down))
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))

@@ -23,10 +23,10 @@ use gpui::{
     Timer, Window,
 };
 
+use crate::ui::button::IconButton;
 use crate::app::{
-    button_frame, empty_state, file_badge, file_glyph, icon, icon_button_frame, nerd_font_family,
-    press, ControlExt, EmptyFill, TipExt,
-};
+    button_frame, empty_state, file_badge, file_glyph, icon, nerd_font_family,
+    press, ControlExt, EmptyFill, };
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
 use crate::theme::tokens::RaisedExt;
@@ -849,33 +849,24 @@ impl FileViewer {
                     )
                 })
                 .child(
-                    icon_button_frame(
-                        div().id(gpui::ElementId::Name(
+                    IconButton::new(gpui::ElementId::Name(
                             format!("viewer-tab-close-{index}").into(),
-                        )),
-                        &theme,
-                        ButtonSize::None,
-                    )
-                    .tip(tr!("explorer.close_tab"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        ), "icons/x.svg")
+.size(ButtonSize::None)
+.ink(if active {
+                            theme.text_primary
+                        } else {
+                            theme.text_muted
+                        })
+.tip(tr!("explorer.close_tab"))
+.on_click(&theme, cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.close_tab(index, cx);
                         // Click handlers bubble: without this the tab's
                         // own `on_click` below would also run with the
                         // now-stale `index` and index past the shrunken
                         // tab list (out-of-bounds panic).
                         cx.stop_propagation();
-                    }))
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::None.icon_size().px(&theme),
-                        if active {
-                            theme.text_primary
-                        } else {
-                            theme.text_muted
-                        },
-                    )),
+                    })),
                 ),
             );
         }
@@ -899,23 +890,18 @@ impl FileViewer {
             .border_color(theme.border)
             .child(tabs.flex_1().min_w_0())
             .child(
-                icon_button_frame(div().id("viewer-close"), &theme, ButtonSize::Default)
-                    .tip(tr!("common.close"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                IconButton::new("viewer-close", "icons/x.svg")
+.size(ButtonSize::Default)
+.ink(theme.text_muted)
+.tip(tr!("common.close"))
+.on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| {
                         // Close here — this listener already holds the viewer's
                         // lease, so the app callback must not re-enter `update`
                         // on this entity (that would double-lease and abort).
                         let on_close = this.on_close.clone();
                         this.hide(cx);
                         on_close(cx);
-                    }))
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_muted,
-                    )),
+                    })),
             )
             .into_any_element()
     }

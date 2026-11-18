@@ -13,8 +13,8 @@ use crate::motion::Hover;
 use crate::theme::tokens::{
     button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
-use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
 use crate::ui::tooltip::Tooltip;
+use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
 
 /// The sidebar updater pill: a `ButtonSize::Compact` disc at rest (the
 /// download icon), expanding sideways to reveal the "Update" label while
@@ -1278,26 +1278,16 @@ fn dialog_button(
     label: String,
     on_mouse_up: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let button = button_frame(div().id(id), &theme, ButtonSize::Large)
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM)
-        .on_mouse_up(MouseButton::Left, on_mouse_up);
-    let button = if primary {
-        button
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
+    let variant = if primary {
+        ButtonVariant::Primary
     } else {
-        button
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .hover_state(&theme)
+        ButtonVariant::Secondary
     };
-    press(button).child(label).into_any_element()
+    Button::new(id, variant)
+        .size(ButtonSize::Large)
+        .label(label)
+        .on_mouse_up(&theme, on_mouse_up)
+        .into_any_element()
 }
 
 /// The sidebar pill's two layers: the action's glyph and its label,

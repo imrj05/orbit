@@ -119,10 +119,13 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         signed-in providers from its own `pi --list-models`, Sign in / Refresh on the host
   src/app/server_clone_ui.rs  "Add to a server": the dialog (server, folder, SSH/HTTPS, ignored files
                         to copy) and the connect → clone → copy → save host → start session flow
+  src/app/remote_sessions_ui.rs  a sidebar group per remote host entry (its server's sessions in its
+                        folder), the quiet/interactive list fetches, and resume on the host
   src/app/ssh_auth_ui.rs  SSH password logins: keys first, then the masked password dialog and the
                         askpass retry; passwords in memory only, keyed by ssh account
   src/server_clone.rs   the local half of "Add to a server": origin (credentials stripped) and
                         ignored files via git, SSH↔HTTPS URLs, the copy payload, host-output parsing
+  src/remote_sessions.rs  a host's session list: parse the host script's lines, group by entry folder
   src/remote_hosts.rs   `~/.orbit-pi/remote-hosts.json`: lenient host list, validated ssh targets,
                         surgical upsert/remove, `~/.ssh/config` alias discovery, the read-only probe
   docs/remote-sessions.md  agent-only SSH sessions: launch script, safety, what is off while remote
@@ -172,8 +175,14 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         running) with each tab's login-shell profile mark; alacritty_terminal VT grid,
                         GPUI canvas render, keys/selection/paste
   src/ui/               the shared UI layer: `ui/style/` holds the zero-cost style
-                        seams (control states, surface/material), `ui/tooltip.rs` the
-                        shared tooltip view. `ui/*` may use theme/motion/i18n/gpui and
+                        seams (control states, press, surface/material); `ui/button.rs`
+                        owns `Button` + `ButtonVariant` (the one place a variant is
+                        decided), `ui/chip.rs` `Badge`, `ui/banner.rs` `Banner`,
+                        `ui/menu.rs` `MenuState`, `ui/popover.rs` anchoring + `DismissGuard` +
+                        `dismiss_on_outside`, `ui/dialog.rs` modal frame + `ModalFocus`, `ui/row.rs` picker/option/nav rows,
+                        `ui/resize.rs` handles, `ui/chrome.rs` window chrome, `ui/glyph.rs` file
+                        glyphs + provider tints,
+                        `ui/tooltip.rs` the tooltip view. `ui/*` may use theme/motion/i18n/gpui and
                         must NOT import a surface (`scripts/check_ui_layers.py`).
                         Every element gets one owner here; see docs/plans/ui-component-layer.md
   src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_1/2/3, component metrics) resolved through the Theme; see INTENT.md D11
@@ -204,7 +213,8 @@ crates/orbit-rpc/       pi CLI process + JSONL protocol
   src/client.rs         spawn, writer/reader/stderr threads, kill-on-drop
   src/types.rs          CommandBody / Event (permissive serde) + auth.* / quota.* wire types
   src/remote.rs         ssh target validation, ssh argv, the guarded remote launch script (guard +
-                        workflow extension), and the short host scripts (probe, install, key, mode, clone, copy)
+                        workflow extension), and the short host scripts (probe, install, key, mode, clone, copy,
+                        session list)
   tests/remote_fake_ssh.rs  fake-ssh round trip: guard installed, mode pinned, RPC over ssh stdio
   docs/auth-rpc.md      provider-auth RPC server contract (secrets never cross it)
   docs/quota-rpc.md     provider-quota RPC server contract (normalized, non-secret)
@@ -578,7 +588,7 @@ These compiled and ran against the pinned version. When in doubt, check
 - **Any-elements:** `.into_any()` is on `Element` (concrete types); on an opaque `impl IntoElement` return use `.into_any_element()`.
 - **Custom text input:** there is no multi-line editor widget we use. `ComposerInput` is an `EntityInputHandler` adapted from gpui's `input` example (grapheme-aware caret, clipboard, IME stubbed). Keep it single-line until a deliberate composer upgrade (INTENT.md risk #3).
 - **Key-binding precedence:** bindings are ordered by dispatch-tree depth (deepest/focused node first); ties at the same depth break by **registration order (later wins)**. Bindings with no context count as the deepest depth. The picker filter uses `.with_key_context("Composer Picker")` so backspace still edits, and picker `enter`/`escape`/`arrows` are registered **after** composer bindings in `main.rs` so they win over `Submit` / `AbortRun`.
-- **Popovers:** `anchored().position_mode(AnchoredPositionMode::Local).anchor(Corner::BottomLeft).offset(…).snap_to_window()` + `deferred(entity)` paints a floating popup. `on_mouse_down_out` dismisses. **Click-through:** the same click's mouse-up would re-open the chip — `OrbitApp` swallows toggles for ~200 ms after an outside mouse-down dismiss (`menu_dismissed_at`). Layered `BoxShadow`es (`vec![contact, ambient]`) read as a real modal surface.
+- **Popovers:** `anchored().position_mode(AnchoredPositionMode::Local).anchor(Corner::BottomLeft).offset(…).snap_to_window()` + `deferred(entity)` paints a floating popup (`ui::popover::anchored_popover`). Dismiss with `PopoverExt::dismiss_on_outside` (occlude + `on_mouse_down_out`; never call `on_mouse_down_out` directly). **Click-through:** the same click's mouse-up would re-open the chip — the owner's `DismissGuard` is `arm()`ed on dismiss and the trigger returns early when `swallows()`. Layered `BoxShadow`es (`vec![contact, ambient]`) read as a real modal surface.
 - **Picker lists:** **do not use `uniform_list` inside a `deferred` + `anchored` popover** — measured layout can collapse to height 0. Use `max_h` + `overflow_y_scroll` + `ScrollHandle` (Zed `ContextMenu` shape). Keyboard nav must `set_offset` to keep the highlighted row in view. `.on_hover` / `.on_click` live on *stateful* elements (`.id(...)` required).
 - **Assets:** implement `gpui::AssetSource` over `include_dir!` so packaged builds don't depend on cwd. SVG icons: `img("icons/….svg")` via helpers in `app.rs`. Provider marks live under `assets/icons/providers/`.
 - **Fonts:** `cx.text_system().add_fonts` for embedded `Symbols Nerd Font` (devicons) and the curated catalog under `assets/fonts/bundled/`. `assets::register_zed_fonts` loads IBM Plex Sans / Lilex; `assets::register_bundled_fonts` recursively loads the bundled faces so `theme::UI_FONTS` / `CODE_FONTS` resolve without an OS dependency. Each family is a statically instanced, subset 400/500/600/700 TTF with a normalized name table (one typographic family, unique PostScript names) so font-kit weight selection works.
@@ -605,6 +615,8 @@ These compiled and ran against the pinned version. When in doubt, check
 | `enter` / `escape` / `up` / `down` | Confirm / cancel / move | `Picker` (registered after Composer) |
 | `enter` / `escape` / `up` / `down` | Run / close / move | `AddMenu` (composer "+" menu; registered after Picker) |
 | `enter` / `escape` / `up` / `down` | Select / close / move | `AccessMenu` (composer access-mode picker) |
+| `enter` / `escape` / `up` / `down` / `home` / `end` | Open / close / move / first / last | `WorkInMenu` (worktree "Work in" picker) |
+| `enter` / `escape` / `up` / `down` / `home` / `end` | Confirm / cancel / move / first / last | `DialogSelect` (extension select dialog) |
 | `enter` / `escape` / `up` / `down` | Confirm / deny / move | `Approval` (inline access-guard bar) |
 | `alt-up` / `alt-down` | Move the row under the cursor in the sidebar — a project group, or a session inside its project (the pointer twin is dragging a header or a session row) | `Sidebar` |
 

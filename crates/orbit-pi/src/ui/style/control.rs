@@ -13,6 +13,24 @@ use crate::theme::Theme;
 use crate::ui::tooltip::Tooltip;
 use gpui::{AppContext, Hsla, InteractiveElement, SharedString, Styled};
 
+/// Opacity of an action button while the pointer is down.
+///
+/// GPUI 0.2.2 has no element transform (`Transformation` is SVG-only) and no
+/// CSS-style transitions, so the usual `scale(0.96)` press cannot be expressed
+/// on a `div`. This dim is its tactile stand-in — one value keeps filled,
+/// ghost, and danger buttons feeling identical under the finger.
+pub(crate) const PRESS_DIM: f32 = 0.85;
+
+/// Give an action button its shared press (`:active`) feedback. Call it around
+/// the finished, stateful element:
+///
+/// ```ignore
+/// press(div().id("save").cursor_pointer().hover(...)).child(label)
+/// ```
+pub(crate) fn press<T: gpui::StatefulInteractiveElement>(element: T) -> T {
+    element.active(|style| style.opacity(PRESS_DIM))
+}
+
 /// Attach Orbit's native tooltip to any interactive element.
 ///
 /// The send / stop button set the register: a localized label, usually with the

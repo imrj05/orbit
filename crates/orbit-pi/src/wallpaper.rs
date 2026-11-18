@@ -18,8 +18,9 @@
 //!
 //! Readability is part of the pipeline, not a fixed alpha: [`surfaces`]
 //! composites representative wallpaper samples with the active palette and
-//! raises the card/panel alpha until text clears its contrast targets, without
-//! dimming the wallpaper.
+//! raises a card's alpha until text clears its contrast targets. The page and
+//! the sidebar take no such pass and no floor — their tint is exactly the
+//! requested opacity, so a zero there paints the picture untouched.
 
 use std::{
     borrow::Cow,
@@ -56,18 +57,19 @@ const BLUR_MAX_EDGE: u32 = 1280;
 /// metadata and folder rows (AA large).
 const PRIMARY_TARGET: f32 = 4.5;
 const SECONDARY_TARGET: f32 = 3.0;
-/// Bounds for the computed card/panel alpha. The lower bound keeps a card a
-/// card; the upper bound lets the wallpaper disappear on a hostile image
-/// rather than making the UI unreadable.
+/// Bounds for the computed card alpha. The lower bound keeps a card a card;
+/// the upper bound lets the wallpaper disappear on a hostile image rather
+/// than making the UI unreadable.
 const MIN_CARD_ALPHA: f32 = 0.35;
 const MAX_CARD_ALPHA: f32 = 1.0;
-/// Keep texture subdued under the transcript even when contrast permits less.
-const MIN_PAGE_ALPHA: f32 = 0.65;
 
 pub const IMAGE_OPACITY_RANGE: (f32, f32) = (0.0, 1.0);
 pub const BLUR_RANGE: (f32, f32) = (0.0, 40.0);
 pub const DIM_RANGE: (f32, f32) = (0.0, 0.9);
-pub const CARD_OPACITY_RANGE: (f32, f32) = (0.35, 1.0);
+/// Requested alpha for cards and for the page (sidebar, main column, settings
+/// nav). Zero is allowed: the picture is then painted exactly as processed,
+/// with no tint over it at all.
+pub const CARD_OPACITY_RANGE: (f32, f32) = (0.0, 1.0);
 /// How strongly the artwork effect replaces the photograph. `0` keeps the
 /// source, `1` is the effect at full strength.
 pub const EFFECT_INTENSITY_RANGE: (f32, f32) = (0.0, 1.0);
@@ -1011,10 +1013,6 @@ fn surface_over(backdrop: [f32; 3], surface: [f32; 3], alpha: f32) -> [f32; 3] {
 
 /// The first alpha at which sharp-image extremes clear both text targets on `base`.
 fn minimum_alpha(theme: Theme, base: Hsla, brightness: &Brightness) -> f32 {
-    minimum_alpha_for_text(theme, base, brightness, false)
-}
-
-fn minimum_alpha_for_text(theme: Theme, base: Hsla, brightness: &Brightness, page: bool) -> f32 {
     let samples = if brightness.extremes.is_empty() {
         &brightness.samples
     } else {
@@ -1026,27 +1024,6 @@ fn minimum_alpha_for_text(theme: Theme, base: Hsla, brightness: &Brightness, pag
     let theme_bg = rgb_of(theme.background);
     let surface = rgb_of(base);
     let (primary, secondary) = (rgb_of(theme.text_primary), rgb_of(theme.text_secondary));
-    // A palette may not meet the page target on every opaque panel. In that
-    // case use the card floor rather than forcing every panel fully opaque.
-    let target = |text, preferred, fallback| {
-        if contrast_ratio(text, surface) >= preferred {
-            preferred
-        } else {
-            fallback
-        }
-    };
-    let primary_target = if page {
-        target(primary, 7.0, PRIMARY_TARGET)
-    } else {
-        PRIMARY_TARGET
-    };
-    let secondary_target = if page {
-        target(secondary, 4.0, SECONDARY_TARGET)
-    } else {
-        SECONDARY_TARGET
-    };
-    let muted = rgb_of(theme.text_muted);
-    let muted_target = target(muted, 4.5, SECONDARY_TARGET);
     let at = |alpha: f32| {
         samples.iter().all(|sample| {
             let backdrop = effective_backdrop(
@@ -1056,9 +1033,8 @@ fn minimum_alpha_for_text(theme: Theme, base: Hsla, brightness: &Brightness, pag
                 theme.wallpaper.dim,
             );
             let composite = surface_over(backdrop, surface, alpha);
-            contrast_ratio(primary, composite) >= primary_target
-                && contrast_ratio(secondary, composite) >= secondary_target
-                && (!page || contrast_ratio(muted, composite) >= muted_target)
+            contrast_ratio(primary, composite) >= PRIMARY_TARGET
+                && contrast_ratio(secondary, composite) >= SECONDARY_TARGET
         })
     };
     if at(MIN_CARD_ALPHA) {
@@ -1118,15 +1094,12 @@ pub fn surfaces(
         alpha = alpha.max(minimum_alpha(decorated, base, brightness));
     }
     treatment.card_alpha = clamp(alpha, (MIN_CARD_ALPHA, MAX_CARD_ALPHA));
+    // The page is the picture, so its tint is exactly what the setting asks
+    // for: no floor and no contrast pass, either of which would paint the
+    // whole image darker than the user chose. Cards keep the pass above —
+    // they are the surfaces that hold text.
     treatment.panel_alpha = if full_window {
-        // Protect page and sidebar ink against sharp image extremes without
-        // dimming the image. Each panel can have a different palette fill.
-        [theme.background, theme.surface, theme.surface_secondary]
-            .into_iter()
-            .fold(
-                clamp(settings.card_opacity, CARD_OPACITY_RANGE).max(MIN_PAGE_ALPHA),
-                |alpha, base| alpha.max(minimum_alpha_for_text(decorated, base, brightness, true)),
-            )
+        clamp(settings.card_opacity, CARD_OPACITY_RANGE)
     } else {
         1.0
     };
@@ -1479,9 +1452,11 @@ mod tests {
         let sample = [0.9, 0.8, 0.7];
         assert_eq!(effective_backdrop(sample, [0.; 3], 1.0, 0.9), sample);
         for mode in ["hero", "full"] {
-            let parse = |dim| WallpaperSettings::parse(&format!(
-                r#"{{"mode":"{mode}","path":"/tmp/any","dim":{dim}}}"#
-            ));
+            let parse = |dim| {
+                WallpaperSettings::parse(&format!(
+                    r#"{{"mode":"{mode}","path":"/tmp/any","dim":{dim}}}"#
+                ))
+            };
             let legacy = parse(0.9);
             assert_eq!(legacy.dim, 0.9);
             let clear = surfaces(theme, &parse(0.0), Some(&brightness));
@@ -1565,9 +1540,13 @@ mod tests {
         let treatment = surfaces(theme, &settings, Some(&brightness));
         assert!(treatment.active);
         assert!(treatment.full_window);
-        assert!(treatment.panel_alpha >= MIN_PAGE_ALPHA);
+        // The page tint is the requested opacity, with no floor of its own.
+        assert_eq!(treatment.panel_alpha, settings.card_opacity);
         let decorated = theme.with_wallpaper(treatment);
-        assert_eq!(decorated.panel_fill(theme.background).a, treatment.panel_alpha);
+        assert_eq!(
+            decorated.panel_fill(theme.background).a,
+            treatment.panel_alpha
+        );
         assert!(decorated.card_fill(theme.surface_elevated).a <= 1.0);
     }
 
@@ -1585,7 +1564,7 @@ mod tests {
             r#"{"mode":"full","path":"/tmp/a.png","image_opacity":1,"dim":0,"card_opacity":0.426}"#,
         );
         let treatment = surfaces(theme, &settings, Some(&brightness));
-        assert!(treatment.panel_alpha < 0.88);
+        assert_eq!(treatment.panel_alpha, 0.426);
     }
 
     #[test]
@@ -1626,82 +1605,52 @@ mod tests {
         }
     }
 
+    /// The two contracts either side of the fix that removed the page tint: a
+    /// page tint the user asks for is painted exactly, and a zero tint leaves
+    /// the picture's extremes reaching the eye untouched — no floor, no
+    /// contrast pass silently darkening the whole image.
     #[test]
-    fn full_window_saved_halftone_protects_page_ink() {
-        let settings = WallpaperSettings::parse(
-            r#"{"mode":"full","path":"/tmp/a.png","effect":"halftone","image_opacity":1,"dim":0,"card_opacity":0.426}"#,
-        );
-        assert_eq!(settings.mode, WallpaperMode::FullWindow);
-        assert_eq!(settings.effect.as_str(), "halftone");
-        assert_eq!(settings.card_opacity, 0.426);
+    fn the_page_paints_the_requested_tint_and_nothing_else() {
         let brightness = Brightness {
             samples: vec![[0.5, 0.5, 0.5]],
             extremes: vec![[0., 0., 0.], [1., 1., 1.]],
         };
-        for id in [ThemeId::OrbitAzure, ThemeId::OrbitAzureLight] {
-            let theme = Theme::for_id(id);
-            let treatment = surfaces(theme, &settings, Some(&brightness));
-            assert_eq!(treatment.dim, 0.0, "{id:?}");
-            for base in [theme.background, theme.surface, theme.surface_secondary] {
-                for sample in &brightness.extremes {
-                    let backdrop = effective_backdrop(*sample, rgb_of(theme.background), 1.0, 0.0);
-                    let composite = surface_over(backdrop, rgb_of(base), treatment.panel_alpha);
-                    for (text, preferred, fallback) in [
-                        (theme.text_primary, 7.0, PRIMARY_TARGET),
-                        (theme.text_secondary, 4.0, SECONDARY_TARGET),
-                        (theme.text_muted, 4.5, SECONDARY_TARGET),
-                    ] {
-                        let ratio = contrast_ratio(rgb_of(text), composite);
-                        let opaque = contrast_ratio(rgb_of(text), rgb_of(base));
-                        let target = if opaque >= preferred { preferred } else { fallback };
-                        assert!(ratio + 0.0001 >= target.min(opaque), "{id:?}: {ratio} on {base:?}");
-                    }
-                }
-            }
-        }
-    }
-
-    /// The page carries the transcript, so the artwork effect's dots must never
-    /// be the contrast the words are read against. Full window, a dithered
-    /// image: an ink-black ground with bright dots, which the cells' means
-    /// would report as a calm mid-grey.
-    #[test]
-    fn the_page_settles_the_effects_dots_under_the_text() {
-        let ground = [0.02, 0.02, 0.02];
-        let dots = [0.72, 0.66, 0.38];
-        let brightness = Brightness {
-            samples: vec![[0.2, 0.19, 0.11]],
-            extremes: vec![ground, dots],
-        };
-        let settings = WallpaperSettings {
-            mode: WallpaperMode::FullWindow,
-            path: Some(PathBuf::from("/tmp/any")),
-            dim: 0.,
-            card_opacity: 0.65,
-            ..WallpaperSettings::default()
-        };
         for id in ThemeId::ALL {
             let theme = Theme::for_id(id);
+            for requested in [0., 0.426, 0.65, 0.9] {
+                let settings = WallpaperSettings {
+                    mode: WallpaperMode::FullWindow,
+                    path: Some(PathBuf::from("/tmp/any")),
+                    dim: 0.,
+                    card_opacity: requested,
+                    ..WallpaperSettings::default()
+                };
+                let treatment = surfaces(theme, &settings, Some(&brightness));
+                assert_eq!(treatment.panel_alpha, requested, "{id:?}");
+                let decorated = theme.with_wallpaper(treatment);
+                assert_eq!(
+                    decorated.panel_fill(theme.background).a,
+                    requested,
+                    "{id:?}"
+                );
+            }
+
+            // Zero: the page carries no paint of its own, so every extreme —
+            // a white sky and an ink-black ground alike — arrives unaltered.
+            let settings = WallpaperSettings {
+                mode: WallpaperMode::FullWindow,
+                path: Some(PathBuf::from("/tmp/any")),
+                dim: 0.,
+                card_opacity: 0.,
+                ..WallpaperSettings::default()
+            };
             let treatment = surfaces(theme, &settings, Some(&brightness));
             let theme_bg = rgb_of(theme.background);
-            for (text, target) in [
-                (theme.text_primary, PRIMARY_TARGET),
-                (theme.text_secondary, SECONDARY_TARGET),
-            ] {
-                for sample in &brightness.extremes {
-                    let backdrop = effective_backdrop(
-                        *sample,
-                        theme_bg,
-                        treatment.image_opacity,
-                        treatment.dim,
-                    );
-                    let page = surface_over(backdrop, theme_bg, treatment.panel_alpha);
-                    let ratio = contrast_ratio(rgb_of(text), page);
-                    assert!(
-                        ratio >= target,
-                        "{id:?}: {ratio} < {target} against a dot at the page's own alpha"
-                    );
-                }
+            for sample in &brightness.extremes {
+                let backdrop =
+                    effective_backdrop(*sample, theme_bg, treatment.image_opacity, treatment.dim);
+                let page = surface_over(backdrop, theme_bg, treatment.panel_alpha);
+                assert_eq!(page, backdrop, "{id:?}: the page dimmed the picture");
             }
         }
     }

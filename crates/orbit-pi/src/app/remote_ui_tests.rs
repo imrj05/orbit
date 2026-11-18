@@ -175,14 +175,14 @@ fn a_remote_launch_carries_the_right_workflow_mode(cx: &mut gpui::TestAppContext
             app.workflow_mode = WorkflowMode::Plan;
             assert_eq!(
                 app.remote_launch_workflow(),
-                WorkflowMode::Build,
+                Some(WorkflowMode::Build),
                 "a new session never inherits the last session's mode"
             );
             app.workflow_pending = Some(WorkflowMode::Ask);
-            assert_eq!(app.remote_launch_workflow(), WorkflowMode::Ask);
+            assert_eq!(app.remote_launch_workflow(), Some(WorkflowMode::Ask));
             app.workflow_pending = None;
             app.session_id = Some("remote-1".into());
-            assert_eq!(app.remote_launch_workflow(), WorkflowMode::Plan);
+            assert_eq!(app.remote_launch_workflow(), Some(WorkflowMode::Plan));
         });
     });
 }

@@ -3,6 +3,8 @@ use super::*;
 use crate::theme::tokens::{
     context_menu, input, picker, popover, ButtonSize, IconSize, BASE_REM_PX,
 };
+use crate::ui::popover::{dropdown_below, DropdownAlign};
+use crate::ui::popover::{popover_picker, PopoverExt};
 
 /// The slot an "open in" app icon draws in: 18px at the default UI scale.
 ///
@@ -101,11 +103,8 @@ impl OrbitApp {
     ) {
         // The open menu dismisses on this same click's mouse-down; without
         // this guard the mouse-up would toggle it straight back open.
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         if self.open_in_apps.is_empty() || self.current_workspace.is_none() {
             return;
@@ -280,13 +279,9 @@ impl OrbitApp {
             );
         }
 
-        let popup = picker_surface(div(), &theme)
+        let popup = popover_picker(div(), &theme)
             .w(px(200.))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out({
+            .dismiss_on_outside({
                 let this = this.clone();
                 move |_: &MouseDownEvent, _, cx: &mut App| {
                     this.update(cx, |app, cx| {
@@ -294,7 +289,7 @@ impl OrbitApp {
                             // Arm the click-through guard so this same click's
                             // mouse-up on the caret cannot reopen the menu it
                             // just dismissed.
-                            app.menu_dismissed_at = Some(Instant::now());
+                            app.menu_dismissed_at.arm();
                             app.open_in_menu_open = false;
                             cx.notify();
                         }
@@ -314,19 +309,14 @@ impl OrbitApp {
             .child(list);
 
         Some(
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), popover::MENU_OFFSET),
-                    popup,
-                    "anchored_popover-in-10",
-                    &theme,
-                ))
-                .into_any_element(),
+            dropdown_below(
+                DropdownAlign::End,
+                popover::MENU_OFFSET,
+                popup,
+                "anchored_popover-in-10",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 }

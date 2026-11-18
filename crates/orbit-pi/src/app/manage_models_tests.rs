@@ -104,7 +104,10 @@ fn long_provider_catalog_is_bounded_to_its_card(cx: &mut gpui::TestAppContext) {
     let chip = window
         .debug_bounds("provider-model-chip-anthropic-very-long-anthropic-model-name-that-must-not-overflow-the-provider-card-0")
         .unwrap();
-    assert!(list.size.height <= gpui::px(240.), "catalog height is bounded");
+    assert!(
+        list.size.height <= gpui::px(240.),
+        "catalog height is bounded"
+    );
     assert!(
         chip.origin.x + chip.size.width <= card.origin.x + card.size.width,
         "model stays inside its row"
@@ -136,7 +139,11 @@ fn long_provider_catalog_is_bounded_to_its_card(cx: &mut gpui::TestAppContext) {
     });
     draw(window);
     assert_eq!(
-        window.debug_bounds("provider-row-anthropic").unwrap().origin.y,
+        window
+            .debug_bounds("provider-row-anthropic")
+            .unwrap()
+            .origin
+            .y,
         card.origin.y,
         "page stays in place at the end of the model list"
     );
@@ -258,7 +265,9 @@ fn provider_models_disclose_on_demand_and_on_a_model_search(cx: &mut gpui::TestA
     let closed = cx.add_empty_window();
     open(closed, "");
     assert!(
-        closed.debug_bounds("provider-models-toggle-anthropic").is_some(),
+        closed
+            .debug_bounds("provider-models-toggle-anthropic")
+            .is_some(),
         "a provider with models offers the disclosure"
     );
     assert!(
@@ -363,9 +372,14 @@ fn extra_accounts_are_their_own_rows_beside_their_provider(cx: &mut gpui::TestAp
     let account = window
         .debug_bounds("provider-row-anthropic~work")
         .expect("the account has its own provider row");
-    assert!(account.origin.y > base.origin.y, "the account follows its provider");
+    assert!(
+        account.origin.y > base.origin.y,
+        "the account follows its provider"
+    );
     assert!(window.debug_bounds("provider-accounts-anthropic").is_some());
-    assert!(window.debug_bounds("provider-account-account-work").is_some());
+    assert!(window
+        .debug_bounds("provider-account-account-work")
+        .is_some());
     assert!(window
         .debug_bounds("provider-account-rename-account-work")
         .is_some());
@@ -373,7 +387,9 @@ fn extra_accounts_are_their_own_rows_beside_their_provider(cx: &mut gpui::TestAp
         .debug_bounds("provider-account-remove-account-work")
         .is_some());
     assert!(
-        window.debug_bounds("provider-accounts-anthropic~work").is_none(),
+        window
+            .debug_bounds("provider-accounts-anthropic~work")
+            .is_none(),
         "an account row has no accounts panel of its own"
     );
 }

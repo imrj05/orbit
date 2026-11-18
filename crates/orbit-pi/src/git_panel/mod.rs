@@ -22,11 +22,12 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     canvas, deferred, div, fill, hsla, img, point, prelude::*, px, size, AnyElement, Background,
-    Bounds, ClickEvent, Context, Corner, CursorStyle, Div, Entity, FocusHandle, Focusable,
+    Bounds, ClickEvent, Context, Corner, Div, Entity, FocusHandle, Focusable,
     FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
     PathBuilder, Pixels, Render, ScrollHandle, Stateful, Subscription, Window,
 };
 
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::app::{
     anchored_popover, button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn,
     input_field_frame, menu_header, nerd_font_family, picker_entry, picker_search_frame,
@@ -49,6 +50,8 @@ use crate::theme::tokens::{
     StyledExt, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
+use crate::ui::popover::{dropdown_above, dropdown_below, DropdownAlign};
+use crate::ui::popover::{popover_list, popover_picker, PopoverExt};
 use crate::ui::tooltip::Tooltip;
 
 mod failure;
@@ -219,7 +222,7 @@ pub struct GitPanel {
     commit_model_scroll: ScrollHandle,
     /// Set when an outside mouse-down closed the menu, so the chip's following
     /// mouse-up does not toggle it back open.
-    commit_model_dismissed_at: Option<Instant>,
+    commit_model_dismissed_at: crate::ui::popover::DismissGuard,
     include_unstaged: bool,
     /// How many messages were generated for the current change set, and the
     /// last one shown. A regeneration is told about both so it cannot quietly
@@ -319,7 +322,7 @@ pub struct GitPanel {
     /// When the outside-click dismiss last fired. The chevron's click lands
     /// right after it on the same press; without this the click would toggle
     /// the just-dismissed menu back open, so it can never close.
-    sync_menu_dismissed_at: Option<Instant>,
+    sync_menu_dismissed_at: crate::ui::popover::DismissGuard,
     /// Whether the `gh` probe has run for this workspace. The probe is two
     /// subprocesses, so it is not repeated on every tab switch — only on the
     /// first load, on a workspace change, and on the manual refresh.
@@ -424,12 +427,12 @@ pub struct GitPanel {
     _branch_filter_sub: Subscription,
     /// Set when the branch menu is dismissed by an outside mouse-down so the
     /// chip's following mouse-up does not toggle it straight back open.
-    menu_dismissed_at: Option<Instant>,
+    menu_dismissed_at: crate::ui::popover::DismissGuard,
     /// Whether the branch-actions ("…") dropdown beside Sync is open.
     branch_more_open: bool,
     /// Outside-click dismiss timestamp for the "…" menu (its own gesture
     /// guard, so it never collides with the branch chip's).
-    branch_more_dismissed_at: Option<Instant>,
+    branch_more_dismissed_at: crate::ui::popover::DismissGuard,
     branch_operation: bool,
     /// Manual-refresh feedback: the header button spins until this instant
     /// (and while the active tab's data is in flight), so a click is always
@@ -581,7 +584,7 @@ impl GitPanel {
             commit_model_needle: String::new(),
             commit_model_highlight: 0,
             commit_model_scroll: ScrollHandle::new(),
-            commit_model_dismissed_at: None,
+            commit_model_dismissed_at: crate::ui::popover::DismissGuard::default(),
             include_unstaged: false,
             generate_attempt: 0,
             last_generated: None,
@@ -627,7 +630,7 @@ impl GitPanel {
             gh_detail: String::new(),
             gh_user: None,
             sync_menu_open: false,
-            sync_menu_dismissed_at: None,
+            sync_menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
             gh_probed: false,
             issues: Vec::new(),
             issues_loading: false,
@@ -691,9 +694,9 @@ impl GitPanel {
             branch_menu_open: false,
             branch_filter,
             _branch_filter_sub: branch_filter_sub,
-            menu_dismissed_at: None,
+            menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
             branch_more_open: false,
-            branch_more_dismissed_at: None,
+            branch_more_dismissed_at: crate::ui::popover::DismissGuard::default(),
             branch_operation: false,
             refresh_spin_until: None,
             status: None,
@@ -1846,15 +1849,11 @@ impl GitPanel {
             ));
         }
 
-        let menu = picker_surface(div().id(id), &theme)
+        let menu = popover_picker(div().id(id), &theme)
             .absolute()
             .left(px(0.))
             .w(px(BRANCH_MENU_W))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.template_menu = None;
                 cx.notify();
             }))
@@ -1898,11 +1897,8 @@ impl GitPanel {
                     // mouse-down-out closes the picker; the chip's mouse-up would
                     // otherwise toggle it straight back open on the same gesture
                     // (see AGENTS.md popovers).
-                    const GESTURE: Duration = Duration::from_millis(200);
-                    if let Some(dismissed) = this.menu_dismissed_at.take() {
-                        if dismissed.elapsed() < GESTURE {
-                            return;
-                        }
+                    if this.menu_dismissed_at.swallows() {
+                        return;
                     }
                     let opening = this.ref_menu != Some(RefTarget::PrBase);
                     this.ref_menu = if opening {
@@ -2003,16 +1999,12 @@ impl GitPanel {
             }
         }
 
-        let menu = picker_surface(div().id("git-pr-base-menu"), &theme)
+        let menu = popover_picker(div().id("git-pr-base-menu"), &theme)
             .absolute()
             .bottom(px(30.))
             .left(px(0.))
             .w(px(BRANCH_MENU_W))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.close_ref_picker(cx);
             }))
             .child(
@@ -2594,7 +2586,7 @@ impl GitPanel {
             self.tab,
             GitTab::History | GitTab::Graph | GitTab::Issues | GitTab::Pulls
         )
-            .then(|| self.list_focus.clone())
+        .then(|| self.list_focus.clone())
     }
 
     /// Expand or collapse a commit's detail panel.
@@ -3153,10 +3145,7 @@ impl GitPanel {
         // An outside mouse-down closed the menu on this same press; its
         // following mouse-up is the dismissal, not a reopen (the branch chip's
         // gesture guard).
-        let just_dismissed = self
-            .commit_model_dismissed_at
-            .take()
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(200));
+        let just_dismissed = self.commit_model_dismissed_at.swallows();
         if just_dismissed {
             // The click that dismissed the menu was this chip: the editor held
             // focus before the popup opened, so give it back instead of leaving
@@ -3272,7 +3261,6 @@ impl GitPanel {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .occlude()
             // A click inside the popup is the popup's business: without this
             // the commit box's mouse-up would refocus the message editor and
             // take the caret out of the search field.
@@ -3291,8 +3279,8 @@ impl GitPanel {
             .on_action(cx.listener(|this, _: &crate::PickerSelectPrev, _, cx| {
                 this.move_commit_model_highlight(-1, cx)
             }))
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.commit_model_dismissed_at = Some(Instant::now());
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.commit_model_dismissed_at.arm();
                 this.close_commit_model_menu(cx);
             }))
             .child(
@@ -3312,19 +3300,14 @@ impl GitPanel {
             .child(list);
 
         Some(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::BottomLeft,
-                    point(px(0.), px(-6.)),
-                    menu,
-                    "anchored_popover-in-18",
-                    &theme,
-                ))
-                .into_any_element(),
+            dropdown_above(
+                DropdownAlign::Start,
+                px(6.),
+                menu,
+                "anchored_popover-in-18",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 
@@ -3635,7 +3618,7 @@ impl GitPanel {
         self.ref_menu = None;
         self.branch_menu_open = false;
         self.branch_more_open = false;
-        self.menu_dismissed_at = Some(Instant::now());
+        self.menu_dismissed_at.arm();
         cx.notify();
     }
 
@@ -3656,7 +3639,7 @@ impl GitPanel {
         self.branch_prompt = Some(prompt);
         self.branch_menu_open = false;
         self.branch_more_open = false;
-        self.menu_dismissed_at = Some(Instant::now());
+        self.menu_dismissed_at.arm();
         let focus = self.branch_input.read(cx).focus_handle(cx);
         window.focus(&focus);
         cx.notify();
@@ -3692,7 +3675,7 @@ impl GitPanel {
     fn delete_branch(&mut self, name: String, cx: &mut Context<Self>) {
         self.branch_menu_open = false;
         self.branch_more_open = false;
-        self.menu_dismissed_at = Some(Instant::now());
+        self.menu_dismissed_at.arm();
         let Some(cwd) = self.cwd() else { return };
         let for_work = name.clone();
         self.spawn_data(
@@ -3737,11 +3720,8 @@ impl GitPanel {
     fn toggle_branch_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // mouse-down-out closes the menu; the chip's mouse-up would otherwise
         // toggle it open again on the same click (see AGENTS.md popovers).
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         // A click on the chip closes the ref picker and toggles the branch menu.
         self.ref_menu = None;
@@ -3760,18 +3740,15 @@ impl GitPanel {
     fn dismiss_branch_menu(&mut self, cx: &mut Context<Self>) {
         if self.branch_menu_open {
             self.branch_menu_open = false;
-            self.menu_dismissed_at = Some(Instant::now());
+            self.menu_dismissed_at.arm();
             cx.notify();
         }
     }
 
     /// Toggle the branch-actions ("…") menu beside Sync.
     fn toggle_branch_more(&mut self, cx: &mut Context<Self>) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.branch_more_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.branch_more_dismissed_at.swallows() {
+            return;
         }
         self.branch_menu_open = false;
         self.branch_more_open = !self.branch_more_open;
@@ -3781,7 +3758,7 @@ impl GitPanel {
     fn dismiss_branch_more(&mut self, cx: &mut Context<Self>) {
         if self.branch_more_open {
             self.branch_more_open = false;
-            self.branch_more_dismissed_at = Some(Instant::now());
+            self.branch_more_dismissed_at.arm();
             cx.notify();
         }
     }
@@ -3797,7 +3774,7 @@ impl GitPanel {
         let Some(cwd) = self.cwd() else { return };
         self.branch_menu_open = false;
         self.branch_more_open = false;
-        self.menu_dismissed_at = Some(Instant::now());
+        self.menu_dismissed_at.arm();
         self.branch_operation = true;
         self.clear_branch_filter(cx);
         cx.notify();
@@ -4189,7 +4166,7 @@ impl GitPanel {
                             .hover_state(&theme)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.sync_menu_open = false;
-                                this.sync_menu_dismissed_at = None;
+                                this.sync_menu_dismissed_at.clear();
                                 this.run_git_action(GitAction::Sync, None, cx);
                             }))
                     })
@@ -4223,10 +4200,7 @@ impl GitPanel {
                         // The outside-click dismiss runs on mouse-down for the
                         // same press, so a click within its wake-up window is
                         // the close, not a reopen.
-                        let just_dismissed = this
-                            .sync_menu_dismissed_at
-                            .take()
-                            .is_some_and(|at| at.elapsed() < Duration::from_millis(200));
+                        let just_dismissed = this.sync_menu_dismissed_at.swallows();
                         if !just_dismissed {
                             this.sync_menu_open = !this.sync_menu_open;
                         }
@@ -4247,16 +4221,11 @@ impl GitPanel {
         if !self.sync_menu_open {
             return None;
         }
-        let menu = picker_surface(div().id("git-sync-popup"), &theme)
+        let menu = popover_list(div().id("git-sync-popup"), &theme)
             .w(px(200.))
-            .py(picker::list_padding_y(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.sync_menu_open = false;
-                this.sync_menu_dismissed_at = Some(Instant::now());
+                this.sync_menu_dismissed_at.arm();
                 cx.notify();
             }))
             .child(menu_row(
@@ -4312,19 +4281,14 @@ impl GitPanel {
                 }),
             ));
         Some(
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), px(6.)),
-                    menu,
-                    "anchored_popover-in-19",
-                    &theme,
-                ))
-                .into_any_element(),
+            dropdown_below(
+                DropdownAlign::End,
+                px(6.),
+                menu,
+                "anchored_popover-in-19",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 
@@ -4366,14 +4330,9 @@ impl GitPanel {
         if !self.branch_more_open {
             return None;
         }
-        let mut menu = picker_surface(div().id("git-branch-more-popup"), &theme)
+        let mut menu = popover_list(div().id("git-branch-more-popup"), &theme)
             .w(px(ACTION_MENU_W))
-            .py(picker::list_padding_y(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.dismiss_branch_more(cx);
             }))
             .child(menu_row(
@@ -4411,19 +4370,14 @@ impl GitPanel {
             ));
         }
         Some(
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), px(6.)),
-                    menu,
-                    "anchored_popover-in-20",
-                    &theme,
-                ))
-                .into_any_element(),
+            dropdown_below(
+                DropdownAlign::End,
+                px(6.),
+                menu,
+                "anchored_popover-in-20",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 
@@ -5420,17 +5374,12 @@ impl GitPanel {
     /// The per-file actions menu: open, reveal, copy path, file history.
     fn file_actions_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (path, _hash) = self.file_menu.clone()?;
-        let menu = picker_surface(div().id("git-file-menu"), &theme)
+        let menu = popover_list(div().id("git-file-menu"), &theme)
             .absolute()
             .top(px(42.))
             .right(px(12.))
             .w(px(ACTION_MENU_W))
-            .py(picker::list_padding_y(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
-            .occlude()
-            .on_mouse_down_out(
+            .dismiss_on_outside(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_file_menu(cx)),
             )
             .child(menu_row(
@@ -5694,16 +5643,18 @@ impl GitPanel {
     /// to carry. Dragging it resizes the list; the width is persisted when the
     /// drag ends, so one drag costs one write.
     fn github_list_handle(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("git-github-list-resize")
-            .debug_selector(|| "github-split-handle".into())
-            .group("github-list-resize")
-            .flex_none()
+        resize_handle(
+            "git-github-list-resize",
+            &theme,
+            ResizeAxis::Horizontal,
+            ResizeLook::Border,
+        )
+        .debug_selector(|| "github-split-handle".into())
+        .flex_none()
             .w(px(GITHUB_LIST_HANDLE_W))
             .h_full()
             .flex()
             .justify_center()
-            .cursor(CursorStyle::ResizeLeftRight)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _, _| {
@@ -5718,11 +5669,6 @@ impl GitPanel {
                     });
                 }),
             )
-            .border_l_1()
-            .border_color(theme.border)
-            .group_hover("github-list-resize", |style| {
-                style.border_color(theme.border_strong)
-            })
             .into_any_element()
     }
 
@@ -6407,13 +6353,9 @@ impl GitPanel {
                 Hover::row(&theme),
             ));
         }
-        let menu = picker_surface(div().id("git-label-menu"), &theme)
+        let menu = popover_picker(div().id("git-label-menu"), &theme)
             .w(px(260.))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+            .dismiss_on_outside(cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                 this.label_menu = None;
                 // Suppress only the dismissed trigger's subsequent mouse-up.
                 this.label_menu_dismissed = Some((target, Instant::now()));
@@ -7622,13 +7564,9 @@ impl GitPanel {
             );
         }
 
-        let menu = picker_surface(div().id("git-branch-menu"), &theme)
+        let menu = popover_picker(div().id("git-branch-menu"), &theme)
             .w(px(BRANCH_MENU_W))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.dismiss_branch_menu(cx);
             }))
             .child(
@@ -7772,19 +7710,14 @@ impl GitPanel {
             RefTarget::Rebase => tr!("git_panel.rebase_onto"),
             RefTarget::PrBase => tr!("git_panel.base_branch"),
         };
-        let mut menu = picker_surface(div().id("git-ref-menu"), &theme)
+        let mut menu = popover_list(div().id("git-ref-menu"), &theme)
             .absolute()
             .top(px(42.))
             .right(px(12.))
             .w(px(300.))
             .max_h(px(360.))
-            .py(picker::list_padding_y(&theme))
             .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.close_ref_picker(cx);
             }))
             .child(menu_header(title, &theme));
@@ -7899,8 +7832,7 @@ impl GitPanel {
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base12.px(&theme))
-            .occlude()
-            .on_mouse_down_out(
+            .dismiss_on_outside(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
             )
             .child(
@@ -7982,8 +7914,7 @@ impl GitPanel {
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base12.px(&theme))
-            .occlude()
-            .on_mouse_down_out(
+            .dismiss_on_outside(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
             )
             .child(
@@ -8122,8 +8053,7 @@ impl GitPanel {
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base12.px(&theme))
-            .occlude()
-            .on_mouse_down_out(
+            .dismiss_on_outside(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
             )
             .child(
@@ -10073,7 +10003,7 @@ fn commit_row_core(
                 .opacity(0.)
                 .group_hover("git-row", |s| s.opacity(1.))
                 .child(row_button(
-                    &format!("{}-open", id_prefix),
+                    format!("{}-open", id_prefix),
                     "icons/arrow-up-right.svg",
                     "git_panel.open_on_github",
                     theme,

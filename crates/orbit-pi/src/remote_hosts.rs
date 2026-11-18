@@ -631,6 +631,27 @@ pub fn copy_files(
     )
 }
 
+/// The newest sessions in `host`'s pi store (see
+/// [`orbit_rpc::remote::list_sessions_script`]): one ssh run, read-only, only
+/// row metadata. Blocking: call it off the UI thread.
+pub fn list_sessions(
+    host: &RemoteHost,
+    password: Option<&str>,
+) -> std::result::Result<Vec<crate::remote_sessions::RemoteSession>, ProbeFailure> {
+    let target = host
+        .target()
+        .map_err(|err| ProbeFailure::Other(format!("{err:#}")))?;
+    let script = orbit_rpc::remote::list_sessions_script(crate::remote_sessions::LIST_LIMIT);
+    let stdout = run_script_output(
+        &target,
+        &script,
+        password,
+        orbit_rpc::remote::LIST_SESSIONS_STARTED,
+        None,
+    )?;
+    Ok(crate::remote_sessions::parse(&stdout))
+}
+
 /// The models `host`'s pi can use (see
 /// [`orbit_rpc::remote::list_models_script`]), which is also the list of
 /// providers signed in there. Blocking: call it off the UI thread.

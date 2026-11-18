@@ -267,7 +267,8 @@ impl BundledExtensions {
     /// script installs the access guard and the workflow extension on the
     /// host and pins its access mode to supervised before it execs pi (see
     /// `orbit_rpc::remote`). `workflow` (a wire id) is the mode the session
-    /// starts in, until Orbit records one in the host's store.
+    /// starts in, until Orbit records one in the host's store; `None` leaves
+    /// it to the session's own record (a resume).
     ///
     /// Fails closed: when the guard could not be materialized locally, the
     /// bundled copy is suspect too, so no remote session starts unguarded.
@@ -275,7 +276,7 @@ impl BundledExtensions {
         &self,
         target: &RemoteTarget,
         password: Option<&str>,
-        workflow: &str,
+        workflow: Option<&str>,
     ) -> anyhow::Result<PiClient> {
         if self.guard.is_none() {
             anyhow::bail!(
@@ -294,10 +295,11 @@ impl BundledExtensions {
             .map(|(askpass, secret)| orbit_rpc::remote::SshPassword { askpass, secret });
         // Remote profiles are unsupported; never forward local auth paths,
         // even when an ssh SendEnv rule would otherwise inherit them.
-        let env = [
-            ("ORBIT_WORKFLOW_MODE", workflow),
-            ("ORBIT_AUTH_PROFILE_ROUTES", "{}"),
-        ];
+        // A resume carries no workflow mode: the session's own record decides.
+        let mut env = vec![("ORBIT_AUTH_PROFILE_ROUTES", "{}")];
+        if let Some(mode) = workflow {
+            env.insert(0, ("ORBIT_WORKFLOW_MODE", mode));
+        }
         let launch = RemoteLaunch {
             guard: &REMOTE_GUARD_FILES,
             extensions: &REMOTE_EXTENSIONS,
@@ -362,7 +364,10 @@ fn install_accounts_extension() -> Option<PathBuf> {
     install_extension(
         &home_dir()?,
         "accounts-extension",
-        &[("index.js", ACCOUNTS_INDEX_JS), ("aliases.js", ACCOUNTS_ALIASES_JS)],
+        &[
+            ("index.js", ACCOUNTS_INDEX_JS),
+            ("aliases.js", ACCOUNTS_ALIASES_JS),
+        ],
     )
 }
 
@@ -518,7 +523,10 @@ mod tests {
         let entry = install_extension(
             &dir,
             "accounts-extension",
-            &[("index.js", ACCOUNTS_INDEX_JS), ("aliases.js", ACCOUNTS_ALIASES_JS)],
+            &[
+                ("index.js", ACCOUNTS_INDEX_JS),
+                ("aliases.js", ACCOUNTS_ALIASES_JS),
+            ],
         )
         .expect("accounts extension installs");
         assert!(entry.ends_with("accounts-extension/index.js"));

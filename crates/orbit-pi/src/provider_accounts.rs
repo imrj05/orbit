@@ -58,7 +58,8 @@ static LABELS: std::sync::RwLock<BTreeMap<String, String>> =
 
 /// `openai-codex~work` → `("openai-codex", "work")`; `None` for a plain id.
 pub(crate) fn split_alias(id: &str) -> Option<(&str, &str)> {
-    id.split_once('~').filter(|(base, slug)| !base.is_empty() && !slug.is_empty())
+    id.split_once('~')
+        .filter(|(base, slug)| !base.is_empty() && !slug.is_empty())
 }
 
 /// The account name behind an alias, as last read from the store.
@@ -283,7 +284,10 @@ impl ProviderAccounts {
             return None;
         }
         let value: serde_json::Value = serde_json::from_slice(&fs::read(&auth).ok()?).ok()?;
-        value.get(provider).filter(|entry| entry.is_object()).cloned()
+        value
+            .get(provider)
+            .filter(|entry| entry.is_object())
+            .cloned()
     }
 
     fn remove_legacy_dir(&self, id: &str) {
@@ -518,7 +522,10 @@ fn unique_alias(provider: &str, label: &str, taken: &BTreeSet<String>) -> String
 }
 
 fn valid_alias(alias: &str, provider: &str) -> bool {
-    let Some(slug) = alias.strip_prefix(provider).and_then(|rest| rest.strip_prefix('~')) else {
+    let Some(slug) = alias
+        .strip_prefix(provider)
+        .and_then(|rest| rest.strip_prefix('~'))
+    else {
         return false;
     };
     !slug.is_empty()
@@ -594,8 +601,7 @@ mod tests {
             ProviderAccounts::at(self.0.clone())
         }
         fn pi_auth(&self) -> serde_json::Value {
-            serde_json::from_slice(&fs::read(self.0.join(".pi/agent/auth.json")).unwrap())
-                .unwrap()
+            serde_json::from_slice(&fs::read(self.0.join(".pi/agent/auth.json")).unwrap()).unwrap()
         }
         fn write_pi_auth(&self, value: &str) {
             fs::create_dir_all(self.0.join(".pi/agent")).unwrap();
@@ -649,7 +655,10 @@ mod tests {
         let id = accounts.all_profiles()["p"][0].id.clone();
         accounts.rename(&id, "  Client ").unwrap();
         let profile = &accounts.all_profiles()["p"][0];
-        assert_eq!((profile.label.as_str(), profile.alias.as_str()), ("Client", alias.as_str()));
+        assert_eq!(
+            (profile.label.as_str(), profile.alias.as_str()),
+            ("Client", alias.as_str())
+        );
         assert!(accounts.rename(&id, " ").is_err());
 
         assert_eq!(accounts.remove(&id).unwrap(), alias);
@@ -709,7 +718,11 @@ mod tests {
         let root = fixture.0.join(".orbit-pi");
         let dir = root.join("provider-accounts/account-1");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("auth.json"), r#"{"p":{"type":"api_key","key":"old"}}"#).unwrap();
+        fs::write(
+            dir.join("auth.json"),
+            r#"{"p":{"type":"api_key","key":"old"}}"#,
+        )
+        .unwrap();
         fs::write(
             root.join("provider-accounts.json"),
             r#"{"version":1,"profiles":{"account-1":{"provider":"p","label":"W"}},"defaults":{},"sessions":{}}"#,
@@ -740,7 +753,9 @@ mod tests {
         accounts.activate_session(&path).unwrap();
         assert!(accounts.selected("p").is_none());
         assert!(accounts.selection_for_session(&path).unwrap().is_empty());
-        assert!(accounts.record_session(&path, &AccountSelection::new()).is_ok());
+        assert!(accounts
+            .record_session(&path, &AccountSelection::new())
+            .is_ok());
         let stale = AccountSelection::from([("p".into(), "account-x".into())]);
         assert!(accounts.record_session(&path, &stale).is_err());
         assert!(accounts.routes_for(&stale).is_err());

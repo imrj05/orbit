@@ -56,6 +56,7 @@ use crate::theme::tokens::{
     Radius, TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::popover::PopoverExt;
 
 /// Model popover width — room for the search field, mode tabs, a provider
 /// header, and one-line rows with their metadata.
@@ -1128,14 +1129,13 @@ impl Render for ModelSelector {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .occlude()
             // A click inside the popup (a row, the search field, the scope
             // chips) is the popup's own business: stop it here so it never
             // bubbles out to the composer box, whose mouse-up refocuses the
             // composer input and would kill the popup's keyboard ownership.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             // any mouse-down outside the popup dismisses it
-            .on_mouse_down_out(cx.listener(Self::on_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_outside_down))
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))

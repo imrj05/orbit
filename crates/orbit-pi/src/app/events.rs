@@ -343,6 +343,9 @@ impl OrbitApp {
                     self.title_generating = false;
                 }
                 Event::AgentSettled { aborted } => {
+                    // A remote session joins its server's sidebar list once
+                    // it has a message; refetch that server.
+                    self.refresh_active_remote_sessions(cx);
                     self.abort_requested = false;
                     self.abort_sent_at = None;
                     self.busy = false;

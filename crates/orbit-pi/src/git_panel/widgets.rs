@@ -8,14 +8,12 @@
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window};
 
 use crate::app::helpers::empty_state_glyph;
-use crate::app::{
-    button_frame, icon, icon_button_frame, press, ControlExt, PressedRamp, StatefulControlExt,
-    BUTTON_GROUP,
-};
+use crate::app::{button_frame, icon, icon_button_frame, press, ControlExt, BUTTON_GROUP};
 use crate::git::RefKind;
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::Theme;
+use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::chip::{Badge, BadgeFill};
 use crate::ui::tooltip::Tooltip;
 
 /// The color for a `git status` porcelain badge byte.
@@ -57,8 +55,9 @@ pub fn check_box(checked: bool, theme: Theme) -> gpui::Div {
         })
 }
 
-/// A Medium action button with an optional leading glyph. `primary` paints it
-/// in the send/accent colors; `disabled` mutes it and drops the click handler.
+/// A Medium action button with an optional leading glyph: the shared
+/// [`ButtonVariant::Primary`] when `primary`, otherwise the outlined secondary
+/// the Git bar uses. `disabled` renders the disabled state and drops the click.
 pub fn action_button(
     id: &'static str,
     label: &str,
@@ -68,40 +67,18 @@ pub fn action_button(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    let mut button = button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .font_weight(FontWeight::MEDIUM)
-        .border_1();
-    if disabled {
-        button = button
-            .border_color(theme.border)
-            .bg(theme.overlay)
-            .text_color(theme.text_disabled);
-    } else if primary {
-        // Accent buttons press by color (the theme's pressed step), not the
-        // generic opacity dim, so the primary action keeps a real edge.
-        button = button
-            .group(BUTTON_GROUP)
-            .border_color(gpui::transparent_black())
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .cursor_pointer()
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
-            .on_click(listener);
+    let variant = if primary {
+        ButtonVariant::Primary
     } else {
-        button = press(button)
-            .group(BUTTON_GROUP)
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_primary)
-            .cursor_pointer()
-            .hover_bordered(&theme)
-            .on_click(listener);
-    }
+        ButtonVariant::Outline
+    };
+    let mut button = Button::new(id, variant)
+        .label(label.to_string())
+        .disabled(disabled);
     if let Some(leading) = leading {
-        button = button.child(leading);
+        button = button.leading(leading);
     }
-    button.child(label.to_string()).into_any_element()
+    button.on_click(&theme, listener).into_any_element()
 }
 
 /// An icon-only row-action button (`ButtonSize::Default`), with a tooltip so
@@ -138,7 +115,7 @@ pub fn row_button(
     .into_any_element()
 }
 
-/// A small ref chip (`main`, `origin/main`, `v1.2.0`), colored by kind.
+/// A small ref badge (`main`, `origin/main`, `v1.2.0`), colored by kind.
 pub fn ref_badge(name: &str, kind: RefKind, theme: Theme) -> AnyElement {
     let (fg, border) = match kind {
         RefKind::Head => (theme.accent_text, theme.accent),
@@ -146,19 +123,12 @@ pub fn ref_badge(name: &str, kind: RefKind, theme: Theme) -> AnyElement {
         RefKind::Remote => (theme.text_muted, theme.border),
         RefKind::Tag => (theme.warning, theme.warning),
     };
-    div()
-        .h(px(18.))
-        .px(DynamicSpacing::Base06.px(&theme))
-        .rounded(Radius::Small.px(&theme))
-        .border_1()
-        .border_color(border.opacity(0.6))
-        .flex()
-        .items_center()
-        .text_size(TextSize::XSmall.px(&theme))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(fg)
-        .child(name.to_string())
-        .into_any_element()
+    Badge::new(
+        name.to_string(),
+        fg,
+        BadgeFill::Outline(border.opacity(0.6)),
+    )
+    .render(&theme)
 }
 
 /// The pager at the end of a paginated list.

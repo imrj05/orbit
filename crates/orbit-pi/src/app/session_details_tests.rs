@@ -64,7 +64,7 @@ fn the_details_chip_toggles_the_panel(cx: &mut gpui::TestAppContext) {
 
     cx.update(|_, cx| {
         app.update(cx, |app, _| {
-            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.menu_dismissed_at.arm();
         });
     });
     cx.update(|window, cx| {

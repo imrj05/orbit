@@ -1,6 +1,7 @@
 use super::*;
 use crate::commands::CommandId;
 use crate::theme::tokens::{popover, DynamicSpacing};
+use crate::ui::popover::{dropdown_above, dropdown_below, DropdownAlign};
 
 impl OrbitApp {
     /// Rows for the new-task page's folder selector: the machine this task
@@ -60,11 +61,8 @@ impl OrbitApp {
     /// Mutually exclusive with the other popovers; Escape/outside-down
     /// dismiss returns focus to the composer.
     pub(super) fn toggle_workspace_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         if self.workspace_picker.take().is_some() {
             window.focus(&self.new_task_folder_focus);
@@ -179,7 +177,7 @@ impl OrbitApp {
         let on_dismiss = Box::new(move |by_mouse: bool, window: &mut Window, cx: &mut App| {
             this.update(cx, |app, cx| {
                 if by_mouse {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                 }
                 app.workspace_picker = None;
                 if by_mouse {
@@ -392,7 +390,7 @@ impl OrbitApp {
             this.update(cx, |app, cx| {
                 // Only mouse dismissals arm the chip's click-through guard.
                 if by_mouse {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                 }
                 app.close_model_selector(window, cx);
             })
@@ -501,13 +499,8 @@ impl OrbitApp {
         // A dismissal from the same click's mouse-down must not immediately
         // re-open — the sidebar Search row opens on mouse-up, and the scrim
         // dismisses on mouse-down.
-        const GESTURE: Duration = Duration::from_millis(200);
-        if by_gesture {
-            if let Some(dismissed) = self.menu_dismissed_at.take() {
-                if dismissed.elapsed() < GESTURE {
-                    return;
-                }
-            }
+        if by_gesture && self.menu_dismissed_at.swallows() {
+            return;
         }
         if self.command_palette.take().is_some() {
             self.restore_palette_focus(window, cx);
@@ -578,7 +571,7 @@ impl OrbitApp {
         let on_dismiss = Box::new(move |by_mouse: bool, window: &mut Window, cx: &mut App| {
             this.update(cx, |app, cx| {
                 if by_mouse {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                 }
                 app.command_palette = None;
                 app.restore_palette_focus(window, cx);
@@ -816,11 +809,8 @@ impl OrbitApp {
         if self.branch_operation_pending {
             return;
         }
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         if self.branch_picker.take().is_some() {
             self.input.read(cx).focus(window);
@@ -875,7 +865,7 @@ impl OrbitApp {
         let on_dismiss = Box::new(move |by_mouse: bool, _window: &mut Window, cx: &mut App| {
             this.update(cx, |app, cx| {
                 if by_mouse {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                 }
                 app.branch_picker = None;
                 cx.notify();
@@ -973,22 +963,14 @@ impl OrbitApp {
     /// have to be shrunk to fit at the window's minimum height.
     pub(super) fn workspace_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.workspace_picker.clone().map(|picker| {
-            div()
-                .absolute()
-                .bottom_0()
-                .left_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopLeft,
-                    point(
-                        px(0.),
-                        popover::MENU_OFFSET + DynamicSpacing::Base08.px(theme),
-                    ),
-                    picker,
-                    "anchored_popover-in-7",
-                    theme,
-                ))
-                .into_any_element()
+            dropdown_below(
+                DropdownAlign::Start,
+                popover::MENU_OFFSET + DynamicSpacing::Base08.px(theme),
+                picker,
+                "anchored_popover-in-7",
+                theme,
+            )
+            .into_any_element()
         })
     }
 
@@ -997,19 +979,14 @@ impl OrbitApp {
     /// covering it. (The anchor point is the chip's top edge, not its bottom.)
     pub(super) fn branch_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.branch_picker.clone().map(|picker| {
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::BottomLeft,
-                    point(px(0.), -popover::MENU_OFFSET),
-                    picker,
-                    "anchored_popover-in-8",
-                    theme,
-                ))
-                .into_any_element()
+            dropdown_above(
+                DropdownAlign::Start,
+                popover::MENU_OFFSET,
+                picker,
+                "anchored_popover-in-8",
+                theme,
+            )
+            .into_any_element()
         })
     }
 
@@ -1020,19 +997,14 @@ impl OrbitApp {
         theme: &crate::theme::Theme,
     ) -> Option<AnyElement> {
         self.branch_picker.clone().map(|picker| {
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), popover::MENU_OFFSET),
-                    picker,
-                    "anchored_popover-in-8",
-                    theme,
-                ))
-                .into_any_element()
+            dropdown_below(
+                DropdownAlign::End,
+                popover::MENU_OFFSET,
+                picker,
+                "anchored_popover-in-8",
+                theme,
+            )
+            .into_any_element()
         })
     }
 

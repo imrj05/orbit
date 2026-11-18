@@ -86,14 +86,16 @@ impl OrbitApp {
                 .flex()
                 .flex_col()
                 .gap(toast_tokens::stack_gap(&theme))
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    this.hover_toast_stack(*hovered, cx)
-                }));
+                .on_hover(
+                    cx.listener(|this, hovered: &bool, _, cx| this.hover_toast_stack(*hovered, cx)),
+                );
             if expanded {
                 // Oldest at the top, newest nearest the corner.
-                stack.children(items.iter().map(|toast| {
-                    self.toast_card(toast, now, theme, reduce_motion, cx)
-                }))
+                stack.children(
+                    items
+                        .iter()
+                        .map(|toast| self.toast_card(toast, now, theme, reduce_motion, cx)),
+                )
             } else {
                 // Collapsed: empty slabs for the older cards, deepest first so
                 // the front card paints over them. Each slab is the front
@@ -102,8 +104,8 @@ impl OrbitApp {
                 let peek = toast_tokens::deck_peek(&theme);
                 let behind = items.len().saturating_sub(1).min(toast_tokens::DECK_DEPTH);
                 let slabs = (1..=behind).rev().map(|depth| {
-                    let inset = toast_tokens::WIDTH
-                        * (toast_tokens::DECK_SCALE_STEP * depth as f32 / 2.0);
+                    let inset =
+                        toast_tokens::WIDTH * (toast_tokens::DECK_SCALE_STEP * depth as f32 / 2.0);
                     let lift = peek * depth as f32;
                     toast_tokens::surface(
                         div().debug_selector(move || format!("toast-deck-{depth}")),
@@ -115,9 +117,9 @@ impl OrbitApp {
                     .left(inset)
                     .right(inset)
                 });
-                let front = items.last().map(|toast| {
-                    self.toast_card(toast, now, theme, reduce_motion, cx)
-                });
+                let front = items
+                    .last()
+                    .map(|toast| self.toast_card(toast, now, theme, reduce_motion, cx));
                 stack.children(slabs).children(front)
             }
         });

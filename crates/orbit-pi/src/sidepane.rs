@@ -20,15 +20,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight,
+    div, prelude::*, px, AnyElement, ClickEvent, Context, Entity, FontWeight,
     ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, ScrollHandle,
     StatefulInteractiveElement, Window,
 };
 
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::app::{
     button_frame, context_menu_separator, empty_state, file_glyph, icon, icon_button_frame,
-    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, AccentWash,
-    ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::diff_view::{
@@ -43,7 +43,10 @@ use crate::theme::tokens::{
     TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
-use crate::ui::button::quiet_icon_button;
+use crate::ui::button::{quiet_icon_button, Button, ButtonVariant};
+use crate::ui::feedback::empty_state_with_action;
+use crate::ui::popover::PopoverExt;
+use crate::ui::menu::menu_hint;
 use crate::ui::tooltip::Tooltip;
 
 /// Pane width defaults / drag clamps.
@@ -159,7 +162,7 @@ pub struct SidePane {
     source_menu_open: bool,
     /// Guards against the outside-dismiss click's mouse-up re-opening the
     /// menu through the chip.
-    menu_dismissed_at: Option<Instant>,
+    menu_dismissed_at: crate::ui::popover::DismissGuard,
     /// Virtualized diff rows.
     diff_list: ListState,
     /// The unwrapped diff's horizontal scroller. The pane reads it while
@@ -250,7 +253,7 @@ impl SidePane {
             follow_latest_turn: true,
             load_generation: 0,
             source_menu_open: false,
-            menu_dismissed_at: None,
+            menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
             diff_list: ListState::new(0, ListAlignment::Top, px(400.)),
             h_scroll: ScrollHandle::new(),
             wrap: true,
@@ -366,7 +369,7 @@ impl SidePane {
     pub fn close_source_menu(&mut self, cx: &mut Context<Self>) {
         if self.source_menu_open {
             self.source_menu_open = false;
-            self.menu_dismissed_at = Some(Instant::now());
+            self.menu_dismissed_at.arm();
             cx.notify();
         }
     }
@@ -1121,11 +1124,8 @@ impl SidePane {
     // ── source filter ──────────────────────────────────────────────────
 
     fn toggle_source_menu(&mut self, cx: &mut Context<Self>) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(at) = self.menu_dismissed_at.take() {
-            if at.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.source_menu_open = !self.source_menu_open;
         cx.notify();
@@ -1137,7 +1137,7 @@ impl SidePane {
 
     fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
         self.source_menu_open = false;
-        self.menu_dismissed_at = Some(Instant::now());
+        self.menu_dismissed_at.arm();
         // Choosing Last Turn from the menu resumes following, even if it is
         // currently the same turn as an explicitly selected card.
         self.follow_latest_turn = true;
@@ -1448,16 +1448,16 @@ impl SidePane {
                     &theme,
                     ButtonSize::Default,
                 )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
-                    .child(icon(
-                        "icons/folder.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        if self.tree_open {
-                            theme.text_primary
-                        } else {
-                            theme.text_muted
-                        },
-                    ))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
+                .child(icon(
+                    "icons/folder.svg",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    if self.tree_open {
+                        theme.text_primary
+                    } else {
+                        theme.text_muted
+                    },
+                ))
             }))
             .child(
                 quiet_icon_button(
@@ -1468,16 +1468,16 @@ impl SidePane {
                     &theme,
                     ButtonSize::Default,
                 )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.refresh_from_button(cx);
-                    }))
-                    .child(refresh_glyph(
-                        "review-spinner",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        self.review_loading || self.refresh_spin_until.is_some(),
-                        theme.text_muted,
-                        theme,
-                    )),
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.refresh_from_button(cx);
+                }))
+                .child(refresh_glyph(
+                    "review-spinner",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    self.review_loading || self.refresh_spin_until.is_some(),
+                    theme.text_muted,
+                    theme,
+                )),
             );
 
         if !self.embedded {
@@ -1510,12 +1510,12 @@ impl SidePane {
                         &theme,
                         ButtonSize::Default,
                     )
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
-                        .child(icon(
-                            "icons/x.svg",
-                            ButtonSize::Default.icon_size().px(&theme),
-                            theme.text_muted,
-                        )),
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_muted,
+                    )),
                 );
         }
 
@@ -1870,12 +1870,23 @@ impl SidePane {
                 EmptyFill::Grow,
             )
         } else if let Some(error) = self.review_error.as_deref() {
-            empty_state(
+            // A failed diff is usually transient (a lock, a moved ref): offer
+            // the same reload the header's refresh runs.
+            let retry = Button::new("sidepane-review-retry", ButtonVariant::Secondary)
+                .label(tr!("common.retry"))
+                .icon("icons/refresh.svg")
+                .on_click(
+                    &theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.refresh_from_button(cx)),
+                )
+                .into_any_element();
+            empty_state_with_action(
                 theme,
                 "icons/stop.svg",
                 &tr!("sidepane.changes_unavailable"),
                 Some(error),
                 EmptyFill::Grow,
+                Some(retry),
             )
         } else if let Some(snapshot) = self.review.clone() {
             if snapshot.files.is_empty() {
@@ -2678,8 +2689,7 @@ impl SidePane {
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base01.px(&theme))
-            .occlude()
-            .on_mouse_down_out(
+            .dismiss_on_outside(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_source_menu(cx)),
             );
 
@@ -2769,14 +2779,7 @@ fn source_row(
     )
     .when(!enabled, |row| {
         // Zed's `ml_4` before a trailing hint, less the row gap already there.
-        row.child(
-            div()
-                .flex_none()
-                .ml(context_menu::keybinding_gap(&theme) - context_menu::icon_gap(&theme))
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_muted)
-                .child(tr!("sidepane.no_turns_yet")),
-        )
+        row.child(menu_hint(tr!("sidepane.no_turns_yet"), &theme))
     })
     .when(selected, |row| {
         row.child(icon(
@@ -2883,8 +2886,7 @@ impl Render for SidePane {
             .flex_col()
             .min_h_0()
             .child(
-                div()
-                    .id("side-pane-resize-handle")
+                resize_handle("side-pane-resize-handle", &theme, ResizeAxis::Horizontal, ResizeLook::Wash)
                     .absolute()
                     .top_0()
                     .bottom_0()
@@ -2893,8 +2895,6 @@ impl Render for SidePane {
                     // the edge users see is the edge they can grab.
                     .left(px(9.))
                     .w(px(6.))
-                    .cursor(CursorStyle::ResizeLeftRight)
-                    .hover_accent_wash(&theme, AccentWash::Strong)
                     .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
             )
             // The dock reads as a rounded card, like the Git/Usage cards in

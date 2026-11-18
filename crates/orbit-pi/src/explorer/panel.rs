@@ -11,10 +11,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, ClickEvent, Context, CursorStyle, Entity, FocusHandle,
+    div, prelude::*, px, AnyElement, App, ClickEvent, Context, Entity, FocusHandle,
     FontWeight, Hsla, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, Pixels,
     Render, Subscription, Window,
 };
@@ -22,11 +21,12 @@ use gpui::{
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::app::{
-    anchored_popover, anchored_popover_at, button_frame, context_menu_entry,
-    context_menu_separator, context_menu_surface, disclosure_chevron, empty_state, file_badge,
-    file_glyph, icon, icon_button_frame, nerd_font_family, press, AccentWash, ControlExt,
-    EmptyFill, TipExt, BUTTON_GROUP,
+    anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
+    context_menu_surface, disclosure_chevron, empty_state, file_badge, file_glyph, icon,
+    icon_button_frame, nerd_font_family, press, ControlExt, EmptyFill, TipExt,
+    BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::git;
@@ -37,6 +37,9 @@ use crate::theme::tokens::{
     TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
+use crate::ui::menu::menu_hint;
+use crate::ui::popover::PopoverExt;
+use crate::ui::popover::{dropdown_below, DropdownAlign};
 
 /// Panel width defaults / drag clamps.
 pub const PANEL_DEFAULT_W: f32 = 248.;
@@ -151,14 +154,15 @@ pub struct ProjectPanel {
     active: Option<String>,
     /// Right-click context menu, if open.
     menu: Option<PanelMenu>,
-    /// When the menu was dismissed by an outside click; guards re-open.
-    menu_dismissed_at: Option<Instant>,
     /// Whether the header's "…" menu (refresh, collapse all, hidden files)
     /// is open.
     header_menu_open: bool,
     /// When the header menu was dismissed by an outside click, so that same
     /// click's mouse-up on the "…" button cannot reopen it.
-    header_menu_dismissed_at: Option<Instant>,
+    /// Arms when the context menu is dismissed, so it is not repainted under
+    /// the pointer by the same click.
+    menu_dismissed_at: crate::ui::popover::DismissGuard,
+    header_menu_dismissed_at: crate::ui::popover::DismissGuard,
     /// Inline name prompt (new file/folder or rename), if open.
     entry: Option<EntryEditor>,
     /// A pending delete confirmation, if any.
@@ -212,9 +216,9 @@ impl ProjectPanel {
             focus_subscriptions: None,
             active: None,
             menu: None,
-            menu_dismissed_at: None,
             header_menu_open: false,
-            header_menu_dismissed_at: None,
+            menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
+            header_menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
             entry: None,
             pending_delete: None,
             notice: None,
@@ -523,7 +527,7 @@ impl ProjectPanel {
 
     fn dismiss_menu(&mut self, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
-            self.menu_dismissed_at = Some(Instant::now());
+            self.menu_dismissed_at.arm();
             cx.notify();
         }
     }
@@ -924,11 +928,10 @@ impl ProjectPanel {
                 .w(px(220.))
                 .flex()
                 .flex_col()
-                .occlude()
-                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                     if this.header_menu_open {
                         this.header_menu_open = false;
-                        this.header_menu_dismissed_at = Some(Instant::now());
+                        this.header_menu_dismissed_at.arm();
                         cx.notify();
                     }
                 }))
@@ -974,18 +977,13 @@ impl ProjectPanel {
                         cx.notify();
                     }),
                 ));
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    gpui::Corner::TopRight,
-                    gpui::point(px(0.), popover::MENU_OFFSET),
-                    menu,
-                    "explorer-header-menu-in",
-                    &theme,
-                ))
+            dropdown_below(
+                DropdownAlign::End,
+                popover::MENU_OFFSET,
+                menu,
+                "explorer-header-menu-in",
+                &theme,
+            )
         });
         div()
             .relative()
@@ -998,11 +996,7 @@ impl ProjectPanel {
     /// Flip the header menu. The click that dismissed it from outside also
     /// lands here on mouse-up; the stamp keeps it from reopening.
     fn toggle_header_menu(&mut self, cx: &mut Context<Self>) {
-        if self
-            .header_menu_dismissed_at
-            .take()
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(200))
-        {
+        if self.header_menu_dismissed_at.swallows() {
             return;
         }
         self.header_menu_open = !self.header_menu_open;
@@ -1406,10 +1400,7 @@ impl ProjectPanel {
 
     fn context_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let menu = self.menu.as_ref()?;
-        if self
-            .menu_dismissed_at
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(150))
-        {
+        if self.menu_dismissed_at.is_recent() {
             return None;
         }
         let target = self.menu_target_path()?;
@@ -1420,8 +1411,7 @@ impl ProjectPanel {
             .w(px(220.))
             .flex()
             .flex_col()
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.dismiss_menu(cx);
             }));
 
@@ -1625,8 +1615,7 @@ impl ProjectPanel {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .occlude()
-            .on_mouse_down_out(
+            .dismiss_on_outside(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.cancel_delete(cx)),
             )
             .child(
@@ -1767,15 +1756,7 @@ fn menu_row(
             .text_color(theme.text_secondary)
             .child(label),
     )
-    .children(hint.map(|hint| {
-        // Zed's `ml_4` before a keybinding, less the row gap already there.
-        div()
-            .flex_none()
-            .ml(context_menu::keybinding_gap(&theme) - context_menu::icon_gap(&theme))
-            .text_size(TextSize::Small.px(&theme))
-            .text_color(theme.text_muted)
-            .child(hint)
-    }))
+    .children(hint.map(|hint| menu_hint(hint, &theme)))
     .into_any_element()
 }
 
@@ -1834,8 +1815,7 @@ impl Render for ProjectPanel {
             .flex_col()
             .min_h_0()
             .child(
-                div()
-                    .id("explorer-resize-handle")
+                resize_handle("explorer-resize-handle", &theme, ResizeAxis::Horizontal, ResizeLook::Wash)
                     .absolute()
                     .top_0()
                     .bottom_0()
@@ -1844,8 +1824,6 @@ impl Render for ProjectPanel {
                     // the edge users see is the edge they can grab.
                     .left(px(9.))
                     .w(px(6.))
-                    .cursor(CursorStyle::ResizeLeftRight)
-                    .hover_accent_wash(&theme, AccentWash::Strong)
                     .on_drag(ExplorerResize, |_, _, _, cx| cx.new(|_| ExplorerDragGhost)),
             )
             // The dock reads as a rounded card, like the Git/Usage cards in
@@ -1902,7 +1880,7 @@ mod tests {
         cx.update(|_, app| {
             panel.update(app, |panel, cx| {
                 panel.header_menu_open = false;
-                panel.header_menu_dismissed_at = Some(Instant::now());
+                panel.header_menu_dismissed_at.arm();
                 panel.toggle_header_menu(cx);
             })
         });

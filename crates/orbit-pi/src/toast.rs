@@ -281,11 +281,17 @@ mod tests {
         // Long past its TTL while held: still there, its clock frozen at 1 s.
         let later = created + ttl * 10;
         assert!(!toasts.expire(later, FADE));
-        assert_eq!(toasts.elapsed(&toasts.items()[0], later), Duration::from_secs(1));
+        assert_eq!(
+            toasts.elapsed(&toasts.items()[0], later),
+            Duration::from_secs(1)
+        );
         // Released: the remaining TTL runs from the release, not from birth.
         assert!(toasts.release(later));
         assert_eq!(toasts.items()[0].revision, 1);
-        assert_eq!(toasts.elapsed(&toasts.items()[0], later), Duration::from_secs(1));
+        assert_eq!(
+            toasts.elapsed(&toasts.items()[0], later),
+            Duration::from_secs(1)
+        );
         assert!(!toasts.expire(later + ttl - Duration::from_secs(1), FADE));
         assert!(toasts.expire(later + ttl + FADE, FADE));
     }
@@ -310,7 +316,10 @@ mod tests {
         toasts.push(ToastKind::Info, "b", None);
         let b = &toasts.items()[1];
         // Its life has not started, so it is not fading out.
-        assert_eq!(toasts.elapsed(b, held + Duration::from_secs(60)), Duration::ZERO);
+        assert_eq!(
+            toasts.elapsed(b, held + Duration::from_secs(60)),
+            Duration::ZERO
+        );
     }
 
     #[test]

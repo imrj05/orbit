@@ -90,8 +90,8 @@ mod palette_recents;
 mod pi_install;
 mod pi_update;
 mod pins;
-mod session_order;
 mod platform;
+mod session_order;
 // Frame-time sampling for the render baseline. Debug builds only: a release
 // binary must not carry a frame hook or a recorder.
 #[cfg(debug_assertions)]
@@ -104,6 +104,7 @@ mod quota;
 mod quota_hidden;
 mod recent_models;
 mod remote_hosts;
+mod remote_sessions;
 mod repository_clone;
 mod review;
 mod rewind;
@@ -305,6 +306,8 @@ actions!(
     [
         WorkInMenuNext,
         WorkInMenuPrev,
+        WorkInMenuFirst,
+        WorkInMenuLast,
         WorkInMenuConfirm,
         WorkInMenuClose
     ]
@@ -338,7 +341,14 @@ actions!(
 // card and `DialogInput` on its text field).
 actions!(
     dialog_keys,
-    [DialogCancel, DialogConfirm, DialogNext, DialogPrev]
+    [
+        DialogCancel,
+        DialogConfirm,
+        DialogNext,
+        DialogPrev,
+        DialogFirst,
+        DialogLast
+    ]
 );
 
 // Inline ask questionnaire actions (bound to the `AskPanel` context on the
@@ -547,6 +557,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", WorkInMenuConfirm, Some("WorkInMenu")),
         KeyBinding::new("up", WorkInMenuPrev, Some("WorkInMenu")),
         KeyBinding::new("down", WorkInMenuNext, Some("WorkInMenu")),
+        KeyBinding::new("home", WorkInMenuFirst, Some("WorkInMenu")),
+        KeyBinding::new("end", WorkInMenuLast, Some("WorkInMenu")),
         KeyBinding::new("tab", CloneDialogNext, Some("CloneDialog")),
         KeyBinding::new("shift-tab", CloneDialogPrev, Some("CloneDialog")),
         KeyBinding::new("enter", CloneDialogActivate, Some("CloneDialog")),
@@ -574,6 +586,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", DialogConfirm, Some("DialogInput")),
         KeyBinding::new("up", DialogPrev, Some("DialogSelect")),
         KeyBinding::new("down", DialogNext, Some("DialogSelect")),
+        KeyBinding::new("home", DialogFirst, Some("DialogSelect")),
+        KeyBinding::new("end", DialogLast, Some("DialogSelect")),
         // Inline ask questionnaire keys. Registered after the Composer
         // bindings so Enter answers instead of submitting the composer, and
         // Escape declines instead of aborting the run.

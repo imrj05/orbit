@@ -16,6 +16,7 @@ use super::*;
 use crate::git_panel::widgets::action_button;
 use crate::issue_message::ReportKind;
 use crate::theme::tokens::{input, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::ui::button::active_segment;
 use gpui::ClickEvent;
 
 /// The most screenshots one report may carry.
@@ -211,23 +212,13 @@ impl OrbitApp {
         for (ix, kind) in KINDS.iter().enumerate() {
             let kind = *kind;
             let selected = self.bug_report_kind == kind;
-            let seg = segmented_segment(
+            let seg = active_segment(
                 div().id(ElementId::Name(format!("bug-report-type-{ix}").into())),
                 &theme,
                 ButtonSize::Medium,
                 SegmentPosition::at(ix, KINDS.len()),
-            )
-            .cursor_pointer();
-            let seg = if selected {
-                seg.bg(theme.surface_active)
-                    .text_color(theme.text_primary)
-                    .border_color(theme.border)
-            } else {
-                seg.bg(theme.surface_elevated)
-                    .text_color(theme.text_secondary)
-                    .border_color(theme.border)
-                    .hover_state(&theme)
-            };
+                selected,
+            );
             row = row.child(
                 press(seg)
                     .on_mouse_up(

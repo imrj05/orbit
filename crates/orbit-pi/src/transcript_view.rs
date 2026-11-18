@@ -43,11 +43,12 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
+use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::agent_call_display::AgentCallDisplay;
 use crate::app::{
     anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
-    icon_button_frame, nerd_font_family, picker_entry, picker_surface, press, ControlExt, OrbitApp,
-    TipExt, BUTTON_GROUP,
+    icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, OrbitApp, TipExt,
+    BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -61,8 +62,9 @@ use crate::theme::tokens::{
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, HistoryCard, Step, SummaryRow, ToolCall, ToolFacts};
-use crate::ui::style::surface::SurfaceExt;
 use crate::turn_review::{ChangedFile, TurnFiles};
+use crate::ui::popover::{popover_list, PopoverExt};
+use crate::ui::style::surface::SurfaceExt;
 
 fn frosted_transcript_fill(theme: Theme) -> Hsla {
     if theme.glass_sigma().is_some() {
@@ -1121,16 +1123,11 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
     let dismiss = state.clone();
     anchored_popover_at(
         menu.position,
-        picker_surface(div().id("transcript-text-menu"), &theme)
+        popover_list(div().id("transcript-text-menu"), &theme)
             .w(px(220.))
-            .py(picker::list_padding_y(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
             .overflow_hidden()
-            .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(move |_, window, _| {
+            .dismiss_on_outside(move |_, window, _| {
                 dismiss.borrow_mut().menu = None;
                 window.refresh();
             })
@@ -4847,18 +4844,10 @@ fn render_activity_card(
                     let patch = edit_patch_text(&rows);
                     let copied_sections = copied_sections.clone();
                     row.child(
-                        icon_button_frame(
-                            div().id(ElementId::NamedInteger(
+                        IconButton::glyph(ElementId::NamedInteger(
                                 "copy-edit-diff".into(),
                                 (key.0 as u64) << 16 | key.1 as u64,
-                            )),
-                            &theme,
-                            ButtonSize::Compact,
-                        )
-                        .tip(tr!("transcript.copy_diff"))
-                        .cursor_pointer()
-                        .hover_on_glass(&theme)
-                        .child(glyph(
+                            ), glyph(
                             if copied {
                                 "icons/check.svg"
                             } else {
@@ -4871,7 +4860,10 @@ fn render_activity_card(
                                 theme.text_muted
                             },
                         ))
-                        .on_click(move |_, _, cx| {
+.size(ButtonSize::Compact)
+.variant(IconButtonVariant::Glass)
+.tip(tr!("transcript.copy_diff"))
+.on_click(&theme, move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()));
                             copied_sections
                                 .borrow_mut()

@@ -1626,7 +1626,10 @@ impl Theme {
     pub fn floating_fill_with(self, base: Hsla, reduce_transparency: bool) -> Hsla {
         if self.wallpaper.active {
             self.card_fill(base)
-        } else if self.floating_glass_sigma_with(reduce_transparency).is_some() {
+        } else if self
+            .floating_glass_sigma_with(reduce_transparency)
+            .is_some()
+        {
             base.opacity(self.floating_glass_alpha(base))
         } else {
             base
@@ -2996,12 +2999,21 @@ mod tests {
         for id in ThemeId::ALL {
             let theme = Theme::for_id(id);
             let base = theme.surface_elevated;
-            let expect = (theme.mode == ThemeMode::Dark && supported).then_some(FLOATING_GLASS_BLUR);
+            let expect =
+                (theme.mode == ThemeMode::Dark && supported).then_some(FLOATING_GLASS_BLUR);
             assert_eq!(theme.floating_glass_sigma_with(false), expect, "{id:?}");
-            assert_eq!(theme.glass_sigma(), None, "{id:?}: panes stay wallpaper-only");
+            assert_eq!(
+                theme.glass_sigma(),
+                None,
+                "{id:?}: panes stay wallpaper-only"
+            );
             let fill = theme.floating_fill_with(base, false);
             if expect.is_some() {
-                assert_eq!(fill, base.opacity(theme.floating_glass_alpha(base)), "{id:?}");
+                assert_eq!(
+                    fill,
+                    base.opacity(theme.floating_glass_alpha(base)),
+                    "{id:?}"
+                );
             } else {
                 assert_eq!(fill, base, "{id:?}: light palettes keep the opaque card");
             }
@@ -3046,12 +3058,14 @@ mod tests {
         // the tint alone has to hold the card's text targets over both, and it
         // must be the lowest such tint (one step lower fails, unless floored).
         let passes = |theme: Theme, surface: [f32; 3], a: f32| {
-            [[0., 0., 0.], [1., 1., 1.]].iter().all(|backdrop: &[f32; 3]| {
-                let composite: [f32; 3] =
-                    std::array::from_fn(|i| backdrop[i] + (surface[i] - backdrop[i]) * a);
-                contrast_ratio(rgb(theme.text_primary), composite) >= 4.5
-                    && contrast_ratio(rgb(theme.text_secondary), composite) >= 3.0
-            })
+            [[0., 0., 0.], [1., 1., 1.]]
+                .iter()
+                .all(|backdrop: &[f32; 3]| {
+                    let composite: [f32; 3] =
+                        std::array::from_fn(|i| backdrop[i] + (surface[i] - backdrop[i]) * a);
+                    contrast_ratio(rgb(theme.text_primary), composite) >= 4.5
+                        && contrast_ratio(rgb(theme.text_secondary), composite) >= 3.0
+                })
         };
         for id in ThemeId::ALL {
             let theme = Theme::for_id(id);
@@ -3064,7 +3078,10 @@ mod tests {
                 (FLOATING_GLASS_MIN_ALPHA..=1.).contains(&alpha),
                 "{id:?}: {alpha}"
             );
-            assert!(passes(theme, surface, alpha), "{id:?}: {alpha} loses contrast");
+            assert!(
+                passes(theme, surface, alpha),
+                "{id:?}: {alpha} loses contrast"
+            );
             if alpha > FLOATING_GLASS_MIN_ALPHA + 0.005 {
                 assert!(
                     !passes(theme, surface, alpha - 0.01),

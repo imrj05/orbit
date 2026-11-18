@@ -432,7 +432,7 @@ Mac's. Projects reach a host by `git clone` there, never by uploading the
 working tree (t3code's model): only pushed history travels, the host needs its
 own git access, and the ignored files a clone cannot bring are copied one by
 one on stdin into the clone. Not yet: quota, auto-title and subagents on the host (they read state
-Orbit keeps locally), sidebar listing and resume of remote sessions, MCP secrets
+Orbit keeps locally), MCP secrets
 forwarding, password logins on Windows, and trusting a new host key in-app.
 Passwords follow t3code: keys first in `BatchMode`; on `Permission denied`
 with a password method listed, a masked dialog asks, and the probe reruns with
@@ -515,7 +515,7 @@ ticked ignored files over ssh stdin; a host entry saved for the clone), the
 guard and the workflow extension installed and the mode pinned to
 Supervised on every launch (the access chip shows that and stays locked), the
 Plan / Build / Ask mode synced to the host's store, and the default model
-applied over RPC when the host's catalog has it. Covered by `orbit-rpc`'s fake-ssh transport
+applied over RPC when the host's catalog has it, and each host's sessions listed in the sidebar (read from the host's own store over ssh, metadata only) and resumed there with `switch_session`. Covered by `orbit-rpc`'s fake-ssh transport
 test, `remote_hosts`' store tests (surgical writes, unique names, alias
 discovery) and the app's `remote_ui_tests`; not yet exercised against a real VPS
 or in the GUI by hand.

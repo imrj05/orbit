@@ -242,6 +242,35 @@ only the ignored files the user ticks.
 
 Only pushed commits reach the server; uncommitted work stays on this Mac.
 
+## Remote sessions in the sidebar
+
+pi writes a remote session's file on the host, so this Mac's
+`~/.pi/agent/sessions` never has it. The sidebar lists them from the host:
+
+- **Listing** (`orbit_rpc::remote::list_sessions_script`, read-only): the
+  host's Node walks `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions`, newest
+  files first (at most 300), and prints one JSON line per session with only
+  what a row shows — id, cwd, pi's latest `session_info` name, the first user
+  message's text and the newest user message's time. No transcript and no
+  base64 image crosses; drafts (no user message) are skipped like locally;
+  files over 16 MB are read head and tail only. `remote_sessions::parse` turns
+  the lines into rows.
+- **Grouping** (`remote_sessions::group`): one group per enabled host entry,
+  after this Mac's projects. A server is listed once and its sessions shared
+  by its entries; each session sits under the entry with the longest folder
+  containing its cwd, so `demo on vps` (`~/demo`) takes its sessions from a
+  `vps` entry rooted at `~`. A group shows its newest eight; a search hides
+  the groups (it filters local sessions only).
+- **When:** at launch and on ⌘R without asking for anything (a server that
+  wants a password says so on its group), after a remote turn settles (the
+  new session becomes listable), and from a group's refresh button — the only
+  one that may open the password prompt (`AuthThen::SessionList`).
+- **Resume:** the connection check (`AuthThen::ResumeSession`), then the
+  remote start in the session's own cwd, then `switch_session` with the host
+  path — the reattach a remote restart uses. The launch carries no
+  `ORBIT_WORKFLOW_MODE` (the session's own store entry or recorded mode
+  decides) and no default model (a resumed session keeps its own).
+
 ## In the app
 
 - **Start:** the new-task folder picker lists one row per host, then **Add a
@@ -286,7 +315,7 @@ behind it is not installed on the host (only the access guard is).
 | Subagents (tool, Settings page) | subagents extension, local agent files | **Missing** | Install extension; agent files are the host's |
 | Quota / usage meters | quota extension + `get_entries` | **Missing**: no quota for remote sessions | Install the quota extension |
 | Usage page | local session files | Local history only | Read the host's sessions over ssh |
-| Sidebar sessions, resume | local `~/.pi/agent/sessions` | Remote sessions not listed | List the host's sessions over ssh |
+| Sidebar sessions, resume | the host's own store, listed over ssh (`list_sessions_script`) | **Done**: a group per host entry; a click resumes on the host | — |
 | Settings → Skills, Plugins, MCP | local files, local `pi mcp list` | Describe this Mac | Per-host versions over ssh |
 | Files, Git, Review, Worktrees, Explorer | local disk | Off with an explanation (correct) | Remote file/Git over ssh |
 | Terminal (⌘J) | local PTY | A local shell (honest) | Optional "ssh into host" tab |
@@ -296,8 +325,9 @@ behind it is not installed on the host (only the access guard is).
 ## Not done
 
 - Remote file, Git and Review views (the panels are off, not remote-aware).
-- Sidebar listing and resume: pi writes session files on the host, so remote
-  sessions are not in the local `~/.pi/agent/sessions` list.
+- Remote sessions in the sidebar have no pin, rename, archive, delete or
+  "show more"; a group shows its newest eight, and the list is in memory only
+  (it is fetched again at launch, so an offline server shows no sessions).
 - The quota, title and subagent extensions are not installed on the host, so
   remote sessions have no usage meters, no auto-title and no `subagent` tool.
 - Non-image file attachments are refused rather than uploaded.

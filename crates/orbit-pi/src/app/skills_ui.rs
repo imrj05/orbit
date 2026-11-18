@@ -9,9 +9,7 @@
 use super::helpers::*;
 use super::*;
 use crate::skills::{self, Skill, SkillScope};
-use crate::theme::tokens::{
-    input, list_item, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
-};
+use crate::theme::tokens::{input, list_item, DynamicSpacing, IconSize, Radius, TextSize};
 
 /// A Skills-page control, dispatched through one entry point.
 #[derive(Clone)]
@@ -634,43 +632,17 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SkillAction,
     ) -> AnyElement {
-        let base = button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM);
-        let (button, icon_color) = if danger {
-            (
-                base.border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .text_color(theme.error)
-                    .hover_danger_soft(&theme),
-                theme.error,
-            )
+        let variant = if danger {
+            ButtonVariant::Danger
         } else {
-            (
-                base.border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .text_color(theme.text_secondary)
-                    .hover_state(&theme),
-                theme.text_secondary,
-            )
+            ButtonVariant::Secondary
         };
-        press(button)
-            .when_some(icon_path, |button, path| {
-                button.child(icon(
-                    path,
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    icon_color,
-                ))
-            })
-            .child(div().child(label.to_string()))
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        let mut button = Button::new(id, variant).label(label.to_string());
+        if let Some(path) = icon_path {
+            button = button.icon(path);
+        }
+        button
+            .on_mouse_up(&theme, move |_, _, cx| {
                 let action = action.clone();
                 this.update(cx, |app, cx| app.apply_skill_action(action, cx));
             })

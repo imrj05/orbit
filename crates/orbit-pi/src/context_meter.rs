@@ -14,10 +14,12 @@ use gpui::{
 };
 use orbit_rpc::{ContextUsage, SessionUsage};
 
-use crate::app::{button_frame, icon_button_frame, ControlExt, TipExt};
+use crate::ui::button::IconButton;
+use crate::app::{button_frame, ControlExt};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
+use crate::ui::popover::PopoverExt;
 
 const RING: f32 = 16.;
 const RING_BOX: f32 = 22.;
@@ -393,8 +395,7 @@ pub fn details_card(
     div()
         .w(px(PANEL_W))
         .elevation_2(&theme)
-        .occlude()
-        .on_mouse_down_out(on_outside)
+        .dismiss_on_outside(on_outside)
         .flex()
         .flex_col()
         .px(px(14.))
@@ -413,16 +414,14 @@ pub fn details_card(
                         .child(tr!("context_meter.context_usage")),
                 )
                 .child(
-                    icon_button_frame(div().id("context-close"), &theme, ButtonSize::Compact)
-                        .tip(tr!("common.close"))
-                        .cursor_pointer()
-                        .hover_state(&theme)
-                        .on_click(on_close)
-                        .child(glyph(
+                    IconButton::glyph("context-close", glyph(
                             "icons/x.svg",
                             ButtonSize::Compact.icon_size().px(&theme),
                             theme.text_muted,
-                        )),
+                        ))
+.size(ButtonSize::Compact)
+.tip(tr!("common.close"))
+.on_click(&theme, on_close),
                 ),
         )
         .child(

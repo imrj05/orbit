@@ -53,6 +53,8 @@ use gpui::{
     Window,
 };
 
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::button::IconButton;
 use crate::app::{
     button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, ControlExt,
     PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
@@ -2008,17 +2010,19 @@ impl TerminalPanel {
     /// above the header so the tab strip below it never fights a drag for the
     /// same pixels.
     fn splitter(&self, theme: Theme) -> AnyElement {
-        div()
-            .id("terminal-panel-splitter")
-            .flex_none()
-            .w_full()
-            .h(px(SPLITTER_H))
-            .cursor(CursorStyle::ResizeUpDown)
-            .on_drag(TerminalResize, |_, _, _, cx| cx.new(|_| DragGhost))
-            // Hover is the only affordance a borderless splitter can carry on
-            // a code surface; it reads as the edge thickening, not a new rule.
-            .hover_divider(&theme)
-            .into_any_element()
+        // Hover is the only affordance a borderless splitter can carry on a
+        // code surface; it reads as the edge thickening, not a new rule.
+        resize_handle(
+            "terminal-panel-splitter",
+            &theme,
+            ResizeAxis::Vertical,
+            ResizeLook::Divider,
+        )
+        .flex_none()
+        .w_full()
+        .h(px(SPLITTER_H))
+        .on_drag(TerminalResize, |_, _, _, cx| cx.new(|_| DragGhost))
+        .into_any_element()
     }
 
     /// One chip in the tab strip: label, and a close button that appears with
@@ -2082,32 +2086,22 @@ impl TerminalPanel {
                 .child(label),
         )
         .child(
-            icon_button_frame(
-                div().id(gpui::ElementId::Name(
+            IconButton::new(gpui::ElementId::Name(
                     format!("terminal-tab-close-{index}").into(),
-                )),
-                &theme,
-                ButtonSize::None,
-            )
-            .group(BUTTON_GROUP)
-            .tip(tr!("terminal.close_tab"))
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+                ), "icons/x.svg")
+.size(ButtonSize::None)
+.ink(if active {
+                    theme.text_primary
+                } else {
+                    theme.text_muted
+                })
+.tip(tr!("terminal.close_tab"))
+.on_click(&theme, cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
                 this.close_tab(index, window, cx);
                 // Click handlers bubble: without this the chip's own handler
                 // would select the stale index inside the shrunken strip.
                 cx.stop_propagation();
-            }))
-            .child(icon(
-                "icons/x.svg",
-                ButtonSize::None.icon_size().px(&theme),
-                if active {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                },
-            )),
+            })),
         )
         .tip(tooltip)
         .into_any_element()
@@ -2148,20 +2142,13 @@ impl TerminalPanel {
             // New tab sits with the tabs, where a browser and every editor put
             // it, and never scrolls away with them.
             .child(
-                icon_button_frame(div().id("terminal-new-tab"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("terminal.new_tab"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                IconButton::new("terminal-new-tab", "icons/plus.svg")
+.size(ButtonSize::Default)
+.ink(theme.text_secondary)
+.tip(tr!("terminal.new_tab"))
+.on_click(&theme, cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
                         this.new_tab(window, cx);
-                    }))
-                    .child(icon(
-                        "icons/plus.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_secondary,
-                    )),
+                    })),
             );
         if exited {
             header = header.child(
@@ -2214,14 +2201,7 @@ impl TerminalPanel {
             // Restart reads as the primary action once the shell has exited,
             // and only ever touches the active tab.
             .child(
-                icon_button_frame(div().id("terminal-restart"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("terminal.restart"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.restart(cx)))
-                    .child(refresh_glyph(
+                IconButton::glyph("terminal-restart", refresh_glyph(
                         "terminal-restart-spin",
                         ButtonSize::Default.icon_size().px(&theme),
                         self.restart_spin_until.is_some(),
@@ -2231,24 +2211,19 @@ impl TerminalPanel {
                             theme.text_secondary
                         },
                         theme,
-                    )),
+                    ))
+.size(ButtonSize::Default)
+.tip(tr!("terminal.restart"))
+.on_click(&theme, cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.restart(cx))),
             )
             .child(
-                icon_button_frame(div().id("terminal-close"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("common.close"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click(
-                        cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                IconButton::new("terminal-close", "icons/x.svg")
+.size(ButtonSize::Default)
+.ink(theme.text_secondary)
+.tip(tr!("common.close"))
+.on_click(&theme, cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
                             this.toggle(window, cx)
-                        }),
-                    )
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_secondary,
-                    )),
+                        }),),
             )
             .into_any_element()
     }

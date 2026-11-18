@@ -25,6 +25,8 @@ use crate::theme::tokens::{
     context_menu, input, modal, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
     Radius, RaisedExt, TextSize,
 };
+use crate::ui::banner::{Banner, BannerTone};
+use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::worktree::{self, Worktree, WorktreeError, WorktreeManager};
 use crate::worktree_setup;
 
@@ -310,16 +312,7 @@ impl OrbitApp {
             self.clone_confirm_focus.clone(),
             self.clone_cancel_focus.clone(),
         ];
-        let current = fields
-            .iter()
-            .position(|field| field.is_focused(window))
-            .unwrap_or(0);
-        let next = if backwards {
-            (current + fields.len() - 1) % fields.len()
-        } else {
-            (current + 1) % fields.len()
-        };
-        window.focus(&fields[next]);
+        crate::ui::dialog::focus_ring(&fields, backwards, window);
     }
 
     fn on_clone_next(
@@ -1083,11 +1076,8 @@ impl OrbitApp {
     /// click's mouse-up would toggle it straight back open, so a second click
     /// never closed it.
     pub(super) fn toggle_worktree_advanced(&mut self, cx: &mut Context<Self>) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.worktree_advanced_open = !self.worktree_advanced_open;
         cx.notify();
@@ -1736,8 +1726,7 @@ impl OrbitApp {
                                     .debug_selector(|| "worktrees-advanced-popup".to_string())
                                     .w(px(240.))
                                     .py(picker::list_padding_y(&theme))
-                                    .occlude()
-                                    .on_mouse_down_out({
+                                    .dismiss_on_outside({
                                         let this = popup_this.clone();
                                         move |_, _, cx| {
                                             this.update(cx, |app, cx| {
@@ -1746,7 +1735,7 @@ impl OrbitApp {
                                                 // button's mouse-up (the same
                                                 // click) cannot toggle it back
                                                 // open.
-                                                app.menu_dismissed_at = Some(Instant::now());
+                                                app.menu_dismissed_at.arm();
                                                 cx.notify();
                                             });
                                         }
@@ -2004,33 +1993,16 @@ impl OrbitApp {
     fn worktrees_error_banner(&self, theme: Theme, this: Entity<OrbitApp>) -> Option<AnyElement> {
         let error = self.worktrees_error.clone()?;
         Some(
-            div()
-                .w_full()
-                .min_w_0()
-                .bg(theme.error.opacity(0.08))
-                .border_1()
-                .border_color(theme.error.opacity(0.35))
-                .rounded(panel::RADIUS.px(&theme))
-                .px(DynamicSpacing::Base16.px(&theme))
-                .py(DynamicSpacing::Base12.px(&theme))
-                .flex()
-                .items_start()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(icon(
-                    "icons/circle-x.svg",
-                    IconSize::Medium.px(&theme),
-                    theme.error,
-                ))
-                .child(
+            Banner::new(BannerTone::Error)
+                // The error is git's own output; keep its monospace layout.
+                .line(
                     div()
-                        .flex_1()
-                        .min_w_0()
                         .font_family(theme::code_font_family())
                         .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_primary)
                         .child(error),
                 )
-                .child(worktree_text_button(
+                .action(worktree_text_button(
                     "worktrees-error-dismiss",
                     tr!("common.dismiss"),
                     theme,
@@ -2040,7 +2012,7 @@ impl OrbitApp {
                         cx.notify();
                     },
                 ))
-                .into_any_element(),
+                .render(&theme),
         )
     }
 
@@ -3291,7 +3263,8 @@ impl OrbitApp {
             ));
         }
         let rows = self.work_in_rows().unwrap_or_default();
-        self.work_in_menu_highlight = self.work_in_selected_ix(&rows);
+        self.work_in_menu_highlight
+            .highlight(self.work_in_selected_ix(&rows));
         self.work_in_scroll.set_offset(point(px(0.), px(0.)));
         self.work_in_menu_open = true;
         // The list a worktree was created in from a terminal may be one
@@ -3324,11 +3297,8 @@ impl OrbitApp {
     ) {
         // The click's mouse-down dismisses any open menu; without this guard
         // the same click's mouse-up would toggle it straight back open.
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_work_in_menu(window, cx);
     }
@@ -3341,7 +3311,7 @@ impl OrbitApp {
     ) {
         let count = self.work_in_row_count();
         if count > 0 {
-            self.work_in_menu_highlight = (self.work_in_menu_highlight + 1) % count;
+            self.work_in_menu_highlight.next(count);
             self.reveal_work_in_highlight(cx);
         }
         cx.notify();
@@ -3355,9 +3325,33 @@ impl OrbitApp {
     ) {
         let count = self.work_in_row_count();
         if count > 0 {
-            self.work_in_menu_highlight = (self.work_in_menu_highlight + count - 1) % count;
+            self.work_in_menu_highlight.prev(count);
             self.reveal_work_in_highlight(cx);
         }
+        cx.notify();
+    }
+
+    pub(super) fn on_work_in_first(
+        &mut self,
+        _: &crate::WorkInMenuFirst,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.work_in_row_count();
+        self.work_in_menu_highlight.first(count, |_| true);
+        self.reveal_work_in_highlight(cx);
+        cx.notify();
+    }
+
+    pub(super) fn on_work_in_last(
+        &mut self,
+        _: &crate::WorkInMenuLast,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.work_in_row_count();
+        self.work_in_menu_highlight.last(count, |_| true);
+        self.reveal_work_in_highlight(cx);
         cx.notify();
     }
 
@@ -3365,7 +3359,7 @@ impl OrbitApp {
     /// scrolling list, so gpui can scroll to the row itself.
     fn reveal_work_in_highlight(&self, _cx: &Context<Self>) {
         self.work_in_scroll
-            .scroll_to_item(self.work_in_menu_highlight);
+            .scroll_to_item(self.work_in_menu_highlight.highlighted());
     }
 
     pub(super) fn on_work_in_confirm(
@@ -3374,7 +3368,11 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let ix = self.work_in_menu_highlight;
+        // Rows can change while the menu is open (remote hosts load in the
+        // background), so Enter acts on the nearest row that still exists.
+        let count = self.work_in_row_count();
+        self.work_in_menu_highlight.reconcile(count, |_| true);
+        let ix = self.work_in_menu_highlight.highlighted();
         self.run_work_in_item(ix, window, cx);
     }
 
@@ -3591,21 +3589,19 @@ impl OrbitApp {
             ));
         }
 
-        let mut popup = picker_surface(div(), &theme)
+        let mut popup = popover_picker(div(), &theme)
             .debug_selector(|| "work-in-popup".to_string())
             .w(px(300.))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
             .key_context("WorkInMenu")
             .track_focus(&self.work_in_menu_focus)
             .on_action(cx.listener(Self::on_work_in_next))
             .on_action(cx.listener(Self::on_work_in_prev))
+            .on_action(cx.listener(Self::on_work_in_first))
+            .on_action(cx.listener(Self::on_work_in_last))
             .on_action(cx.listener(Self::on_work_in_confirm))
             .on_action(cx.listener(Self::on_work_in_close))
-            .on_mouse_down_out(cx.listener(|app, _, window, cx| {
-                app.menu_dismissed_at = Some(Instant::now());
+            .dismiss_on_outside(cx.listener(|app, _, window, cx| {
+                app.menu_dismissed_at.arm();
                 app.close_work_in_menu(window, cx);
             }))
             .child(menu_header(tr!("working_folder.title"), &theme))
@@ -3648,7 +3644,7 @@ impl OrbitApp {
         theme: &Theme,
         this: gpui::WeakEntity<OrbitApp>,
     ) -> AnyElement {
-        let highlighted = ix == self.work_in_menu_highlight;
+        let highlighted = ix == self.work_in_menu_highlight.highlighted();
         let (icon_path, label, detail, prunable) = match row {
             WorkInRow::Folder(folder) => {
                 let icon_path = match &folder.folder.location {
@@ -3695,8 +3691,8 @@ impl OrbitApp {
                     move |_, _, cx| {
                         this_row
                             .update(cx, |app, cx| {
-                                if app.work_in_menu_highlight != ix {
-                                    app.work_in_menu_highlight = ix;
+                                if app.work_in_menu_highlight.highlighted() != ix {
+                                    app.work_in_menu_highlight.highlight(ix);
                                     cx.notify();
                                 }
                             })
@@ -3856,17 +3852,13 @@ fn worktree_row_menu(
             move |app, cx| app.start_remove_worktree(remove_path.clone(), cx),
         ));
     }
-    let popup = picker_surface(div(), &theme)
+    let popup = popover_picker(div(), &theme)
         .w(px(220.))
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .occlude()
-        .on_mouse_down_out({
+        .dismiss_on_outside({
             let this = this.clone();
             move |_, _, cx| {
                 this.update(cx, |app, cx| {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                     app.worktree_menu = None;
                     cx.notify();
                 })
@@ -4074,33 +4066,21 @@ fn clone_dialog_button<F>(
 where
     F: Fn(&mut OrbitApp, &mut Window, &mut Context<OrbitApp>) + 'static,
 {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .key_context("CloneDialog CloneDialogButton")
-        .track_focus(&focus)
-        .border_1()
-        .when(primary, |button| {
-            button
-                .border_color(theme.accent.opacity(0.5))
-                .raised(theme.accent.opacity(0.14), &theme)
-                .hover_accent_wash(&theme, AccentWash::Faint)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.accent_text)
-        })
-        .when(!primary, |button| {
-            button
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .hover_state(&theme)
-                .text_color(theme.text_secondary)
-        })
-        .focus_state(&theme)
-        .cursor_pointer()
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+    let variant = if primary {
+        ButtonVariant::Tinted
+    } else {
+        ButtonVariant::Secondary
+    };
+    let focus_target = focus.clone();
+    Button::new(id, variant)
+        .label(label)
+        .on_mouse_up(&theme, move |_, window, cx| {
             cx.stop_propagation();
-            window.focus(&focus);
+            window.focus(&focus_target);
             this.update(cx, |app, cx| action(app, window, cx));
         })
+        .key_context("CloneDialog CloneDialogButton")
+        .track_focus(&focus)
         .into_any_element()
 }
 
@@ -4178,16 +4158,9 @@ fn worktree_primary_button<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .border_1()
-        .border_color(theme.accent.opacity(0.5))
-        .raised(theme.accent.opacity(0.14), &theme)
-        .cursor_pointer()
-        .hover_accent_wash(&theme, AccentWash::Faint)
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.accent_text)
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+    Button::new(id, ButtonVariant::Tinted)
+        .label(label)
+        .on_mouse_up(&theme, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
         })
         .into_any_element()

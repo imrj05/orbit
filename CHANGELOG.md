@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Remote sessions in the sidebar.** Each enabled remote host entry gets a group under your
+  projects listing the sessions that ran in its folder on that server, newest first; clicking
+  one resumes it **on the server** (the session's own model and Plan/Build/Ask mode kept). The
+  server lists its own pi store over ssh — read-only, only each row's title, folder and time,
+  never a transcript. Lists refresh at launch, on ⌘R and after a remote turn settles without
+  asking for anything; a server that wants a password says so, and its group's refresh button
+  signs in.
+- **Focus comes back after more dialogs close.** The MCP server editor, the remote
+  host editor, the provider account editor, the remote API-key prompt, "Add to a
+  server" and the SSH password prompt now return the keyboard to whatever opened
+  them when they close — by button, Escape, the scrim or a finished operation —
+  instead of leaving focus nowhere. While they are open, **Tab** and **Shift-Tab** move
+  between their fields and wrap, instead of doing nothing. An extension's question
+  dialog labels itself in your interface language instead of always in English. Menus that close from an outside click now
+  all ignore that same click's release on their trigger for the same 200 ms.
+
+- **Home / End in long pickers, and Retry when Review cannot load.** The worktree
+  "Work in" menu and an extension's select dialog jump to their first and last
+  rows with **Home** and **End**. When the Review pane fails to read a diff, its
+  error now carries a **Retry** button that runs the same reload as the header's
+  refresh.
+- **One button and badge vocabulary across the app.** Buttons now come from one
+  component with named variants (primary, secondary, outline, tinted, danger,
+  ghost), so the same meaning looks the same in Settings, Subagents, MCP, Git,
+  Worktrees, Usage and the updater. A few buttons changed slightly as a result:
+  primary buttons gain the 1px edge their neighbours already had (2px wider),
+  primary buttons press by colour instead of also dimming, disabled buttons use
+  the shared disabled frame, and the session-retention, plugin and runtime
+  buttons take the shared medium weight. Provider badges are 18px tall like
+  Git's ref badges. Inline warning and error notices share one banner, so the
+  Worktrees error and the inactive-subagents notice match the app's other
+  error cards.
+
 - **Frosted floating surfaces without a wallpaper.** In dark palettes on macOS,
   menus, pickers, popovers, tooltips, notifications, modals and the
   jump-to-latest button now frost the workbench behind them, a 24 pt blur
@@ -118,6 +151,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reopens docked after it is closed — ⌘J never changes two things at once.
 
 ### Changed
+
+- **The wallpaper's page tint is yours, not the contrast pass's.** In full-window
+  mode the sidebar, the chat column and the settings nav used to take at least
+  65% of the palette's own background colour over the picture, and the contrast
+  pass could raise that further on a bright image — so a chosen wallpaper read as
+  a black-tinted backdrop however translucent you asked for. **Card opacity** now
+  paints those panes at exactly the value you set, all the way down to 0%, where
+  the image is shown as processed with no tint at all. Cards, the composer,
+  menus and dialogs keep their contrast pass, so their text stays readable.
+  Dimming the picture is now only **Image opacity** (plus **Glass panes** for the
+  panes themselves, which blur without tinting).
 
 - **One design system, and a redesigned Theme and Background.** The
   Classic / Operational switch is gone: Operational and Operational Light are
