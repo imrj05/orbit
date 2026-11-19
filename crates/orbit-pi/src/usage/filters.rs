@@ -9,6 +9,7 @@
 //! Every control writes through `UsagePage`'s filter setters, so one state
 //! object drives every panel on the page (§10).
 
+use crate::ui::popover::anchored_menu;
 use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::ui::chip::{ChipButton, ChipStyle};
@@ -20,7 +21,7 @@ use crate::ui::prelude::{
 };
 use chrono::Datelike;
 use gpui::{
-    anchored, deferred, div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
+    div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
     FontWeight, IntoElement, MouseButton, MouseDownEvent, SharedString, Window,
 };
 
@@ -74,15 +75,10 @@ pub fn chip_with_menu(
             // otherwise the panel hangs over the chip that opened it (and a
             // second click lands inside the popup). See the same fix in
             // `settings.rs`.
-            anchored()
-                .position_mode(gpui::AnchoredPositionMode::Local)
-                .anchor(corner)
-                .offset(point(
+            anchored_menu(corner, point(
                     px(-1.),
                     TRIGGER_SIZE.height(&theme) + popover::MENU_OFFSET,
-                ))
-                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                .child(deferred(panel()))
+                ), panel())
         }))
         .into_any_element()
 }
@@ -126,49 +122,11 @@ pub fn toggle_button(
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let rest = if on {
-        theme.surface_active
-    } else {
-        theme.background
-    };
-    let button = button_frame(
-        div().id(ElementId::Name(SharedString::from(id))),
-        &theme,
-        TRIGGER_SIZE,
-    )
-    .border_1()
-    .border_color(if on {
-        theme.border_strong
-    } else {
-        theme.border
-    })
-    .raised(rest, &theme)
-    .cursor_pointer()
-    .on_mouse_down(MouseButton::Left, on_click)
-    .children(on.then(|| {
-        icon(
-            "icons/check.svg",
-            ButtonSize::Medium.icon_size().px(&theme),
-            theme.text_primary,
-        )
-    }))
-    .child(
-        div()
-            .text_color(if on {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            })
-            .child(label),
-    );
-    // The wash fades in over the button's own fill (§ the interaction layer),
-    // rather than swapping on one frame.
-    crate::motion::hover(
-        button,
-        id,
-        &theme,
-        crate::motion::Hover::over(Some(rest), theme.hover_wash()),
-    )
+    ChipButton::new(id, ChipStyle::Outlined { inset: true })
+        .size(TRIGGER_SIZE)
+        .label(label)
+        .checked(on)
+        .on_mouse_down(&theme, on_click)
 }
 
 /// The popover shell shared by every filter menu, on the branch selector's
@@ -294,12 +252,9 @@ fn footer_row(
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .cursor_pointer()
-        .text_color(theme.text_muted)
-        .hover_quiet(&theme)
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(label.to_string())
+    Button::new(id, ButtonVariant::Ghost)
+        .label(label.to_string())
+        .on_mouse_down(&theme, on_click)
         .into_any_element()
 }
 
@@ -1166,6 +1121,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                 };
                 let entity = cx.entity();
                 week = week.child(
+                    // Bespoke: a date-grid cell — selected / in-range / today are the calendar's own fills.
                     button_frame(
                         div().id(ElementId::NamedInteger(
                             "usage-cal-day".into(),
@@ -1249,6 +1205,8 @@ pub fn toggle_chip(
     let clear_id = format!("{id}-clear");
     // Sized like the filter chips it sits beside; the right edge is tighter
     // so the clear button reads as part of the chip.
+    // Bespoke: Usage's own small family — a static "narrowed" chip with an
+    // inline clear; neither a trigger nor a choice the chip owner expresses.
     button_frame(
         div().id(ElementId::Name(SharedString::from(id))),
         &theme,

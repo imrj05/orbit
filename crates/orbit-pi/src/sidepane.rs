@@ -25,6 +25,7 @@ use gpui::{
     StatefulInteractiveElement, Window,
 };
 
+use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::composer::ComposerInput;
 use crate::diff_view::{
     diff_gutter_width, render_code_row, render_file_header, render_hunk_header, render_meta,
@@ -32,7 +33,6 @@ use crate::diff_view::{
 };
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
@@ -45,9 +45,8 @@ use crate::ui::list::virtual_list;
 use crate::ui::menu::menu_hint;
 use crate::ui::popover::PopoverExt;
 use crate::ui::prelude::{
-    button_frame, context_menu_separator, empty_state, file_glyph, icon, nerd_font_family,
-    picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, PressedRamp,
-    StatefulControlExt, TipExt, BUTTON_GROUP,
+    context_menu_separator, empty_state, file_glyph, icon, nerd_font_family,
+    picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, TipExt, BUTTON_GROUP,
 };
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::style::surface::SurfaceExt;
@@ -1527,39 +1526,12 @@ impl SidePane {
         // embedded browser always shows the working tree split into Staged and
         // Changes sections, so its chip is dropped.
         let source_chip = (!self.embedded).then(|| {
-            button_frame(div().id("review-source"), &theme, ButtonSize::Medium)
-                .group(BUTTON_GROUP)
-                .border_1()
-                .border_color(if self.source_menu_open {
-                    theme.border_strong
-                } else {
-                    theme.border
-                })
-                .raised(theme.surface_elevated, &theme)
-                .cursor_pointer()
-                .hover_state(&theme)
-                .pressed_state(&theme, PressedRamp::Wash)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
-                .child(icon(
-                    "icons/file-diff.svg",
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    theme.text_muted,
-                ))
-                .child(
-                    div()
-                        .max_w(px(120.))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(self.source_label(self.source)),
-                )
-                .child(icon(
-                    "icons/chevron-down.svg",
-                    IconSize::XSmall.px(&theme),
-                    theme.text_muted,
-                ))
-                .into_any_element()
+            ChipButton::new("review-source", ChipStyle::Outlined { inset: false })
+                .icon("icons/file-diff.svg")
+                .label(self.source_label(self.source))
+                .label_max_w(px(120.))
+                .open(self.source_menu_open)
+                .on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
         });
 
         // Toolbar: the source filter chip, the diff view toggles, and the

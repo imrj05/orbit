@@ -43,6 +43,8 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
+use crate::ui::button::disclosure_toggle;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::agent_call_display::AgentCallDisplay;
 use crate::app::OrbitApp;
 use crate::context_meter::{format_tokens, hit_percent_label};
@@ -50,7 +52,6 @@ use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
 use crate::motion::Hover;
 use crate::shimmer::ShimmerText;
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     button, context_menu, looping, panel, picker, popover, BufferLineHeight, ButtonSize,
     DynamicSpacing, IconSize, Motion, Radius, StyledExt, TextSize, BORDER_WIDTH,
@@ -59,9 +60,10 @@ use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, HistoryCard, Step, SummaryRow, ToolCall, ToolFacts};
 use crate::turn_review::{ChangedFile, TurnFiles};
 use crate::ui::button::{IconButton, IconButtonVariant};
+use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::ui::popover::{popover_list, PopoverExt};
 use crate::ui::prelude::{
-    anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
+    anchored_popover_at, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
     icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::ui::style::surface::SurfaceExt;
@@ -2763,20 +2765,11 @@ fn render_assistant_error(
     retry: Option<RegenerateOpener>,
 ) -> AnyElement {
     let retry_button = retry.map(|opener| {
-        button_frame(
-            div().id(ElementId::NamedInteger("retry-response".into(), ix as u64)),
-            &theme,
-            ButtonSize::Default,
-        )
+        Button::keyed(ElementId::NamedInteger("retry-response".into(), ix as u64), ButtonVariant::Secondary)
+.size(ButtonSize::Default)
+.render(&theme)
         .debug_selector(move || format!("retry-response-{ix}"))
         .flex_none()
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.text_secondary)
-        .hover_state(&theme)
         .tip(tr!("transcript.retry_hint"))
         .child(glyph(
             "icons/refresh.svg",
@@ -3009,60 +3002,28 @@ fn render_activity_group(
         // Let the summary chip hug its content so it reads as a control
         // instead of a full-width band across the answer column.
         .items_start()
-        .child(
-            button_frame(
-                div().id(ElementId::NamedInteger(
-                    "activity-toggle".into(),
-                    ((ix as u64) << 20) | range.start as u64,
-                )),
-                &theme,
-                ButtonSize::Medium,
+        .child({
+            let glyph_ink = cluster_state.unwrap_or(theme.text_secondary);
+            ChipButton::new(
+                format!("activity-toggle-{}-{}", ix, key.1),
+                ChipStyle::Outlined { inset: false },
             )
-            .min_w_0()
-            .max_w_full()
-            // Raised fill + hairline = DESIGN.md's chip treatment: the
-            // open state steps the border up for emphasis.
-            .raised(theme.surface_elevated, &theme)
-            .border_1()
-            .border_color(if open {
-                theme.border_strong
-            } else {
-                theme.border
-            })
-            .cursor_pointer()
-            .hover_state(&theme)
-            .child(
+            .shrink()
+            .open(open)
+            .leading(
                 div()
                     .flex_none()
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base04.px(&theme))
-                    .children(icons.iter().copied().map(|icon| {
+                    .children(icons.iter().copied().map(move |icon| {
                         // Settled work is monochrome ink; only run/fail state
                         // takes a color (see `cluster_state`).
-                        glyph(
-                            icon,
-                            IconSize::XSmall.px(&theme),
-                            cluster_state.unwrap_or(theme.text_secondary),
-                        )
+                        glyph(icon, IconSize::XSmall.px(&theme), glyph_ink)
                     })),
             )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary)
-                    .child(title),
-            )
-            .child(disclosure_chevron(
-                format!("activity-caret-{ix}-{}", key.1),
-                open,
-                IconSize::XSmall.px(&theme),
-                theme.text_muted,
-                &theme,
-            ))
-            .on_click({
+            .label(title)
+            .on_click(&theme, {
                 let expanded_activities = expanded_activities.clone();
                 let scroller = scroller.clone();
                 move |_, _, cx| {
@@ -3071,8 +3032,8 @@ fn render_activity_group(
                     scroller.remeasure_toggle(ix);
                     cx.refresh_windows();
                 }
-            }),
-        );
+            })
+        });
 
     if open {
         let mut body = div()
@@ -5575,26 +5536,19 @@ fn render_detail_section(
             tr!("transcript.show_all_lines", count = total)
         };
         card.child(
-            button_frame(
-                div()
-                    .id(ElementId::NamedInteger(
-                        "section-fold".into(),
-                        ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                    ))
-                    .debug_selector(move || {
-                        format!("tool-section-fold-{}-{}-{section}", key.0, key.1)
-                    }),
+            disclosure_toggle(
+                ElementId::NamedInteger(
+                    "section-fold".into(),
+                    ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
+                ),
                 &theme,
                 ButtonSize::Default,
             )
+            .debug_selector(move || format!("tool-section-fold-{}-{}-{section}", key.0, key.1))
             // Full width with its label at the start, so the paint-cap note
             // can fill the rest of the row.
             .w_full()
             .justify_start()
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .hover_ink(&theme)
             .child(disclosure_chevron(
                 format!("section-fold-caret-{}-{}-{section}", key.0, key.1),
                 expanded,
@@ -5909,22 +5863,14 @@ fn render_edit_diff(
             tr!("transcript.show_all_lines", count = total)
         };
         body = body.child(
-            button_frame(
-                div().id(ElementId::NamedInteger(
+            disclosure_toggle(ElementId::NamedInteger(
                     "edit-diff-fold".into(),
                     ((key.0 as u64) << 16 | key.1 as u64) << 8 | EDIT_DIFF_COPY_SECTION as u64,
-                )),
-                &theme,
-                ButtonSize::Default,
-            )
+                ), &theme, ButtonSize::Default)
             // Full width with its label at the start, so the paint-cap note
             // can fill the rest of the row.
             .w_full()
             .justify_start()
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .hover_ink(&theme)
             .child(disclosure_chevron(
                 format!("edit-diff-caret-{}-{}", key.0, key.1),
                 expanded,
@@ -6491,16 +6437,7 @@ fn render_turn_fold(
         .gap(px(10.))
         .child(div().h(px(1.)).flex_1().bg(theme.border))
         .child(
-            button_frame(
-                div().id(ElementId::NamedInteger("turn-fold".into(), ix as u64)),
-                &theme,
-                ButtonSize::Default,
-            )
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .hover_ink_quiet(&theme)
+            disclosure_toggle(ElementId::NamedInteger("turn-fold".into(), ix as u64), &theme, ButtonSize::Default)
             .child(label)
             .child(disclosure_chevron(
                 format!("turn-fold-caret-{ix}"),
@@ -9298,21 +9235,12 @@ pub(crate) fn render_changed_files(
     // Review affordance: opens the changed-files diff in the right side
     // pane's Review tab (no external editor hop).
     let review = review_changes.map(|(turn, review)| {
-        button_frame(
-            div().id(ElementId::NamedInteger(
+        Button::keyed(ElementId::NamedInteger(
                 "review-changes".into(),
                 message_ix as u64,
-            )),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.text_secondary)
-        .hover_state(&theme)
+            ), ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
         .child(glyph(
             "icons/file-diff.svg",
             ButtonSize::Medium.icon_size().px(&theme),

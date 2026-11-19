@@ -368,6 +368,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
         .debug_selector(|| "message-scroller-jump".to_string())
         .group(BUTTON_GROUP);
     let button = if unread {
+        // Bespoke: the labelled form of the same floating, frosted jump control as its icon twin.
         button_frame(button, &theme, ButtonSize::Large)
     } else {
         // Bespoke: a floating, frosted, fully round control over the

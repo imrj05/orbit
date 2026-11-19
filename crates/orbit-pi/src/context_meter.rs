@@ -9,17 +9,16 @@ use std::rc::Rc;
 
 use gpui::{
     canvas, deferred, div, point, prelude::*, px, relative, svg, AnyElement, App, Background,
-    Bounds, ClickEvent, Context, Entity, FontWeight, Hsla, IntoElement, MouseDownEvent,
+    Bounds, ClickEvent, Context, Entity, Hsla, IntoElement, MouseDownEvent,
     PathBuilder, Pixels, SharedString, Window,
 };
 use orbit_rpc::{ContextUsage, SessionUsage};
 
-use crate::theme::tokens::RaisedExt;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
 use crate::ui::button::IconButton;
 use crate::ui::popover::PopoverExt;
-use crate::ui::prelude::{button_frame, ControlExt};
 
 const RING: f32 = 16.;
 const RING_BOX: f32 = 22.;
@@ -459,27 +458,16 @@ pub fn details_card(
 /// label names the in-flight state while pi works, so the control is never
 /// a second click on a run that is already compacting.
 fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme) -> AnyElement {
-    let button = button_frame(div().id("context-compact-now"), &theme, ButtonSize::Medium)
+    Button::new("context-compact-now", ButtonVariant::Secondary)
+        .label(if is_compacting {
+            tr!("context_meter.compacting")
+        } else {
+            tr!("context_meter.compact_now")
+        })
+        .loading(is_compacting)
+        .on_click(&theme, move |event, window, cx| on_compact(event, window, cx))
         .w_full()
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .font_weight(FontWeight::MEDIUM);
-    if is_compacting {
-        button
-            .text_color(theme.text_muted)
-            .cursor_default()
-            .child(tr!("context_meter.compacting"))
-            .into_any_element()
-    } else {
-        button
-            .text_color(theme.text_secondary)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_click(move |event, window, cx| on_compact(event, window, cx))
-            .child(tr!("context_meter.compact_now"))
-            .into_any_element()
-    }
+        .into_any_element()
 }
 
 fn segmented_bar(slices: &[ContextSlice], window: u64, theme: Theme) -> impl IntoElement + use<> {

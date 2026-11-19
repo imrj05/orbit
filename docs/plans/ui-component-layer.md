@@ -1,9 +1,17 @@
 # Plan — UI component layer
 
-**Status (2026-11-18):** Phases 1–7 landed; only the manual pass is outstanding.
-Work is on the `feat/sidebar-toolbar` branch (§6.14 uncommitted). Start at
-**Resume here** below; §6.2–§6.13 is the per-pass log (what moved, the checks
-that ran and every declared pixel change).
+**Status (2026-11-19):** Phases 1–7 landed and committed (§6.14 in `6fe96e59`).
+Every element family has one owner under `ui/`. The §6.15 sweep (buttons,
+toggle/select chips, popover anchors, disclosures, Glass, `FileChip`) is done
+and committed on `feat/sidebar-toolbar` (`refactor(ui): move the last
+hand-built controls onto ui/ owners`).
+The last 20 raw button/popover constructs are also dealt with (§6.15 last
+cohort below): every site now runs an owner or carries a `// Bespoke:` reason,
+so the raw-construct ratchet sits at **0**. Left: the manual pass, which has
+never been done. Ratchets: raw constructs 0 (`scripts/ui_owner_budget.json`),
+one-frame hovers 104 (`scripts/hover_budget.json`). Start at **Resume here**
+below; §6.2–§6.15 is the per-pass log (what moved, the checks that ran and
+every declared pixel change).
 
 ## Resume here
 
@@ -13,11 +21,13 @@ that ran and every declared pixel change).
 |---|---|---|
 | Interaction states, press, tooltip | `ui/style/control.rs` | ✅ done |
 | Material (frost) | `ui/style/surface.rs` | ✅ done |
-| Button (6 variants, loading, disabled, faded) | `ui/button.rs` `Button`, `ButtonVariant` | ✅ owner; ~20 wrappers migrated |
-| Icon button (ghost/glass, open, faded, glyph) | `ui/button.rs` `IconButton` | ✅ 74 more sites moved; 19 `icon_button_frame` sites left, each a commented bespoke control (send/stop, jump-to-latest, updater pill, open-in split, action-filled, copy-acknowledge, pager, account mark) |
+| Button (8 variants, loading, disabled, faded) | `ui/button.rs` `Button` (`new` for string ids, `keyed` for tuple ids), `ButtonVariant` Primary / Secondary / Outline / Tinted / Danger / Ghost / Destructive / Glass | ✅ owner; the §6.15 sweep moved the hand-built buttons. `loading` keeps a caller's leading glyph; busy buttons no longer stay clickable |
+| Icon button (ghost/glass, open, faded, glyph) | `ui/button.rs` `IconButton` | ✅ 15 `icon_button_frame` sites left, each a `// Bespoke:` control (send/stop, jump-to-latest, updater pill, open-in split, action-filled, copy-acknowledge, pager, account mark) |
+| Disclosure toggle | `ui/button.rs` `disclosure_toggle` (style seam, returns the frame) | ✅ show/hide-more and expand toggles |
 | Segmented control | `ui/button.rs` `ButtonGroup`, `SegmentFill`, `segmented_segment` | ✅ all 11 segmented controls; `settings_segment` / `active_segment` deleted |
-| Link | `ui/button.rs` `LinkButton` | ✅ updater changelog link, transcript tool URL |
-| Trigger chip (quiet / outlined) | `ui/chip.rs` `ChipButton` (+ size, leading mark, disabled, shrink) | ✅ Usage filters + composer access/workflow/model/thinking |
+| Link | `ui/button.rs` `LinkButton` | ✅ updater changelog link, transcript tool URL, Subagents' *Undo* |
+| Trigger / choice / toggle chip | `ui/chip.rs` `ChipButton` (`open` / `selected` / `checked` / `applied`, caret control, + size, leading / trailing, mono, `label_tip`, `label_max_w`, disabled, shrink (truncating), `render`) | ✅ Usage filters + toggles, composer chips, Settings select, Machine, Review source, MCP/provider kinds, permissions scope, subagent tool/thinking, model scope tabs, Git triggers (branch, commit-model, label filter), merge-mode choices, the transcript activity fold, ssh alias suggestions. **Decided: neutral selected** — `surface_selected` fill, a check glyph on toggles, never an accent fill. Usage's narrowed-filter token stays `// Bespoke:` (a static chip with an inline clear) |
+| File chip | `ui/chip.rs` `FileChip` (visual, name, meta, `on_open`, `on_remove`) | ✅ composer attachments + screenshots; only the nested ✕ removes |
 | Badge | `ui/chip.rs` `Badge` (+ `Framed`, leading glyph) | ✅ owner; Git refs, provider badges, Explorer save state |
 | Pill | `ui/chip.rs` `Pill` (bare / faced) | ✅ MCP status, composer queue count (the save-state chip proved to be a `Badge`) |
 | Banner / error card | `ui/banner.rs` `Banner` (Info/Success/Warning/Error, glyph, `strip`), `error_state` | ✅ run error (via `error_state`), Git failure, Explorer notice strip, worktree setup |
@@ -28,7 +38,7 @@ that ran and every declared pixel change).
 | Menu cursor | `ui/menu.rs` `MenuState`, `MenuCursor` (hidden until a key, ignored by `==`), `MenuKey` | ✅ 9 menus: add, access, workflow, Work in, extension select, Explorer row menu, transcript text menu, sidebar session + workspace menus (Shift-F10 / Menu key open the row menus) |
 | Menu frame + hint | `ui/menu.rs` `context_menu_*`, `menu_hint` | ✅ |
 | Popover shell + dismissal | `ui/popover.rs` `popover_list`, `popover_picker`, `dismiss_on_outside`, `DismissGuard` | ✅ `on_mouse_down_out` only in `ui/` |
-| Dropdown (trigger ↔ menu) | `ui/popover.rs` `dropdown_below/above`, `column_menu` | ✅ 11 dropdowns + 6 column menus; 2 pointer menus use `anchored_popover_at`; no direct `anchored_popover` outside `ui/` |
+| Dropdown (trigger ↔ menu) | `ui/popover.rs` `dropdown_below/above`, `column_menu`, `row_menu`, `anchored_menu` | ✅ 11 dropdowns + 6 column menus; row and pointer menus on `row_menu` / `anchored_menu`; 2 raw `anchored()` left, both `// Bespoke:` |
 | Modal | `ui/dialog.rs` `modal_card/scrim/footer`, `ModalHeader` (+ `modal_header`), `modal_button`, `ModalFocus`, `focus_ring` | ✅ every modal header; footer buttons are Tab stops (Enter/Space press them) in all six ring-managed form modals |
 | Rows | `ui/row.rs` `PickerRow`, `picker_entry`, `option_row`, `nav_row`, `setting_row`, `RowState`, `list_row` | ✅ sidebar + pickers; Usage on `table_row`; trees on `TreeRow` (fills from `RowState`); Git's History/Graph/GitHub rows on `list_row` |
 | Resize handle | `ui/resize.rs` | ✅ all 5 |
@@ -48,6 +58,7 @@ that ran and every declared pixel change).
 | Navigation rail | `ui/rail.rs` `tick_width`, `tick_ink`, `tick_bar`, `edge_fade`, `side_card` | ✅ transcript turn rail (state, scroll and hint lifetime stay in the transcript) |
 | `app/helpers.rs` deletion (Phase 6) | `ui/prelude.rs`, `app/format.rs` | ✅ deleted; nothing imports it; `app.rs` re-exports no UI |
 | One-owner guard, docs (Phase 7) | `scripts/check_ui_owners.py`; `DESIGN.md` §Components, `INTENT.md` D22, `README.md`, `CHANGELOG.md`, `AGENTS.md` | ✅ |
+| Raw-control ratchet | `scripts/check_ui_owners.py` (`button_frame(` / `anchored()` per file vs `scripts/ui_owner_budget.json`; `--update` lowers it) | ✅ runs in CI's design-guards job with `check_ui_layers.py` |
 
 ### Next, in order
 
@@ -61,10 +72,18 @@ that ran and every declared pixel change).
    `crate::app::{…}` re-exports to `crate::ui::…`, delete the file.
 5. ~~**Phase 7**~~ — done (§6.14). Was: a one-owner guard (each family's defining file), `DESIGN.md`
    §Components, an `INTENT.md` `D#` decision, `README.md`.
-6. **Manual pass** (never done yet): `bacon run` in one light, one dark
+6. ~~**§6.15 sweep**~~ — buttons, toggle/select chips, anchors, disclosures,
+   Glass, `FileChip`, triggers, small controls: done.
+7. ~~**The last 20 raw constructs**~~ — done (§6.15 last cohort): every site
+   moved onto an owner or carries a `// Bespoke:` reason; ratchet at 0.
+8. ~~**Commit**~~ — done, as one commit (most files were touched by several
+   cohorts, so a per-cohort split would not build slice by slice).
+9. **Manual pass** (never done yet): `bacon run` in one light, one dark
     non-blue-accent and the Operational palette; check sidebar rows/drag,
-    composer chips, menus (pointer + keyboard), modals (Tab/Escape/focus
-    return), resize handles, Usage filters and meters.
+    composer chips (neutral selected + check glyph), file chips (only ✕
+    removes), menus (pointer + keyboard), modals (Tab/Escape/focus
+    return), resize handles, Usage filters and meters, and every §6.15
+    declared change.
 
 ### How to work on it
 
@@ -77,6 +96,10 @@ that ran and every declared pixel change).
   count — it is the honest size of what is left.
 - **`ui/*` must not import a surface** (`scripts/check_ui_layers.py`).
   `crate::platform` and `crate::mentions` are allowed.
+- **Raw-control ratchet**: `scripts/check_ui_owners.py` fails when a file's
+  raw `button_frame(` / `anchored()` count rises above
+  `scripts/ui_owner_budget.json`, and when it falls (run `--update` to lock the
+  gain in). A genuine one-off gets `// Bespoke: <why>` within four lines above.
 - **Hover ratchet**: `scripts/check_hovers.py` fails when a file's one-frame
   hover count changes; after moving hovers *into* a `ui/` owner (total down),
   run `python3 scripts/check_hovers.py --update`.
@@ -1186,6 +1209,272 @@ The MCP, remote-host and account editors' Cancel/Save are `Button`s
   `review::TreeRow` (the diff tree's data model) is its one named exception.
   DESIGN.md §Components gained the owner table, INTENT.md D22 records the
   decision, and README, CHANGELOG and AGENTS describe the layer.
+
+## 6.15 Audit after Phase 7, and the button sweep (2026-11-18)
+
+**Now (2026-11-19, after the cohorts below):**
+
+| Raw construct | Sites | State |
+|---|---:|---|
+| `button_frame(` + `anchored()` outside `ui/` | **0** (was 98 once the guard counted past the first `cfg(test)`; the last 20 went in the final cohort below) | ratcheted by `scripts/ui_owner_budget.json` |
+| GPUI `anchored()` | 2 | both `// Bespoke:` — the sidebar *Show* submenu (inside an already-deferred popup) and the worktree toolbar menu (window-space, unsnapped so it cannot slide over its button) |
+| `icon_button_frame` | 15 | all `// Bespoke:` |
+| `picker_surface` / `context_menu_surface` | 11 | not yet ratcheted; `popover_list` / `popover_picker` where the shape matches |
+| hand focus-ring border | 7 | unchanged; `RowState` / `TextField` |
+| plugin-update prompt card | 0 | done (Tail cohort) |
+| one-frame hovers | 104 | `scripts/hover_budget.json` |
+
+CI now runs `check_ui_layers.py` and `check_ui_owners.py` (+ `--self-test`).
+
+**At the start of the sweep (2026-11-18).** The guards passed, but they did
+not watch every raw construct. An audit of what surfaces still built by hand
+outside `ui/`:
+
+| Raw construct | Sites | What it should be |
+|---|---:|---|
+| `button_frame(` | **67** (was 85) | `Button` / `IconButton`, or `// Bespoke:` |
+| GPUI `anchored()` | 13 | `anchored_popover_at` / `dropdown_*` (pointer menus mostly) |
+| `picker_surface` / `context_menu_surface` | 10 | `popover_list` / `popover_picker` where the shape matches |
+| hand focus-ring border | 7 | `RowState` / `TextField` (`remote_sessions_ui.rs` ×2, `mcp_ui.rs` ×2, `view.rs` ×2, `transcript_view.rs` ×1) |
+| plugin-update prompt card | 1 | `ToastCard` (`app/toast_ui.rs`) |
+
+Also, then: CI (`.github/workflows/ci.yml`) did not run `check_ui_owners.py` or
+`check_ui_layers.py` (fixed in the second cohort).
+
+**Button sweep, first cohort.** `Button::keyed(id: impl Into<ElementId>, …)`
+added beside `Button::new` (string ids), for tuple-keyed rows. 18 hand-built
+buttons now use `Button`: 7 Secondary (response retry, Usage retry / clear,
+three Settings modal Close/Cancel, subagent and updater actions), 6 Primary
+(MCP ×2, quota "Show MCP servers", remote-host Add, provider Add (faded),
+provider editor Save), 2 Ghost (attachments Clear, Usage), plus the
+`press(…)`-wrapped ones unwrapped. Declared changes: Primary gains the shared
+1px transparent edge (2px wider); remote-host Add gains the action hover it
+lacked; Secondary gains the press dim, and the Settings modal buttons the
+secondary ink + medium weight every other modal's Cancel has; Ghost gains the
+wash press. Verified: 987 focused tests, the seven guards, clippy `-D
+warnings`; hover ratchet 177 → 161. **Not verified:** a manual look.
+
+**What the remaining button sites are** (classified, not yet moved):
+- **On/off toggle chips** — Usage `toggle_button`, Subagents tool + thinking
+  chips, MCP exposure chips, permissions scope, a Settings select. They do
+  *not* agree with each other (Usage: `surface_active` on the canvas with a
+  faded glass wash; Subagents: `surface_selected`, a checkbox, muted ink, hover
+  only while off), so one owner means a design decision first — likely a
+  `ChipButton` toggle mode — not a mechanical move.
+- **Faded near-variants** — wrapped in `motion::hover` instead of the swap;
+  `Button::faded` covers them once each is checked.
+- **Icon-only glass buttons without an id** — the composer attachment remove
+  buttons (`composer_ops.rs`, ×6): `IconButton` with `Glass`, ids from their
+  debug selectors.
+- **Real one-offs** — send/stop, the toast action buttons, the updater pill
+  states, the open-state source trigger: keep and add `// Bespoke:`.
+
+**Second cohort and the ratchet (same day).** 9 more sites: the attachment
+remove and sidebar search Clear are `IconButton` (Glass / faded; their frames
+are now square, ~2px narrower); two Settings toolbar buttons are faded
+Secondary; a new **`ButtonVariant::Destructive`** (filled `error`, `error_fg`
+ink, `hover_danger`) owns the confirm of an irreversible step — the sidebar's
+two delete confirmations and Explorer's prompt, whose Cancels became
+Secondary / Outline (declared: they gain the hairline, and the project-delete
+Cancel gains the hover it lacked). Verified: 432 focused tests, the seven
+guards, clippy `-D warnings`; hover ratchet 161 → 158.
+
+`check_ui_owners.py` now **ratchets** raw `button_frame(` and GPUI
+`anchored()` outside `ui/`: each file may keep at most its count in
+`scripts/ui_owner_budget.json`, a `// Bespoke:` comment within four lines
+above exempts a site, and the budget only goes down (`--update` after a
+migration). Baseline: **98 raw constructs in 27 files** — higher than the 67
+above, because the old classifier and the guard both stopped reading a file at
+its first `#[cfg(test)]`, even when that guarded one test fn mid-file (fixed:
+only a test *module* starts the test section; the self-test covers it). CI now
+runs `check_ui_layers.py` and `check_ui_owners.py` (+ `--self-test`).
+
+**Toggle chips and select triggers (decided: neutral selected).** They were
+three behaviours drawn five ways. `ChipButton` now has three states, each on
+the role `DESIGN.md` assigns it:
+
+| State | Fill | Edge | Ink | Glyph | Hover |
+|---|---|---|---|---|---|
+| `open(true)` — a trigger whose menu shows | `surface_active` | `border_strong` | primary | caret | held |
+| `selected(true)` — one choice of several | `surface_selected` | `border_strong` | primary | — | held |
+| `checked(true)` — an independent on/off | `surface_selected` | `border_strong` | primary | leading check | held |
+| rest | `surface_elevated` (canvas when `inset`) | `border` | secondary | — | shared wash |
+
+`selected` / `checked` drop the caret (a choice opens nothing); the check keeps
+on/off from resting on colour alone. Also new: `mono()` (code-face label),
+`render()` (no handler — placeholders), `on_click`, and `selector` takes an
+owned string. Migrated (11): Usage `toggle_button`, Subagent tool chips
+(checked, mono) and thinking chips, MCP transport kind and provider API kind
+(**declared: accent tint → neutral selected**), permissions scope, model-picker
+scope tabs (leading mark + trailing count), the Settings select trigger
+(declared: open fill `overlay` → `surface_active`), the provider Machine
+trigger (menu in a `relative` wrapper), Review's source trigger (declared:
+gains the open fill), and the two "no models" placeholders (now the shared
+disabled state). Other declared changes: tool chips' resting ink muted →
+secondary and checkbox → check; scope tabs take the chip radius and label size;
+Usage toggles swap their hover instead of fading. Tests pin each state's fill
+and edge in every palette, and that choices/toggles carry no caret. Verified:
+526 focused tests, the seven guards, clippy `-D warnings`. Ratchets: raw
+constructs 98 → 86, one-frame hovers 158 → 150. **Not verified:** a manual
+look.
+
+Deliberately not moved: the composer **branch chip** (live pending state,
+per-label tooltip, ahead/behind counts — needs `ChipButton` to grow a
+`pending` state first), Usage's **filter token** (`toggle_chip`: a static
+"narrowed" chip with an inline clear — its own small family), and Settings'
+**model checklist rows** (full-width checkbox rows, a row family, not chips).
+
+**Popover anchors and the next cohort (same day).** Two new owners in
+`ui/popover.rs`: **`row_menu(at, corner, below, popup)`** — a row's action menu
+at the pointer after a right-click, or hung from the row's corner on the
+keyboard route (the sidebar session and workspace menus and the worktree row
+menu each spelled this out) — and **`anchored_menu(corner, offset, popup)`**,
+the local, snapped, deferred panel with no entrance (the sidebar hover card,
+the remote-host and machine menus, Usage's row menu and filter panel). Same
+corner, offset and snap: no pixel change. Two anchors are marked
+`// Bespoke:` with the reason: the Worktrees *Advanced* menu (window-space and
+unsnapped on purpose) and the sidebar's *Show* submenu (nested inside the
+already-deferred options popup). Buttons: worktrees Clone/New, a Git conflict
+action and a Git list action are Secondary; the Git and Worktrees back buttons
+are Ghost (declared: wash press instead of the dim); the empty sidebar's
+*New session* is a faded Primary and the empty search *Clear* a faded
+Secondary (declared: it gains the raised face). The test-section fix also went
+into the migration classifier, which surfaced buttons it had been skipping.
+Verified: 528 focused tests, the seven guards, clippy `-D warnings`.
+Ratchets: raw constructs 86 → **65**, one-frame hovers 150 → 144. `sidebar.rs`
+is at 0. **Not verified:** a manual look.
+
+**Git panel and view.rs (same day).** Git's `github_state_tab` is a Quiet
+`ChipButton` choice, `filter_toggle_chip` a checked toggle (declared: accent
+fill → neutral selected + check, per the decision above) and `dropdown_chip` a
+trigger. That retired the last accent-filled control, so `hover_accent` and
+`PressedRamp::Accent` were deleted. The onboarding *Refresh* and *Migrate pi*
+buttons are Ghost `Button`s with `loading` — which also **fixes a real bug**:
+while busy they dimmed but kept their click handler, so they could be pressed
+again mid-operation. `Button::loading` now keeps a caller-built `leading`
+element (Refresh's turning glyph) instead of swapping in the generic spinner.
+Marked `// Bespoke:` with verified reasons: Git's delete-branch checkbox (an
+explicit off state for a consequential option), the composer send-hint row
+(inert, borrows the frame only to align), and the composer branch chip (live
+pending state + ahead/behind counts). Verified: 479 focused tests, the seven
+guards, clippy `-D warnings`. Ratchets: raw constructs 65 → **57**, one-frame
+hovers 144 → 138. **Not verified:** a manual look.
+
+**Tail cohort (same day).** Plugin-update toast *Skip* (Ghost) and *Update
+now* (Primary); terminal *Restart* (Primary — its icon was primary ink on the
+action fill, now `action_fg`); *Compact now* (Secondary + `loading`); GitHub
+*Check for updates* (Secondary + `loading`, replacing a 60% dim); *Clear
+remembered approvals* (Secondary, `disabled` when empty); the worktree how-to
+dismiss (`IconButton` Glass); and the updater's *Downloading…* / *Updating…*,
+which were inert look-alikes of the same button and are now its `loading`
+state (declared: they gain the spinner). Marked `// Bespoke:`: the Usage
+pager's current page (an inert marker among page buttons). Verified: 406
+focused tests, the seven guards, clippy. Ratchets: raw constructs 57 → **47**,
+one-frame hovers 138 → 131.
+
+**Disclosures and verified one-offs (same day).** New **`disclosure_toggle(id,
+theme, size)`** in `ui/button.rs`: the text disclosure frame (medium muted
+label, ink lifting under the pointer; the caller places the chevron, label and
+note). The transcript's tool-section fold, edit-diff fold and turn fold use it
+(declared: the turn fold's ink now lifts to primary like the others, and
+`hover_ink_quiet` — its last user — was deleted). Marked `// Bespoke:` with
+checked reasons: Usage's calendar day cells (the grid's own selected /
+in-range / today fills), the labelled jump-to-latest (the same floating,
+frosted control as its icon twin), and Git's Sync (the left half of a split
+button). Kept pending as a real family rather than one-offs: the composer
+attachment chip and the bug-report screenshot chips are one **file chip**
+(body opens a preview, a nested button removes) — a `FileChip` owner, two
+sites. Verified: 512 focused tests, the seven guards, clippy. Ratchets: raw
+constructs 47 → **41**, one-frame hovers 131 → 129.
+
+**Glass controls and FileChip (same day).** New **`ButtonVariant::Glass`**
+(the `overlay` ink wash, no hairline, `hover_overlay_strong`) for a control on
+glass or a translucent panel: the ask panel's *Back*, the MCP popup's secondary
+action and the error banner's *Reconnect*. The ask panel's *Next / Submit* is
+`Tinted` (declared: it gains Tinted's accent hairline). Both ask buttons now
+use `disabled` instead of a 45% dim, so they stop accepting clicks once the
+questionnaire is submitted. New **`FileChip`** (`ui/chip.rs`, registered in
+`check_ui_owners.py`): thumbnail or glyph, truncated name with its tooltip,
+optional meta, a nested remove button and an optional preview on the body.
+The composer attachment chip and the bug-report screenshot chips use it.
+**Declared behaviour change:** a screenshot chip used to remove itself on a
+click anywhere; now only its ✕ removes — the attachment chip's existing rule
+that a chip big enough to read is big enough to hit by accident. Verified: 558
+focused tests, the seven guards (+ self-test), clippy. Ratchets: raw constructs
+41 → **35**, one-frame hovers 129 → 124.
+
+**Triggers onto ChipButton (2026-11-19).** No new state was needed: Git's
+branch control, worktree *Advanced* and the status-bar *Work in* are `open`
+triggers; the worktree mode chips (declared: accent → neutral, per the
+decision) and the plugin scope chips are `selected` choices; the models
+*Favorites* filter is a `checked` toggle. New: `ChipButton::label_tip` — the
+full value on a truncated label, separate from the chip's tooltip — so *Work
+in* keeps both its "working folder" tip and the path tip the design rules ask
+for. Declared: Advanced's label takes the chip label size (was Small), and its
+open fill moves from `surface_hover` to the shared `surface_active`.
+Verified: 398 focused tests, the seven guards, clippy. Ratchets: raw constructs
+35 → **29**, one-frame hovers 124 → 119.
+
+**Small-control sweep (2026-11-19).** Nine more: the worktree text and icon
+buttons (faded Secondary; the icon one keeps its padded frame), branch-picker
+*Create* (Primary, now keyed), Git *Load more* (Secondary + `loading`; it
+gains the raised face), the Explorer markdown *Edit / Preview* toggle
+(Secondary), Usage's menu-footer actions (Ghost; ink muted → secondary), the
+session-details name actions (Primary / Outline, faded), the remote-host
+`~/.ssh/config` alias suggestions (`ChipButton` mono), and Git-accounts
+*Refresh* (Secondary + `loading`, keeping its turning glyph). Verified: 608
+focused tests, the seven guards, clippy. Ratchets: raw constructs 29 → **20**,
+one-frame hovers 119 → 114.
+
+**The last twenty (2026-11-19).** The remaining 20 raw constructs, each onto
+an owner or a `// Bespoke:` reason; after this the raw-construct ratchet sits
+at **0**:
+
+*Moved onto owners (14).*
+- `Button` — Settings show/hide-all-models (Ghost); the session-details
+  *Review* / *Git* actions (`Button::keyed` Outline); the Usage pager's page
+  buttons (`keyed` Ghost `faded`, its numeral font chained); the composer
+  retry-bar *Cancel* (Ghost Compact `faded`); the terminal page's *Back*
+  (Ghost `faded`); the MCP status-bar chip (Ghost, leading its muted icon and
+  state dot — declared: its quiet hover becomes the shared wash); Git's
+  *Stash changes* (Secondary, declared: `hover_bordered_ink` → the variant
+  hover, and its last user was deleted); Git's *Generate* (Outline +
+  `loading`, declared: the in-flight chip's `overlay` fill and muted text
+  become the shared loading treatment and the spinner takes the variant ink).
+- `ChipButton` — Git's commit-model trigger (Outlined, `open(true)`, leading
+  provider mark; declared: the open fill moves `overlay` → `surface_active`,
+  as the Settings select trigger did); the GitHub label-filter (Outlined +
+  `applied(active)` beside `open` — the state the applied decision added — and
+  its compact mode is `caret(false)`, collapsing to the tag mark the tooltip
+  names; declared: the label ink lifts to primary while a filter is in force
+  and the hover is held when open); the merge-mode choices in the ref picker
+  (Quiet `selected`; declared: selected ink `selection_fg` → primary, per the
+  neutral-selected decision); the transcript's activity-fold chip (Outlined
+  `open`, glyph cluster as the leading mark, `shrink`; the owner grew
+  truncate-when-`shrink` so the title gives way inside the column — declared:
+  the open state takes the shared open fill, the chevron is the chip's static
+  one, and the open label reads primary).
+- `Tab` — the Git tab strip, whose fills, inks, press and density were already
+  this owner's (declared: the label takes `TextSize::Small` and loses its
+  hand weight swap, which the owner owns).
+- `LinkButton` — Subagents' *Undo* (declared: its wash hover becomes the
+  link's accent deepening).
+
+*`// Bespoke:` (6), with verified reasons.*
+- Settings' provider model rows (a full-width checkbox row, a row family, not
+  a chip) and the model-selector *Manage models…* (carries its chord after the
+  label in muted ink — the label slot is a single run).
+- `view.rs`'s new-task folder trigger (one of the composer header's three
+  peers, needing `track_focus` and a key context and action the chip owner
+  does not expose) and the approval tiles (the deny option wants a danger
+  hover on the glass face and the keyboard cursor swaps the hairline per
+  render).
+- Usage's filter token (its own small family: a static "narrowed" chip with an
+  inline clear) and the failures drill-down link (a bare danger link; Danger
+  would add the chip chrome).
+
+Verified: `cargo check` clean, the seven guards, hover ratchet 114 → 104.
+**Not verified:** a manual look.
 
 ## 6.1 Remaining owner work — actionable backlog
 

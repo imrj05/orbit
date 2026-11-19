@@ -15,9 +15,11 @@
 
 use super::mcp_ui::mcp_text_button;
 use super::*;
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::popover::anchored_menu;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::remote_hosts::{self, RemoteHost};
 use crate::theme::tokens::{input, modal, panel, ButtonSize, DynamicSpacing, IconSize, TextSize};
-use crate::ui::button::ButtonVariant;
 use crate::ui::button::IconButton;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
@@ -511,22 +513,14 @@ impl OrbitApp {
     // ── rendering ─────────────────────────────────────────────────────────
 
     pub(super) fn remote_hosts_toolbar(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let add = button_frame(div().id("remote-host-add"), &theme, ButtonSize::Large)
-            .debug_selector(|| "remote-host-add".to_string())
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .pressed_state(&theme, PressedRamp::Action)
-            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+        let add = Button::new("remote-host-add", ButtonVariant::Primary)
+            .size(ButtonSize::Large)
+            .icon("icons/plus.svg")
+            .label(tr!("remote_hosts.add"))
+            .on_mouse_up(&theme, move |_, window, cx| {
                 this.update(cx, |app, cx| app.remote_host_add(window, cx))
             })
-            .child(icon(
-                "icons/plus.svg",
-                ButtonSize::Large.icon_size().px(&theme),
-                theme.action_fg,
-            ))
-            .child(tr!("remote_hosts.add"));
+            .debug_selector(|| "remote-host-add".to_string());
         div()
             .w_full()
             .flex()
@@ -966,32 +960,17 @@ impl OrbitApp {
                 );
             for (ix, alias) in suggestions.into_iter().enumerate() {
                 let this = this.clone();
-                chips = chips.child(crate::motion::hover(
-                    button_frame(
-                        div().id(ElementId::NamedInteger(
-                            "remote-host-alias".into(),
-                            ix as u64,
-                        )),
-                        &theme,
-                        ButtonSize::Default,
-                    )
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .font_family(theme::code_font_family())
-                    .text_color(theme.text_secondary)
-                    .cursor_pointer()
-                    .on_mouse_up(MouseButton::Left, {
+                chips = chips.child(ChipButton::new(format!("remote-host-alias-{ix}"), ChipStyle::Outlined { inset: false })
+                            .size(ButtonSize::Default)
+                            .label(alias.clone())
+                            .mono()
+                            .caret(false)
+                            .on_mouse_up(&theme, {
                         let alias = alias.clone();
                         move |_, _, cx| {
                             this.update(cx, |app, cx| app.remote_host_pick_alias(alias.clone(), cx))
                         }
-                    })
-                    .child(alias),
-                    format!("remote-host-alias-{ix}"),
-                    &theme,
-                    crate::motion::Hover::fill(theme.surface_elevated, theme.surface_hover),
-                ));
+                    }));
             }
             host_field = host_field.child(chips);
         }
@@ -1255,16 +1234,10 @@ fn remote_host_menu(name: &str, theme: Theme, this: Entity<OrbitApp>) -> AnyElem
             })
         })
         .child(body);
-    anchored()
-        .position_mode(AnchoredPositionMode::Local)
-        .anchor(Corner::TopRight)
-        .offset(point(
+    anchored_menu(Corner::TopRight, point(
             px(0.),
             ButtonSize::Default.height(&theme) + crate::theme::tokens::popover::MENU_OFFSET,
-        ))
-        .snap_to_window_with_margin(crate::theme::tokens::popover::WINDOW_MARGIN)
-        .child(deferred(popup))
-        .into_any_element()
+        ), popup)
 }
 
 /// pi is missing: **Install pi** runs pi's own installer on the host (plus

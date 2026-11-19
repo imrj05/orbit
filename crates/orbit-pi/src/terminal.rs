@@ -53,14 +53,12 @@ use gpui::{
     Window,
 };
 
-use crate::motion::Hover;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
-use crate::theme::tokens::{RaisedExt, StyledExt};
+use crate::theme::tokens::{StyledExt};
 use crate::theme::{self, Theme};
 use crate::ui::button::IconButton;
-use crate::ui::prelude::{
-    button_frame, icon, nerd_font_family, press, refresh_glyph, ControlExt, TipExt,
-};
+use crate::ui::prelude::{icon, nerd_font_family, refresh_glyph, TipExt};
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::tab::{tab_strip, Tab};
 
@@ -1743,22 +1741,14 @@ impl TerminalPanel {
     /// bar. Back flips the panel's own flag; the app's observer moves the
     /// mount (this is not a feature page, so there is no `on_close` to call).
     pub fn top_bar_leading(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let back = crate::motion::hover(
-            press(
-                button_frame(div().id("terminal-back"), &theme, ButtonSize::Medium)
-                    .cursor_pointer(),
-            )
-            .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.toggle_full_width(cx)))
-            .child(icon(
-                "icons/arrow-left.svg",
-                ButtonSize::Medium.icon_size().px(&theme),
-                theme.text_secondary,
-            ))
-            .child(div().child(tr!("common.back"))),
-            "terminal-back-hover",
-            &theme,
-            Hover::row(&theme),
-        );
+        let back = Button::new("terminal-back", ButtonVariant::Ghost)
+            .icon("icons/arrow-left.svg")
+            .label(tr!("common.back"))
+            .faded(&theme, |el| {
+                el.on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                    this.toggle_full_width(cx)
+                }))
+            });
         div()
             .flex()
             .items_center()
@@ -2226,26 +2216,10 @@ impl TerminalPanel {
                                 .child(tr!("terminal.shell_exited")),
                         )
                         .child(
-                            button_frame(
-                                div().id("terminal-exited-restart"),
-                                &theme,
-                                ButtonSize::Medium,
-                            )
-                            .raised(theme.action, &theme)
-                            .cursor_pointer()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.action_fg)
-                            .hover_dimmed()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| this.restart(cx)),
-                            )
-                            .child(icon(
-                                "icons/refresh.svg",
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                theme.text_primary,
-                            ))
-                            .child(tr!("terminal.restart")),
+                            Button::new("terminal-exited-restart", ButtonVariant::Primary)
+                                .icon("icons/refresh.svg")
+                                .label(tr!("terminal.restart"))
+                                .on_mouse_up(&theme, cx.listener(|this, _, _, cx| this.restart(cx))),
                         ),
                 )
                 .into_any_element(),

@@ -1,4 +1,6 @@
 use super::*;
+use crate::ui::chip::FileChip;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{
     context_menu, picker, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
@@ -628,10 +630,10 @@ impl OrbitApp {
                             .child(tr!("composer.attachments", count = total)),
                     )
                     .child(
-                        button_frame(div().id("attachments-clear"), &theme, ButtonSize::Compact)
+                        Button::keyed("attachments-clear", ButtonVariant::Ghost)
+.size(ButtonSize::Compact)
+.render(&theme)
                             .debug_selector(|| "attachments-clear".to_string())
-                            .cursor_pointer()
-                            .hover_state(&theme)
                             .tip(tr!("composer.clear_attachments"))
                             .child(icon(
                                 "icons/x.svg",
@@ -800,58 +802,16 @@ impl OrbitApp {
         remove: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
         open: Option<ChipOpener>,
     ) -> AnyElement {
-        let remove_debug = format!("remove-{debug}");
-        let chip = button_frame(
-            div().id(id).debug_selector(move || debug),
-            theme,
-            ButtonSize::Medium,
-        )
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, theme)
-        .hover_border(theme)
-        .child(visual)
-        .child(
-            div()
-                .min_w_0()
-                .max_w(px(180.))
-                .truncate()
-                .text_color(theme.text_secondary)
-                .tip(content.tip)
-                .child(content.name),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_size(TextSize::XSmall.px(theme))
-                .text_color(theme.text_muted)
-                .child(content.meta),
-        )
-        .child(
-            button_frame(div(), theme, ButtonSize::Compact)
-                .debug_selector(move || remove_debug)
-                .cursor_pointer()
-                .hover_on_glass(theme)
-                .tip(tr!("composer.remove_attachment"))
-                .child(icon(
-                    "icons/x.svg",
-                    IconSize::XSmall.px(theme),
-                    theme.text_muted,
-                ))
-                .on_mouse_up(MouseButton::Left, move |event, window, cx| {
-                    // A nested button, so the chip's own `open` never fires
-                    // for a click that meant to delete.
-                    cx.stop_propagation();
-                    remove(event, window, cx);
-                }),
-        );
+        let chip = FileChip::new(id, visual, content.name)
+            .name_tip(content.tip)
+            .meta(content.meta)
+            .selector(debug)
+            .on_remove(tr!("composer.remove_attachment"), remove);
         match open {
-            Some(open) => chip
-                .cursor_pointer()
-                .on_click(move |event, window, cx| open(event, window, cx)),
+            Some(open) => chip.on_open(move |event, window, cx| open(event, window, cx)),
             None => chip,
         }
-        .into_any_element()
+        .render(theme)
     }
 
     /// Queue one classified path, focusing the composer when the caller has a

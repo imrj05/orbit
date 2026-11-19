@@ -40,6 +40,7 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
+use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::app::ModelEntry;
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
@@ -633,11 +634,6 @@ impl ModelSelector {
         for (ix, (label, scope)) in entries.into_iter().enumerate() {
             let count = Self::scope_count(&scope, &self.models, &favorites, &recents);
             let active = self.scope == scope;
-            let ink = if active {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            };
             // One iconography for every scope: the provider's mark when it has
             // one, and the shared mode glyphs for All/Recents/Favorites. The
             // mark stays brand-faithful; only the mono fallback follows the
@@ -690,30 +686,18 @@ impl ModelSelector {
             };
             let this = this.clone();
             row = row.child(
-                button_frame(
-                    div().id(ElementId::NamedInteger("scope-chip".into(), ix as u64)),
-                    &theme,
-                    ButtonSize::Medium,
-                )
-                .px(DynamicSpacing::Base08.px(&theme))
-                .rounded(Radius::Large.px(&theme))
-                .border_1()
-                .border_color(theme.border)
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(ink)
-                .when(active, |tab| tab.bg(theme.surface_selected))
-                .when(!active, |tab| tab.hover_quiet(&theme))
-                .cursor_pointer()
-                .on_click(move |_, _, cx| {
+                ChipButton::new(format!("scope-chip-{ix}"), ChipStyle::Outlined { inset: false })
+                    .leading(lead)
+                    .label(label)
+                    .trailing(div().text_color(theme.text_muted).child(count.to_string()))
+                    .selected(active)
+                    .on_click(&theme, move |_, _, cx| {
                     this.update(cx, |selector, cx| {
                         selector.set_scope(scope.clone(), cx);
                         selector.center_scope_chip(ix, cx);
                     })
                     .ok();
-                })
-                .child(lead)
-                .child(label)
-                .child(div().text_color(theme.text_muted).child(count.to_string())),
+                }),
             );
         }
 
@@ -1504,6 +1488,8 @@ fn manage_models_button(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     theme: Theme,
 ) -> AnyElement {
+    // Bespoke: the label carries its keyboard chord (e.g. ⌘,) after it in
+    // muted ink; `Button`'s label slot is a single run.
     let button = crate::ui::prelude::press(
         button_frame(
             div()

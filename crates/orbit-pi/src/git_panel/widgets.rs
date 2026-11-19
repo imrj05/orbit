@@ -13,7 +13,7 @@ use crate::theme::Theme;
 use crate::ui::button::{Button, ButtonVariant, IconButton};
 use crate::ui::chip::{Badge, BadgeFill};
 use crate::ui::prelude::empty_state_glyph;
-use crate::ui::prelude::{button_frame, icon, press, ControlExt, BUTTON_GROUP};
+use crate::ui::prelude::icon;
 
 /// The color for a `git status` porcelain badge byte.
 pub fn status_color(badge: char, theme: Theme) -> Hsla {
@@ -122,24 +122,18 @@ pub fn load_more(
     loading: bool,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    press(
-        button_frame(div().id("git-load-more"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .mx(DynamicSpacing::Base12.px(&theme))
-            .mt(DynamicSpacing::Base06.px(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .cursor_pointer()
-            .text_color(theme.text_secondary)
-            .hover_state(&theme),
-    )
-    .on_click(listener)
-    .child(if loading {
-        tr!("git_panel.loading")
-    } else {
-        tr!("git_panel.load_more")
-    })
-    .into_any_element()
+    Button::new("git-load-more", ButtonVariant::Secondary)
+        .size(ButtonSize::Large)
+        .label(if loading {
+            tr!("git_panel.loading")
+        } else {
+            tr!("git_panel.load_more")
+        })
+        .loading(loading)
+        .on_click(&theme, listener)
+        .mx(DynamicSpacing::Base12.px(&theme))
+        .mt(DynamicSpacing::Base06.px(&theme))
+        .into_any_element()
 }
 
 /// A centered empty/error state: an icon tile, a title, and optional detail.

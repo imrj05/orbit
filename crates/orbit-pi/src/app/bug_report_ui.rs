@@ -12,6 +12,7 @@
 //! limitation falls back to GitHub's web form and the saved image folder.
 
 use super::*;
+use crate::ui::chip::FileChip;
 use crate::git_panel::widgets::action_button;
 use crate::issue_message::ReportKind;
 use crate::theme::tokens::{input, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
@@ -310,36 +311,19 @@ impl OrbitApp {
                             )
                             .into_any_element(),
                         };
-                        button_frame(
-                            div().id(ElementId::NamedInteger("bug-screenshot".into(), ix as u64)),
-                            &theme,
-                            ButtonSize::Medium,
+                        FileChip::new(
+                            ElementId::NamedInteger("bug-screenshot".into(), ix as u64),
+                            visual,
+                            shot.name.clone(),
                         )
-                        .border_1()
-                        .border_color(theme.border)
-                        .raised(theme.surface_elevated, &theme)
-                        .cursor_pointer()
-                        .hover_overlay(&theme)
-                        .child(visual)
-                        .child(
-                            div()
-                                .max_w(px(160.))
-                                .truncate()
-                                .text_color(theme.text_secondary)
-                                .child(shot.name.clone()),
-                        )
-                        .child(icon(
-                            "icons/x.svg",
-                            ButtonSize::Medium.icon_size().px(&theme),
-                            theme.text_muted,
-                        ))
-                        .on_mouse_up(
-                            MouseButton::Left,
+                        .max_name_width(px(160.))
+                        .on_remove(
+                            tr!("common.remove"),
                             cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                                 this.remove_bug_report_screenshot(ix, cx)
                             }),
                         )
-                        .into_any_element()
+                        .render(&theme)
                     }),
             )
             .into_any_element()

@@ -22,12 +22,12 @@
 //! Their stored rules survive untouched for when the mode is confined again.
 
 use super::*;
+use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::permissions::{Action, Rule, Rules, Scope, Target};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, Radius, TextSize};
 use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::TextField;
-use crate::ui::prelude::*;
 
 /// The inline "add a pattern" form for one family. Only one is open at a time.
 pub(super) struct PatternEditor {
@@ -325,33 +325,14 @@ impl OrbitApp {
                 let label = Self::scope_label(&scope);
                 let click_scope = scope.clone();
                 let this = this.clone();
-                button_frame(
-                    div()
-                        .id(ElementId::Name(format!("permissions-scope-{ix}").into()))
-                        .debug_selector(move || format!("permissions-scope-{ix}")),
-                    &theme,
-                    ButtonSize::Medium,
-                )
-                .rounded(Radius::Medium.px(&theme))
-                .border_1()
-                .border_color(if selected {
-                    theme.border_strong
-                } else {
-                    theme.border
-                })
-                .when(selected, |chip| chip.bg(theme.surface_active))
-                .text_color(if selected {
-                    theme.text_primary
-                } else {
-                    theme.text_secondary
-                })
-                .cursor_pointer()
-                .when(!selected, |chip| chip.hover_state(&theme))
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                ChipButton::new(format!("permissions-scope-{ix}"), ChipStyle::Outlined { inset: false })
+                    .selector(format!("permissions-scope-{ix}"))
+                    .label(label)
+                    .selected(selected)
+                    .on_mouse_up(&theme, move |_, _, cx| {
                     let scope = click_scope.clone();
                     this.update(cx, |app, cx| app.set_permission_scope(scope, cx));
                 })
-                .child(label)
             });
         row_frame(theme)
             .child(row_label(&tr!("permissions.applies_to"), theme))

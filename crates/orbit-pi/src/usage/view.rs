@@ -32,6 +32,8 @@
 //!
 //! Sections: Summary · Usage over time · Breakdown · Records · Daily activity.
 
+use crate::ui::popover::anchored_menu;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::ui::card::{card, section};
@@ -41,7 +43,7 @@ use crate::ui::popover::{popover_list, PopoverExt};
 use std::rc::Rc;
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, AnyElement, App, Context, Corner, ElementId, Entity,
+    div, prelude::*, px, AnyElement, App, Context, Corner, ElementId, Entity,
     FontWeight, Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Stateful, Window,
 };
 
@@ -64,15 +66,14 @@ use super::sparkline;
 use super::table::{FailureSort, TableKind};
 use crate::composer::ComposerInput;
 use crate::model_selector::{leading_tile, provider_icon};
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+    context_menu, panel, picker, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::transcript_view::activity_icon;
 use crate::ui::prelude::{
     button_frame, context_menu_separator, empty_state_glyph, icon, icon_button_frame, icon_dyn,
-    picker_entry, press, provider_mark_color, ControlExt, BUTTON_GROUP,
+    picker_entry, press, provider_mark_color, ControlExt,
 };
 use crate::ui::table::{
     cell_shell, data_table, empty_cell, status_badge, table_row, text_cell, two_line_cell, Column,
@@ -163,10 +164,9 @@ impl UsagePage {
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 press(
-                    button_frame(div().id("usage-top-back"), &theme, ButtonSize::Medium)
-                        .group(BUTTON_GROUP)
-                        .cursor_pointer()
-                        .hover_state(&theme),
+                    Button::keyed("usage-top-back", ButtonVariant::Ghost)
+.size(ButtonSize::Medium)
+.render(&theme),
                 )
                 .on_mouse_down(MouseButton::Left, {
                     let entity = cx.entity();
@@ -713,16 +713,10 @@ impl UsagePage {
             // The store could not be read at all: say so, and offer the retry.
             if let Some(error) = self.error().map(str::to_string) {
                 let entity = cx.entity();
-                let action = press(
-                    button_frame(div().id("usage-retry"), &theme, ButtonSize::Medium)
-                        .group(BUTTON_GROUP)
+                let action = Button::keyed("usage-retry", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
                         .mt(DynamicSpacing::Base02.px(&theme))
-                        .border_1()
-                        .border_color(theme.border)
-                        .raised(theme.surface_elevated, &theme)
-                        .cursor_pointer()
-                        .hover_state(&theme),
-                )
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |page, cx| page.refresh(cx));
                 })
@@ -926,16 +920,10 @@ impl UsagePage {
         }
         let entity = cx.entity();
         Some(
-            press(
-                button_frame(div().id("usage-state-clear"), &theme, ButtonSize::Medium)
-                    .group(BUTTON_GROUP)
+            Button::keyed("usage-state-clear", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
                     .mt(DynamicSpacing::Base02.px(&theme))
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .cursor_pointer()
-                    .hover_state(&theme),
-            )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 entity.update(cx, |page, cx| page.clear_filters(cx));
             })
@@ -1673,6 +1661,8 @@ impl UsagePage {
         // The failed-request drill-down sits under the rate it explains.
         let failures_link = (totals.errors > 0).then(|| {
             let fail_entity = cx.entity();
+            // Bespoke: a bare danger link inside a stat panel — an inline
+            // drill-down; `Button`'s Danger would add the raised chip chrome.
             let link = press(
                 button_frame(
                     div().id("usage-summary-failures"),
@@ -4147,12 +4137,7 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
         }
     }));
 
-    anchored()
-        .position_mode(gpui::AnchoredPositionMode::Local)
-        .anchor(Corner::TopLeft)
-        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-        .child(deferred(context_menu_shell(theme, page, items)))
-        .into_any_element()
+    anchored_menu(Corner::TopLeft, gpui::point(gpui::px(0.), gpui::px(0.)), context_menu_shell(theme, page, items))
 }
 
 /// The menu shell, on the branch selector's picker metrics
@@ -4352,6 +4337,7 @@ fn table_pager(
                 .text_color(theme.text_muted)
                 .child("…")
                 .into_any_element(),
+            // Bespoke: the current page — an inert marker in the pager (the other pages are buttons).
             Some(page) if page == current => button_frame(div(), &theme, ButtonSize::Medium)
                 .id(SharedString::from(format!("{id}-page-{ix}")))
                 .min_w(square)
@@ -4367,23 +4353,20 @@ fn table_pager(
                 .into_any_element(),
             Some(page) => {
                 let on_page = on_page.clone();
-                crate::motion::hover(
-                    button_frame(div(), &theme, ButtonSize::Medium)
-                        .id(SharedString::from(format!("{id}-page-{ix}")))
-                        .min_w(square)
-                        .justify_center()
-                        .cursor_pointer()
-                        .font(num_font())
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            on_page(page, window, cx)
-                        })
-                        .child(page.to_string()),
-                    format!("{id}-page-{ix}"),
-                    &theme,
-                    crate::motion::Hover::wash(&theme),
+                Button::keyed(
+                    ElementId::Name(SharedString::from(format!("{id}-page-{ix}"))),
+                    ButtonVariant::Ghost,
                 )
+                .label(page.to_string())
+                .faded(&theme, |el| {
+                    el.font(num_font()).min_w(square).on_mouse_down(
+                        MouseButton::Left,
+                        move |_, window, cx| {
+                            on_page(page, window, cx)
+                        },
+                    )
+                })
+                .into_any_element()
             }
         })
         .collect();

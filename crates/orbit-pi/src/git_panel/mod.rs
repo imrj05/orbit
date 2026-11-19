@@ -27,6 +27,9 @@ use gpui::{
     Stateful, Subscription, Window,
 };
 
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::tab::Tab;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::app::ModelEntry;
 use crate::commit_message;
 use crate::commit_model::{CommitModel, CommitModelConfig};
@@ -52,7 +55,7 @@ use crate::ui::popover::{popover_list, popover_picker, PopoverExt};
 use crate::ui::prelude::{
     button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn, menu_header,
     nerd_font_family, picker_entry, picker_surface, press, provider_mark_color, refresh_glyph,
-    spinner, ControlExt, ModalWidthExt, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+    spinner, ControlExt, ModalWidthExt, PressedRamp, StatefulControlExt, BUTTON_GROUP,
 };
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::row::{list_row, RowState};
@@ -3054,24 +3057,20 @@ impl GitPanel {
             .relative()
             .flex_none()
             .children(self.commit_model_menu(theme, cx))
-            .child(
-                button_frame(div().id("git-commit-model"), &theme, ButtonSize::Medium)
-                    .border_1()
-                    .border_color(if open {
-                        theme.border_strong
-                    } else {
-                        theme.border
-                    })
-                    .when(open, |chip| chip.bg(theme.overlay))
-                    .when(!open, |chip| chip.raised(theme.surface_elevated, &theme))
-                    .when(enabled, |chip| chip.cursor_pointer().hover_bordered(&theme))
-                    .when(!enabled, |chip| chip.disabled_state(&theme))
-                    .when(enabled, |chip| chip.text_color(theme.text_secondary))
-                    .tip(tr!(
-                        "git_panel.commit_model_tip",
-                        name = self.commit_model_label()
+            .child({
+                let model_label = self.commit_model_label();
+                ChipButton::new("git-commit-model", ChipStyle::Outlined { inset: false })
+                    .disabled(!enabled)
+                    .open(enabled && open)
+                    .leading(icon_dyn(
+                        provider_icon(&provider),
+                        ButtonSize::Medium.icon_size().px(&theme),
+                        provider_mark_color(&provider, &theme, theme.text_muted),
                     ))
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    .label(model_label.clone())
+                    .label_max_w(px(150.))
+                    .tip(tr!("git_panel.commit_model_tip", name = model_label))
+                    .on_click(&theme, cx.listener(|this, _: &ClickEvent, window, cx| {
                         // The commit box's own mouse-up refocuses the message
                         // editor; keep it from stealing the popup's search
                         // field.
@@ -3081,28 +3080,7 @@ impl GitPanel {
                         }
                         this.toggle_commit_model_menu(window, cx);
                     }))
-                    .child(icon_dyn(
-                        provider_icon(&provider),
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        provider_mark_color(&provider, &theme, theme.text_muted),
-                    ))
-                    .child(
-                        div()
-                            .max_w(px(150.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .child(self.commit_model_label()),
-                    )
-                    .child(icon(
-                        "icons/chevron-down.svg",
-                        IconSize::XSmall.px(&theme),
-                        if open {
-                            theme.text_primary
-                        } else {
-                            theme.text_muted
-                        },
-                    )),
-            )
+            })
             .into_any_element()
     }
 
@@ -3807,11 +3785,9 @@ impl GitPanel {
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
-                press(
-                    button_frame(div().id("git-back"), &theme, ButtonSize::Medium)
-                        .cursor_pointer()
-                        .hover_state(&theme),
-                )
+                Button::keyed("git-back", ButtonVariant::Ghost)
+.size(ButtonSize::Medium)
+.render(&theme)
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     // Close the panel here (we already hold it), then tell
                     // the app to leave the Git page. Calling back into the
@@ -3869,45 +3845,14 @@ impl GitPanel {
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 div().relative().child(
-                    button_frame(div().id("git-branch-chip"), &theme, ButtonSize::Medium)
-                        .border_1()
-                        .border_color(theme.border)
-                        .raised(
-                            if self.branch_menu_open {
-                                theme.surface_active
-                            } else {
-                                theme.surface_elevated
-                            },
-                            &theme,
-                        )
-                        .cursor_pointer()
-                        .hover_state(&theme)
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    ChipButton::new("git-branch-chip", ChipStyle::Outlined { inset: false })
+                        .icon("icons/branch.svg")
+                        .label(branch)
+                        .label_max_w(px(180.))
+                        .open(self.branch_menu_open)
+                        .on_click(&theme, cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.toggle_branch_menu(window, cx);
-                        }))
-                        .child(icon(
-                            "icons/branch.svg",
-                            ButtonSize::Medium.icon_size().px(&theme),
-                            if self.branch_menu_open {
-                                theme.text_primary
-                            } else {
-                                theme.text_secondary
-                            },
-                        ))
-                        .child(
-                            div()
-                                .max_w(px(180.))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_primary)
-                                .child(branch),
-                        )
-                        .child(icon(
-                            "icons/chevron-down.svg",
-                            IconSize::XSmall.px(&theme),
-                            theme.text_muted,
-                        )),
+                        })),
                 ),
             )
             .children(self.ahead_behind.and_then(|(ahead, behind)| {
@@ -4018,27 +3963,23 @@ impl GitPanel {
             .border_b_1()
             .border_color(theme.border)
             .children(tabs.into_iter().map(|(tab, tab_icon, key)| {
-                let label = tr!(key);
                 let selected = self.tab == tab;
-                press(button_frame(
-                    div().id(gpui::ElementId::Name(
-                        format!("git-tab-{}", key.rsplit('.').next().unwrap_or(key)).into(),
-                    )),
-                    &theme,
-                    ButtonSize::Medium,
+                Tab::new(
+                    gpui::ElementId::Name(format!("git-tab-{}", key.rsplit('.').next().unwrap_or(key)).into()),
+                    tr!(key).to_string(),
+                )
+                .size(ButtonSize::Medium)
+                .glyph(icon(
+                    tab_icon,
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    if selected {
+                        theme.text_primary
+                    } else {
+                        theme.text_muted
+                    },
                 ))
-                .cursor_pointer()
-                .font_weight(if selected {
-                    FontWeight::MEDIUM
-                } else {
-                    FontWeight::NORMAL
-                })
-                .when(selected, |tab| {
-                    tab.bg(theme.surface_active).text_color(theme.text_primary)
-                })
-                .when(!selected, |tab| {
-                    tab.text_color(theme.text_muted).hover_quiet(&theme)
-                })
+                .active(selected)
+                .render(&theme)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     if this.tab != tab {
                         this.tab = tab;
@@ -4048,16 +3989,6 @@ impl GitPanel {
                     this.refresh_all(cx);
                     cx.notify();
                 }))
-                .child(icon(
-                    tab_icon,
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    if selected {
-                        theme.text_primary
-                    } else {
-                        theme.text_muted
-                    },
-                ))
-                .child(label.to_string())
             }))
             .child(div().flex_1())
             .into_any_element()
@@ -4139,6 +4070,7 @@ impl GitPanel {
             .items_center()
             .overflow_hidden()
             .child(
+                // Bespoke: the left half of the Sync split button, squared on the right to meet its caret.
                 button_frame(div().id("git-sync"), &theme, ButtonSize::Medium)
                     .h_full()
                     .rounded_r_none()
@@ -4547,19 +4479,11 @@ impl GitPanel {
                         .gap(DynamicSpacing::Base06.px(&theme))
                         .children(self.conflicts.iter().take(8).map(|path| {
                             let target = path.clone();
-                            button_frame(
-                                div().id(gpui::ElementId::Name(
+                            Button::keyed(gpui::ElementId::Name(
                                     format!("git-conflict-{path}").into(),
-                                )),
-                                &theme,
-                                ButtonSize::Default,
-                            )
-                            .border_1()
-                            .border_color(theme.border)
-                            .raised(theme.surface_elevated, &theme)
-                            .cursor_pointer()
-                            .text_color(theme.text_secondary)
-                            .hover_state(&theme)
+                                ), ButtonVariant::Secondary)
+.size(ButtonSize::Default)
+.render(&theme)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.open_path(target.clone(), window, cx)
                             }))
@@ -4720,52 +4644,17 @@ impl GitPanel {
                                     .gap(DynamicSpacing::Base08.px(&theme))
                                     .child(self.commit_model_controls(theme, cx))
                                     .child(
-                                        button_frame(
-                                            div().id("git-generate"),
-                                            &theme,
-                                            ButtonSize::Medium,
-                                        )
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .when(self.generating, |button| button.bg(theme.overlay))
-                                        .when(!self.generating, |button| {
-                                            button.raised(theme.surface_elevated, &theme)
-                                        })
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(if self.generating {
-                                            theme.text_muted
-                                        } else {
-                                            theme.text_primary
-                                        })
-                                        .when(!self.generating, |button| {
-                                            button.cursor_pointer().hover_bordered(&theme).on_click(
-                                                cx.listener(|this, _: &ClickEvent, _, cx| {
-                                                    this.generate(cx)
-                                                }),
-                                            )
-                                        })
-                                        .child(if self.generating {
-                                            spinner(
-                                                "git-generate-spinner",
-                                                ButtonSize::Medium.icon_size().px(&theme),
-                                                theme.accent_text,
-                                                theme,
-                                            )
-                                        } else {
-                                            icon(
-                                                "icons/magic-wand.svg",
-                                                ButtonSize::Medium.icon_size().px(&theme),
-                                                theme.text_secondary,
-                                            )
-                                            .into_any_element()
-                                        })
-                                        .child(
-                                            if self.generating {
+                                        Button::keyed("git-generate", ButtonVariant::Outline)
+                                            .icon("icons/magic-wand.svg")
+                                            .label(if self.generating {
                                                 tr!("git_panel.generating_short")
                                             } else {
                                                 tr!("git_panel.generate")
-                                            },
-                                        ),
+                                            })
+                                            .loading(self.generating)
+                                            .on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| {
+                                                this.generate(cx)
+                                            })),
                                     )
                             }))
                             .child(match actions {
@@ -4944,23 +4833,13 @@ impl GitPanel {
             .child(div().flex_1());
         if has_changes {
             header = header.child(
-                button_frame(div().id("git-stash-all"), &theme, ButtonSize::Default)
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .cursor_pointer()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary)
-                    .hover_bordered_ink(&theme)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                Button::new("git-stash-all", ButtonVariant::Secondary)
+                    .size(ButtonSize::Default)
+                    .icon("icons/archive.svg")
+                    .label(tr!("git_panel.stash_changes"))
+                    .on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.stash_push(cx);
-                    }))
-                    .child(icon(
-                        "icons/archive.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(tr!("git_panel.stash_changes")),
+                    })),
             );
         }
         let body = if self.stashes.is_empty() {
@@ -7651,20 +7530,17 @@ impl GitPanel {
                         .into_iter()
                         .map(|(mode, key)| {
                             let selected = self.merge_mode == mode;
-                            let id = gpui::ElementId::Name(format!("git-merge-mode-{key}").into());
-                            button_frame(div().id(id), &theme, ButtonSize::Medium)
-                                .cursor_pointer()
-                                .when(selected, |s| {
-                                    s.bg(theme.surface_selected).text_color(theme.selection_fg)
-                                })
-                                .when(!selected, |s| {
-                                    s.text_color(theme.text_muted).hover_state(&theme)
-                                })
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.merge_mode = mode;
-                                    cx.notify();
-                                }))
-                                .child(tr!(key))
+                            ChipButton::new(
+                                format!("git-merge-mode-{key}"),
+                                ChipStyle::Quiet,
+                            )
+                            .size(ButtonSize::Medium)
+                            .selected(selected)
+                            .label(tr!(key).to_string())
+                            .on_click(&theme, cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.merge_mode = mode;
+                                cx.notify();
+                            }))
                         }),
                     ),
             );
@@ -8556,22 +8432,10 @@ fn github_state_tab(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    button_frame(div().id(id), &theme, ButtonSize::Default)
-        .group(BUTTON_GROUP)
-        .border_1()
-        .border_color(gpui::transparent_black())
-        .when(active, |tab| {
-            tab.bg(theme.surface_selected)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_primary)
-        })
-        .when(!active, |tab| tab.text_color(theme.text_muted))
-        .cursor_pointer()
-        .hover_state(&theme)
-        .pressed_state(&theme, PressedRamp::Wash)
-        .on_click(listener)
-        .child(label.to_string())
-        .into_any_element()
+    ChipButton::new(id, ChipStyle::Quiet)
+        .label(label.to_string())
+        .selected(active)
+        .on_click(&theme, listener)
 }
 
 /// A quiet checkbox row used for consequential secondary options such as
@@ -8583,6 +8447,8 @@ fn github_check_toggle(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    // Bespoke: an explicit checkbox for a consequential option (delete the branch);
+    // a ChipButton check shows only when on, which would hide the off state.
     button_frame(div().id(id), &theme, ButtonSize::Default)
         .group(BUTTON_GROUP)
         .border_1()
@@ -8598,7 +8464,8 @@ fn github_check_toggle(
 }
 
 /// The repository-label picker trigger. Its text is capped and ellipsized so
-/// even the longest GitHub label cannot push search or create off the toolbar.
+/// even the longest GitHub label cannot push search or create off the toolbar;
+/// in a narrow list it collapses to the tag mark alone, named by its tooltip.
 fn github_label_filter_button(
     id: &'static str,
     label: &str,
@@ -8608,27 +8475,11 @@ fn github_label_filter_button(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    let button = button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .debug_selector(|| "github-label-filter".into())
-        .max_w(px(104.))
-        .border_1()
-        .border_color(if active {
-            theme.border_strong
-        } else {
-            theme.border
-        })
-        .raised(
-            if open {
-                theme.surface_active
-            } else {
-                theme.surface_elevated
-            },
-            &theme,
-        )
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_click(listener)
-        .child(icon(
+    let chip = ChipButton::new(id, ChipStyle::Outlined { inset: false })
+        .selector("github-label-filter")
+        .applied(active)
+        .open(open)
+        .leading(icon(
             "icons/tag-01.svg",
             ButtonSize::Medium.icon_size().px(&theme),
             if active {
@@ -8637,31 +8488,17 @@ fn github_label_filter_button(
                 theme.text_muted
             },
         ));
-    if compact {
+    let chip = if compact {
         let tip = if active {
             tr!("git_panel.label_chip", name = label)
         } else {
             tr!("git_panel.label_filter")
         };
-        return button
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tip.clone())).into())
-            .into_any_element();
-    }
-    button
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(theme.text_secondary)
-                .child(label.to_string()),
-        )
-        .child(icon(
-            "icons/chevron-down.svg",
-            IconSize::Indicator.px(&theme),
-            theme.text_muted,
-        ))
-        .into_any_element()
+        chip.caret(false).tip(tip)
+    } else {
+        chip.label(label.to_string()).max_w(px(104.))
+    };
+    chip.on_click(&theme, listener)
 }
 
 /// Create is the toolbar's one primary action. It keeps its full label when
@@ -8741,13 +8578,9 @@ fn filter_chip(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
-        .text_color(theme.text_secondary)
-        .hover_state(&theme)
+    Button::keyed(id, ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
         .on_click(listener)
         .child(label.to_string())
         .child(icon(
@@ -8769,35 +8602,14 @@ fn filter_toggle_chip(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .border_1()
-        .border_color(if active { theme.accent } else { theme.border })
-        .when(active, |chip| {
-            // An accent-filled toggle: the fill matches the accent border, so
-            // its interactive states ride the accent's own steps.
-            chip.raised(theme.accent, &theme)
-                .text_color(theme.accent_fg)
-                .hover_accent(&theme)
-                .pressed_state(&theme, PressedRamp::Accent)
-        })
-        .when(!active, |chip| {
-            chip.text_color(theme.text_muted).hover_state(&theme)
-        })
-        .cursor_pointer()
-        .on_click(listener)
-        .children(glyph.map(|path| {
-            icon(
-                path,
-                ButtonSize::Medium.icon_size().px(&theme),
-                if active {
-                    theme.action_fg
-                } else {
-                    theme.text_muted
-                },
-            )
-        }))
-        .child(label.to_string())
-        .into_any_element()
+    let chip = ChipButton::new(id, ChipStyle::Outlined { inset: false })
+        .label(label.to_string())
+        .checked(active);
+    let chip = match glyph {
+        Some(path) => chip.icon(path),
+        None => chip,
+    };
+    chip.on_click(&theme, listener)
 }
 
 /// A chip that opens a picker, styled like the top branch selector: the glyph,
@@ -8811,48 +8623,12 @@ fn dropdown_chip(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .border_1()
-        .border_color(theme.border)
-        .raised(
-            if open {
-                theme.surface_active
-            } else {
-                theme.surface_elevated
-            },
-            &theme,
-        )
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_click(listener)
-        .child(icon(
-            glyph,
-            ButtonSize::Medium.icon_size().px(&theme),
-            if open {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            },
-        ))
-        .child(
-            div()
-                .max_w(px(180.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_primary)
-                .child(label.to_string()),
-        )
-        .child(icon(
-            "icons/chevron-down.svg",
-            IconSize::XSmall.px(&theme),
-            if open {
-                theme.text_primary
-            } else {
-                theme.text_muted
-            },
-        ))
-        .into_any_element()
+    ChipButton::new(id, ChipStyle::Outlined { inset: false })
+        .icon(glyph)
+        .label(label.to_string())
+        .label_max_w(px(180.))
+        .open(open)
+        .on_click(&theme, listener)
 }
 
 /// The commit-model picker's rows: the follow-the-session option first, then

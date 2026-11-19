@@ -439,7 +439,7 @@ python3 scripts/check_states.py       # interaction states must come from the co
 python3 scripts/check_motion.py       # animations must use a motion primitive
 python3 scripts/check_keyboard.py     # every key binding lands in a declared context
 python3 scripts/check_ui_layers.py    # ui/ imports no surface; material resolved once
-python3 scripts/check_ui_owners.py    # every UI element has one owner under src/ui/
+python3 scripts/check_ui_owners.py    # one owner per UI element; raw buttons/popovers only go down (--update)
 python3 scripts/read-perf.py          # frame-time captures from a debug build (⌘⌥P)
 ```
 

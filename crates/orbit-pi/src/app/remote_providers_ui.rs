@@ -18,6 +18,8 @@ use std::collections::BTreeMap;
 use super::mcp_ui::mcp_text_button;
 use super::ssh_auth_ui::AuthThen;
 use super::*;
+use crate::ui::popover::anchored_menu;
+use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::remote_hosts::{self, ListedModel, ProbeFailure, RemoteHost};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::ui::button::ButtonVariant;
@@ -365,35 +367,20 @@ impl OrbitApp {
         };
         let open = self.providers_machine_menu;
         let toggle_this = this.clone();
-        let button = button_frame(div().id("providers-machine"), &theme, ButtonSize::Large)
-            .debug_selector(|| "providers-machine".to_string())
+        let button = div()
             .relative()
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .when(open, |button| button.bg(theme.surface_active))
-            .pressed_state(&theme, PressedRamp::Wash)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            .child(
+                ChipButton::new("providers-machine", ChipStyle::Outlined { inset: false })
+                    .size(ButtonSize::Large)
+                    .selector("providers-machine")
+                    .icon(glyph)
+                    .label(label)
+                    .open(open)
+                    .on_mouse_up(&theme, move |_, _, cx| {
                 cx.stop_propagation();
                 toggle_this.update(cx, |app, cx| app.toggle_providers_machine_menu(cx));
-            })
-            .child(icon(
-                glyph,
-                ButtonSize::Large.icon_size().px(&theme),
-                theme.text_secondary,
-            ))
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(label),
+            }),
             )
-            .child(icon(
-                "icons/chevron-down.svg",
-                IconSize::XSmall.px(&theme),
-                theme.text_muted,
-            ))
             .children(open.then(|| machine_menu(&hosts, selected.as_ref(), theme, this.clone())));
         Some(
             div()
@@ -1041,16 +1028,10 @@ fn machine_menu(
             })
         })
         .child(body);
-    anchored()
-        .position_mode(AnchoredPositionMode::Local)
-        .anchor(Corner::TopLeft)
-        .offset(point(
+    anchored_menu(Corner::TopLeft, point(
             px(0.),
             ButtonSize::Large.height(&theme) + crate::theme::tokens::popover::MENU_OFFSET,
-        ))
-        .snap_to_window_with_margin(crate::theme::tokens::popover::WINDOW_MARGIN)
-        .child(deferred(popup))
-        .into_any_element()
+        ), popup)
 }
 
 /// One line saying why a short ssh run on `host` (saving a key, setting the

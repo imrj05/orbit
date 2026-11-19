@@ -124,6 +124,14 @@ jobs:
       - name: Translations cover every English key
         run: python3 scripts/check_i18n.py
 
+      - name: The UI layer imports no surface
+        run: python3 scripts/check_ui_layers.py
+
+      - name: Every UI element has one owner, and raw controls only go down
+        run: |
+          python3 scripts/check_ui_owners.py --self-test
+          python3 scripts/check_ui_owners.py
+
       # The extensions are loaded with `--extension` by every Orbit session, and
       # the guard's access policy is a security boundary. Every `*.test.mjs` in
       # the tree runs with the Node test runner (the same command as each

@@ -11,11 +11,11 @@ use gpui::{
     Subscription, Window,
 };
 
+use crate::ui::button::{Button, ButtonVariant};
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, list, list_item, picker, ButtonSize, DynamicSpacing, TextSize,
+    context_menu, list, list_item, picker, DynamicSpacing, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::ui::field::search_field;
@@ -23,7 +23,7 @@ use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::text_width;
 use crate::ui::prelude::{
-    button_frame, icon, menu_header, picker_entry, ControlExt, PressedRamp, StatefulControlExt,
+    icon, menu_header, picker_entry, ControlExt, PressedRamp, StatefulControlExt,
 };
 
 const POPOVER_W: f32 = 320.;
@@ -327,24 +327,16 @@ impl Render for BranchPicker {
                         ),
                 )
                 .child(
-                    button_frame(div(), &theme, ButtonSize::Medium)
-                        .mx(DynamicSpacing::Base08.px(&theme))
-                        .mb(DynamicSpacing::Base04.px(&theme))
-                        .raised(theme.action, &theme)
-                        .hover_action(&theme)
-                        .cursor_pointer()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.action_fg)
-                        .on_mouse_up(
-                            gpui::MouseButton::Left,
-                            cx.listener(|picker, _, window, cx| {
+                    Button::new("branch-picker-create", ButtonVariant::Primary)
+                        .label(tr!("branch_picker.create_branch"))
+                        .on_mouse_up(&theme, cx.listener(|picker, _, window, cx| {
                                 let name = picker.create_input.read(cx).text().trim().to_string();
                                 if !name.is_empty() {
                                     (picker.on_create)(name, window, cx);
                                 }
-                            }),
-                        )
-                        .child(tr!("branch_picker.create_branch")),
+                            }))
+                        .mx(DynamicSpacing::Base08.px(&theme))
+                        .mb(DynamicSpacing::Base04.px(&theme)),
                 );
         }
 

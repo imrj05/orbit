@@ -13,14 +13,14 @@
 //! leaves every key it does not own byte-for-byte.
 
 use super::*;
-use crate::git_panel::widgets::check_box;
 use crate::subagent_file::{self, Agent, Source, Tier};
 use crate::subagents;
 use crate::theme::tokens::{
     button, input, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
+use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::ui::banner::{truncated_line, Banner, BannerTone};
-use crate::ui::button::{Button, ButtonVariant, IconButton};
+use crate::ui::button::{Button, ButtonVariant, IconButton, LinkButton};
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::search_field;
 use crate::ui::field::{FormRow, TextField};
@@ -320,19 +320,9 @@ impl OrbitApp {
 
         let new_agent = {
             let this = this.clone();
-            button_frame(
-                div().id(ElementId::Name("subagents-new".into())),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .hover_state(&theme)
+            Button::keyed(ElementId::Name("subagents-new".into()), ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
             .child(icon(
                 "icons/plus.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
@@ -368,21 +358,14 @@ impl OrbitApp {
                     .text_color(theme.text_muted)
                     .child(tr!("subagents_ui.deleted_agent", name = undo.name.clone()))
                     .child(
-                        button_frame(
-                            div().id(ElementId::Name("subagents-undo".into())),
+                        LinkButton::new("subagents-undo", tr!("subagents_ui.undo")).on_click(
                             &theme,
-                            ButtonSize::Medium,
-                        )
-                        .group(BUTTON_GROUP)
-                        .cursor_pointer()
-                        .text_color(theme.accent_text)
-                        .hover_state(&theme)
-                        .child(tr!("subagents_ui.undo"))
-                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                            this.update(cx, |app, cx| {
-                                app.apply_subagent_action(SubagentAction::UndoDelete, cx)
-                            });
-                        }),
+                            move |_, _, cx| {
+                                this.update(cx, |app, cx| {
+                                    app.apply_subagent_action(SubagentAction::UndoDelete, cx)
+                                });
+                            },
+                        ),
                     ),
             );
         }
@@ -1941,49 +1924,17 @@ impl OrbitApp {
     ) -> AnyElement {
         let id = format!("subagent-tool-{tool}");
         let toggle = tool.clone();
-        button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Default,
-        )
-        .group(BUTTON_GROUP)
-        .border_1()
-        .border_color(if on {
-            theme.border_strong
-        } else {
-            theme.border
-        })
-        .raised(
-            if on {
-                theme.surface_selected
-            } else {
-                theme.surface_elevated
-            },
-            &theme,
-        )
-        .text_color(if on {
-            theme.text_primary
-        } else {
-            theme.text_muted
-        })
-        .cursor_pointer()
-        // A checked chip keeps its selected fill under the pointer, like the
-        // thinking chips: hover never reads as "unchecked".
-        .when(!on, |chip| chip.hover_state(&theme))
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            let tool = toggle.clone();
-            this.update(cx, |app, cx| {
-                app.apply_subagent_action(SubagentAction::ToggleTool(tool), cx)
-            });
-        })
-        .child(check_box(on, theme))
-        .child(
-            div()
-                .font_family(theme::code_font_family())
-                .text_size(theme.code_px(11.))
-                .child(tool),
-        )
-        .into_any_element()
+        ChipButton::new(id, ChipStyle::Outlined { inset: false })
+            .size(ButtonSize::Default)
+            .label(tool)
+            .mono()
+            .checked(on)
+            .on_mouse_up(&theme, move |_, _, cx| {
+                let tool = toggle.clone();
+                this.update(cx, |app, cx| {
+                    app.apply_subagent_action(SubagentAction::ToggleTool(tool), cx)
+                });
+            })
     }
 
     fn subagent_thinking_chip(
@@ -2004,38 +1955,13 @@ impl OrbitApp {
             crate::model_selector::thinking_display(&level)
         };
         let action = SubagentAction::SetThinking(level.clone());
-        button_frame(
-            div().id(ElementId::Name(id.into())),
-            theme,
-            ButtonSize::Default,
-        )
-        .group(BUTTON_GROUP)
-        .border_1()
-        .border_color(if active {
-            theme.border_strong
-        } else {
-            theme.border
-        })
-        .raised(
-            if active {
-                theme.surface_selected
-            } else {
-                theme.surface_elevated
-            },
-            theme,
-        )
-        .text_color(if active {
-            theme.text_primary
-        } else {
-            theme.text_secondary
-        })
-        .cursor_pointer()
-        .when(!active, |chip| chip.hover_state(theme))
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            this.update(cx, |app, cx| app.apply_subagent_action(action.clone(), cx));
-        })
-        .child(label)
-        .into_any_element()
+        ChipButton::new(id, ChipStyle::Outlined { inset: false })
+            .size(ButtonSize::Default)
+            .label(label)
+            .selected(active)
+            .on_mouse_up(theme, move |_, _, cx| {
+                this.update(cx, |app, cx| app.apply_subagent_action(action.clone(), cx));
+            })
     }
 
     #[allow(clippy::too_many_arguments)]

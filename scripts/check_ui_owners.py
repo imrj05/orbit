@@ -24,6 +24,7 @@ Run from the repo root:
 
 Exit status 1 on a violation, so CI can gate on it.
 """
+import json
 import os
 import re
 import sys
@@ -40,6 +41,7 @@ TYPES = {
     "ChipButton": "ui/chip.rs",
     "Badge": "ui/chip.rs",
     "Pill": "ui/chip.rs",
+    "FileChip": "ui/chip.rs",
     "Banner": "ui/banner.rs",
     "ToastCard": "ui/toast.rs",
     "Tab": "ui/tab.rs",
@@ -111,6 +113,16 @@ PRIMITIVES = [
 ICON_FRAME = re.compile(r"\bicon_button_frame\(")
 BESPOKE = re.compile(r"//\s*Bespoke:")
 
+# Raw constructs a surface still builds by hand while their migration is in
+# progress. They are *ratcheted*, not banned: each file may keep at most the
+# count in BUDGET (sites marked `// Bespoke:` don't count), and the budget
+# only goes down. `--update` rewrites it after a migration lowers a count.
+RATCHETED = [
+    (re.compile(r"(?<![_a-z])button_frame\("), "build buttons with ui::button::Button / IconButton"),
+    (re.compile(r"(?<![_a-z:.])anchored\(\)"), "position popovers with ui::popover (anchored_popover_at, dropdown_*)"),
+]
+BUDGET = "scripts/ui_owner_budget.json"
+
 TYPE_DEF = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum)\s+(\w+)\b")
 FN_DEF = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?fn\s+(\w+)\s*[<(]")
 
@@ -127,6 +139,51 @@ def read(path):
         return handle.readlines()
 
 
+def next_item_is_mod(lines, number):
+    """Whether the item the attribute at 1-based `number` decorates is a `mod`."""
+    for line in lines[number:]:
+        text = line.strip()
+        if not text or text.startswith("#[") or text.startswith("//"):
+            continue
+        return text.startswith("mod ") or text.startswith("pub mod ") or text.startswith("pub(crate) mod ")
+    return False
+
+
+def ratchet_counts(root=ROOT):
+    """Per-file counts of uncommented raw constructs outside ui/ and tests."""
+    counts = {}
+    for path in rust_files(root):
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        if rel.startswith("ui/") or rel.endswith("_tests.rs") or rel.endswith("/tests.rs"):
+            continue
+        lines = read(path)
+        in_tests = False
+        for number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if stripped.startswith("#[cfg(test)]") and next_item_is_mod(lines, number):
+                in_tests = True
+            if in_tests or stripped.startswith("//"):
+                continue
+            for pattern, _advice in RATCHETED:
+                if pattern.search(line) and not FN_DEF.match(line):
+                    context = "".join(lines[max(0, number - 5) : number])
+                    if not BESPOKE.search(context):
+                        counts[rel] = counts.get(rel, 0) + 1
+    return counts
+
+
+def check_ratchet(counts, budget):
+    """(over-budget lines, files now under budget)."""
+    over, under = [], []
+    for rel in sorted(set(counts) | set(budget)):
+        have, allowed = counts.get(rel, 0), budget.get(rel, 0)
+        if have > allowed:
+            over.append(f"  {rel}: {have} raw button/popover constructs, budget {allowed}")
+        elif have < allowed:
+            under.append(rel)
+    return over, under
+
+
 def check(root=ROOT):
     violations = []
     for path in rust_files(root):
@@ -136,7 +193,9 @@ def check(root=ROOT):
         in_tests = False
         for number, line in enumerate(lines, start=1):
             stripped = line.strip()
-            if stripped.startswith("#[cfg(test)]"):
+            # A test *module* starts the test section; a single `#[cfg(test)]`
+            # item (one test fn mid-file) must not exempt the rest of the file.
+            if stripped.startswith("#[cfg(test)]") and next_item_is_mod(lines, number):
                 in_tests = True
             if stripped.startswith("//"):
                 continue
@@ -179,7 +238,13 @@ def self_test():
             handle.write("// Bespoke: a floating control\n")
             handle.write("fn h() { icon_button_frame(div(), t, s); }\n")
             handle.write("impl X { fn icon(self) {} }\n")
+        with open(os.path.join(tmp, "late.rs"), "w", encoding="utf-8") as handle:
+            handle.write("#[cfg(test)]\n#[test]\nfn t() {}\n")
+            handle.write("fn after() { anchored_popover(a); }\n")
+            handle.write("    let a = button_frame(div(), t, s); let b = anchored();\n")
+            handle.write("    // Bespoke: a one-off\n    let c = button_frame(div(), t, s);\n")
         found = check(tmp)
+        counts = ratchet_counts(tmp)
     rules = [rule for _p, _n, rule, _t in found]
     expected = [
         "`Button` is owned by ui/button.rs",
@@ -198,6 +263,16 @@ def self_test():
     if any(path.startswith("ui/") for path, _n, _r, _t in found):
         print("self-test FAILED: an owner file was reported")
         return 1
+    if not any(path == "late.rs" for path, _n, _r, _t in found):
+        print("self-test FAILED: a single #[cfg(test)] item exempted the rest of its file")
+        return 1
+    if counts.get("late.rs") != 2:
+        print(f"self-test FAILED: ratchet counted {counts.get('late.rs')} raw constructs, expected 2")
+        return 1
+    over, _ = check_ratchet({"late.rs": 2}, {"late.rs": 1})
+    if not over:
+        print("self-test FAILED: an over-budget file passed")
+        return 1
     print("self-test: every rule fires; owners, methods and commented bespoke frames pass")
     return 0
 
@@ -205,6 +280,19 @@ def self_test():
 def main():
     if "--self-test" in sys.argv:
         return self_test()
+    counts = ratchet_counts()
+    if "--update" in sys.argv:
+        with open(BUDGET, "w", encoding="utf-8") as handle:
+            json.dump(dict(sorted(counts.items())), handle, indent=2)
+            handle.write("\n")
+        print(f"ui-owner budget rewritten: {sum(counts.values())} raw constructs in {len(counts)} files")
+        return 0
+    try:
+        with open(BUDGET, encoding="utf-8") as handle:
+            budget = json.load(handle)
+    except FileNotFoundError:
+        budget = {}
+    over, under = check_ratchet(counts, budget)
     violations = check()
     if violations:
         print("A UI element has a second owner (docs/plans/ui-component-layer.md §9).")
@@ -212,7 +300,21 @@ def main():
         for path, number, rule, text in violations:
             print(f"  {path}:{number}: {rule}\n      {text}")
         return 1
-    print(f"ui-owner check: {len(TYPES)} components and {len(FUNCTIONS)} owning functions have one home")
+    if over:
+        print("A surface built a new raw button or popover instead of using ui/.")
+        print("Use ui::button / ui::popover, or say why with `// Bespoke:` above it.\n")
+        print("\n".join(over))
+        return 1
+    if under:
+        print("Raw constructs went down — lower the budget so they stay down:")
+        print("    python3 scripts/check_ui_owners.py --update")
+        for rel in under:
+            print(f"  {rel}: {counts.get(rel, 0)} (budget {budget.get(rel, 0)})")
+        return 1
+    print(
+        f"ui-owner check: {len(TYPES)} components and {len(FUNCTIONS)} owning functions have one home;"
+        f" {sum(counts.values())} raw button/popover constructs left in {len(counts)} files"
+    )
     return 0
 
 

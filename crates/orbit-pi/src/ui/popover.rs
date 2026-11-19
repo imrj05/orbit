@@ -227,6 +227,46 @@ pub(crate) fn dropdown_above(
         .into_any_element()
 }
 
+/// A row's action menu: at the pointer when a right-click opened it (`at`, in
+/// window coordinates), otherwise hung `below` the row's top edge from its
+/// `corner` — the keyboard / palette route, where there is no pointer. Snapped
+/// inside the window and deferred above the list. No entrance travel: a menu at
+/// the pointer has no edge to travel from, and the keyboard twin matches it.
+pub(crate) fn row_menu(
+    at: Option<Point<Pixels>>,
+    corner: Corner,
+    below: Pixels,
+    popup: impl IntoElement + 'static,
+) -> AnyElement {
+    match at {
+        Some(at) => anchored()
+            .anchor(Corner::TopLeft)
+            .position(at)
+            .snap_to_window_with_margin(popover::WINDOW_MARGIN)
+            .child(deferred(popup))
+            .into_any_element(),
+        None => anchored_menu(corner, gpui::point(gpui::px(0.), below), popup),
+    }
+}
+
+/// A floating panel anchored by its `corner` at `offset` from where it is
+/// mounted, snapped inside the window and deferred above the surface — with
+/// no entrance motion (a hover card, a filter panel, a host menu). For a menu
+/// that should travel out of its trigger, use [`anchored_popover`].
+pub(crate) fn anchored_menu(
+    corner: Corner,
+    offset: Point<Pixels>,
+    popup: impl IntoElement + 'static,
+) -> AnyElement {
+    anchored()
+        .position_mode(AnchoredPositionMode::Local)
+        .anchor(corner)
+        .offset(offset)
+        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
+        .child(deferred(popup))
+        .into_any_element()
+}
+
 /// Anchor a popover at a point the caller computed — a context menu at the
 /// pointer, a menu that opens beside a row rather than under a trigger.
 pub(crate) fn anchored_popover_at(

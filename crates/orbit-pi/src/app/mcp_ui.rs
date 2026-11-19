@@ -18,6 +18,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::button::{Button, ButtonVariant};
 use crate::mcp::config::{self as mcp_config, SecretUpdate};
 use crate::mcp::manager::McpProbe;
 use crate::mcp::{
@@ -27,7 +29,6 @@ use crate::mcp::{
 use crate::theme::tokens::{
     button, input, list_item, modal, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
-use crate::ui::button::ButtonVariant;
 use crate::ui::button::IconButton;
 use crate::ui::chip::Pill;
 use crate::ui::dialog::modal_button;
@@ -955,24 +956,29 @@ impl OrbitApp {
         }
         let entity = cx.entity();
         Some(
-            button_frame(div().id("status-mcp"), &theme, ButtonSize::Default)
-                .cursor_pointer()
-                .hover_quiet(&theme)
+            Button::new("status-mcp", ButtonVariant::Ghost)
+                .size(ButtonSize::Default)
+                .leading(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::theme::tokens::button::gap(&theme))
+                        .child(icon(
+                            "icons/tools/mcp.svg",
+                            ButtonSize::Default.icon_size().px(&theme),
+                            theme.text_muted,
+                        ))
+                        .child(div().size(px(6.)).rounded_full().bg(dot)),
+                )
+                .label(label)
                 .tip(tr!("mcp.command_open"))
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                .on_mouse_up(&theme, move |_, _, cx| {
                     entity.update(cx, |app, cx| {
                         app.settings_open = true;
                         app.set_settings_section(SettingsSection::Mcp, cx);
                         app.sync_terminal_active(cx);
                     });
                 })
-                .child(icon(
-                    "icons/tools/mcp.svg",
-                    ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_muted,
-                ))
-                .child(div().size(px(6.)).rounded_full().bg(dot))
-                .child(div().text_color(theme.text_secondary).child(label))
                 .into_any_element(),
         )
     }
@@ -1079,13 +1085,9 @@ impl OrbitApp {
         .border_color(theme.border)
         .raised(theme.surface_elevated, &theme);
 
-        let add = button_frame(div().id("mcp-add"), &theme, ButtonSize::Large)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
+        let add = Button::keyed("mcp-add", ButtonVariant::Primary)
+.size(ButtonSize::Large)
+.render(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1709,13 +1711,9 @@ impl OrbitApp {
                         .child(tr!("mcp.empty_hint")),
                 )
                 .child(
-                    button_frame(div().id("mcp-empty-add"), &theme, ButtonSize::Medium)
-                        .cursor_pointer()
-                        .font_weight(FontWeight::MEDIUM)
-                        .raised(theme.action, &theme)
-                        .text_color(theme.action_fg)
-                        .hover_action(&theme)
-                        .pressed_state(&theme, PressedRamp::Action)
+                    Button::keyed("mcp-empty-add", ButtonVariant::Primary)
+.size(ButtonSize::Medium)
+.render(&theme)
                         .on_mouse_up(MouseButton::Left, {
                             let this = this.clone();
                             move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1887,35 +1885,11 @@ impl OrbitApp {
         for kind in [McpTransportKind::Stdio, McpTransportKind::StreamableHttp] {
             let selected = editor.kind == kind;
             transport_chips = transport_chips.child(
-                button_frame(
-                    div().id(ElementId::Name(
-                        format!("mcp-editor-kind-{}", kind_label(kind)).into(),
-                    )),
-                    &theme,
-                    ButtonSize::Default,
-                )
-                .border_1()
-                .border_color(if selected {
-                    theme.accent.opacity(0.5)
-                } else {
-                    theme.border
-                })
-                .raised(
-                    if selected {
-                        theme.accent.opacity(0.12)
-                    } else {
-                        theme.surface_elevated
-                    },
-                    &theme,
-                )
-                .text_color(if selected {
-                    theme.accent_text
-                } else {
-                    theme.text_secondary
-                })
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_up(MouseButton::Left, {
+                ChipButton::new(format!("mcp-editor-kind-{}", kind_label(kind)), ChipStyle::Outlined { inset: false })
+.size(ButtonSize::Default)
+.label(tr!(kind.label_key()))
+.selected(selected)
+.on_mouse_up(&theme, {
                     let this = this.clone();
                     move |_, _, cx| {
                         this.update(cx, |app, cx| {
@@ -1925,8 +1899,7 @@ impl OrbitApp {
                             }
                         });
                     }
-                })
-                .child(tr!(kind.label_key())),
+                }),
             );
         }
 
@@ -2843,29 +2816,15 @@ fn mcp_popup_action(
     this: Entity<OrbitApp>,
     action: impl Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 ) -> AnyElement {
-    let action = Rc::new(action);
-    let mut button = button_frame(
-        div().id(ElementId::Name(id.into())),
-        &theme,
-        ButtonSize::Compact,
-    )
-    .cursor_pointer()
-    .font_weight(FontWeight::MEDIUM);
-    button = if primary {
-        button
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
+    let variant = if primary {
+        ButtonVariant::Primary
     } else {
-        button
-            .raised(theme.overlay, &theme)
-            .text_color(theme.text_secondary)
-            .hover_overlay_strong(&theme)
+        ButtonVariant::Glass
     };
-    press(button)
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+    Button::new(id, variant)
+        .size(ButtonSize::Compact)
+        .label(label)
+        .on_mouse_up(&theme, move |_, _, cx| {
             cx.stop_propagation();
             this.update(cx, |app, cx| action(app, cx));
         })

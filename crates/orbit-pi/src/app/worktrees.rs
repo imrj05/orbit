@@ -19,13 +19,15 @@ use std::time::{Duration, Instant};
 use gpui::{AnyElement, MouseDownEvent, MouseUpEvent};
 
 use super::*;
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::button::{IconButton, IconButtonVariant};
+use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::popover::row_menu;
 use crate::motion::Hover;
 use crate::theme::tokens::{
-    context_menu, modal, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
-    RaisedExt, TextSize,
+    context_menu, modal, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::ui::banner::{Banner, BannerTone};
-use crate::ui::button::IconButton;
 use crate::ui::field::{form_label, FormRow, TextField};
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::*;
@@ -1474,12 +1476,9 @@ impl OrbitApp {
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
-                press(
-                    button_frame(div().id("worktrees-top-back"), &theme, ButtonSize::Medium)
-                        .group(BUTTON_GROUP)
-                        .cursor_pointer()
-                        .hover_state(&theme),
-                )
+                Button::keyed("worktrees-top-back", ButtonVariant::Ghost)
+.size(ButtonSize::Medium)
+.render(&theme)
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _: &MouseUpEvent, _, cx| this.close_worktrees(cx)),
@@ -1620,12 +1619,9 @@ impl OrbitApp {
         right = right
             .child(advanced)
             .child(
-                button_frame(div().id("worktrees-clone"), &theme, ButtonSize::Medium)
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .cursor_pointer()
-                    .hover_state(&theme)
+                Button::keyed("worktrees-clone", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
                     .tip(tr!("working_folder.clone_hint"))
                     .child(icon(
                         "icons/cloud.svg",
@@ -1640,13 +1636,9 @@ impl OrbitApp {
                     ),
             )
             .child(
-                button_frame(div().id("worktrees-new"), &theme, ButtonSize::Medium)
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .hover_state(&theme)
+                Button::keyed("worktrees-new", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
                     .child(icon(
                         "icons/plus.svg",
                         ButtonSize::Medium.icon_size().px(&theme),
@@ -1715,6 +1707,7 @@ impl OrbitApp {
                         // flip, so in this top toolbar the off-screen "open
                         // above" position made the snap slide the menu down
                         // over its own button.
+                        // Bespoke: window-space and unsnapped on purpose — snapping slid it over its own button.
                         anchored()
                             .position_mode(AnchoredPositionMode::Window)
                             .anchor(Corner::TopRight)
@@ -1794,39 +1787,13 @@ impl OrbitApp {
             );
         }
         control = control.child(
-            press(
-                button_frame(div().id("worktrees-advanced"), &theme, ButtonSize::Medium)
-                    .debug_selector(|| "worktrees-advanced".to_string())
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(
-                        if open {
-                            theme.surface_hover
-                        } else {
-                            theme.surface_elevated
-                        },
-                        &theme,
-                    )
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(tr!("worktree.page.advanced")),
-                    )
-                    .child(icon(
-                        "icons/chevron-down.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.text_muted,
-                    )),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+            ChipButton::new("worktrees-advanced", ChipStyle::Outlined { inset: false })
+                .selector("worktrees-advanced")
+                .label(tr!("worktree.page.advanced"))
+                .open(open)
+                .on_mouse_up(&theme, cx.listener(|this, _: &MouseUpEvent, _, cx| {
                     this.toggle_worktree_advanced(cx);
-                }),
-            ),
+                })),
         );
         control.into_any_element()
     }
@@ -1978,20 +1945,10 @@ impl OrbitApp {
         if self.worktree_howto_dismissed {
             return None;
         }
-        let dismiss = button_frame(
-            div().id("worktrees-howto-dismiss"),
-            &theme,
-            ButtonSize::Default,
-        )
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .tip(tr!("common.dismiss"))
-        .child(icon(
-            "icons/x.svg",
-            ButtonSize::Default.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        let dismiss = IconButton::new("worktrees-howto-dismiss", "icons/x.svg")
+            .variant(IconButtonVariant::Glass)
+            .tip(tr!("common.dismiss"))
+            .on_mouse_up(&theme, move |_, _, cx| {
             this.update(cx, |app, cx| {
                 app.worktree_howto_dismissed = true;
                 crate::transcript::persist_hint(WORKTREE_HOWTO_HINT_KEY);
@@ -3418,42 +3375,15 @@ impl OrbitApp {
                 .items_start()
                 .children(self.work_in_popup(cx))
                 .child(
-                    button_frame(div().id("status-work-in"), &theme, ButtonSize::Default)
-                        .debug_selector(|| "status-work-in".to_string())
-                        .cursor_pointer()
-                        .when(!open, |chip| chip.hover_quiet(&theme))
-                        .when(open, |chip| {
-                            chip.bg(theme.surface_active).text_color(theme.text_primary)
-                        })
+                    ChipButton::new("status-work-in", ChipStyle::Quiet)
+                        .selector("status-work-in")
+                        .icon(icon_path)
+                        .label(label.clone())
+                        .label_max_w(px(120.))
+                        .label_tip(label)
                         .tip(tr!("working_folder.title"))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(Self::on_work_in_trigger_click),
-                        )
-                        .child(icon(
-                            icon_path,
-                            ButtonSize::Default.icon_size().px(&theme),
-                            theme.text_muted,
-                        ))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .max_w(px(120.))
-                                .truncate()
-                                .tip(label.clone())
-                                .text_color(if open {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_muted
-                                })
-                                .child(label),
-                        )
-                        .child(Self::chip_caret(
-                            open,
-                            theme.text_primary,
-                            "work-in-caret-turn",
-                            cx,
-                        )),
+                        .open(open)
+                        .on_mouse_up(&theme, cx.listener(Self::on_work_in_trigger_click)),
                 )
                 .into_any_element(),
         )
@@ -3772,21 +3702,7 @@ fn worktree_row_menu(
             }
         })
         .child(body);
-    let anchor = if let Some(at) = menu.at {
-        anchored().anchor(Corner::TopLeft).position(at)
-    } else {
-        anchored()
-            .position_mode(AnchoredPositionMode::Local)
-            .anchor(Corner::TopRight)
-            .offset(point(
-                px(0.),
-                ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET,
-            ))
-    };
-    anchor
-        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-        .child(deferred(popup))
-        .into_any_element()
+    row_menu(menu.at, Corner::TopRight, ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET, popup)
 }
 
 /// The worktree state marker: locked / prunable / main / linked.
@@ -3981,23 +3897,11 @@ fn worktree_text_button<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    let button = button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
-        .text_color(theme.text_secondary)
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+    Button::new(id, ButtonVariant::Secondary)
+        .label(label)
+        .faded(&theme, move |button| button.on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
-        });
-    crate::motion::hover(
-        button,
-        id,
-        &theme,
-        Hover::fill(theme.surface_elevated, theme.surface_hover)
-            .with_ink(theme.text_secondary, theme.text_primary),
-    )
+        }))
 }
 
 /// A quiet icon button (page refresh).
@@ -4011,26 +3915,12 @@ fn worktree_icon_button<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    let button = button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
+    Button::new(id, ButtonVariant::Secondary)
+        .icon(icon_path)
         .tip(tr!("common.refresh"))
-        .child(icon(
-            icon_path,
-            ButtonSize::Medium.icon_size().px(&theme),
-            theme.text_secondary,
-        ))
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        .faded(&theme, move |button| button.on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
-        });
-    crate::motion::hover(
-        button,
-        id,
-        &theme,
-        Hover::fill(theme.surface_elevated, theme.surface_hover),
-    )
+        }))
 }
 
 /// The dialog's primary action.
@@ -4100,34 +3990,13 @@ fn worktree_mode_chip<F>(
 where
     F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    button_frame(div().id(id), &theme, ButtonSize::Default)
-        .border_1()
-        .border_color(if selected {
-            theme.accent.opacity(0.5)
-        } else {
-            theme.border
-        })
-        .raised(
-            if selected {
-                theme.accent.opacity(0.14)
-            } else {
-                theme.surface_elevated
-            },
-            &theme,
-        )
-        .cursor_pointer()
-        .hover_state(&theme)
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(if selected {
-            theme.accent_text
-        } else {
-            theme.text_secondary
-        })
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+    ChipButton::new(id, ChipStyle::Outlined { inset: false })
+        .size(ButtonSize::Default)
+        .label(label)
+        .selected(selected)
+        .on_mouse_up(&theme, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
         })
-        .into_any_element()
 }
 
 /// `/Users/user/...` reads `~/...` on every surface that shows a path.

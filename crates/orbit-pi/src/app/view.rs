@@ -2,6 +2,7 @@ use super::format::*;
 use super::session::{SESSION_DETAILS_GUTTER, SESSION_DETAILS_W};
 use super::sidebar::*;
 use super::*;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::prelude::*;
 
 use crate::commands::{self, CommandId};
@@ -2421,6 +2422,7 @@ impl OrbitApp {
                     .into_iter()
                     .map(|(keys, action)| {
                         // Match the adjacent footer controls without adding click behavior.
+                        // Bespoke: inert — the send hints borrow a button frame only to align with the footer controls; nothing here is pressable.
                         button_frame(div(), &theme, ButtonSize::Default)
                             .flex_shrink()
                             .min_w_0()
@@ -2886,6 +2888,10 @@ impl OrbitApp {
         let glyph = size.icon_size().px(&theme);
         let gap = DynamicSpacing::Base08.px(&theme);
 
+        // Bespoke: one of the composer header's three peer controls (folder,
+        // branch, working directory), sharing the header's own metrics; it
+        // needs track_focus plus a key context and action the chip owner does
+        // not expose.
         let row = button_frame(div().id("pick-folder"), &theme, size)
             .debug_selector(|| "new-task-folder".to_string())
             // It truncates inside its slot instead of pushing the branch and
@@ -3189,42 +3195,28 @@ impl OrbitApp {
                                     )
                                     .child(
                                         // Medium, like the Done button beside it.
-                                        button_frame(
-                                            div().id("refresh-setup"),
-                                            &theme,
-                                            ButtonSize::Medium,
-                                        )
-                                        .group(BUTTON_GROUP)
-                                        .when(self.refreshing, |b| b.opacity(0.55))
-                                        .when(!self.refreshing, |b| {
-                                            b.cursor_pointer()
-                                                .hover_state(&theme)
-                                                .pressed_state(&theme, PressedRamp::Wash)
-                                        })
-                                        .on_click({
-                                            let this = cx.entity();
-                                            move |_, _window, cx| {
-                                                this.update(cx, |app, cx| {
-                                                    app.refresh_setup(cx);
-                                                });
-                                            }
-                                        })
-                                        .child(refresh_glyph(
+                                        Button::new("refresh-setup", ButtonVariant::Ghost)
+                                            .leading(refresh_glyph(
                                             "refresh-spin",
                                             ButtonSize::Medium.icon_size().px(&theme),
                                             self.refreshing,
                                             theme.text_secondary,
                                             theme,
                                         ))
-                                        .child(
-                                            div().text_color(theme.text_secondary).child(
-                                                if self.refreshing {
+                                            .label(if self.refreshing {
                                                     tr!("common.checking")
                                                 } else {
                                                     tr!("common.refresh")
-                                                },
-                                            ),
-                                        ),
+                                                })
+                                            .loading(self.refreshing)
+                                            .on_click(&theme, {
+                                            let this = cx.entity();
+                                            move |_, _window, cx| {
+                                                this.update(cx, |app, cx| {
+                                                    app.refresh_setup(cx);
+                                                });
+                                            }
+                                        }),
                                     )
                                     // Only offered when the page was opened on
                                     // request — with something missing, the
@@ -3340,25 +3332,19 @@ impl OrbitApp {
                     .child(tr!("pi_update.migrate_note")),
             )
             .child(
-                button_frame(div().id("pi-migrate"), &theme, ButtonSize::Medium)
-                    .group(BUTTON_GROUP)
-                    .when(migrating, |b| b.opacity(0.55))
-                    .when(!migrating, |b| {
-                        b.cursor_pointer()
-                            .hover_state(&theme)
-                            .pressed_state(&theme, PressedRamp::Wash)
+                Button::new("pi-migrate", ButtonVariant::Ghost)
+                    .label(if migrating {
+                        tr!("pi_update.migrating")
+                    } else {
+                        tr!("pi_update.migrate")
                     })
-                    .on_click({
+                    .loading(migrating)
+                    .on_click(&theme, {
                         let this = cx.entity();
                         move |_, _window, cx| {
                             this.update(cx, |app, cx| app.migrate_pi_install(cx));
                         }
-                    })
-                    .child(div().text_color(theme.text_secondary).child(if migrating {
-                        tr!("pi_update.migrating")
-                    } else {
-                        tr!("pi_update.migrate")
-                    })),
+                    }),
             )
     }
 
@@ -3600,6 +3586,8 @@ impl OrbitApp {
                         .min_w_0()
                         .max_w_full()
                         .child(
+                            // Bespoke: a trigger with a live pending state (dimmed, inert while a branch
+                            // operation runs) and ahead/behind counts; ChipButton has no pending state yet.
                             button_frame(div().id("branch-chip"), &theme, ButtonSize::Default)
                                 .min_w_0()
                                 .max_w_full()
@@ -4680,21 +4668,17 @@ impl OrbitApp {
                                 error = retry.error
                             )),
                     )
-                    .child(crate::motion::hover(
-                        button_frame(div().id("cancel-retry"), &theme, ButtonSize::Compact)
-                            .text_color(theme.text_secondary)
-                            .cursor_pointer()
-                            .on_mouse_up(
+                    .child(Button::new("cancel-retry", ButtonVariant::Ghost)
+                        .size(ButtonSize::Compact)
+                        .label(tr!("view.cancel"))
+                        .faded(&theme, |el| {
+                            el.on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.abort_retry(cx);
                                 }),
                             )
-                            .child(tr!("view.cancel")),
-                        "cancel-retry",
-                        &theme,
-                        Hover::wash(&theme).with_ink(theme.text_secondary, theme.text_primary),
-                    ))
+                        }))
                     .into_any_element(),
             );
         }
@@ -5070,22 +5054,14 @@ impl OrbitApp {
         } else {
             tr!("ask.hint_single")
         };
-        let mut back = button_frame(div().id("ask-back"), &theme, ButtonSize::Medium)
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(gpui::transparent_black())
-            .raised(theme.overlay, &theme)
-            .text_color(theme.text_secondary);
         let back_disabled = submitted || cursor == 0;
-        if back_disabled {
-            back = back.opacity(0.45);
-        } else {
-            back = back
-                .cursor_pointer()
-                .hover_overlay_strong(&theme)
-                .on_click(cx.listener(|this, _, window, cx| this.ask_prev_question(window, cx)));
-        }
-        back = back.child(tr!("view.back"));
+        let back = Button::new("ask-back", ButtonVariant::Glass)
+            .label(tr!("view.back"))
+            .disabled(back_disabled)
+            .on_click(
+                &theme,
+                cx.listener(|this, _, window, cx| this.ask_prev_question(window, cx)),
+            );
 
         let last = cursor + 1 >= total;
         let next_label = if last {
@@ -5093,21 +5069,13 @@ impl OrbitApp {
         } else {
             tr!("ask.next")
         };
-        let mut next = button_frame(div().id("ask-next"), &theme, ButtonSize::Medium)
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(gpui::transparent_black())
-            .raised(theme.accent.opacity(0.16), &theme)
-            .text_color(theme.accent_text);
-        if submitted {
-            next = next.opacity(0.45);
-        } else {
-            next = next
-                .cursor_pointer()
-                .hover_accent_wash(&theme, AccentWash::Soft)
-                .on_click(cx.listener(|this, _, window, cx| this.ask_next_question(window, cx)));
-        }
-        next = next.child(next_label);
+        let next = Button::new("ask-next", ButtonVariant::Tinted)
+            .label(next_label)
+            .disabled(submitted)
+            .on_click(
+                &theme,
+                cx.listener(|this, _, window, cx| this.ask_next_question(window, cx)),
+            );
 
         card = card.child(
             div()
@@ -5168,6 +5136,9 @@ impl OrbitApp {
             let is_deny = option.eq_ignore_ascii_case("deny");
             let is_primary = !is_deny && !option.to_ascii_lowercase().contains("always");
             let id = ElementId::NamedInteger("approval-option".into(), ix as u64);
+            // Bespoke: approval tiles — the deny option wants a danger hover
+            // on the glass face, and the keyboard cursor swaps the hairline
+            // per render; no `Button` variant covers both.
             let mut button = button_frame(div().id(id), &theme, ButtonSize::Medium)
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
@@ -5652,23 +5623,16 @@ impl OrbitApp {
         let mut actions = div().flex().flex_none().items_center().gap_1();
         if reconnect {
             actions = actions.child(
-                button_frame(div().id("reconnect-runtime"), &theme, ButtonSize::Default)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .cursor_pointer()
-                    .raised(theme.overlay, &theme)
-                    .hover_on_glass(&theme)
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
+                Button::new("reconnect-runtime", ButtonVariant::Glass)
+                    .size(ButtonSize::Default)
+                    .label(tr!("view.reconnect"))
+                    .on_mouse_up(&theme, cx.listener(|this, _, _, cx| {
                             if this.error_source.as_deref() != Some(REWIND_INTERRUPTED_ERROR_SOURCE)
                             {
                                 this.error = None;
                             }
                             this.runtime_restart(cx);
-                        }),
-                    )
-                    .child(tr!("view.reconnect")),
+                        })),
             );
         }
         actions = actions

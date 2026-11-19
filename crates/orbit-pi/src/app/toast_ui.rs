@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{toast as toast_tokens, IconSize, Motion};
 use crate::toast::{Toast, ToastKind};
 use crate::ui::prelude::*;
@@ -220,39 +221,21 @@ impl OrbitApp {
             );
 
         let this = cx.entity();
-        let skip_button = press(button_frame(
-            div().id(ElementId::Name("plugin-update-skip".into())),
-            &theme,
-            toast_tokens::ACTION_BUTTON,
-        ))
-        .cursor_pointer()
-        .text_color(theme.text_muted)
-        .hover_state(&theme)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        let skip_button = Button::keyed(ElementId::Name("plugin-update-skip".into()), ButtonVariant::Ghost)
+            .size(toast_tokens::ACTION_BUTTON)
+            .label(tr!("git_panel.recover_skip"))
+            .on_mouse_up(&theme, move |_, _, cx| {
             this.update(cx, |app, cx| app.skip_plugin_updates(cx));
-        })
-        .child(tr!("git_panel.recover_skip"));
+        });
 
         let this = cx.entity();
-        let update_button = press(button_frame(
-            div().id(ElementId::Name("plugin-update-now".into())),
-            &theme,
-            toast_tokens::ACTION_BUTTON,
-        ))
-        .cursor_pointer()
-        .raised(theme.action, &theme)
-        .text_color(theme.action_fg)
-        .hover_action(&theme)
-        .pressed_state(&theme, PressedRamp::Action)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        let update_button = Button::keyed(ElementId::Name("plugin-update-now".into()), ButtonVariant::Primary)
+            .size(toast_tokens::ACTION_BUTTON)
+            .leading(icon("icons/refresh.svg", IconSize::XSmall.px(&theme), theme.action_fg))
+            .label(tr!("updater_ui.update_now"))
+            .on_mouse_up(&theme, move |_, _, cx| {
             this.update(cx, |app, cx| app.apply_plugin_updates(cx));
-        })
-        .child(icon(
-            "icons/refresh.svg",
-            IconSize::XSmall.px(&theme),
-            theme.action_fg,
-        ))
-        .child(tr!("updater_ui.update_now"));
+        });
 
         let card = toast_tokens::surface(
             div()

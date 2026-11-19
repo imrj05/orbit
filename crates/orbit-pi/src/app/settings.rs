@@ -1,6 +1,7 @@
 use super::format::*;
 use super::sidebar::star_project_banner;
 use super::*;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::git_panel::widgets::check_box;
 use crate::motion::Hover;
 use crate::quota::note_should_render;
@@ -10,7 +11,7 @@ use crate::theme::tokens::{
 };
 use crate::theme::MotionPreference;
 use crate::ui::button::{ButtonGroup, SegmentFill};
-use crate::ui::chip::{Badge, BadgeFill};
+use crate::ui::chip::{Badge, BadgeFill, ChipButton, ChipStyle};
 use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
 use crate::ui::field::search_field;
 use crate::ui::field::TextField;
@@ -1347,63 +1348,17 @@ impl OrbitApp {
         // A filter chip in the toolbar's button language: `surface_elevated` + a
         // hairline when off, the standard `selection` fill when on — never an
         // accent wash, which is reserved for the favorite stars themselves.
-        crate::motion::hover(
-            button_frame(
-                div().id("models-favorites-filter"),
-                &theme,
-                ButtonSize::Large,
-            )
-            .border_1()
-            .border_color(theme.border)
-            .cursor_pointer()
-            .when(self.models_favorites_only, |button| {
-                button
-                    .raised(theme.surface_active, &theme)
-                    .text_color(theme.text_primary)
-            })
-            .when(!self.models_favorites_only, |button| {
-                button.raised(theme.surface_elevated, &theme)
-            })
-            .on_mouse_up(MouseButton::Left, {
+        ChipButton::new("models-favorites-filter", ChipStyle::Outlined { inset: false })
+            .size(ButtonSize::Large)
+            .icon("icons/star.svg")
+            .label(tr!("settings.favorites"))
+            .checked(self.models_favorites_only)
+            .on_mouse_up(&theme, {
                 let this = this.clone();
                 move |_, _, cx| {
                     this.update(cx, |app, cx| app.toggle_models_favorites_only(cx));
                 }
             })
-            .child(icon(
-                "icons/star.svg",
-                ButtonSize::Large.icon_size().px(&theme),
-                if self.models_favorites_only {
-                    theme.text_primary
-                } else {
-                    theme.text_secondary
-                },
-            ))
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if self.models_favorites_only {
-                        theme.text_primary
-                    } else {
-                        theme.text_secondary
-                    })
-                    .child(tr!("settings.favorites")),
-            ),
-            "models-favorites-filter",
-            &theme,
-            Hover::over(
-                Some(if self.models_favorites_only {
-                    theme.surface_active
-                } else {
-                    theme.surface_elevated
-                }),
-                if self.models_favorites_only {
-                    theme.surface_active
-                } else {
-                    theme.surface_hover
-                },
-            ),
-        )
     }
 
     /// Refresh pi's provider/model catalog (`pi update --models`).
@@ -1411,15 +1366,10 @@ impl OrbitApp {
         // Refresh pi's provider/model catalog (`pi update --models`) and
         // reload it. The catalog is pi's own data, so this is the one control
         // that fetches new providers/models rather than filtering what we have.
-        crate::motion::hover(
-            button_frame(div().id("models-update"), &theme, ButtonSize::Large)
-                .group(BUTTON_GROUP)
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .cursor_pointer()
+        Button::keyed("models-update", ButtonVariant::Secondary)
+.size(ButtonSize::Large)
+.faded(&theme, |button| button
                 .when(self.models_refreshing, |button| button.opacity(0.6))
-                .pressed_state(&theme, PressedRamp::Wash)
                 .on_mouse_up(MouseButton::Left, {
                     let this = this.clone();
                     move |_, _, cx| {
@@ -1438,11 +1388,7 @@ impl OrbitApp {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_secondary)
                         .child(tr!("settings.models_update")),
-                ),
-            "models-update",
-            &theme,
-            Hover::over(Some(theme.surface_elevated), theme.surface_hover),
-        )
+                ))
     }
 
     /// The active model as a settings-style row: label on the left, selector
@@ -1479,13 +1425,12 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         if self.available_models.is_empty() {
-            return button_frame(div().id("active-model-select"), &theme, SELECT_CHIP_SIZE)
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.text_muted)
-                .child(tr!("settings.no_models_reported"))
-                .into_any_element();
+            return ChipButton::new("active-model-select", ChipStyle::Outlined { inset: false })
+                .size(SELECT_CHIP_SIZE)
+                .label(tr!("settings.no_models_reported"))
+                .caret(false)
+                .disabled(true)
+                .render(&theme);
         }
         let options: Vec<String> = self
             .available_models
@@ -2033,30 +1978,15 @@ impl OrbitApp {
             "plugin-scope-{}",
             if project { "project" } else { "global" }
         );
-        let mut chip = button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Large,
-        )
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM);
-        chip = if active {
-            chip.raised(theme.surface_active, &theme)
-                .text_color(theme.text_primary)
-        } else {
-            chip.border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.text_muted)
-                .hover_state(&theme)
-        };
-        chip.on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            this.update(cx, |app, cx| {
-                app.apply_plugin_action(PluginAction::SetScope { project }, cx)
-            });
-        })
-        .child(label.to_string())
-        .into_any_element()
+        ChipButton::new(id, ChipStyle::Outlined { inset: false })
+            .size(ButtonSize::Large)
+            .label(label.to_string())
+            .selected(active)
+            .on_mouse_up(&theme, move |_, _, cx| {
+                this.update(cx, |app, cx| {
+                    app.apply_plugin_action(PluginAction::SetScope { project }, cx)
+                });
+            })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2185,15 +2115,10 @@ impl OrbitApp {
             theme.text_secondary,
             theme,
         );
-        let refresh_button = crate::motion::hover(
-            button_frame(div().id("providers-refresh"), &theme, ButtonSize::Large)
-                .group(BUTTON_GROUP)
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .cursor_pointer()
+        let refresh_button = Button::keyed("providers-refresh", ButtonVariant::Secondary)
+.size(ButtonSize::Large)
+.faded(&theme, |button| button
                 .when(self.providers_refreshing, |button| button.opacity(0.6))
-                .pressed_state(&theme, PressedRamp::Wash)
                 .on_mouse_up(MouseButton::Left, {
                     let this = this.clone();
                     move |_, _, cx| {
@@ -2206,38 +2131,18 @@ impl OrbitApp {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_secondary)
                         .child(tr!("settings.refresh")),
-                ),
-            "providers-refresh",
-            &theme,
-            Hover::over(Some(theme.surface_elevated), theme.surface_hover),
-        );
+                ));
 
-        let add_button = crate::motion::hover(
-            button_frame(div().id("providers-add"), &theme, ButtonSize::Large)
-                .raised(theme.action, &theme)
-                .cursor_pointer()
-                .pressed_state(&theme, PressedRamp::Action)
-                .on_mouse_up(MouseButton::Left, {
-                    let this = this.clone();
-                    move |_, window, cx| {
-                        this.update(cx, |app, cx| app.provider_editor_open(None, window, cx));
-                    }
+        let add_button = Button::new("providers-add", ButtonVariant::Primary)
+            .size(ButtonSize::Large)
+            .icon("icons/plus.svg")
+            .label(tr!("settings.add_provider"))
+            .faded(&theme, |button| {
+                let this = this.clone();
+                button.on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                    this.update(cx, |app, cx| app.provider_editor_open(None, window, cx));
                 })
-                .child(icon(
-                    "icons/plus.svg",
-                    ButtonSize::Large.icon_size().px(&theme),
-                    theme.action_fg,
-                ))
-                .child(
-                    div()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.action_fg)
-                        .child(tr!("settings.add_provider")),
-                ),
-            "providers-add",
-            &theme,
-            Hover::over(Some(theme.action), theme.action_hover),
-        );
+            });
 
         // Search and the page's actions share one row; on a narrow window
         // the buttons wrap under the field instead of clipping.
@@ -3658,30 +3563,22 @@ impl OrbitApp {
             .iter()
             .map(|model| (model.provider.clone(), model.id.clone()))
             .collect();
-        let bulk = button_frame(
-            div().id(ElementId::Name(
-                format!("provider-models-visibility-{provider}").into(),
-            )),
-            &theme,
-            ButtonSize::Default,
+        let bulk = Button::new(
+            format!("provider-models-visibility-{provider}"),
+            ButtonVariant::Ghost,
         )
-        .flex_none()
-        .text_size(TextSize::Small.px(&theme))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.text_secondary)
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        .label(if all_hidden {
+            tr!("settings.show_all_models")
+        } else {
+            tr!("settings.hide_all_models")
+        })
+        .on_mouse_up(&theme, move |_, _, cx| {
             for (provider, id) in &ids {
                 crate::hidden_models::set(provider, id, !all_hidden);
             }
             this.update(cx, |_, cx| cx.notify());
         })
-        .child(if all_hidden {
-            tr!("settings.show_all_models")
-        } else {
-            tr!("settings.hide_all_models")
-        });
+        .flex_none();
 
         div()
             .debug_selector({
@@ -3742,6 +3639,9 @@ impl OrbitApp {
         let label = id.clone();
         let shown = !hidden.contains(&provider, &id);
         let chip_id = format!("provider-model-chip-{provider}-{id}");
+        // Bespoke: a full-width checkbox row — a row family, not a chip; its
+        // check stays explicit when hidden, which a ChipButton check (on-only)
+        // would not.
         let mut chip = button_frame(
             div()
                 .id(ElementId::Name(chip_id.clone().into()))
@@ -3979,12 +3879,9 @@ impl OrbitApp {
             .find(|view| view.id == id)?;
         let body = self.provider_quota_section(&view, theme)?;
 
-        let close = button_frame(div().id("provider-usage-close"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .hover_state(&theme)
+        let close = Button::keyed("provider-usage-close", ButtonVariant::Secondary)
+.size(ButtonSize::Large)
+.render(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -4142,12 +4039,9 @@ impl OrbitApp {
             );
         }
 
-        let cancel = button_frame(div().id("provider-key-close"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .hover_state(&theme)
+        let cancel = Button::keyed("provider-key-close", ButtonVariant::Secondary)
+.size(ButtonSize::Large)
+.render(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -4315,45 +4209,19 @@ impl OrbitApp {
             let selected = editor.api == api;
             let this = this.clone();
             api_chips = api_chips.child(
-                button_frame(
-                    div().id(ElementId::Name(format!("provider-api-{api}").into())),
-                    &theme,
-                    ButtonSize::Default,
-                )
-                .border_1()
-                .border_color(if selected {
-                    theme.accent.opacity(0.5)
-                } else {
-                    theme.border
-                })
-                .raised(
-                    if selected {
-                        theme.accent.opacity(0.12)
-                    } else {
-                        theme.surface_elevated
-                    },
-                    &theme,
-                )
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| {
-                        if let Some(editor) = app.provider_editor.as_mut() {
-                            editor.api = api.to_string();
-                            cx.notify();
-                        }
-                    });
-                })
-                .child(
-                    div()
-                        .font_family(theme::code_font_family())
-                        .text_color(if selected {
-                            theme.accent_text
-                        } else {
-                            theme.text_muted
-                        })
-                        .child(api),
-                ),
+                ChipButton::new(format!("provider-api-{api}"), ChipStyle::Outlined { inset: false })
+                    .size(ButtonSize::Default)
+                    .label(api)
+                    .mono()
+                    .selected(selected)
+                    .on_mouse_up(&theme, move |_, _, cx| {
+                        this.update(cx, |app, cx| {
+                            if let Some(editor) = app.provider_editor.as_mut() {
+                                editor.api = api.to_string();
+                                cx.notify();
+                            }
+                        });
+                    }),
             );
         }
 
@@ -4483,16 +4351,9 @@ impl OrbitApp {
 
         let cancel = {
             let this = this.clone();
-            button_frame(
-                div().id("provider-editor-cancel"),
-                &theme,
-                ButtonSize::Large,
-            )
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .hover_state(&theme)
+            Button::keyed("provider-editor-cancel", ButtonVariant::Secondary)
+.size(ButtonSize::Large)
+.render(&theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| {
                     app.provider_editor = None;
@@ -4507,24 +4368,16 @@ impl OrbitApp {
         };
         let save = {
             let this = this.clone();
-            button_frame(div().id("provider-editor-save"), &theme, ButtonSize::Large)
-                .raised(theme.action, &theme)
-                .cursor_pointer()
-                .hover_action(&theme)
-                .pressed_state(&theme, PressedRamp::Action)
-                .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                    this.update(cx, |app, cx| app.provider_save(window, cx));
-                })
-                .child(
-                    div()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.action_fg)
-                        .child(if editing {
+            Button::new("provider-editor-save", ButtonVariant::Primary)
+                .size(ButtonSize::Large)
+                .label(if editing {
                             tr!("settings.save_changes")
                         } else {
                             tr!("settings.add_provider")
-                        }),
-                )
+                        })
+                .on_mouse_up(&theme, move |_, window, cx| {
+                    this.update(cx, |app, cx| app.provider_save(window, cx));
+                })
         };
         card = card.child(modal_footer(&theme).child(cancel).child(save));
 
@@ -4696,15 +4549,9 @@ impl OrbitApp {
     /// The About page's repository link: a ghost button that opens the
     /// project's GitHub page in the OS browser.
     pub(super) fn about_github_button(&self, theme: Theme) -> AnyElement {
-        button_frame(div().id("about-github"), &theme, ButtonSize::Medium)
-            .group(BUTTON_GROUP)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_secondary)
-            .cursor_pointer()
-            .hover_state(&theme)
+        Button::keyed("about-github", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
             .child(icon(
                 "icons/arrow-up-right.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
@@ -5665,17 +5512,12 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let Some(model) = self.default_model_entry() else {
-            return button_frame(
-                div().id("default-thinking-select"),
-                &theme,
-                SELECT_CHIP_SIZE,
-            )
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_muted)
-            .child(tr!("settings.pi_default"))
-            .into_any_element();
+            return ChipButton::new("default-thinking-select", ChipStyle::Outlined { inset: false })
+                .size(SELECT_CHIP_SIZE)
+                .label(tr!("settings.pi_default"))
+                .caret(false)
+                .disabled(true)
+                .render(&theme);
         };
         let mut options: Vec<String> = vec![tr!("settings.pi_default")];
         options.extend(
@@ -5924,25 +5766,13 @@ impl OrbitApp {
                 tools = remembered.join(", ")
             )
         };
-        let mut clear = button_frame(
-            div().id("clear-remembered-approvals"),
-            &theme,
-            ButtonSize::Large,
-        )
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .text_color(theme.text_secondary)
-        .child(tr!("settings.remembered_approvals_clear"));
-        if !remembered.is_empty() {
-            clear = clear
-                .cursor_pointer()
-                .hover_state(&theme)
-                .pressed_state(&theme, PressedRamp::Wash)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| app.clear_remembered_approvals(cx));
-                });
-        }
+        let clear = Button::new("clear-remembered-approvals", ButtonVariant::Secondary)
+            .size(ButtonSize::Large)
+            .label(tr!("settings.remembered_approvals_clear"))
+            .disabled(remembered.is_empty())
+            .on_mouse_up(&theme, move |_, _, cx| {
+                this.update(cx, |app, cx| app.clear_remembered_approvals(cx));
+            });
         self.settings_section(
             theme,
             &tr!("settings.remembered_approvals"),
@@ -7712,25 +7542,20 @@ impl OrbitApp {
             // dropdown anchored below the chip when open
             .children(self.settings_select_popup(kind, size, options, selected, theme, &this, cx))
             .child(
-                button_frame(div().id(ElementId::Name(id.into())), &theme, size)
-                    .border_1()
-                    .border_color(if open {
-                        theme.border_strong
-                    } else {
-                        theme.border
-                    })
-                    .raised(
-                        if open {
-                            theme.overlay
-                        } else {
-                            theme.surface_elevated
-                        },
-                        &theme,
-                    )
-                    .cursor_pointer()
-                    .text_color(theme.text_secondary)
-                    .hover_overlay(&theme)
-                    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                {
+                    let chip = ChipButton::new(id, ChipStyle::Outlined { inset: false })
+                        .size(size)
+                        .label(label)
+                        .open(open);
+                    let chip = match model_provider {
+                        Some(provider) => chip.leading(icon_dyn(
+                            provider_icon(provider),
+                            context_menu::ICON.px(&theme),
+                            provider_mark_color(provider, &theme, theme.text_muted),
+                        )),
+                        None => chip,
+                    };
+                    chip.on_mouse_up(&theme, move |_, window, cx| {
                         chip_this.update(cx, |app, cx| {
                             // A dismissal from this same click's mouse-down
                             // must not immediately re-open (see
@@ -7756,19 +7581,7 @@ impl OrbitApp {
                             cx.notify();
                         });
                     })
-                    .when_some(model_provider, |chip, provider| {
-                        chip.child(icon_dyn(
-                            provider_icon(provider),
-                            context_menu::ICON.px(&theme),
-                            provider_mark_color(provider, &theme, theme.text_muted),
-                        ))
-                    })
-                    .child(label)
-                    .child(icon(
-                        "icons/chevron-down.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.text_muted,
-                    )),
+                },
             )
             .into_any_element()
     }

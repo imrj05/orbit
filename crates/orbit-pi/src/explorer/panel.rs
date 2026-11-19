@@ -21,10 +21,10 @@ use gpui::{
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, input, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize,
 };
@@ -36,10 +36,8 @@ use crate::ui::menu::menu_hint;
 use crate::ui::popover::PopoverExt;
 use crate::ui::popover::{dropdown_below, DropdownAlign};
 use crate::ui::prelude::{
-    anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
-    context_menu_surface, empty_state, file_badge, file_glyph, icon, nerd_font_family, press,
-    ControlExt, EmptyFill, TipExt, BUTTON_GROUP,
-};
+    anchored_popover_at, context_menu_entry, context_menu_separator,
+    context_menu_surface, empty_state, file_badge, file_glyph, icon, nerd_font_family, ControlExt, EmptyFill, TipExt, };
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::style::surface::SurfaceExt;
 use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
@@ -1587,25 +1585,17 @@ fn prompt_button(
     destructive: bool,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let (bg, fg) = if destructive {
-        (theme.error, theme.error_fg)
+    // The prompt's confirm is the irreversible step (Delete); the other
+    // choice is the quiet way out.
+    let variant = if destructive {
+        ButtonVariant::Destructive
     } else {
-        (theme.surface_elevated, theme.text_primary)
+        ButtonVariant::Outline
     };
-    press(
-        button_frame(div().id(id).group(BUTTON_GROUP), &theme, ButtonSize::Medium)
-            .cursor_pointer()
-            .raised(bg, &theme)
-            .hover_dimmed(),
-    )
-    .on_click(listener)
-    .child(
-        div()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(fg)
-            .child(label),
-    )
-    .into_any_element()
+    Button::new(id, variant)
+        .label(label)
+        .on_click(&theme, listener)
+        .into_any_element()
 }
 
 /// A header/toolbar ghost icon control: a Default icon button, hover fill

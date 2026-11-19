@@ -63,7 +63,8 @@ impl StatusBar {
             .gap_4()
             .text_size(TextSize::Small.px(theme))
             .text_color(theme.text_muted);
-        if self.protect {
+        // Keep the spacing, but don't paint a strip when there's no ink to protect.
+        if self.protect && !(self.leading.is_empty() && self.trailing.is_empty()) {
             row = row.bg(theme.background);
         }
         row.children(self.leading)
@@ -133,13 +134,29 @@ mod tests {
     #[test]
     fn the_bar_protects_its_ink_only_when_asked() {
         let theme = Theme::for_id(ThemeId::ALL[0]);
-        let mut plain = StatusBar::new().render(&theme);
-        let mut protected = StatusBar::new().protect(true).render(&theme);
+        let mut plain = StatusBar::new().leading(Some("Workspace")).render(&theme);
+        let mut protected_leading = StatusBar::new()
+            .protect(true)
+            .leading(Some("Workspace"))
+            .render(&theme);
+        let mut protected_trailing = StatusBar::new()
+            .protect(true)
+            .trailing(Some("Status"))
+            .render(&theme);
         assert!(plain.style().background.is_none());
-        assert_eq!(protected.style().background, Some(theme.background.into()));
+        let fill = Some(theme.background.into());
+        assert_eq!(protected_leading.style().background, fill);
+        assert_eq!(protected_trailing.style().background, fill);
         assert_eq!(
             plain.style().text.as_ref().and_then(|text| text.color),
             Some(theme.text_muted)
         );
+    }
+
+    #[test]
+    fn an_empty_protected_bar_does_not_paint_over_the_wallpaper() {
+        let theme = Theme::for_id(ThemeId::ALL[0]);
+        let mut row = StatusBar::new().protect(true).render(&theme);
+        assert!(row.style().background.is_none());
     }
 }

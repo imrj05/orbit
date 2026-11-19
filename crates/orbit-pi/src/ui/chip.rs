@@ -177,14 +177,34 @@ pub(crate) struct ChipButton {
     icon: Option<&'static str>,
     label: Option<SharedString>,
     label_max_w: Option<Pixels>,
+    max_w: Option<Pixels>,
     open: bool,
     caret: bool,
     tip: Option<SharedString>,
-    selector: Option<&'static str>,
+    selector: Option<SharedString>,
     trailing: Option<AnyElement>,
     leading: Option<AnyElement>,
     disabled: bool,
     shrink: bool,
+    mark: Option<ChipMark>,
+    mono: bool,
+    label_tip: Option<SharedString>,
+    applied: bool,
+}
+
+/// What a chip that is not a trigger reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChipMark {
+    /// One choice among several (a radio): `true` is the one in force.
+    Choice(bool),
+    /// An independent on/off: `true` is on, and a check says so.
+    Toggle(bool),
+}
+
+impl ChipMark {
+    fn on(self) -> bool {
+        matches!(self, Self::Choice(true) | Self::Toggle(true))
+    }
 }
 
 impl ChipButton {
@@ -199,6 +219,7 @@ impl ChipButton {
             icon: None,
             label: None,
             label_max_w: None,
+            max_w: None,
             open: false,
             caret: true,
             tip: None,
@@ -207,7 +228,59 @@ impl ChipButton {
             leading: None,
             disabled: false,
             shrink: false,
+            mark: None,
+            mono: false,
+            label_tip: None,
+            applied: false,
         }
+    }
+
+    /// The full value on hover over a truncated label — a folder path, a long
+    /// branch — separate from the chip's own [`Self::tip`] naming the control.
+    pub(crate) fn label_tip(mut self, tip: impl Into<SharedString>) -> Self {
+        self.label_tip = Some(tip.into());
+        self
+    }
+
+    /// Draw the label in the code face — a tool or command name is machine
+    /// text, the register the transcript uses for an identifier.
+    pub(crate) fn mono(mut self) -> Self {
+        self.mono = true;
+        self
+    }
+
+    /// Make the chip a **choice** — one of several, like a radio — instead of
+    /// a trigger. The choice in force takes `surface_selected` and a strong
+    /// hairline, held under the pointer so hovering never reads as
+    /// deselecting it. No caret: a choice opens nothing.
+    pub(crate) fn selected(mut self, selected: bool) -> Self {
+        self.mark = Some(ChipMark::Choice(selected));
+        self.caret = false;
+        self
+    }
+
+    /// Make the chip an **on/off toggle**. On, it reads like a selected
+    /// choice and carries a leading check, so the state never rests on the
+    /// fill alone. No caret.
+    pub(crate) fn checked(mut self, checked: bool) -> Self {
+        self.mark = Some(ChipMark::Toggle(checked));
+        self.caret = false;
+        self
+    }
+
+    /// Whether the chip shows the held "on" treatment (open trigger,
+    /// selected choice or checked toggle).
+    fn lit(&self) -> bool {
+        self.open || self.applied || self.mark.is_some_and(ChipMark::on)
+    }
+
+    /// A trigger whose filter is **in force** (a label picked, a scope
+    /// narrowed): the strong hairline and primary ink, with the caret and the
+    /// ordinary hover kept — it still opens its picker. Unlike
+    /// [`Self::selected`] it says nothing about the fill, so `open` still reads.
+    pub(crate) fn applied(mut self, applied: bool) -> Self {
+        self.applied = applied;
+        self
     }
 
     pub(crate) fn size(mut self, size: ButtonSize) -> Self {
@@ -237,6 +310,14 @@ impl ChipButton {
     /// row) so a truncating label gives way first.
     pub(crate) fn shrink(mut self) -> Self {
         self.shrink = true;
+        self
+    }
+
+    /// Cap the whole chip; a truncating label gives way first. For a chip in
+    /// a crowded row where its label may not push anything off — a long
+    /// GitHub label beside the search field this one sits beside.
+    pub(crate) fn max_w(mut self, width: Pixels) -> Self {
+        self.max_w = Some(width);
         self
     }
 
@@ -279,13 +360,14 @@ impl ChipButton {
     }
 
     /// A test hook (`debug_selector`); the label gets `<selector>-label`.
-    pub(crate) fn selector(mut self, selector: &'static str) -> Self {
-        self.selector = Some(selector);
+    pub(crate) fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.selector = Some(selector.into());
         self
     }
 
     fn frame(&self, theme: &Theme) -> gpui::Stateful<gpui::Div> {
         let open = self.open;
+        let marked = self.mark.is_some_and(ChipMark::on);
         let mut el = button_frame(div().id(self.id.clone()), theme, self.size);
         el = if self.disabled {
             el.disabled_state(theme)
@@ -295,32 +377,49 @@ impl ChipButton {
         if self.shrink {
             el = el.min_w_0().max_w_full();
         }
-        if let Some(selector) = self.selector {
+        if let Some(max_w) = self.max_w {
+            el = el.max_w(max_w);
+        }
+        if let Some(selector) = self.selector.clone() {
             el = el.debug_selector(move || selector.to_string());
         }
         el = match self.style {
             _ if self.disabled => el,
-            ChipStyle::Quiet => el.when_open(open, |el| {
-                el.bg(theme.surface_active).text_color(theme.text_primary)
-            }),
-            ChipStyle::Outlined { inset } => el
-                .border_1()
-                .border_color(if open {
-                    theme.border_strong
-                } else {
-                    theme.border
+            ChipStyle::Quiet => el
+                .when_open(open, |el| {
+                    el.bg(theme.surface_active).text_color(theme.text_primary)
                 })
-                .raised(
-                    if open {
-                        theme.surface_active
-                    } else if inset {
-                        theme.background
+                .when_open(marked, |el| {
+                    el.bg(theme.surface_selected).text_color(theme.text_primary)
+                }),
+            ChipStyle::Outlined { inset } => {
+                let el = el
+                    .border_1()
+                    .border_color(if open || marked || self.applied {
+                        theme.border_strong
                     } else {
-                        theme.surface_elevated
-                    },
-                    theme,
-                )
-                .hover_state_open(theme, open),
+                        theme.border
+                    })
+                    .raised(
+                        if open {
+                            theme.surface_active
+                        } else if marked {
+                            theme.surface_selected
+                        } else if inset {
+                            theme.background
+                        } else {
+                            theme.surface_elevated
+                        },
+                        theme,
+                    );
+                // A selected choice or a checked toggle holds its fill under
+                // the pointer; everything else takes the shared wash.
+                if marked {
+                    el
+                } else {
+                    el.hover_state_open(theme, open)
+                }
+            }
         };
         if let Some(tip) = self.tip.clone() {
             el = el.tip(tip);
@@ -329,18 +428,27 @@ impl ChipButton {
     }
 
     fn content(self, el: gpui::Stateful<gpui::Div>, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+        let lit = self.lit();
         let open = self.open;
+        let check = (self.mark == Some(ChipMark::Toggle(true))).then(|| {
+            icon(
+                "icons/check.svg",
+                self.size.icon_size().px(theme),
+                theme.text_primary,
+            )
+            .into_any_element()
+        });
         let quiet = self.style == ChipStyle::Quiet;
         let icon_ink = if self.disabled {
             theme.text_disabled
-        } else if open && !quiet {
+        } else if lit && !quiet {
             theme.text_primary
         } else {
             theme.text_muted
         };
         let label_ink = if self.disabled {
             theme.text_disabled
-        } else if open {
+        } else if lit {
             theme.text_primary
         } else {
             theme.text_secondary
@@ -356,17 +464,31 @@ impl ChipButton {
                 icon(path, self.size.icon_size().px(theme), icon_ink).into_any_element()
             })
         });
-        el.children(leading)
+        el.children(check)
+            .children(leading)
             .children(self.label.map(|label| {
                 let mut text = div().text_color(label_ink);
-                if let Some(selector) = self.selector {
+                if self.mono {
+                    text = text
+                        .font_family(crate::theme::code_font_family())
+                        .text_size(theme.code_px(11.));
+                }
+                if let Some(selector) = self.selector.clone() {
                     text = text.debug_selector(move || format!("{selector}-label"));
                 }
                 let text = match self.label_max_w {
                     Some(width) => text.min_w_0().max_w(width).truncate(),
+                    None if self.shrink || self.max_w.is_some() => text.min_w_0().truncate(),
                     None => text,
                 };
-                text.child(label)
+                match self.label_tip {
+                    Some(tip) => text
+                        .id(SharedString::from(format!("{}-label", self.id)))
+                        .tip(tip)
+                        .child(label)
+                        .into_any_element(),
+                    None => text.child(label).into_any_element(),
+                }
             }))
             .children(self.trailing)
             .children(self.caret.then(|| {
@@ -386,16 +508,17 @@ impl ChipButton {
     fn finish(self, el: gpui::Stateful<gpui::Div>, theme: &Theme) -> AnyElement {
         let quiet = self.style == ChipStyle::Quiet;
         let open = self.open;
+        let marked = self.mark.is_some_and(ChipMark::on);
         let name = self.id.clone();
         let disabled = self.disabled;
         let el = self.content(el, theme);
         if quiet && !disabled {
-            crate::motion::hover(
-                el,
-                name,
-                theme,
-                Hover::over(open.then_some(theme.surface_active), theme.hover_wash()),
-            )
+            let hover = if marked {
+                Hover::over(Some(theme.surface_selected), theme.surface_selected)
+            } else {
+                Hover::over(open.then_some(theme.surface_active), theme.hover_wash())
+            };
+            crate::motion::hover(el, name, theme, hover)
         } else {
             el.into_any_element()
         }
@@ -415,6 +538,26 @@ impl ChipButton {
         self.finish(el, theme)
     }
 
+    /// The chip with no handler — a disabled or placeholder trigger.
+    pub(crate) fn render(self, theme: &Theme) -> AnyElement {
+        let el = self.frame(theme);
+        self.finish(el, theme)
+    }
+
+    pub(crate) fn on_click(
+        self,
+        theme: &Theme,
+        handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> AnyElement {
+        let el = self.frame(theme);
+        let el = if self.disabled {
+            el
+        } else {
+            gpui::StatefulInteractiveElement::on_click(el, handler)
+        };
+        self.finish(el, theme)
+    }
+
     pub(crate) fn on_mouse_down(
         self,
         theme: &Theme,
@@ -427,6 +570,152 @@ impl ChipButton {
             el.on_mouse_down(MouseButton::Left, handler)
         };
         self.finish(el, theme)
+    }
+}
+
+type RemoveHandler = Box<dyn Fn(&MouseUpEvent, &mut Window, &mut App)>;
+type OpenHandler = Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App)>;
+
+/// A file attached to something being composed — a prompt's attachment, a bug
+/// report's screenshot: a thumbnail or glyph, the truncated name (its full
+/// value in the tooltip), optional metadata (a size), and a nested remove
+/// button.
+///
+/// **Only the remove button removes.** A chip large enough to read the name is
+/// large enough to hit by accident, so the body never deletes; with
+/// [`Self::on_open`] it previews instead.
+pub(crate) struct FileChip {
+    id: gpui::ElementId,
+    visual: AnyElement,
+    name: SharedString,
+    name_tip: Option<SharedString>,
+    meta: Option<SharedString>,
+    selector: Option<SharedString>,
+    max_name_w: Pixels,
+    remove_tip: SharedString,
+    remove: Option<RemoveHandler>,
+    open: Option<OpenHandler>,
+}
+
+impl FileChip {
+    pub(crate) fn new(
+        id: impl Into<gpui::ElementId>,
+        visual: impl IntoElement,
+        name: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            visual: visual.into_any_element(),
+            name: name.into(),
+            name_tip: None,
+            meta: None,
+            selector: None,
+            max_name_w: gpui::px(180.),
+            remove_tip: SharedString::default(),
+            remove: None,
+            open: None,
+        }
+    }
+
+    /// The full name (or path) on hover over the truncated label.
+    pub(crate) fn name_tip(mut self, tip: impl Into<SharedString>) -> Self {
+        self.name_tip = Some(tip.into());
+        self
+    }
+
+    pub(crate) fn meta(mut self, meta: impl Into<SharedString>) -> Self {
+        self.meta = Some(meta.into());
+        self
+    }
+
+    /// A test hook; the remove button gets `remove-<selector>`.
+    pub(crate) fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.selector = Some(selector.into());
+        self
+    }
+
+    pub(crate) fn max_name_width(mut self, width: Pixels) -> Self {
+        self.max_name_w = width;
+        self
+    }
+
+    /// The nested remove button: its localized tooltip and handler.
+    pub(crate) fn on_remove(
+        mut self,
+        tip: impl Into<SharedString>,
+        handler: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.remove_tip = tip.into();
+        self.remove = Some(Box::new(handler));
+        self
+    }
+
+    /// Clicking the chip's body previews the file.
+    pub(crate) fn on_open(
+        mut self,
+        handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.open = Some(Box::new(handler));
+        self
+    }
+
+    pub(crate) fn render(self, theme: &Theme) -> AnyElement {
+        use crate::ui::button::{IconButton, IconButtonVariant};
+        let remove_id = format!(
+            "remove-{}",
+            self.selector.clone().unwrap_or_else(|| format!("{}", self.id).into())
+        );
+        let mut chip = button_frame(div().id(self.id), theme, ButtonSize::Medium)
+            .border_1()
+            .border_color(theme.border)
+            .raised(theme.surface_elevated, theme)
+            .hover_border(theme);
+        if let Some(selector) = self.selector.clone() {
+            chip = chip.debug_selector(move || selector.to_string());
+        }
+        let mut name = div()
+            .id(SharedString::from(format!("{remove_id}-name")))
+            .min_w_0()
+            .max_w(self.max_name_w)
+            .truncate()
+            .text_color(theme.text_secondary);
+        if let Some(tip) = self.name_tip {
+            name = name.tip(tip);
+        }
+        let chip = chip
+            .child(self.visual)
+            .child(name.child(self.name))
+            .children(self.meta.map(|meta| {
+                div()
+                    .flex_none()
+                    .text_size(TextSize::XSmall.px(theme))
+                    .text_color(theme.text_muted)
+                    .child(meta)
+            }))
+            .children(self.remove.map(|remove| {
+                let selector = remove_id.clone();
+                IconButton::glyph(
+                    gpui::ElementId::Name(remove_id.clone().into()),
+                    icon("icons/x.svg", IconSize::XSmall.px(theme), theme.text_muted),
+                )
+                .size(ButtonSize::Compact)
+                .variant(IconButtonVariant::Glass)
+                .tip(self.remove_tip.clone())
+                .on_mouse_up(theme, move |event, window, cx| {
+                    // Nested in the chip: the chip's own open must not fire.
+                    cx.stop_propagation();
+                    remove(event, window, cx);
+                })
+                .debug_selector(move || selector.clone())
+            }));
+        match self.open {
+            Some(open) => gpui::StatefulInteractiveElement::on_click(
+                chip.cursor_pointer(),
+                move |event, window, cx| open(event, window, cx),
+            )
+            .into_any_element(),
+            None => chip.into_any_element(),
+        }
     }
 }
 
@@ -446,6 +735,65 @@ impl<T> WhenOpen for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fill_and_edge(chip: ChipButton, theme: &Theme) -> (Option<gpui::Fill>, Option<gpui::Hsla>) {
+        let mut el = chip.frame(theme);
+        let style = el.style();
+        (style.background.clone(), style.border_color)
+    }
+
+    #[test]
+    fn open_selected_and_checked_each_take_their_role_in_every_palette() {
+        for id in crate::theme::ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let chip = || ChipButton::new("c", ChipStyle::Outlined { inset: false });
+            let rest = fill_and_edge(chip(), &theme);
+            assert_eq!(rest, (Some(theme.surface_elevated.into()), Some(theme.border)), "{id:?}");
+            let open = fill_and_edge(chip().open(true), &theme);
+            assert_eq!(open, (Some(theme.surface_active.into()), Some(theme.border_strong)), "{id:?}");
+            for on in [chip().selected(true), chip().checked(true)] {
+                assert_eq!(
+                    fill_and_edge(on, &theme),
+                    (Some(theme.surface_selected.into()), Some(theme.border_strong)),
+                    "{id:?}"
+                );
+            }
+            for off in [chip().selected(false), chip().checked(false)] {
+                assert_eq!(fill_and_edge(off, &theme), rest, "{id:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn choices_and_toggles_open_nothing() {
+        let chip = || ChipButton::new("c", ChipStyle::Outlined { inset: false });
+        assert!(chip().caret);
+        assert!(!chip().selected(true).caret);
+        assert!(!chip().checked(false).caret);
+        assert!(chip().checked(true).lit());
+        assert!(!chip().checked(false).lit());
+    }
+
+    #[test]
+    fn an_applied_trigger_keeps_its_face_and_caret_but_takes_the_strong_edge() {
+        for id in crate::theme::ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let chip = || ChipButton::new("c", ChipStyle::Outlined { inset: false });
+            assert_eq!(
+                fill_and_edge(chip().applied(true), &theme),
+                (Some(theme.surface_elevated.into()), Some(theme.border_strong)),
+                "{id:?}"
+            );
+            assert_eq!(
+                fill_and_edge(chip().applied(true).open(true), &theme),
+                (Some(theme.surface_active.into()), Some(theme.border_strong)),
+                "{id:?}"
+            );
+        }
+        let applied = ChipButton::new("c", ChipStyle::Outlined { inset: false }).applied(true);
+        assert!(applied.caret);
+        assert!(applied.lit());
+    }
     use crate::theme::ThemeId;
 
     #[test]

@@ -110,26 +110,12 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
         self.hover(move |style| style.border_color(border).bg(fill).text_color(ink))
     }
 
-    /// Hover for an accent-filled control: the fill steps to `accent_hover`.
-    fn hover_accent(self, theme: &Theme) -> Self {
-        let fill = theme.accent_hover;
-        self.hover(move |style| style.bg(fill))
-    }
-
     /// Hover for a control that is defined by its outline: the wash plus the
     /// strong hairline, no ink change.
     fn hover_bordered(self, theme: &Theme) -> Self {
         let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
         let edge = theme.border_strong;
         self.hover(move |style| style.bg(fill).border_color(edge))
-    }
-
-    /// `hover_bordered`, and the ink lifts to primary as well.
-    fn hover_bordered_ink(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
-        let edge = theme.border_strong;
-        let ink = theme.text_primary;
-        self.hover(move |style| style.bg(fill).border_color(edge).text_color(ink))
     }
 
     /// A wash that keeps secondary ink — a row whose label must not brighten
@@ -143,13 +129,6 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
     /// Ink only: a control with no fill of its own brightens to primary.
     fn hover_ink(self, theme: &Theme) -> Self {
         let ink = theme.text_primary;
-        self.hover(move |style| style.text_color(ink))
-    }
-
-    /// Ink only, stepping *down* to secondary: used where the resting state is
-    /// primary and the pointer should quiet it.
-    fn hover_ink_quiet(self, theme: &Theme) -> Self {
-        let ink = theme.text_secondary;
         self.hover(move |style| style.text_color(ink))
     }
 
@@ -239,8 +218,6 @@ pub(crate) enum PressedRamp {
     Selected,
     /// `action_pressed` — a primary button.
     Action,
-    /// `accent_pressed` — an accent-filled control.
-    Accent,
     /// `error_hover` — a destructive control.
     Danger,
 }
@@ -253,7 +230,6 @@ impl PressedRamp {
                 .expect("Pressed fills"),
             Self::Selected => InteractionState::Hover.fill(theme).expect("Hover fills"),
             Self::Action => theme.action_pressed,
-            Self::Accent => theme.accent_pressed,
             Self::Danger => theme.error_hover,
         }
     }

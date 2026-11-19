@@ -49,6 +49,16 @@ pub(crate) enum ButtonVariant {
     Danger,
     /// No fill and no hairline; the wash appears under the pointer only.
     Ghost,
+    /// The confirming action of an irreversible step (Delete, in the
+    /// confirmation that asked): the error fill with its own foreground.
+    /// Reserve it for the confirm itself — the entry that opens the
+    /// confirmation stays [`Self::Danger`].
+    Destructive,
+    /// A control floating on glass or a translucent panel (the ask panel's
+    /// Back, an action in a popover over the workbench, a banner's Reconnect):
+    /// the `overlay` ink wash instead of a slab, so what is behind stays
+    /// visible, and no hairline.
+    Glass,
 }
 
 impl ButtonVariant {
@@ -61,6 +71,8 @@ impl ButtonVariant {
             Self::Outline => theme.text_primary,
             Self::Tinted => theme.accent_text,
             Self::Danger => theme.error,
+            Self::Destructive => theme.error_fg,
+            Self::Glass => theme.text_secondary,
         }
     }
 }
@@ -111,6 +123,18 @@ fn variant_treatment<E: Styled + StatefulInteractiveElement>(
         ButtonVariant::Ghost => el
             .text_color(theme.text_secondary)
             .pressed_state(theme, PressedRamp::Wash),
+        ButtonVariant::Destructive => press(
+            el.border_1()
+                .border_color(gpui::transparent_black())
+                .raised(theme.error, theme)
+                .text_color(theme.error_fg),
+        ),
+        ButtonVariant::Glass => press(
+            el.border_1()
+                .border_color(gpui::transparent_black())
+                .raised(theme.overlay, theme)
+                .text_color(theme.text_secondary),
+        ),
     }
 }
 
@@ -122,6 +146,8 @@ fn hover_swap<E: Styled + InteractiveElement>(el: E, theme: &Theme, variant: But
         ButtonVariant::Outline => el.hover_bordered(theme),
         ButtonVariant::Tinted => el.hover_accent_wash(theme, AccentWash::Faint),
         ButtonVariant::Danger => el.hover_danger_soft(theme),
+        ButtonVariant::Destructive => el.hover_danger(theme),
+        ButtonVariant::Glass => el.hover_overlay_strong(theme),
     }
 }
 
@@ -136,7 +162,7 @@ impl ButtonVariant {
                 Some(Hover::fill(theme.surface_elevated, theme.surface_hover))
             }
             Self::Ghost => Some(Hover::wash(theme)),
-            Self::Tinted | Self::Danger => None,
+            Self::Tinted | Self::Danger | Self::Destructive | Self::Glass => None,
         }
     }
 }
@@ -156,7 +182,7 @@ impl ButtonVariant {
 /// tracking, a key context or a debug selector. Disabled and loading buttons
 /// render the disabled state and **never** receive the handler.
 pub(crate) struct Button {
-    id: SharedString,
+    id: ElementId,
     variant: ButtonVariant,
     size: ButtonSize,
     label: Option<SharedString>,
@@ -171,6 +197,12 @@ pub(crate) struct Button {
 
 impl Button {
     pub(crate) fn new(id: impl Into<SharedString>, variant: ButtonVariant) -> Self {
+        Self::keyed(ElementId::Name(id.into()), variant)
+    }
+
+    /// [`Self::new`] for an id that is not a string — a row's
+    /// `ElementId::NamedInteger`, so a list of buttons keys each by index.
+    pub(crate) fn keyed(id: impl Into<ElementId>, variant: ButtonVariant) -> Self {
         Self {
             id: id.into(),
             variant,
@@ -234,8 +266,9 @@ impl Button {
         self
     }
 
-    /// Work in flight: a spinner replaces the leading glyph, the label stays so
-    /// the button keeps its width, and the button cannot be pressed again.
+    /// Work in flight: a spinner replaces the icon (a caller-built `leading`
+    /// stays — it is its own indicator), the label stays so the button keeps
+    /// its width, and the button cannot be pressed again.
     pub(crate) fn loading(mut self, loading: bool) -> Self {
         self.loading = loading;
         self
@@ -250,7 +283,7 @@ impl Button {
     pub(crate) fn render(self, theme: &Theme) -> Stateful<Div> {
         let can_act = self.can_act();
         let id = self.id;
-        let mut el = button_frame(div().id(ElementId::Name(id.clone())), theme, self.size)
+        let mut el = button_frame(div().id(id.clone()), theme, self.size)
             .group(BUTTON_GROUP);
         if let Some(focus) = &self.focus {
             el = el.track_focus(focus);
@@ -280,15 +313,17 @@ impl Button {
             self.variant.ink(theme)
         };
         let icon_px = self.size.icon_size().px(theme);
-        let leading = if self.loading {
+        // A caller's own leading element wins even while loading: it is the
+        // live indicator (a refresh glyph that turns while it works).
+        let leading = if let Some(leading) = self.leading {
+            Some(leading)
+        } else if self.loading {
             Some(spinner(
                 ElementId::Name(SharedString::from(format!("{id}-loading"))),
                 icon_px,
                 ink,
                 *theme,
             ))
-        } else if let Some(leading) = self.leading {
-            Some(leading)
         } else {
             self.icon
                 .map(|path| icon(path, icon_px, ink).into_any_element())
@@ -360,7 +395,7 @@ impl Button {
         self.fade = true;
         let can_act = self.can_act();
         let fade = self.variant.fade(theme).filter(|_| can_act);
-        let name = self.id.clone();
+        let name = SharedString::from(format!("{}", self.id));
         let el = self.render(theme);
         let el = if can_act { attach(el) } else { el };
         match fade {
@@ -409,6 +444,22 @@ pub(crate) fn icon_button_frame<E: Styled + InteractiveElement>(
         .justify_center()
         .rounded(button::radius(size).px(theme))
         .focus_state(theme)
+}
+
+/// A text disclosure: a medium, muted label beside a `disclosure_chevron`,
+/// whose ink lifts under the pointer — a transcript section or turn that folds.
+/// The caller adds the chevron (leading or trailing), the label and any note,
+/// and the click; the frame owns the look so every fold reads alike.
+pub(crate) fn disclosure_toggle(
+    id: impl Into<ElementId>,
+    theme: &Theme,
+    size: ButtonSize,
+) -> Stateful<Div> {
+    button_frame(div().id(id), theme, size)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_muted)
+        .hover_ink(theme)
 }
 
 /// A segment's position in a group sharing one outline.

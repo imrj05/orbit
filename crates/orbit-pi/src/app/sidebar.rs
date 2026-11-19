@@ -1,5 +1,8 @@
 use super::format::*;
 use super::*;
+use crate::ui::popover::anchored_menu;
+use crate::ui::popover::row_menu;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::menu::MenuKey;
 use crate::ui::prelude::*;
 
@@ -486,24 +489,14 @@ pub(crate) fn empty_search_state(
                 .text_align(TextAlign::Center)
                 .child(tr!("sidebar.no_sessions_match", query = query)),
         )
-        .child(crate::motion::hover(
-            button_frame(
-                div().id("sidebar-search-empty-clear"),
-                theme,
-                ButtonSize::Compact,
-            )
-            .border_1()
-            .border_color(theme.border)
-            .text_color(theme.text_secondary)
-            .cursor_pointer()
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                input.update(cx, |input, cx| input.clear(cx));
-            })
-            .child(tr!("common.clear")),
-            "sidebar-search-empty-clear",
-            theme,
-            Hover::row(theme),
-        ))
+        .child(Button::new("sidebar-search-empty-clear", ButtonVariant::Secondary)
+            .size(ButtonSize::Compact)
+            .label(tr!("common.clear"))
+            .faded(theme, move |button| {
+                button.on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    input.update(cx, |input, cx| input.clear(cx));
+                })
+            }))
         .into_any_element()
 }
 
@@ -2220,12 +2213,7 @@ pub(crate) fn render_side_row(
             {
                 card = card.child(
                     div().absolute().top_0().right_0().size(px(0.)).child(
-                        anchored()
-                            .position_mode(AnchoredPositionMode::Local)
-                            .anchor(Corner::TopLeft)
-                            .offset(point(tooltip::offset_x(&theme), px(0.)))
-                            .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                            .child(deferred(session_card(&hover, &theme))),
+                        anchored_menu(Corner::TopLeft, point(tooltip::offset_x(&theme), px(0.)), session_card(&hover, &theme)),
                     ),
                 );
             }
@@ -2435,11 +2423,9 @@ pub(crate) fn session_menu_popup(
                     .flex()
                     .justify_end()
                     .gap(DynamicSpacing::Base06.px(&theme))
-                    .child(crate::motion::hover(
-                        button_frame(div().id("menu-cancel"), &theme, ButtonSize::Default)
-                            .raised(theme.surface_elevated, &theme)
-                            .cursor_pointer()
-                            .text_color(theme.text_secondary)
+                    .child(Button::new("menu-cancel", ButtonVariant::Secondary)
+.size(ButtonSize::Default)
+.faded(&theme, |button| button
                             .on_mouse_down(MouseButton::Left, {
                                 let this = this.clone();
                                 move |_, _, cx| {
@@ -2447,17 +2433,11 @@ pub(crate) fn session_menu_popup(
                                     this.update(cx, |app, cx| app.on_menu_cancel(cx));
                                 }
                             })
-                            .child(tr!("sidebar.cancel")),
-                        "menu-cancel",
-                        &theme,
-                        Hover::fill(theme.surface_elevated, theme.surface_hover),
-                    ))
+                            .child(tr!("sidebar.cancel"))))
                     .child(
-                        button_frame(div().id("menu-confirm-delete"), &theme, ButtonSize::Default)
-                            .raised(theme.error, &theme)
-                            .cursor_pointer()
-                            .hover_danger(&theme)
-                            .text_color(theme.error_fg)
+                        Button::new("menu-confirm-delete", ButtonVariant::Destructive)
+.size(ButtonSize::Default)
+.render(&theme)
                             .on_mouse_down(MouseButton::Left, {
                                 let this = this.clone();
                                 move |_, _, cx| {
@@ -2639,21 +2619,7 @@ pub(crate) fn session_menu_popup(
     // to its card — the standard app dropdown position. `deferred` paints it
     // above the rest of the list — same convention as the composer chip
     // pickers. `snap_to_window` keeps it inside the window near the edges.
-    let anchor = if let Some(at) = menu.at {
-        anchored().anchor(Corner::TopLeft).position(at)
-    } else {
-        anchored()
-            .position_mode(AnchoredPositionMode::Local)
-            .anchor(Corner::TopLeft)
-            .offset(point(
-                px(0.),
-                TextSize::Default.px(&theme) + DynamicSpacing::Base06.px(&theme),
-            ))
-    };
-    anchor
-        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-        .child(deferred(popup))
-        .into_any_element()
+    row_menu(menu.at, Corner::TopLeft, TextSize::Default.px(&theme) + DynamicSpacing::Base06.px(&theme), popup)
 }
 
 /// The hover-revealed '…' button on a workspace group header. Clicking it
@@ -2910,10 +2876,9 @@ fn workspace_delete_confirm(
     };
     let cancel = {
         let this = this.clone();
-        button_frame(div().id("wm-delete-cancel"), &theme, ButtonSize::Default)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .text_color(theme.text_secondary)
+        Button::new("wm-delete-cancel", ButtonVariant::Secondary)
+.size(ButtonSize::Default)
+.render(&theme)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
                 this.update(cx, |app, cx| app.on_workspace_delete_files_cancel(cx));
@@ -2922,11 +2887,9 @@ fn workspace_delete_confirm(
     };
     let confirm = {
         let this = this.clone();
-        button_frame(div().id("wm-delete-confirm"), &theme, ButtonSize::Default)
-            .raised(theme.error, &theme)
-            .cursor_pointer()
-            .hover_danger(&theme)
-            .text_color(theme.error_fg)
+        Button::new("wm-delete-confirm", ButtonVariant::Destructive)
+.size(ButtonSize::Default)
+.render(&theme)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
                 this.update(cx, |app, cx| app.on_workspace_delete_files_confirm(cx));
@@ -3120,21 +3083,7 @@ pub(crate) fn workspace_menu_popup(
         })
         .child(body);
 
-    let anchor = if let Some(at) = menu.at {
-        anchored().anchor(Corner::TopLeft).position(at)
-    } else {
-        anchored()
-            .position_mode(AnchoredPositionMode::Local)
-            .anchor(Corner::TopLeft)
-            .offset(point(
-                px(0.),
-                ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET,
-            ))
-    };
-    anchor
-        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-        .child(deferred(popup))
-        .into_any_element()
+    row_menu(menu.at, Corner::TopLeft, ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET, popup)
 }
 
 /// A grid cell's side: a square hit target that holds an [`IconSize::Medium`]
@@ -3643,6 +3592,8 @@ fn sidebar_show_popup(
                     |app, cx| app.toggle_sidebar_first_message(cx),
                 )),
         );
+    // Bespoke: a submenu inside the already-deferred options popup; deferring it
+    // again (as anchored_menu does) would paint it apart from its parent.
     anchored()
         .position_mode(AnchoredPositionMode::Local)
         .anchor(Corner::TopLeft)
@@ -4108,24 +4059,17 @@ pub(crate) fn empty_sessions_state(
         )
         // The empty state offers the action that resolves it. A pane that says
         // "pick a folder" without a way to do it is a dead end.
-        .child(crate::motion::hover(
-            button_frame(div().id("empty-sessions-new"), &theme, ButtonSize::Medium)
-                .mt(DynamicSpacing::Base06.px(&theme))
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.action, &theme)
-                .text_color(theme.action_fg)
-                .cursor_pointer()
-                .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                    this.update(cx, |app, cx| {
-                        app.on_new_session(&crate::NewSession, window, cx)
-                    });
-                })
-                .child(tr!("sidebar.new_session")),
-            "empty-sessions-new",
-            &theme,
-            Hover::fill(theme.action, theme.action_hover),
-        ))
+        .child(Button::new("empty-sessions-new", ButtonVariant::Primary)
+            .label(tr!("sidebar.new_session"))
+            .faded(&theme, move |button| {
+                button
+                    .mt(DynamicSpacing::Base06.px(&theme))
+                    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                        this.update(cx, |app, cx| {
+                            app.on_new_session(&crate::NewSession, window, cx)
+                        });
+                    })
+            }))
 }
 
 // ── controller ────────────────────────────────────────────────────
@@ -5271,26 +5215,14 @@ impl OrbitApp {
             });
         let clear = (!self.sidebar_query.is_empty()).then(|| {
             let input = self.sidebar_search.clone();
-            crate::motion::hover(
-                button_frame(
-                    div().id("sidebar-search-clear"),
-                    &theme,
-                    ButtonSize::Compact,
-                )
+            IconButton::new("sidebar-search-clear", "icons/x.svg")
+                .size(ButtonSize::Compact)
                 .tip(tr!("common.clear"))
-                .cursor_pointer()
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    input.update(cx, |input, cx| input.clear(cx));
+                .faded(&theme, move |button| {
+                    button.on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        input.update(cx, |input, cx| input.clear(cx));
+                    })
                 })
-                .child(icon(
-                    "icons/x.svg",
-                    ButtonSize::Compact.icon_size().px(&theme),
-                    theme.text_muted,
-                )),
-                "sidebar-search-clear",
-                &theme,
-                Hover::wash(&theme),
-            )
         });
         div()
             .flex_1()

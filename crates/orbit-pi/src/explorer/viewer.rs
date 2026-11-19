@@ -23,16 +23,16 @@ use gpui::{
     Timer, Window,
 };
 
+use crate::ui::button::{Button, ButtonVariant};
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 use crate::ui::button::IconButton;
 use crate::ui::chip::{Badge, BadgeFill};
 use crate::ui::list::virtual_list;
 use crate::ui::prelude::{
-    button_frame, empty_state, file_badge, file_glyph, icon, nerd_font_family, ControlExt,
+    empty_state, file_badge, file_glyph, icon, nerd_font_family,
     EmptyFill,
 };
 use crate::ui::tab::{tab_strip, Tab as TabButton};
@@ -900,22 +900,16 @@ impl FileViewer {
             })
             .when(content.mode == Mode::Markdown && content.editable(), |el| {
                 el.child(
-                    button_frame(div().id("viewer-md-toggle"), &theme, ButtonSize::Compact)
-                        .raised(theme.surface_elevated, &theme)
-                        .border_1()
-                        .border_color(theme.border)
-                        .font_family(theme::ui_font_family())
-                        .cursor_pointer()
-                        .text_color(theme.text_secondary)
-                        .hover_state(&theme)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.toggle_markdown_preview(cx)
-                        }))
-                        .child(if tab.markdown_preview {
+                    Button::new("viewer-md-toggle", ButtonVariant::Secondary)
+                    .size(ButtonSize::Compact)
+                    .label(if tab.markdown_preview {
                             tr!("explorer.edit")
                         } else {
                             tr!("explorer.preview")
-                        }),
+                        })
+                    .on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.toggle_markdown_preview(cx)
+                        })),
                 )
             })
             .child(self.status_chip(theme, tab))

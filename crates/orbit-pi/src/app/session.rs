@@ -1,6 +1,7 @@
 use super::composer_ops::CompletionIntent;
 use super::mcp_ui::QuotaPopupTab;
 use super::*;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::context_meter::context_ring;
 use crate::quota::{canonical_provider, is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::theme::tokens::{
@@ -2573,24 +2574,9 @@ impl OrbitApp {
             let dirty = self.added > 0 || self.removed > 0;
             let action = |id: &'static str, label: String, open_git: bool| {
                 let this = this.clone();
-                crate::motion::hover(
-                    press(
-                        button_frame(
-                            div().id(id).group(BUTTON_GROUP),
-                            &theme,
-                            ButtonSize::Default,
-                        )
-                        .debug_selector(move || id.to_string())
-                        .border_1()
-                        .border_color(theme.border)
-                        .raised(theme.surface_elevated, &theme)
-                        .text_size(TextSize::Small.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .cursor_pointer()
-                        .child(label),
-                    )
-                    .on_click(move |_, _, cx| {
+                Button::keyed(gpui::ElementId::Name(id.into()), ButtonVariant::Outline)
+                    .label(label)
+                    .on_click(&theme, move |_, _, cx| {
                         this.update(cx, |app, cx| {
                             if open_git {
                                 app.open_git(cx);
@@ -2599,11 +2585,9 @@ impl OrbitApp {
                             }
                             cx.notify();
                         });
-                    }),
-                    id,
-                    &theme,
-                    crate::motion::Hover::wash(&theme),
-                )
+                    })
+                    .debug_selector(move || id.to_string())
+                    .into_any_element()
             };
             let counts = if dirty {
                 div()
@@ -3129,14 +3113,10 @@ impl OrbitApp {
                     .child(tr!("session.no_provider_usage")),
             )
             .child(
-                button_frame(div().id("quota-empty-mcp"), &theme, ButtonSize::Compact)
+                Button::keyed("quota-empty-mcp", ButtonVariant::Primary)
+.size(ButtonSize::Compact)
+.render(&theme)
                     .debug_selector(|| "quota-empty-mcp".to_string())
-                    .cursor_pointer()
-                    .font_weight(FontWeight::MEDIUM)
-                    .raised(theme.action, &theme)
-                    .text_color(theme.action_fg)
-                    .hover_action(&theme)
-                    .pressed_state(&theme, PressedRamp::Action)
                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                         this.update(cx, |app, cx| {
                             app.mcp_popup_tab(QuotaPopupTab::Mcp, cx);
@@ -3398,38 +3378,21 @@ impl OrbitApp {
         theme: Theme,
         on_click: impl Fn(&mut Window, &mut App) + 'static,
     ) -> AnyElement {
-        let button = button_frame(
-            div().id(id).group(BUTTON_GROUP),
-            &theme,
-            ButtonSize::Default,
-        )
-        .debug_selector(move || id.to_string())
-        .flex_none()
-        .text_size(TextSize::Small.px(&theme))
-        .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer();
-        let (button, hover) = if primary {
-            (
-                button.bg(theme.action).text_color(theme.action_fg),
-                crate::motion::Hover::fill(theme.action, theme.action_hover),
-            )
+        let variant = if primary {
+            ButtonVariant::Primary
         } else {
-            (
-                button
-                    .border_1()
-                    .border_color(theme.border)
-                    .text_color(theme.text_primary),
-                crate::motion::Hover::wash(&theme),
-            )
+            ButtonVariant::Outline
         };
-        crate::motion::hover(
-            press(button)
-                .on_click(move |_, window, cx| on_click(window, cx))
-                .child(label),
-            id,
-            &theme,
-            hover,
-        )
+        Button::new(id, variant)
+            .size(ButtonSize::Default)
+            .label(label)
+            .faded(&theme, move |button| {
+                button
+                    .debug_selector(move || id.to_string())
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .on_click(move |_, window, cx| on_click(window, cx))
+            })
     }
 
     /// One titled group of the session-details panel. `rule` draws the

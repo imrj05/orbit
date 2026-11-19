@@ -8,6 +8,7 @@
 //! decision, and the sidebar/settings controls only open it.
 
 use super::*;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{
     button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
@@ -634,44 +635,19 @@ impl OrbitApp {
                 ))
                 .into_any_element()
             }
-            UpdateStatus::Downloading => button_frame(
-                div().id("settings-update-action"),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_elevated)
-            .text_color(theme.text_muted)
-            .cursor_default()
-            .child(tr!("updater_ui.downloading"))
-            .into_any_element(),
-            UpdateStatus::Updating => button_frame(
-                div().id("settings-update-action"),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_elevated)
-            .text_color(theme.text_muted)
-            .cursor_default()
-            .child(tr!("updater_ui.updating"))
-            .into_any_element(),
-            UpdateStatus::Idle => button_frame(
-                div().id("settings-update-action"),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .cursor_pointer()
-            .hover_state(&theme)
+            UpdateStatus::Downloading => Button::new("settings-update-action", ButtonVariant::Secondary)
+                .label(tr!("updater_ui.downloading"))
+                .loading(true)
+                .render(&theme)
+                .into_any_element(),
+            UpdateStatus::Updating => Button::new("settings-update-action", ButtonVariant::Secondary)
+                .label(tr!("updater_ui.updating"))
+                .loading(true)
+                .render(&theme)
+                .into_any_element(),
+            UpdateStatus::Idle => Button::keyed("settings-update-action", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.begin_update_check(cx));
             })
