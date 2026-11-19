@@ -23,6 +23,11 @@ static DEV_ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/dev-assets");
 
 pub struct Assets;
 
+/// The bytes of one embedded production asset, without a copy.
+pub fn bytes(path: &str) -> Option<&'static [u8]> {
+    ASSETS.get_file(path).map(|file| file.contents())
+}
+
 impl Assets {
     /// The embedded directories, production first, the macOS debug overlay
     /// second. The length is compile-time selected so release builds carry

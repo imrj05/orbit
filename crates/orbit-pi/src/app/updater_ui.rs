@@ -699,7 +699,7 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let dialog = self.updater_dialog.as_ref()?;
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let can_install = self.updater_can_install(cx);
         let (card_width, card_max_height) = update_dialog_card_size(window.viewport_size());
 

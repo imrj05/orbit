@@ -2187,6 +2187,7 @@ impl TerminalPanel {
     /// A quiet card over the frozen grid once the shell is gone, so "why is
     /// nothing happening" has an answer and a one-click fix.
     fn exited_overlay(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let terminal = self.active_terminal()?;
         if !terminal.read(cx).is_exited() {
             return None;

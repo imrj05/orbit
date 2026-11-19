@@ -907,6 +907,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let editor = self.remote_host_editor.as_ref()?;
         let title = if editor.original.is_some() {
             tr!("remote_hosts.edit_title")
@@ -1155,6 +1156,7 @@ type MenuAction = Box<dyn Fn(&mut OrbitApp, &mut Window, &mut Context<OrbitApp>)
 /// The card's ⋯ menu: Test connection, Edit, Remove. Anchored under its
 /// button like the Worktrees row menu; an outside press dismisses it.
 fn remote_host_menu(name: &str, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+    let theme = theme.for_floating();
     let entry = |id: String,
                  glyph: &'static str,
                  label: String,

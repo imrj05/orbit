@@ -1096,6 +1096,7 @@ const SESSION_CARD_PROVIDER_LIMIT: usize = 3;
 /// what keeps a long title inside the elevation background: the title wraps,
 /// and the metadata lines truncate inside that same width.
 fn session_card(hover: &SessionTooltip, theme: &Theme) -> impl IntoElement {
+    let theme = &theme.for_floating();
     let meta = tooltip::META_TEXT.px(theme);
     let icon_size = IconSize::XSmall.px(theme);
     div()
@@ -2386,6 +2387,7 @@ pub(crate) fn session_menu_popup(
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let lit = lit_row(&menu.cursor, &session_menu_items(menu));
     let deletable = menu.deletable;
     let confirm = menu.confirm_delete;
@@ -2966,6 +2968,7 @@ pub(crate) fn workspace_menu_popup(
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let lit = lit_row(&menu.cursor, &workspace_menu_items(menu));
     let body: AnyElement = if menu.confirm_delete {
         workspace_delete_confirm(menu, this.clone(), theme)
@@ -3202,8 +3205,8 @@ fn workspace_appearance_picker(
                 format!("wm-icon-{stem}"),
                 &theme,
                 Hover::over(
-                    selected.then_some(theme.surface_selected),
-                    theme.surface_hover,
+                    selected.then_some(theme.selected_wash()),
+                    theme.hover_wash(),
                 ),
             ));
         }
@@ -3375,11 +3378,11 @@ where
             id,
             &theme,
             Hover::over(
-                active.then_some(theme.surface_selected),
+                active.then_some(theme.selected_wash()),
                 if active {
-                    theme.surface_selected
+                    theme.selected_wash()
                 } else {
-                    theme.surface_hover
+                    theme.hover_wash()
                 },
             ),
         ))
@@ -3547,6 +3550,7 @@ fn sidebar_show_popup(
     theme: Theme,
     parent_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let popup = popover_picker(div(), &theme)
         .w(px(220.))
         .dismiss_on_outside({
@@ -3625,6 +3629,7 @@ pub(crate) fn sidebar_options_popup(
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let parent_bounds = Rc::new(Cell::new(None));
     let popup = picker_surface(div(), &theme)
         .relative()

@@ -478,6 +478,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let dialog = self.server_clone.as_ref()?;
         let label = |text: String| {
             input_label(text, &theme)
@@ -542,7 +543,7 @@ impl OrbitApp {
                 .h(crate::theme::tokens::picker::two_line_entry_height(&theme))
                 .flex_none()
                 .cursor_pointer()
-                .when(selected, |row| row.bg(theme.surface_selected))
+                .when(selected, |row| row.bg(theme.selected_wash()))
                 .child(
                     PickerRow::new(host.name.clone(), theme.text_primary, theme.text_muted)
                         .icon("icons/server-stack.svg", theme.text_muted)

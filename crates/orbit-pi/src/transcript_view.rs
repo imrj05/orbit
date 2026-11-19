@@ -68,6 +68,19 @@ use crate::ui::prelude::{
 };
 use crate::ui::style::surface::SurfaceExt;
 
+/// A raised transcript surface's own fill on glass: `base` at the
+/// contrast-floored card tint while wallpaper glass is frosting behind it, and
+/// exactly `base` otherwise — so without glass (no wallpaper, Glass off, or a
+/// renderer with no backdrop pass) the surface keeps its opaque plane instead
+/// of showing a sharp picture through text.
+fn glass_surface_fill(theme: Theme, base: Hsla) -> Hsla {
+    if theme.glass_sigma().is_some() {
+        theme.card_fill(base)
+    } else {
+        base
+    }
+}
+
 fn frosted_transcript_fill(theme: Theme) -> Hsla {
     if theme.glass_sigma().is_some() {
         theme.card_fill(theme.surface_secondary)
@@ -1210,6 +1223,7 @@ fn register_text_selection(
 /// `Copy Message` (the clicked message's full text). Wears the branch
 /// selector's picker shell, like every other dropdown in the app.
 fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme) -> AnyElement {
+    let theme = theme.for_floating();
     let has_selection = state.borrow().selected_text().is_some();
     let highlighted = menu
         .keyed
@@ -1282,7 +1296,7 @@ fn selection_menu_item(
         .h(picker::entry_height(&theme))
         .flex_none()
         // The keyboard cursor reads as the pointer's hover.
-        .when(highlighted, |item| item.bg(theme.surface_hover))
+        .when(highlighted, |item| item.bg(theme.hover_wash()))
         .text_color(if enabled {
             theme.text_secondary
         } else {
@@ -2399,10 +2413,12 @@ fn user_message_bubble(body: &str, theme: Theme, column_width: Option<Pixels>) -
         )
         .max_w(px(USER_BUBBLE_MAX_WIDTH))
         .rounded(panel::RADIUS.px(&theme))
-        // The reader's own words keep the palette's surface over a wallpaper:
-        // a picture showing through the text they wrote is not a material, and
-        // the page behind the transcript already carries it.
-        .bg(theme.surface_elevated)
+        // Over wallpaper glass the reader's bubble is frosted like the cards
+        // beside it: the contrast-floored tint over a blurred backdrop, so the
+        // picture reads as a material and never as sharp detail under their
+        // text. Without glass it keeps the palette's opaque surface.
+        .bg(glass_surface_fill(theme, theme.surface_elevated))
+        .frosted_pane(&theme)
         .text_color(theme.text_primary)
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
@@ -3223,12 +3239,12 @@ fn render_thinking_body(
         )
         .into_any_element()
     };
+    // The same card treatment as the tool and activity cards beside it, so a
+    // thought and an edit read as one material: frosted over wallpaper glass,
+    // the `overlay` wash otherwise.
     let mut card = div()
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
-        .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.hairline())
-        .bg(theme.overlay)
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
         .flex()
@@ -3579,7 +3595,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .px(DynamicSpacing::Base08.px(&theme))
                 .py(DynamicSpacing::Base04.px(&theme))
                 .rounded(Radius::Medium.px(&theme))
-                .when(chosen, |row| row.bg(theme.surface_selected));
+                .when(chosen, |row| row.bg(theme.selected_wash()));
             // A plain number keeps the list readable at a glance.
             row = row.child(
                 div()
@@ -3840,7 +3856,7 @@ fn render_subagent_card(
             .cursor_pointer()
             // The open child's row is the index to the log below it, so it
             // carries the selected fill (DESIGN.md §The State Contract).
-            .when(open_child == Some(ix), |row| row.bg(theme.surface_selected))
+            .when(open_child == Some(ix), |row| row.bg(theme.selected_wash()))
             .hover_on_glass(&theme);
         // One activation, two consequences: open that child's log, and open
         // the card that holds it. Activating the open child closes both. The
@@ -5126,10 +5142,13 @@ fn render_tool_detail(
         // way a shell transcript does, instead of two blocks whose only
         // boundary is a gap. The surface is a code plane (`code_bg`), the
         // same treatment a markdown code block takes.
+        // On glass the plane takes the card tint instead of covering the
+        // card's frost with an opaque slab; the card already blurs the
+        // backdrop, so it adds no second blur.
         let mut surface = div()
             .w_full()
             .min_w_0()
-            .bg(theme.code_bg)
+            .bg(glass_surface_fill(theme, theme.code_bg))
             .flex()
             .flex_col()
             // The surface is always the card's last child, so it carries the
@@ -6224,6 +6243,7 @@ fn usage_breakdown_card(
     generation: Option<Duration>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let cost = usage
         .cost
         .map(format_message_cost)
@@ -9569,6 +9589,67 @@ fn starts_followup_turn(messages: &[ChatMessage], ix: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A thought card and a tool card are one material: both paint the shared
+    /// transcript card fill through `card_surface`, with and without glass.
+    #[test]
+    fn thought_and_tool_cards_share_one_fill() {
+        for base in [Theme::dark(), Theme::light()] {
+            for (active, glass) in [(false, false), (true, false), (true, true)] {
+                let theme = base.with_wallpaper(theme::SurfaceTreatment {
+                    active,
+                    glass,
+                    card_alpha: 0.8,
+                    ..theme::SurfaceTreatment::OPAQUE
+                });
+                let mut card =
+                    div().card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme));
+                let expected = Some(frosted_transcript_fill(theme).into());
+                assert_eq!(card.style().background, expected);
+            }
+        }
+        // And the thought card's source uses that treatment, not a fill of
+        // its own (guards the regression where it painted `overlay` directly).
+        let source = include_str!("transcript_view.rs");
+        let start = source.find("fn render_thinking_body(").expect("thinking body");
+        let body = &source[start..start + 4000];
+        assert!(body.contains(
+            ".card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))"
+        ));
+        assert!(!body.contains(".bg(theme.overlay)"));
+    }
+
+    /// The reader's bubble and the tool card's terminal plane are glass only
+    /// while wallpaper glass actually frosts behind them; every other case
+    /// keeps the opaque palette surface.
+    #[test]
+    fn bubble_and_terminal_plane_go_glass_only_with_active_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            for (active, glass) in [(false, false), (false, true), (true, false), (true, true)] {
+                let theme = base.with_wallpaper(theme::SurfaceTreatment {
+                    active,
+                    glass,
+                    card_alpha: 0.8,
+                    ..theme::SurfaceTreatment::OPAQUE
+                });
+                let frosted = active && glass;
+                let (bubble, code) = if frosted {
+                    (
+                        theme.card_fill(theme.surface_elevated),
+                        theme.card_fill(theme.code_bg),
+                    )
+                } else {
+                    (theme.surface_elevated, theme.code_bg)
+                };
+                assert_eq!(glass_surface_fill(theme, theme.code_bg), code);
+                let mut row = user_message_bubble("hi", theme, None);
+                assert_eq!(row.style().background, Some(bubble.into()));
+                if frosted {
+                    assert!(bubble.a < 1.0, "the bubble lets the frost through");
+                }
+            }
+        }
+    }
 
     #[test]
     fn frosted_transcript_fill_uses_guarded_surface_only_for_active_glass() {

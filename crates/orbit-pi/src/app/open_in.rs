@@ -168,7 +168,7 @@ impl OrbitApp {
         .rounded_br(header_ctrl_radius(&theme))
         .cursor_pointer()
         .when(self.open_in_menu_open, |s| {
-            s.bg(theme.surface_active).text_color(theme.text_primary)
+            s.bg(theme.pressed_wash()).text_color(theme.text_primary)
         })
         .child(icon(
             "icons/chevron-down.svg",
@@ -206,6 +206,7 @@ impl OrbitApp {
         theme: Theme,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if !self.open_in_menu_open {
             return None;
         }
@@ -240,7 +241,7 @@ impl OrbitApp {
                 )
                 .flex_none()
                 .cursor_pointer()
-                .when(selected, |row| row.bg(theme.surface_selected))
+                .when(selected, |row| row.bg(theme.selected_wash()))
                 .hover_state(&theme)
                 .child(
                     img(ImageSource::Image(app_icon))

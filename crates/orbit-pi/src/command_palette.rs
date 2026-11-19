@@ -831,7 +831,7 @@ impl Render for CommandPalette {
         let rows = self.results(&self.last_filter);
 
         let this = cx.entity();
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let metrics = PaletteMetrics::new(&theme);
 
         // Hug the content, capped so the card never owns the window.
@@ -1027,7 +1027,7 @@ fn render_row(
                 });
             }
         })
-        .when(highlighted, |row| row.bg(theme.surface_selected))
+        .when(highlighted, |row| row.bg(theme.selected_wash()))
         .child(icon(
             icon_path,
             context_menu::ICON.px(&theme),

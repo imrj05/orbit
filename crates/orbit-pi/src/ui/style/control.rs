@@ -78,6 +78,29 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
         self.hover(move |style| style.bg(wash))
     }
 
+    /// Hover for a control painted on its own opaque `face`: the face lifts
+    /// one subtle step ([`Theme::face_hover`]) under primary ink, and stays
+    /// opaque on glass instead of turning into a see-through wash.
+    fn hover_face(self, theme: &Theme, face: gpui::Hsla) -> Self {
+        let fill = theme.face_hover(face);
+        let ink = InteractionState::Hover.control_ink(theme);
+        self.hover(move |style| style.bg(fill).text_color(ink))
+    }
+
+    /// [`Self::hover_face`] plus the strong hairline, for an outlined face.
+    fn hover_face_bordered(self, theme: &Theme, face: gpui::Hsla) -> Self {
+        let fill = theme.face_hover(face);
+        let edge = theme.border_strong;
+        self.hover(move |style| style.bg(fill).border_color(edge))
+    }
+
+    /// [`Self::hover_face`] for a face whose surface may be open: an open
+    /// control holds its face under the pointer, a closed one lifts it.
+    fn hover_face_open(self, theme: &Theme, face: gpui::Hsla, open: bool) -> Self {
+        let fill = if open { face } else { theme.face_hover(face) };
+        self.hover(move |style| style.bg(fill))
+    }
+
     /// Hover for a field or track: the frame steps to `border_strong` and the
     /// fill does not change. Used where the control is defined by its outline
     /// — text fields, sliders, and segmented tracks.

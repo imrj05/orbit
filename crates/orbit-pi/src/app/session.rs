@@ -2877,7 +2877,7 @@ impl OrbitApp {
         if !self.quota_popup_open {
             return None;
         }
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.entity();
 
         let reports = self.quota.usage_reports(&self.model_provider);

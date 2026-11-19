@@ -381,7 +381,7 @@ pub(super) fn render_remote_host_row(
                 .child(trailing),
             id,
             &theme,
-            Hover::over(cursor.then_some(theme.surface_hover), theme.surface_hover),
+            Hover::over(cursor.then_some(theme.hover_wash()), theme.hover_wash()),
         ))
         .into_any_element()
 }
@@ -411,7 +411,7 @@ pub(super) fn render_remote_session_row(
         .border_1()
         .border_color(theme.hairline().opacity(0.))
         .when(cursor, |card| card.border_color(theme.focus_ring))
-        .when(active, |card| card.bg(theme.surface_selected))
+        .when(active, |card| card.bg(theme.selected_wash()))
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base06.px(&theme))
@@ -447,8 +447,8 @@ pub(super) fn render_remote_session_row(
             id,
             &theme,
             Hover::over(
-                active.then_some(theme.surface_selected),
-                theme.surface_hover,
+                active.then_some(theme.selected_wash()),
+                theme.hover_wash(),
             ),
         ),
         &theme,

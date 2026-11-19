@@ -187,7 +187,7 @@ impl OrbitApp {
     /// `None` while find is closed.
     pub(super) fn transcript_search_bar(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let search = self.transcript_search.as_ref()?;
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let count = search.matches.len();
         let label = if search.query.is_empty() {
             tr!("search.type_to_find")

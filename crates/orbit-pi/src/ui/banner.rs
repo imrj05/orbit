@@ -44,11 +44,15 @@ impl BannerTone {
 
     /// The card's fill, hairline and glyph ink. Only an error tints the card;
     /// every other tone sits on the trough and speaks through its glyph.
+    ///
+    /// The trough is `surface_secondary` through [`Theme::page_fill`], so on a
+    /// glass page it is translucent like every raised surface there.
     fn colors(self, theme: &Theme) -> (Hsla, Hsla, Hsla) {
+        let trough = theme.page_fill(theme.surface_secondary);
         match self {
-            Self::Info => (theme.surface_secondary, theme.hairline(), theme.text_muted),
-            Self::Success => (theme.surface_secondary, theme.hairline(), theme.success),
-            Self::Warning => (theme.surface_secondary, theme.hairline(), theme.warning),
+            Self::Info => (trough, theme.hairline(), theme.text_muted),
+            Self::Success => (trough, theme.hairline(), theme.success),
+            Self::Warning => (trough, theme.hairline(), theme.warning),
             Self::Error => (
                 theme.error.opacity(0.07),
                 theme.error.opacity(0.35),
@@ -60,7 +64,10 @@ impl BannerTone {
     /// A strip's fill and ink: the tone itself carries the message.
     fn strip_colors(self, theme: &Theme) -> (Hsla, Hsla) {
         match self {
-            Self::Info => (theme.surface_secondary, theme.text_secondary),
+            Self::Info => (
+                theme.page_fill(theme.surface_secondary),
+                theme.text_secondary,
+            ),
             Self::Success => (theme.success.opacity(0.12), theme.success),
             Self::Warning => (theme.warning.opacity(0.12), theme.warning),
             Self::Error => (theme.error.opacity(0.12), theme.error),

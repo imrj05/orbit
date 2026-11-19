@@ -1692,6 +1692,9 @@ impl OrbitApp {
         let mut control = div().relative();
         if open {
             let popup_this = this.clone();
+            // The menu's rows take the floating washes; the trigger below
+            // keeps the toolbar's.
+            let theme = theme.for_floating();
             control = control.child(
                 div()
                     .absolute()
@@ -2055,7 +2058,7 @@ impl OrbitApp {
             .items_center()
             .gap(DynamicSpacing::Base12.px(&theme))
             .cursor_pointer()
-            .when(active, |row| row.bg(theme.surface_selected))
+            .when(active, |row| row.bg(theme.selected_wash()))
             .on_mouse_down(MouseButton::Right, {
                 let this = this.clone();
                 let path = path.clone();
@@ -2165,7 +2168,7 @@ impl OrbitApp {
             row,
             row_name,
             &theme,
-            Hover::over(active.then_some(theme.surface_selected), theme.hover_wash()),
+            Hover::over(active.then_some(theme.selected_wash()), theme.hover_wash()),
         )
     }
 
@@ -2229,6 +2232,7 @@ impl OrbitApp {
 
     /// The shared dialog card frame.
     fn worktree_dialog_card(&self, title: String, theme: Theme, body: AnyElement) -> AnyElement {
+        let theme = theme.for_floating();
         modal_card(&theme)
             .w(px(520.))
             .max_h(px(560.))
@@ -2262,6 +2266,7 @@ impl OrbitApp {
     }
 
     fn clone_dialog_body(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let theme = theme.for_floating();
         let mut body = div()
             .flex()
             .flex_col()
@@ -2395,6 +2400,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
+        let theme = theme.for_floating();
         let name_field = worktree_field(
             &theme,
             tr!("worktree.field.name"),
@@ -2486,7 +2492,7 @@ impl OrbitApp {
                         .items_center()
                         .gap(DynamicSpacing::Base08.px(&theme))
                         .cursor_pointer()
-                        .when(selected, |row| row.bg(theme.surface_selected))
+                        .when(selected, |row| row.bg(theme.selected_wash()))
                         .hover_state(&theme)
                         .child(icon(
                             if selected {
@@ -2656,6 +2662,7 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
+        let theme = theme.for_floating();
         let script = self
             .worktree_root_hint()
             .and_then(|root| self.worktree_config.effective_setup_script(&root));
@@ -2699,6 +2706,7 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
+        let theme = theme.for_floating();
         let current = self.worktree_display_name(path);
         let field = worktree_field(
             &theme,
@@ -2734,6 +2742,7 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
+        let theme = theme.for_floating();
         let current = self.worktree_display_name(path);
         let field = worktree_field(
             &theme,
@@ -2770,6 +2779,7 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
+        let theme = theme.for_floating();
         let worktree = self.listed_worktree(path);
         let name = worktree
             .map(|worktree| worktree.name.clone())
@@ -2851,6 +2861,7 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
+        let theme = theme.for_floating();
         let footer = div()
             .flex()
             .items_center()
@@ -2932,6 +2943,7 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
+        let theme = theme.for_floating();
         let path = path.to_path_buf();
         let footer = div()
             .flex()
@@ -3395,7 +3407,7 @@ impl OrbitApp {
         if !self.work_in_menu_open {
             return None;
         }
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.weak_entity();
         let rows = self.work_in_rows().unwrap_or_default();
         let selected_ix = self.work_in_selected_ix(&rows);
@@ -3518,7 +3530,7 @@ impl OrbitApp {
                     theme,
                 )
                 .when(selected || highlighted, |row| {
-                    row.bg(theme.surface_selected)
+                    row.bg(theme.selected_wash())
                 })
                 .when(!selected && !highlighted, |row| row.hover_state(theme))
                 // Scrolling rows under a stationary pointer must not change
@@ -3606,6 +3618,7 @@ fn worktree_row_menu(
     theme: Theme,
     this: Entity<OrbitApp>,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let path = worktree.path.clone();
     let open_path = path.clone();
     let reveal_path = path.clone();

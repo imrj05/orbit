@@ -151,6 +151,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/pi_update.rs      pi self-update check + delegated install: latest-version fetch (pi.dev), version ordering, `pi update self`, failure extraction
   src/command_palette.rs  ⌘P / ⌘K command palette (sections, fuzzy match, modal scrim layer)
   src/workspace_picker.rs new-task folder selector (recent folders + native browse)
+  src/wallpaper_builtin.rs built-in backgrounds: generated gradients + bundled images (assets/wallpapers/,
+                        credits in its CREDITS.md), written into the managed wallpaper folder and imported
+                        like a picked file
   src/workspace_logo.rs workspace logo lookup for the new-task folder field (conventional paths, `.orbit-pi/icon.*` override, folder glyph fallback)
   src/workspace_mark.rs per-workspace sidebar mark: curated HugeIcons + semantic tints, persisted in workspaces.json
   src/worktree.rs       Git worktree lifecycle: `WorktreeManager` (list/create/remove/move/lock/unlock/prune/repair), porcelain parsing, name validation, worktree root + `.orbit/worktree.json`
@@ -215,6 +218,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/commit_message.rs one-shot, tool-free `pi -p` conventional-commit generation
   assets/icons/         HugeIcons SVGs (MIT) + provider brand marks
   assets/fonts/         SymbolsNerdFont-Regular.ttf
+  assets/wallpapers/    bundled built-in backgrounds (2560 px JPEGs) + thumbs/ (240 px) + CREDITS.md
   assets/app-icon.png   512px app mark (from assets/icons/logo-icon.png)
   dev-assets/alpha-app-icon.png  512px Alpha mark; macOS debug-only asset overlay (scripts/make-alpha-icon.sh)
 crates/orbit-rpc/       pi CLI process + JSONL protocol

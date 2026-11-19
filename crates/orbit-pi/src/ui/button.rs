@@ -142,8 +142,9 @@ fn variant_treatment<E: Styled + StatefulInteractiveElement>(
 fn hover_swap<E: Styled + InteractiveElement>(el: E, theme: &Theme, variant: ButtonVariant) -> E {
     match variant {
         ButtonVariant::Primary => el.hover_action(theme),
-        ButtonVariant::Secondary | ButtonVariant::Ghost => el.hover_state(theme),
-        ButtonVariant::Outline => el.hover_bordered(theme),
+        ButtonVariant::Secondary => el.hover_face(theme, theme.surface_elevated),
+        ButtonVariant::Ghost => el.hover_state(theme),
+        ButtonVariant::Outline => el.hover_face_bordered(theme, theme.surface_elevated),
         ButtonVariant::Tinted => el.hover_accent_wash(theme, AccentWash::Faint),
         ButtonVariant::Danger => el.hover_danger_soft(theme),
         ButtonVariant::Destructive => el.hover_danger(theme),
@@ -158,9 +159,10 @@ impl ButtonVariant {
     pub(crate) fn fade(self, theme: &Theme) -> Option<Hover> {
         match self {
             Self::Primary => Some(Hover::fill(theme.action, theme.action_hover)),
-            Self::Secondary | Self::Outline => {
-                Some(Hover::fill(theme.surface_elevated, theme.surface_hover))
-            }
+            Self::Secondary | Self::Outline => Some(Hover::fill(
+                theme.surface_elevated,
+                theme.face_hover(theme.surface_elevated),
+            )),
             Self::Ghost => Some(Hover::wash(theme)),
             Self::Tinted | Self::Danger | Self::Destructive | Self::Glass => None,
         }
@@ -521,7 +523,7 @@ pub(crate) fn navigation_icon_button<E: Styled + StatefulInteractiveElement>(
 ) -> E {
     let button = icon_button_frame(el, theme, size);
     let button = if open {
-        button.bg(theme.surface_active)
+        button.bg(theme.pressed_wash())
     } else {
         button
     };
@@ -736,7 +738,7 @@ impl IconButton {
 /// the pointer, so hovering an open control never reads as closing it.
 fn faded_icon_hover(theme: &Theme, variant: IconButtonVariant, open: bool) -> Hover {
     match (open, variant) {
-        (true, _) => Hover::over(Some(theme.surface_active), theme.surface_active),
+        (true, _) => Hover::over(Some(theme.pressed_wash()), theme.pressed_wash()),
         (false, IconButtonVariant::Ghost) => Hover::wash(theme),
         (false, IconButtonVariant::Glass) => Hover::over(None, theme.hover_wash()),
     }

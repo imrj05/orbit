@@ -575,6 +575,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let prompt = self.remote_password_prompt.as_ref()?;
         let destination = prompt.host.connection_label();
 

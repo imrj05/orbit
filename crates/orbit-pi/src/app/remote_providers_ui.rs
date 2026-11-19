@@ -744,6 +744,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let editor = self.remote_key_editor.as_ref()?;
         let signed_in: std::collections::HashSet<&str> =
             match self.remote_model_lists.get(&editor.host.name) {
@@ -775,7 +776,7 @@ impl OrbitApp {
             .h(crate::theme::tokens::picker::entry_height(&theme))
             .flex_none()
             .cursor_pointer()
-            .when(selected, |row| row.bg(theme.surface_selected))
+            .when(selected, |row| row.bg(theme.selected_wash()))
             .child(crate::model_selector::provider_mark(id, theme))
             .child(
                 div()
@@ -960,6 +961,7 @@ fn machine_menu(
     theme: Theme,
     this: Entity<OrbitApp>,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let entry = |id: String,
                  glyph: &'static str,
                  title: String,
@@ -971,7 +973,7 @@ fn machine_menu(
             .h(crate::theme::tokens::picker::two_line_entry_height(&theme))
             .flex_none()
             .cursor_pointer()
-            .when(checked, |row| row.bg(theme.surface_selected))
+            .when(checked, |row| row.bg(theme.selected_wash()))
             .child(
                 PickerRow::new(title, theme.text_primary, theme.text_muted)
                     .icon(glyph, theme.text_muted)

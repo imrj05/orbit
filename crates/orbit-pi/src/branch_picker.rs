@@ -287,7 +287,7 @@ impl Focusable for BranchPicker {
 
 impl Render for BranchPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.entity();
 
         if self.mode == Mode::Create {
@@ -389,7 +389,7 @@ impl Render for BranchPicker {
                 .cursor_pointer()
                 .pressed_state(&theme, PressedRamp::Wash)
                 .when(selected || highlighted, |row| {
-                    row.bg(theme.surface_selected)
+                    row.bg(theme.selected_wash())
                 })
                 .when(!selected && !highlighted, |row| row.hover_state(&theme))
                 .on_hover({

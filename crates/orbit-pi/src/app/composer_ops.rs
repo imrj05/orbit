@@ -463,7 +463,7 @@ impl OrbitApp {
             return None;
         }
         let highlighted = highlighted.min(entries.len() - 1);
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.weak_entity();
         // Rows are one fixed height, so the list is exactly tall enough for
         // the `AUTOCOMPLETE_LIMIT` entries it ever shows.
@@ -523,7 +523,7 @@ impl OrbitApp {
                 )
                 .h(row_h)
                 .cursor_pointer()
-                .when(selected, |row| row.bg(theme.surface_selected))
+                .when(selected, |row| row.bg(theme.selected_wash()))
                 .hover_state(&theme)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |app, cx| app.commit_entry(entry.clone(), cx))

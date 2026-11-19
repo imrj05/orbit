@@ -214,7 +214,7 @@ fn caption_button(
     let fill = if close {
         theme.error
     } else {
-        theme.surface_hover
+        theme.hover_wash()
     };
     let mut glyph_el = icon(glyph, IconSize::Small.px(&theme), theme.text_secondary);
     if close {

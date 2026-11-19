@@ -454,7 +454,7 @@ impl OrbitApp {
             .items_start()
             .gap_2p5()
             .cursor_pointer()
-            .when(selected, |row| row.bg(theme.surface_selected))
+            .when(selected, |row| row.bg(theme.selected_wash()))
             .when(!selected, |row| row.hover_state(&theme))
             .on_mouse_up(MouseButton::Left, {
                 let select = name.clone();
@@ -1124,7 +1124,7 @@ impl OrbitApp {
             .py(DynamicSpacing::Base06.px(theme))
             .rounded(Radius::Medium.px(theme))
             .cursor_pointer()
-            .when(active, |row| row.bg(theme.surface_selected))
+            .when(active, |row| row.bg(theme.selected_wash()))
             .when(!active, |row| row.hover_state(theme))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 let action = action.clone();
@@ -1654,7 +1654,7 @@ impl OrbitApp {
             .items_center()
             .gap_2p5()
             .cursor_pointer()
-            .when(selected, |row| row.bg(theme.surface_selected))
+            .when(selected, |row| row.bg(theme.selected_wash()))
             .when(!selected, |row| row.hover_state(&theme))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| {

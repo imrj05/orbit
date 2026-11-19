@@ -645,6 +645,34 @@ defers to `glass_sigma` (so Glass panes still turns it off); light palettes,
 renderers without the pass, and macOS Reduce Transparency / Increase Contrast
 (read with Reduce Motion at launch and on window activation) keep the opaque
 card. Structural panes and the composer still frost only over a wallpaper.
+Every builder of such a layer scopes its theme with `Theme::for_floating()`, so
+the rows and controls inside take the ink washes (`hover_wash`, `pressed_wash`,
+`selected_wash`) on the frost instead of the palette's opaque state steps; over a
+wallpaper the same washes already apply everywhere. Faceless controls in `ui/`
+(rows, tree rows, quiet chips, icon buttons, tabs) and the surfaces' own
+highlighted / selected rows all read those washes; buttons and chips with an
+opaque face keep the palette steps on their face. Info / success / warning
+banners and the Usage skeleton use `page_fill`, so they are translucent on a glass
+page.
+
+Settings → Appearance → Theme is one compact row per choice: Light / Dark / System
+as a segmented control, and Dark theme, Light theme and Accent color as the
+standard Settings dropdown (search, keyboard, virtualized list). Palette options
+lead with a small swatch (canvas, sidebar, accent, with the current accent
+applied); accent options with a dot of the accent they would give the palette on
+screen. The former picture cards and thumbnail galleries are gone.
+
+Built-in backgrounds (`wallpaper_builtin.rs`): Settings → Appearance →
+Background offers four rows of one-click backgrounds: Gradients (seven
+generated gradients, rendered with GPUI's own `linear_gradient` math so the
+thumbnail is the image), Nature, Anime and Japanese art (eight bundled 2560 px
+JPEGs under `assets/wallpapers/`, ~5.5 MB, with 240 px thumbnails; Unsplash
+License images and public-domain Hokusai / Hiroshige prints, credited in
+`assets/wallpapers/CREDITS.md` and named in each tooltip). Picking one writes the
+file into the managed wallpaper folder off the UI thread and imports it through
+the ordinary wallpaper path, so placement, blur, effects, glass and
+accent-from-image apply unchanged; it replaces the current image as a picked file
+does. No network is involved.
 
 Glass pages over a full-window wallpaper: the feature pages (Git, Usage, Files,
 Worktrees, the expanded terminal) and the dock cards (Review, Explorer, session

@@ -1058,6 +1058,7 @@ impl ProjectPanel {
     /// The header's "…" button and the menu it anchors: Refresh, Collapse
     /// All Folders, and the hidden-files toggle (checked while shown).
     fn header_menu(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme.for_floating();
         let open = self.header_menu_open;
         let button = IconButton::new("explorer-more", "icons/more.svg")
             .open(open)
@@ -1443,6 +1444,7 @@ impl ProjectPanel {
     }
 
     fn context_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let menu = self.menu.as_ref()?;
         if self.menu_dismissed_at.is_recent() {
             return None;
@@ -1508,6 +1510,7 @@ impl ProjectPanel {
     /// [`platform::TRASH_IS_RECOVERABLE`] so it never promises a restore the
     /// platform cannot deliver.
     fn delete_prompt(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let target = self.pending_delete.as_ref()?;
         let body_key = match (target.is_dir, platform::TRASH_IS_RECOVERABLE) {
             (true, true) => "explorer.delete_body_dir_trash",
@@ -1635,7 +1638,7 @@ fn menu_row(
     )
     .cursor_pointer()
     // The keyboard cursor reads as the pointer's hover.
-    .when(highlighted, |row| row.bg(theme.surface_hover))
+    .when(highlighted, |row| row.bg(theme.hover_wash()))
     .hover_state(&theme)
     .on_click(listener)
     .child(icon(

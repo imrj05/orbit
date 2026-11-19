@@ -39,7 +39,7 @@ pub(crate) fn skeleton_bar(
         .w(width.into())
         .h(height.into())
         .rounded(Radius::Small.px(theme))
-        .bg(theme.surface_secondary)
+        .bg(theme.page_fill(theme.surface_secondary))
 }
 
 /// The sidebar's running-session indicator: one minimal accent arc turning in

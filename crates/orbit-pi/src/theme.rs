@@ -287,6 +287,10 @@ pub struct SurfaceTreatment {
     /// land on the page instead of on the bare palette canvas behind it.
     /// `None` means the palette canvas is the page (no wallpaper).
     pub page: Option<Hsla>,
+    /// Scoped by [`Theme::for_floating`]: the content of a floating layer
+    /// that frosts the workbench with no wallpaper behind it (dark palettes).
+    /// Only the control washes read it; every fill and edge keeps its rule.
+    pub floating: bool,
 }
 
 impl SurfaceTreatment {
@@ -301,6 +305,7 @@ impl SurfaceTreatment {
         panel_alpha: 1.0,
         glass: false,
         page: None,
+        floating: false,
     };
 }
 
@@ -308,6 +313,20 @@ impl Default for SurfaceTreatment {
     fn default() -> Self {
         Self::OPAQUE
     }
+}
+
+/// `ink` at `alpha` painted over an opaque `base`, flattened to one opaque
+/// colour (sRGB source-over).
+fn composite(base: Hsla, ink: Hsla, alpha: f32) -> Hsla {
+    let (base, ink) = (gpui::Rgba::from(base), gpui::Rgba::from(ink));
+    let mix = |b: f32, i: f32| b + (i - b) * alpha;
+    gpui::Rgba {
+        r: mix(base.r, ink.r),
+        g: mix(base.g, ink.g),
+        b: mix(base.b, ink.b),
+        a: base.a,
+    }
+    .into()
 }
 
 /// Semantic palette. Copy so list closures and hover styles can capture it
@@ -1497,7 +1516,8 @@ impl Theme {
     /// The fill of a card-like surface (settings board, transcript card, menu,
     /// dialog). With no active wallpaper this is exactly `base`.
     ///
-    /// The reader's own message bubble remains opaque. The composer uses this
+    /// The reader's own message bubble uses it only while wallpaper glass
+    /// frosts behind it, and stays opaque otherwise. The composer uses this
     /// treatment only when the wallpaper backdrop can actually be frosted.
     pub fn card_fill(self, base: Hsla) -> Hsla {
         if self.wallpaper.active {
@@ -1558,15 +1578,41 @@ impl Theme {
         }
     }
 
+    /// Scope a theme to the content of a floating layer (a menu, popover,
+    /// picker, modal, tooltip or toast). Where that layer frosts the workbench
+    /// with no wallpaper behind it — dark palettes, see
+    /// [`Self::floating_glass_sigma`] — its controls take the ink washes, so a
+    /// hovered or selected row is a state of the glass instead of an opaque
+    /// slab on it. Fills, edges and the frost itself are unchanged; over a
+    /// wallpaper, or where the layer stays opaque, this changes nothing.
+    pub fn for_floating(self) -> Self {
+        self.for_floating_with(os_reduce_transparency())
+    }
+
+    /// [`Self::for_floating`] with the OS preference passed in.
+    pub fn for_floating_with(mut self, reduce_transparency: bool) -> Self {
+        self.wallpaper.floating = self
+            .floating_glass_sigma_with(reduce_transparency)
+            .is_some();
+        self
+    }
+
+    /// Whether a control here sits on something that shows through: the
+    /// wallpaper, or a frosted floating layer ([`Self::for_floating`]).
+    fn controls_on_glass(self) -> bool {
+        self.wallpaper.active || self.wallpaper.floating
+    }
+
     /// The hover wash for a control.
     ///
     /// On an opaque surface this is the palette's own `surface_hover` step.
-    /// Once that surface shows the wallpaper through it the step has to be ink
-    /// at alpha instead: an opaque wash on a frosted card or pane reads as a
-    /// slab cut into the glass rather than a state of it. With no wallpaper
-    /// this resolves to exactly the same colour as before.
+    /// Once that surface shows the wallpaper (or a frosted floating layer)
+    /// through it the step has to be ink at alpha instead: an opaque wash on a
+    /// frosted card or pane reads as a slab cut into the glass rather than a
+    /// state of it. On an opaque surface this resolves to exactly the same
+    /// colour as before.
     pub fn hover_wash(self) -> Hsla {
-        if self.wallpaper.active {
+        if self.controls_on_glass() {
             self.overlay_strong
         } else {
             self.surface_hover
@@ -1604,10 +1650,13 @@ impl Theme {
     /// Deepened from `overlay_strong`'s own alpha rather than from a new
     /// palette value, so each palette still decides how strong its ink states
     /// are. The clamp keeps a heavy wash from burying the surface it sits on.
+    ///
+    /// It is also the *open / active* fill — an open chip or icon button, the
+    /// active tab — which on an opaque surface is the same `surface_active`
+    /// step.
     pub fn pressed_wash(self) -> Hsla {
-        if self.wallpaper.active {
-            self.text_primary
-                .opacity((self.overlay_strong.a * 1.5).min(0.30))
+        if self.controls_on_glass() {
+            self.glass_held_wash()
         } else {
             self.surface_active
         }
@@ -1617,6 +1666,42 @@ impl Theme {
     /// backdrop with. `None` when there is no wallpaper, the Glass panes setting
     /// is off, or this renderer has no backdrop pass — the pane then keeps its
     /// plain translucent fill, which is the whole difference between the two.
+    /// The selected fill: the open row, the chosen option, a selected chip or
+    /// segment. On an opaque surface it is the palette's `surface_selected`
+    /// step; on glass it is ink between the hover and pressed washes, so a
+    /// selected row reads one clear step above a hovered one, stays distinct
+    /// from a pressed one, and stays translucent.
+    pub fn selected_wash(self) -> Hsla {
+        if self.controls_on_glass() {
+            self.text_primary
+                .opacity((self.overlay_strong.a * 1.25).min(0.25))
+        } else {
+            self.surface_selected
+        }
+    }
+
+    /// Hover on a control with its own opaque face (an Outlined chip, a
+    /// Secondary or Outline button). On an opaque surface it is the palette's
+    /// `surface_hover` step, as before. On glass the faceless wash would
+    /// replace the face with ink at alpha and the control would turn
+    /// see-through under the pointer; instead the face itself is lifted by
+    /// that same ink layer, composited, so it stays opaque and the change is
+    /// one subtle step.
+    pub fn face_hover(self, face: Hsla) -> Hsla {
+        if self.controls_on_glass() {
+            composite(face, self.text_primary, self.overlay_strong.a)
+        } else {
+            self.surface_hover
+        }
+    }
+
+    /// The held (pressed, open) wash on glass: `overlay_strong`'s
+    /// own alpha deepened, clamped so it never buries the surface.
+    fn glass_held_wash(self) -> Hsla {
+        self.text_primary
+            .opacity((self.overlay_strong.a * 1.5).min(0.30))
+    }
+
     pub fn glass_sigma(self) -> Option<f32> {
         (self.wallpaper.active && self.wallpaper.glass).then_some(GLASS_BLUR)
     }
@@ -3281,6 +3366,96 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// A control with its own face hovers one subtle, opaque step: the
+    /// palette's hover on an opaque surface, and on glass the face lifted by
+    /// the ink layer — never a see-through wash that drops the face.
+    #[test]
+    fn a_faced_hover_stays_opaque_and_subtle_on_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            assert_eq!(base.face_hover(base.surface_elevated), base.surface_hover);
+            for floating in [false, true] {
+                let glass = if floating {
+                    base.for_floating_with(false)
+                } else {
+                    base.with_wallpaper(SurfaceTreatment {
+                        active: true,
+                        ..SurfaceTreatment::OPAQUE
+                    })
+                };
+                if !floating || glass.floating_glass_sigma_with(false).is_some() {
+                    let face = glass.surface_elevated;
+                    let hover = glass.face_hover(face);
+                    assert!((hover.a - face.a).abs() < 1e-4, "stays as opaque as the face");
+                    assert_ne!(hover, face, "a visible step");
+                    let step = (gpui::Rgba::from(hover).r - gpui::Rgba::from(face).r).abs();
+                    assert!(step < 0.2, "a subtle step, not a jump: {step}");
+                }
+            }
+        }
+    }
+
+    /// Selected rows, chips and segments follow the same rule as hover and
+    /// pressed: the palette's own step on an opaque surface, a translucent
+    /// ink wash one clear step above hover on glass.
+    #[test]
+    fn the_selected_wash_follows_the_surface_under_it() {
+        for base in [Theme::dark(), Theme::light()] {
+            assert_eq!(base.selected_wash(), base.surface_selected);
+            let glass = base.with_wallpaper(SurfaceTreatment {
+                active: true,
+                ..SurfaceTreatment::OPAQUE
+            });
+            let selected = glass.selected_wash();
+            assert_eq!(selected.h, glass.text_primary.h, "an ink wash");
+            assert!(
+                selected.a > glass.hover_wash().a,
+                "selected reads above hover"
+            );
+            assert!(selected.a < 0.31, "and stays translucent");
+        }
+    }
+
+    /// Inside a floating layer that frosts the workbench (dark palettes, no
+    /// wallpaper) the washes go translucent; where that layer stays opaque —
+    /// light palettes, reduced transparency, no backdrop pass — nothing moves.
+    #[test]
+    fn floating_scope_switches_washes_only_where_the_layer_frosts() {
+        for base in [Theme::dark(), Theme::light()] {
+            let frosts = base.floating_glass_sigma_with(false).is_some();
+            let floating = base.for_floating_with(false);
+            if frosts {
+                assert_eq!(floating.hover_wash(), base.overlay_strong);
+                assert!(floating.pressed_wash().a < 0.31);
+                assert!(floating.selected_wash().a < 0.31);
+            } else {
+                assert_eq!(floating.hover_wash(), base.surface_hover);
+                assert_eq!(floating.pressed_wash(), base.surface_active);
+                assert_eq!(floating.selected_wash(), base.surface_selected);
+            }
+            // Fills, edges and the frost keep their own rules.
+            assert_eq!(
+                floating.card_fill(base.surface_elevated),
+                base.card_fill(base.surface_elevated)
+            );
+            assert_eq!(floating.hairline(), base.hairline());
+            assert_eq!(floating.glass_sigma(), base.glass_sigma());
+
+            let reduced = base.for_floating_with(true);
+            assert_eq!(
+                reduced.hover_wash(),
+                base.surface_hover,
+                "reduce transparency keeps it opaque"
+            );
+            assert_eq!(reduced.selected_wash(), base.surface_selected);
+        }
+        let light = Theme::light().for_floating_with(false);
+        assert_eq!(
+            light.hover_wash(),
+            Theme::light().surface_hover,
+            "light layers never frost"
+        );
     }
 
     /// A control's wash follows the surface under it: the palette's own step

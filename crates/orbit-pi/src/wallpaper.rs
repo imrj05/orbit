@@ -318,7 +318,7 @@ fn settings_path() -> PathBuf {
         .join("wallpaper.json")
 }
 
-fn managed_dir() -> PathBuf {
+pub(crate) fn managed_dir() -> PathBuf {
     crate::platform::home_dir()
         .join(".orbit-pi")
         .join("wallpapers")
@@ -1108,6 +1108,7 @@ pub fn surfaces(
         panel_alpha: 1.0,
         glass: settings.glass && gpui::backdrop_blur_supported(),
         page: None,
+        floating: false,
     };
     let decorated = theme.with_wallpaper(treatment);
     let mut alpha = treatment.card_alpha;

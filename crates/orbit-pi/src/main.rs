@@ -131,6 +131,7 @@ mod ui;
 mod updater;
 mod usage;
 mod wallpaper;
+mod wallpaper_builtin;
 mod wallpaper_fx;
 mod watch;
 mod widgets;

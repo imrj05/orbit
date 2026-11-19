@@ -2585,6 +2585,7 @@ impl SidePane {
 
     /// The source filter dropdown, painted over the pane body.
     fn source_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if !self.source_menu_open || self.embedded {
             return None;
         }
@@ -2669,7 +2670,7 @@ fn source_row(
     .h(picker::entry_height(&theme))
     .flex_none()
     .when(enabled, |row| row.cursor_pointer())
-    .when(selected, |row| row.bg(theme.surface_selected))
+    .when(selected, |row| row.bg(theme.selected_wash()))
     .when(enabled && !selected, |row| row.hover_state(&theme))
     .when(enabled && choice.is_some(), |row| {
         row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {

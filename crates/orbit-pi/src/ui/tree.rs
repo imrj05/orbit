@@ -165,7 +165,7 @@ impl TreeRow {
             .items_center()
             .gap(DynamicSpacing::Base06.px(theme));
         row = match self.state {
-            TreeRowState::Editing => row.bg(theme.surface_active),
+            TreeRowState::Editing => row.bg(theme.pressed_wash()),
             // The list rows' state fills, so a tree and a list agree.
             TreeRowState::Selected => row
                 .cursor_pointer()

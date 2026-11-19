@@ -518,6 +518,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let editor = self.account_editor.as_ref()?;
         let mut body = div()
             .w_full()

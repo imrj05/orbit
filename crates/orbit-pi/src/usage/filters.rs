@@ -142,6 +142,7 @@ fn panel(
     children: Vec<AnyElement>,
     page: Entity<UsagePage>,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let dismiss_click = page.clone();
     popover_picker(div().id(ElementId::Name(SharedString::from(id))), &theme)
         .when_some(width, |menu, width| menu.w(px(width)))
@@ -194,7 +195,7 @@ fn row(
         .flex_none()
         .cursor_pointer()
         .pressed_state(&theme, PressedRamp::Wash)
-        .when(highlighted, |row| row.bg(theme.surface_hover))
+        .when(highlighted, |row| row.bg(theme.hover_wash()))
         .when(!highlighted, |row| row.hover_state(&theme))
         .on_hover(on_hover)
         .on_mouse_down(MouseButton::Left, on_click)
@@ -320,6 +321,7 @@ pub fn multi_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let query = page.menu_query().read(cx).text();
     let rows = visible_options(options, &query, selected);
     let highlight = page.menu_highlight();
@@ -458,6 +460,7 @@ pub fn multi_menu(
 /// The export popover: the two things the page can write, and what each
 /// contains. Both respect the current filters.
 pub fn export_menu(cx: &mut gpui::Context<UsagePage>, theme: Theme) -> AnyElement {
+    let theme = theme.for_floating();
     let mut children: Vec<AnyElement> = Vec::new();
     for (format, label, hint) in [
         (
@@ -501,6 +504,7 @@ pub fn page_size_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let current = page.page_size();
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
     for size in PAGE_SIZES {
@@ -530,6 +534,7 @@ pub fn columns_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
     // The display order of the table's own plan, minus the fixed title/open.
     let columns: [SessionSort; 11] = [
@@ -585,6 +590,7 @@ pub fn breakdown_columns_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
     for (id, label) in page.breakdown_column_options() {
         let selected = page.breakdown_column_visible(id);
@@ -624,6 +630,7 @@ pub fn more_filters_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let filter = page.filter();
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.filter_outcome"), theme)];
     for outcome in Outcome::ALL {
@@ -692,6 +699,7 @@ pub fn highlight_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     use super::aggregate::Highlight;
 
     let current = page.trend_highlight();
@@ -787,6 +795,7 @@ pub fn breakdown_page_size_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let current = page.breakdown_view(page.breakdown_tab()).page_size;
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
     for size in PAGE_SIZES {
@@ -821,6 +830,7 @@ pub fn bucket_columns_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
     for column in BucketSort::HIDEABLE {
         let selected = page.bucket_column_visible(column);
@@ -861,6 +871,7 @@ pub fn bucket_page_size_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let current = page.bucket_page_size();
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
     for size in PAGE_SIZES {
@@ -889,6 +900,7 @@ pub fn failure_columns_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
     for column in FailureSort::HIDEABLE {
         let selected = page.failure_column_visible(column);
@@ -929,6 +941,7 @@ pub fn failure_page_size_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let current = page.failure_page_size();
     let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
     for size in PAGE_SIZES {
@@ -958,6 +971,7 @@ fn menu_title(label: &str, theme: Theme) -> AnyElement {
 
 /// The date-range menu: presets, then a compact calendar for custom windows.
 pub fn range_menu(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -> AnyElement {
+    let theme = theme.for_floating();
     let current = page.filter().range.clone();
     let mut children: Vec<AnyElement> = Vec::new();
     let mut rows: Vec<AnyElement> = Vec::new();
@@ -1133,7 +1147,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                     .flex_1()
                     .cursor_pointer()
                     .when(selected, |cell| {
-                        cell.bg(theme.surface_active).text_color(theme.text_primary)
+                        cell.bg(theme.pressed_wash()).text_color(theme.text_primary)
                     })
                     .when(in_range, |cell| {
                         cell.bg(theme.overlay).text_color(theme.text_primary)

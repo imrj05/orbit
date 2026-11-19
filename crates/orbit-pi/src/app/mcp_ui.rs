@@ -1384,7 +1384,7 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base16.px(&theme))
             .when(first, |row| row.rounded_t(panel::RADIUS.px(&theme)))
             .when(last, |row| row.rounded_b(panel::RADIUS.px(&theme)))
-            .when(selected, |row| row.bg(theme.surface_selected))
+            .when(selected, |row| row.bg(theme.selected_wash()))
             .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
@@ -1840,6 +1840,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let editor = self.mcp_editor.as_ref()?;
         let editing = editor.original.is_some();
         let title = if editing {
@@ -2077,7 +2078,7 @@ impl OrbitApp {
                     .focus(|style| style.border_color(theme.focus_ring))
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.surface_selected))
+                    .when(selected, |row| row.bg(theme.selected_wash()))
                     .hover_state(&theme)
                     .on_key_down({
                         let this = this.clone();
@@ -2165,7 +2166,7 @@ impl OrbitApp {
                     .focus(|style| style.border_color(theme.focus_ring))
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.surface_selected))
+                    .when(selected, |row| row.bg(theme.selected_wash()))
                     .hover_state(&theme)
                     .on_key_down({
                         let this = this.clone();

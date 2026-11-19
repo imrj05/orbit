@@ -649,6 +649,7 @@ fn readout(
     theme: Theme,
     count: usize,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let Some(bucket) = series.points.get(ix) else {
         return div().into_any_element();
     };

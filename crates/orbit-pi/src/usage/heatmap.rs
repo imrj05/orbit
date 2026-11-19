@@ -457,6 +457,7 @@ fn day_readout(
     geometry: &Geometry,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let week = ix / 7;
     let row = ix % 7;
     let totals = &day.totals;

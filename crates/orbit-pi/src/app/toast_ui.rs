@@ -74,7 +74,7 @@ impl OrbitApp {
         if self.toasts.is_empty() && self.plugin_update_prompt.is_none() {
             return None;
         }
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let reduce_motion = theme.reduce_motion();
         let now = Instant::now();
         let items = self.toasts.items();

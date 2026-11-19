@@ -103,7 +103,7 @@ and their reference values are `DESIGN.md` §Colors.
 | Panel and chrome | `surface` | Sidebars, panes, title bar, composer. This is Orbit's secondary background. |
 | Nested container | `surface_secondary` | A well inside a panel, not a substitute for one. |
 | Card, chip, menu, popover, dialog | `surface_elevated` | The one raised plane. Reach it through `ElevationIndex` / `StyledExt`, which also supply the hairline and the layer's shadow. |
-| Row and control states | `surface_hover`, `surface_active`, `surface_selected` | Pointer, pressed/open, open row. Choose a treatment, not a role: see §The State Contract in `DESIGN.md`. |
+| Row and control states | `surface_hover`, `surface_active`, `surface_selected` | Pointer, pressed/open, open row. Choose a treatment, not a role: see §The State Contract in `DESIGN.md`. A faceless row or control reads them through `hover_wash()` / `pressed_wash()` / `selected_wash()`, which turn into ink washes on glass; a floating layer's builder scopes its theme with `Theme::for_floating()`. |
 | Edges | `border`, `border_subtle`, `border_strong` | Region seam, quiet internal rule, floating-surface edge. |
 | Ink | `text_primary`, `text_secondary`, `text_muted`, `text_disabled` | Emphasis comes from ink weight and size, never from hue. |
 | Accent | `accent`, `accent_hover`, `accent_pressed`, `accent_fg`, `accent_text` | `accent_text` is the readable role for links, icons, keywords and mentions; `accent` is a fill, and never an automatic primary-button fill. |

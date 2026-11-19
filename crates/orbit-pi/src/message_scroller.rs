@@ -359,6 +359,7 @@ fn render_bottom_fade(theme: Theme) -> gpui::Stateful<gpui::Div> {
 }
 
 fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoElement {
+    let theme = theme.for_floating();
     // Content arrived while the reader was scrolled up: the round jump
     // affordance grows a "New activity" label so the stream's continued
     // progress is visible from anywhere in the transcript.

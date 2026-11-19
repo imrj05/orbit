@@ -140,7 +140,7 @@ impl Tab {
             .cursor_pointer()
             .text_size(TextSize::Small.px(theme));
         el = if active {
-            el.bg(theme.surface_active)
+            el.bg(theme.pressed_wash())
         } else {
             el.text_color(theme.text_muted).hover_quiet(theme)
         };

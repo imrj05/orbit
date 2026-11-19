@@ -280,7 +280,7 @@ impl Focusable for CustomUi {
 
 impl Render for CustomUi {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let font_size = theme.code_px(12.);
         let line_height = theme.code_px(18.);
         let font = widgets::widget_font();

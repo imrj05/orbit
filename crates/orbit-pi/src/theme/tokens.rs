@@ -1183,7 +1183,7 @@ impl InteractionState {
             Self::Rest | Self::Focused => None,
             Self::Hover => Some(theme.hover_wash()),
             Self::Pressed => Some(theme.pressed_wash()),
-            Self::Selected => Some(theme.surface_selected),
+            Self::Selected => Some(theme.selected_wash()),
             Self::Disabled | Self::Glass => Some(theme.overlay),
         }
     }

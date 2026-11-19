@@ -562,7 +562,10 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   effect pixel size, and a **black** overlay — never a palette tint, which washed a bright
   picture out while claiming to dim it. Hero mode paints it only in the main column;
   full-window mode paints it behind the sidebar too, with translucent surfaces above.
-  The reader's own message bubble remains opaque. The chat composer is an explicit
+  The reader's own message bubble, like the transcript's tool and activity cards, is
+  frosted glass while wallpaper glass is on (the contrast-floored card tint over a
+  blurred backdrop) and opaque otherwise; a tool card's terminal plane takes the card
+  tint instead of covering the frost. The chat composer is an explicit
   exception: with supported wallpaper glass behind it, it uses the contrast-adjusted card fill
   and a rounded backdrop frost; otherwise it retains its opaque surface. Hero mode
   has no wallpaper behind the composer in active chat. The page itself never goes below
@@ -777,6 +780,21 @@ the call site. Existing adoption is still in progress:
 | `Selected` | `surface_selected` | role's own | `selection_fg` | `selection_fg` |
 | `Focused` | none | `focus_ring` | `text_primary` | `text_primary` |
 | `Disabled` | `overlay` | `border_subtle` | `text_disabled` | `text_disabled` |
+
+The Hover, Pressed and Selected fills are read through `Theme::hover_wash()`,
+`pressed_wash()` and `selected_wash()`. On an opaque surface they are exactly the
+palette steps above. On glass — over a wallpaper, or inside a floating layer that
+frosts the workbench (a builder scoped with `Theme::for_floating()`) — they are
+ink at alpha instead: `overlay_strong` for hover, then deeper for selected and
+deeper again for pressed/open, so no state paints an opaque slab on the glass.
+`pressed_wash()` is also the open/active fill (an open chip or icon button, the
+active tab). A control with its own opaque face (a Secondary or Outline button, an
+Outlined chip, the segmented track) never takes a wash: it hovers through
+`Theme::face_hover(face)` (`ControlExt::hover_face`, `hover_face_bordered`,
+`hover_face_open`), which is `surface_hover` on an opaque surface and, on glass,
+the face lifted by the same ink layer composited to one opaque colour, so the
+control stays solid and the change is one subtle step. An open control holds
+its face under the pointer. The washes are for faceless rows and controls.
 
 Filled controls step their own role instead of the wash, because `surface_active`
 over a primary, accent or danger fill changes what the button means while it is being

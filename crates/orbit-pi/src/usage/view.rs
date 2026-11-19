@@ -3620,7 +3620,7 @@ impl UsagePage {
                 .id(("usage-session-row", ix))
                 .group("usage-row")
                 .when(selected == Some(row.session), |line| {
-                    line.bg(theme.surface_selected)
+                    line.bg(theme.selected_wash())
                 })
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
@@ -4068,6 +4068,7 @@ fn open_session_cell(
 
 /// The session row's right-click menu (§43): only actions that are wired.
 fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>) -> AnyElement {
+    let theme = theme.for_floating();
     let session = row.session;
     let session_id = row.id.clone();
     let provider_id = row.provider_id;
@@ -4143,6 +4144,7 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
 /// The menu shell, on the branch selector's picker metrics
 /// ([`picker_surface`]), dismissed by an outside click.
 fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyElement>) -> AnyElement {
+    let theme = theme.for_floating();
     popover_list(div().id("usage-row-menu"), &theme)
         .overflow_hidden()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -4344,7 +4346,7 @@ fn table_pager(
                 .justify_center()
                 .border_1()
                 .border_color(theme.border_strong)
-                .bg(theme.surface_active)
+                .bg(theme.pressed_wash())
                 .font(num_font())
                 .font_weight(FontWeight::MEDIUM)
                 .text_size(TextSize::Small.px(&theme))
@@ -4546,7 +4548,7 @@ fn legend_row(
         .flex_col()
         .gap(DynamicSpacing::Base06.px(&theme))
         .cursor_pointer()
-        .when(row.selected, |wash| wash.bg(theme.surface_selected))
+        .when(row.selected, |wash| wash.bg(theme.selected_wash()))
         .hover_state(&theme)
         .child(head)
         .child(bar)

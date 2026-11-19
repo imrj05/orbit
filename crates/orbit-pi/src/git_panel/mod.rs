@@ -1748,6 +1748,7 @@ impl GitPanel {
         target: DraftForm,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if self.template_menu != Some(target) {
             return None;
         }
@@ -1927,6 +1928,7 @@ impl GitPanel {
     /// The New-PR base picker, styled and anchored like the top branch
     /// selector: a search row over the repository's local branches.
     fn pr_base_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if self.ref_menu != Some(RefTarget::PrBase) {
             return None;
         }
@@ -1968,7 +1970,7 @@ impl GitPanel {
                     picker_entry(div().id(id), &theme)
                         .cursor_pointer()
                         .when(selected, |row| {
-                            row.bg(theme.surface_selected)
+                            row.bg(theme.selected_wash())
                                 .text_color(theme.selection_fg)
                         })
                         .when(!selected, |row| {
@@ -3204,6 +3206,7 @@ impl GitPanel {
     /// session-model option followed by the filtered catalog, so the same
     /// search box serves a one-provider list and a full catalog.
     fn commit_model_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if !self.commit_model_menu_open {
             return None;
         }
@@ -3318,7 +3321,7 @@ impl GitPanel {
                 .flex_none()
                 .cursor_pointer()
                 .when(selected || highlighted, |row| {
-                    row.bg(theme.surface_selected)
+                    row.bg(theme.selected_wash())
                         .text_color(theme.text_primary)
                 })
                 .when(!selected && !highlighted, |row| {
@@ -4136,6 +4139,7 @@ impl GitPanel {
 
     /// The Sync dropdown: the steps the full Sync runs, exposed individually.
     fn sync_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if !self.sync_menu_open {
             return None;
         }
@@ -4235,6 +4239,7 @@ impl GitPanel {
 
     /// The branch-actions ("…") dropdown: merge/rebase onto a ref, rename.
     fn branch_more_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if !self.branch_more_open {
             return None;
         }
@@ -5179,6 +5184,7 @@ impl GitPanel {
 
     /// The per-file actions menu: open, reveal, copy path, file history.
     fn file_actions_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let (path, _hash) = self.file_menu.clone()?;
         let menu = popover_list(div().id("git-file-menu"), &theme)
             .absolute()
@@ -6101,6 +6107,7 @@ impl GitPanel {
         target: LabelMenuTarget,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if self.label_menu != Some(target) {
             return None;
         }
@@ -7220,6 +7227,7 @@ impl GitPanel {
     }
 
     fn branch_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if !self.branch_menu_open {
             return None;
         }
@@ -7409,7 +7417,7 @@ impl GitPanel {
         let mut row = picker_entry(div().id(id).group("git-branch-row"), &theme)
             .cursor_pointer()
             .when(selected, |row| {
-                row.bg(theme.surface_selected)
+                row.bg(theme.selected_wash())
                     .text_color(theme.selection_fg)
             })
             .when(!selected, |row| row.text_color(theme.text_secondary))
@@ -7490,6 +7498,7 @@ impl GitPanel {
 
     /// The ref picker opened by "Merge branch…" / "Rebase onto…".
     fn ref_picker_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let target = self.ref_menu?;
         // The New-PR base picker is rendered inside the form, anchored to its
         // chip (see [`Self::base_branch_selector`]); this page-level popup only
@@ -7602,6 +7611,7 @@ impl GitPanel {
 
     /// The New/Rename branch prompt.
     fn branch_prompt_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let prompt = self.branch_prompt.as_ref()?;
         let (title, confirm_label) = match prompt {
             BranchPrompt::New => (
@@ -7678,6 +7688,7 @@ impl GitPanel {
 
     /// The "stage unstaged changes?" confirmation, painted over the page.
     fn stage_prompt_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         self.stage_prompt?;
         let unstaged = self.unstaged.len();
         let staged_empty = self.staged.is_empty();
@@ -7786,6 +7797,7 @@ impl GitPanel {
 
     /// The confirmation for a destructive recovery action (force push, abort).
     fn confirm_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let confirm = self.pending_confirm.clone()?;
         let (title, body, confirm_label) = match confirm {
             PendingConfirm::ForcePush => (

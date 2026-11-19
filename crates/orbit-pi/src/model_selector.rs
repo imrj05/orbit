@@ -1056,7 +1056,7 @@ impl Render for ModelSelector {
         }
 
         let this = cx.entity();
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let metrics = ListMetrics::new(self.kind, &theme);
         let width = match self.kind {
             PickerKind::Model => MODEL_POPOVER_W,
@@ -1682,9 +1682,9 @@ fn render_row(
         })
         // Keyboard/hover cursor and the chosen option are separate
         // states: the cursor is a wash, the choice keeps the fill.
-        .when(highlighted, |row| row.bg(theme.surface_selected))
+        .when(highlighted, |row| row.bg(theme.selected_wash()))
         .when(!highlighted && selected, |row| {
-            row.bg(theme.surface_selected)
+            row.bg(theme.selected_wash())
         })
         .when(!highlighted && !selected, |row| row.hover_state(&theme))
     };

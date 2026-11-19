@@ -208,7 +208,7 @@ impl OrbitApp {
             .items_start()
             .gap_2p5()
             .cursor_pointer()
-            .when(selected, |row| row.bg(theme.surface_selected))
+            .when(selected, |row| row.bg(theme.selected_wash()))
             .when(!selected, |row| row.hover_state(&theme))
             .when(!skill.enabled, |row| row.opacity(0.55))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {

@@ -393,7 +393,7 @@ impl Focusable for WorkspacePicker {
 
 impl Render for WorkspacePicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         self.list_max_h = list_max_height(&theme, window.viewport_size().height);
         let this = cx.entity();
 
@@ -459,12 +459,12 @@ impl Render for WorkspacePicker {
                 .flex_none()
                 .cursor_pointer()
                 .pressed_state(&theme, PressedRamp::Wash)
-                .when(highlighted, |row| row.bg(theme.surface_selected))
+                .when(highlighted, |row| row.bg(theme.selected_wash()))
                 // The current folder keeps the `active` fill at rest (the
                 // same "chosen" register the model picker uses); the accent
                 // check alone is never the only signal.
                 .when(!highlighted && is_current, |row| {
-                    row.bg(theme.surface_selected)
+                    row.bg(theme.selected_wash())
                 })
                 .when(!highlighted && !is_current, |row| row.hover_state(&theme))
                 // Pointer movement moves the highlight; a scroll sliding rows
@@ -588,7 +588,7 @@ impl Render for WorkspacePicker {
                             .flex_none()
                             .cursor_pointer()
                             .pressed_state(&theme, PressedRamp::Wash)
-                            .when(highlighted, |row| row.bg(theme.surface_selected))
+                            .when(highlighted, |row| row.bg(theme.selected_wash()))
                             .when(!highlighted, |row| row.hover_state(&theme))
                             .on_mouse_move({
                                 let this = this.clone();
@@ -689,7 +689,7 @@ impl Render for WorkspacePicker {
                             .h(px(row_h(&theme)))
                             .cursor_pointer()
                             .pressed_state(&theme, PressedRamp::Wash)
-                            .when(browse_highlighted, |row| row.bg(theme.surface_selected))
+                            .when(browse_highlighted, |row| row.bg(theme.selected_wash()))
                             .when(!browse_highlighted, |row| row.hover_state(&theme))
                             .on_mouse_move({
                                 let this = this.clone();

@@ -4476,6 +4476,12 @@ enum SettingsSelect {
     RetentionDays,
     /// The active access mode (Settings → Permissions).
     AccessMode,
+    /// The palette used whenever the appearance is dark (Settings → Appearance).
+    DarkTheme,
+    /// The palette used whenever the appearance is light (Settings → Appearance).
+    LightTheme,
+    /// The accent colour (Settings → Appearance).
+    Accent,
 }
 
 // ── feature modules ───────────────────────────────────────────────────────

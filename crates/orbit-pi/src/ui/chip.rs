@@ -387,12 +387,21 @@ impl ChipButton {
             _ if self.disabled => el,
             ChipStyle::Quiet => el
                 .when_open(open, |el| {
-                    el.bg(theme.surface_active).text_color(theme.text_primary)
+                    el.bg(theme.pressed_wash()).text_color(theme.text_primary)
                 })
                 .when_open(marked, |el| {
-                    el.bg(theme.surface_selected).text_color(theme.text_primary)
+                    el.bg(theme.selected_wash()).text_color(theme.text_primary)
                 }),
             ChipStyle::Outlined { inset } => {
+                let face = if open {
+                    theme.surface_active
+                } else if marked {
+                    theme.surface_selected
+                } else if inset {
+                    theme.background
+                } else {
+                    theme.surface_elevated
+                };
                 let el = el
                     .border_1()
                     .border_color(if open || marked || self.applied {
@@ -400,24 +409,14 @@ impl ChipButton {
                     } else {
                         theme.hairline()
                     })
-                    .raised(
-                        if open {
-                            theme.surface_active
-                        } else if marked {
-                            theme.surface_selected
-                        } else if inset {
-                            theme.background
-                        } else {
-                            theme.surface_elevated
-                        },
-                        theme,
-                    );
+                    .raised(face, theme);
                 // A selected choice or a checked toggle holds its fill under
-                // the pointer; everything else takes the shared wash.
+                // the pointer; everything else lifts its own face one step,
+                // which stays opaque over glass.
                 if marked {
                     el
                 } else {
-                    el.hover_state_open(theme, open)
+                    el.hover_face_open(theme, face, open)
                 }
             }
         };
@@ -514,9 +513,9 @@ impl ChipButton {
         let el = self.content(el, theme);
         if quiet && !disabled {
             let hover = if marked {
-                Hover::over(Some(theme.surface_selected), theme.surface_selected)
+                Hover::over(Some(theme.selected_wash()), theme.selected_wash())
             } else {
-                Hover::over(open.then_some(theme.surface_active), theme.hover_wash())
+                Hover::over(open.then_some(theme.pressed_wash()), theme.hover_wash())
             };
             crate::motion::hover(el, name, theme, hover)
         } else {

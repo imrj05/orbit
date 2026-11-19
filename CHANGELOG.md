@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Built-in backgrounds.** Settings → Appearance → Background now offers
+  one-click backgrounds in four rows: Gradients (seven generated gradients),
+  Nature, Anime (original anime-style illustrations) and Japanese art (woodblock
+  prints by Hokusai and Hiroshige). The images ship with the app and are
+  credited in `assets/wallpapers/CREDITS.md` and in each thumbnail's tooltip.
+  They work like a picked image: placement, blur, effects, glass and
+  accent-from-image all apply.
+
 - **Dithered Hero wallpaper preset.** Apply fine dither, no image blur, and a
   bottom fade to your chosen image on the new-task screen. The preset is opt-in
   under Settings → Appearance → Background. The separate **Bottom fade** toggle
@@ -164,6 +172,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reopens docked after it is closed — ⌘J never changes two things at once.
 
 ### Changed
+
+- **Your messages and terminal output on glass.** With a wallpaper and Glass
+  on, the bubble around your own messages is now frosted glass like the tool
+  cards beside it, and a tool card's command and output pane no longer covers
+  the card's frost with a solid block. Thinking cards now use the same frosted
+  card as tool cards, instead of a lighter wash that made the two look like
+  different materials. Without glass, everything looks as it did before.
+
+- **Subtle hover on glass.** Outlined chips (such as the transcript's
+  "1 thought" chip) and Secondary and Outline buttons no longer turn
+  see-through under the pointer over a wallpaper or a frosted menu; their face
+  lifts one subtle step and stays solid.
+
+- **A cleaner Theme section.** Light / Dark / System is now a small segmented
+  control, and the dark theme, light theme and accent are compact dropdowns.
+  Each theme option shows a small swatch of that theme in your accent, and each
+  accent option a dot of its colour. The large picture cards and thumbnail
+  galleries are gone.
+
+- **Selected and hovered rows on glass.** Over a wallpaper, and inside frosted
+  menus, pickers, popovers and dialogs in dark palettes, the open row, the
+  chosen option, an open chip or icon button and the active tab now use a
+  translucent wash instead of an opaque block, so the glass shows through the
+  state. Info, success and warning banners and Usage's loading bars are
+  translucent on glass pages too. Opaque surfaces look exactly as before.
 
 - **One component layer for the whole app.** Every button, chip, banner, field,
   menu, popover, modal, row, table, tree, tab strip, diff line, status bar and

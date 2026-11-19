@@ -295,6 +295,7 @@ pub fn compact_card(
     session: Option<&SessionUsage>,
     theme: Theme,
 ) -> impl IntoElement {
+    let theme = theme.for_floating();
     let (title, subtitle) = match usage {
         Some(usage) => {
             let title = format_percent(usage)
@@ -377,6 +378,7 @@ pub fn details_card(
     on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_outside: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let theme = theme.for_floating();
     let percent = usage.and_then(format_percent);
     let totals = usage.map(|u| match u.tokens {
         Some(used) => tr!(

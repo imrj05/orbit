@@ -420,7 +420,7 @@ impl RowState {
     /// the quieter `overlay` for the keyboard cursor, nothing otherwise.
     pub(crate) fn rest_fill(self, theme: &Theme) -> Option<gpui::Hsla> {
         match self {
-            Self::Selected => Some(theme.surface_selected),
+            Self::Selected => Some(theme.selected_wash()),
             Self::Cursor => Some(theme.overlay),
             Self::Rest => None,
         }
@@ -593,8 +593,8 @@ pub(crate) fn nav_row<E: Styled>(el: E, theme: &Theme, height: NavRowHeight, cur
 /// every other row fades the wash in.
 pub(crate) fn nav_row_fill(theme: &Theme, selected: bool, cursor: bool) -> crate::motion::Hover {
     if selected {
-        crate::motion::Hover::over(Some(theme.surface_selected), theme.surface_selected)
+        crate::motion::Hover::over(Some(theme.selected_wash()), theme.selected_wash())
     } else {
-        crate::motion::Hover::over(cursor.then_some(theme.surface_hover), theme.surface_hover)
+        crate::motion::Hover::over(cursor.then_some(theme.hover_wash()), theme.hover_wash())
     }
 }

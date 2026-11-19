@@ -2230,7 +2230,7 @@ impl OrbitApp {
         if !self.access_menu_open {
             return None;
         }
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.weak_entity();
         let mut list = div().w_full().flex().flex_col();
         for (ix, mode) in AccessMode::ALL.iter().enumerate() {
@@ -2244,7 +2244,7 @@ impl OrbitApp {
                 picker_entry(entry, &theme)
                     .cursor_pointer()
                     .when(selected || highlighted, |row| {
-                        row.bg(theme.surface_selected)
+                        row.bg(theme.selected_wash())
                     })
                     .when(!selected && !highlighted, |row| row.hover_state(&theme))
                     .on_hover(move |hovered, _, cx| {
@@ -2338,7 +2338,7 @@ impl OrbitApp {
         if !self.workflow_menu_open {
             return None;
         }
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.weak_entity();
         let mut list = div().w_full().flex().flex_col();
         for (ix, mode) in WorkflowMode::ALL.iter().enumerate() {
@@ -2351,7 +2351,7 @@ impl OrbitApp {
                 picker_entry(entry, &theme)
                     .cursor_pointer()
                     .when(selected || highlighted, |row| {
-                        row.bg(theme.surface_selected)
+                        row.bg(theme.selected_wash())
                     })
                     .when(!selected && !highlighted, |row| row.hover_state(&theme))
                     .on_hover(move |hovered, _, cx| {
@@ -2468,7 +2468,7 @@ impl OrbitApp {
         if !self.add_menu_open {
             return None;
         }
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.weak_entity();
         let mut list = div().w_full().flex().flex_col();
         for (ix, (icon_path, label, hint)) in ADD_MENU_ITEMS.iter().enumerate() {
@@ -2480,7 +2480,7 @@ impl OrbitApp {
                     .h(picker::entry_height(&theme))
                     .flex_none()
                     .cursor_pointer()
-                    .when(highlighted, |row| row.bg(theme.surface_selected))
+                    .when(highlighted, |row| row.bg(theme.selected_wash()))
                     .hover_state(&theme)
                     .on_hover(move |hovered, _, cx| {
                         if *hovered {
@@ -2900,7 +2900,7 @@ impl OrbitApp {
             .max_w_full()
             .overflow_hidden()
             .text_color(theme.text_primary)
-            .when(picker_open, |row| row.bg(theme.surface_active))
+            .when(picker_open, |row| row.bg(theme.pressed_wash()))
             .when(!picker_open, |row| row.hover_quiet(&theme))
             .cursor_pointer()
             .pressed_state(
@@ -3597,7 +3597,7 @@ impl OrbitApp {
                                 .text_size(TextSize::Small.px(&theme))
                                 .when(!pending, |chip| chip.cursor_pointer())
                                 .when(open, |chip| {
-                                    chip.bg(theme.surface_active).text_color(theme.text_primary)
+                                    chip.bg(theme.pressed_wash()).text_color(theme.text_primary)
                                 })
                                 .when(!open && !pending, |chip| chip.hover_quiet(&theme))
                                 .when(pending, |chip| chip.opacity(0.6))
@@ -4903,7 +4903,7 @@ impl OrbitApp {
                 } else {
                     gpui::transparent_black()
                 })
-                .when(row_highlighted, |row| row.bg(theme.surface_selected))
+                .when(row_highlighted, |row| row.bg(theme.selected_wash()))
                 .when(!submitted, |row| row.cursor_pointer())
                 .flex()
                 .items_center()
@@ -4940,7 +4940,7 @@ impl OrbitApp {
                 } else {
                     gpui::transparent_black()
                 })
-                .when(row_highlighted, |row| row.bg(theme.surface_selected))
+                .when(row_highlighted, |row| row.bg(theme.selected_wash()))
                 .when(!submitted, |row| row.cursor_pointer())
                 .flex()
                 .items_center()

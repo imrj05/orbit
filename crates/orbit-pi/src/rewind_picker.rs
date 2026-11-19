@@ -274,7 +274,7 @@ impl RewindPicker {
         .flex_none()
         .cursor_pointer()
         .pressed_state(&theme, PressedRamp::Wash)
-        .when(highlighted, |row| row.bg(theme.surface_selected))
+        .when(highlighted, |row| row.bg(theme.selected_wash()))
         .when(!highlighted, |row| row.hover_state(&theme))
         // Pointer movement moves the highlight; a scroll sliding a row under a
         // stationary pointer must not hijack ↑/↓ navigation.
@@ -332,7 +332,7 @@ impl Focusable for RewindPicker {
 
 impl Render for RewindPicker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.entity();
         let rows = self.filtered(&self.last_filter);
 
