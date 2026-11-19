@@ -34,7 +34,7 @@ every declared pixel change).
 | Empty / error / spinner / refresh | `ui/feedback.rs` | ✅ owner (+ action slot) |
 | Progress bar | `ui/feedback.rs` `progress_bar` | ✅ 3 meters |
 | Skeleton | `ui/feedback.rs` `skeleton_bar` | ✅ Usage (the only loading shape) |
-| Toast card | `ui/toast.rs` `ToastCard`, `kind_glyph` | ✅ ordinary toasts; plugin-update prompt card still local |
+| Toast card | `ui/toast.rs` `ToastCard`, `kind_glyph` | ✅ ordinary toasts + the plugin-update prompt (`on_close`: persistent, only × closes; `count`, `content` from `update_row` / `separator`, `actions`) |
 | Menu cursor | `ui/menu.rs` `MenuState`, `MenuCursor` (hidden until a key, ignored by `==`), `MenuKey` | ✅ 9 menus: add, access, workflow, Work in, extension select, Explorer row menu, transcript text menu, sidebar session + workspace menus (Shift-F10 / Menu key open the row menus) |
 | Menu frame + hint | `ui/menu.rs` `context_menu_*`, `menu_hint` | ✅ |
 | Popover shell + dismissal | `ui/popover.rs` `popover_list`, `popover_picker`, `dismiss_on_outside`, `DismissGuard` | ✅ `on_mouse_down_out` only in `ui/` |

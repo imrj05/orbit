@@ -1,8 +1,9 @@
 use super::*;
-use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{toast as toast_tokens, IconSize, Motion};
 use crate::toast::{Toast, ToastKind};
+use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::prelude::*;
+use crate::ui::toast as toast_card;
 
 fn short_revision(revision: &str) -> &str {
     if revision.len() > 12 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -153,171 +154,64 @@ impl OrbitApp {
         reduce_motion: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let title = tr!("updater_ui.update_available");
-        let mut package_rows: Vec<AnyElement> = Vec::new();
+        let mut rows: Vec<AnyElement> = Vec::new();
         for (index, update) in updates.iter().take(3).enumerate() {
             if index > 0 {
-                package_rows.push(
-                    div()
-                        .w_full()
-                        .h(toast_tokens::separator_size())
-                        .bg(theme.hairline())
-                        .into_any_element(),
-                );
+                rows.push(toast_card::separator(&theme).into_any_element());
             }
-            package_rows.push(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .py(toast_tokens::package_row_padding_y(&theme))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(toast_tokens::package_row_gap(&theme))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(toast_tokens::BODY.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(update.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(toast_tokens::version_gap(&theme))
-                            .child(
-                                div()
-                                    .font_family(theme::code_font_family())
-                                    .text_size(toast_tokens::version_text_size(&theme))
-                                    .text_color(theme.text_muted)
-                                    .child(short_revision(&update.current).to_string()),
-                            )
-                            .child(icon(
-                                "icons/arrow-right.svg",
-                                IconSize::XSmall.px(&theme),
-                                theme.text_muted,
-                            ))
-                            .child(
-                                div()
-                                    .font_family(theme::code_font_family())
-                                    .text_size(toast_tokens::version_text_size(&theme))
-                                    .text_color(theme.text_primary)
-                                    .child(short_revision(&update.latest).to_string()),
-                            ),
-                    )
-                    .into_any_element(),
-            );
+            rows.push(toast_card::update_row(
+                update.name.clone(),
+                short_revision(&update.current).to_string(),
+                short_revision(&update.latest).to_string(),
+                &theme,
+            ));
         }
 
-        let close_button = crate::ui::button::IconButton::new("plugin-update-close", "icons/x.svg")
-            .size(toast_tokens::CLOSE_BUTTON)
-            .on_mouse_up(
-                &theme,
-                cx.listener(|this, _, _, cx| this.skip_plugin_updates(cx)),
-            );
-
         let this = cx.entity();
-        let skip_button = Button::keyed(ElementId::Name("plugin-update-skip".into()), ButtonVariant::Ghost)
-            .size(toast_tokens::ACTION_BUTTON)
-            .label(tr!("git_panel.recover_skip"))
-            .on_mouse_up(&theme, move |_, _, cx| {
+        let skip_button = Button::keyed(
+            ElementId::Name("plugin-update-skip".into()),
+            ButtonVariant::Ghost,
+        )
+        .size(toast_tokens::ACTION_BUTTON)
+        .label(tr!("git_panel.recover_skip"))
+        .on_mouse_up(&theme, move |_, _, cx| {
             this.update(cx, |app, cx| app.skip_plugin_updates(cx));
         });
 
         let this = cx.entity();
-        let update_button = Button::keyed(ElementId::Name("plugin-update-now".into()), ButtonVariant::Primary)
-            .size(toast_tokens::ACTION_BUTTON)
-            .leading(icon("icons/refresh.svg", IconSize::XSmall.px(&theme), theme.action_fg))
-            .label(tr!("updater_ui.update_now"))
-            .on_mouse_up(&theme, move |_, _, cx| {
+        let update_button = Button::keyed(
+            ElementId::Name("plugin-update-now".into()),
+            ButtonVariant::Primary,
+        )
+        .size(toast_tokens::ACTION_BUTTON)
+        .leading(icon(
+            "icons/refresh.svg",
+            IconSize::XSmall.px(&theme),
+            theme.action_fg,
+        ))
+        .label(tr!("updater_ui.update_now"))
+        .on_mouse_up(&theme, move |_, _, cx| {
             this.update(cx, |app, cx| app.apply_plugin_updates(cx));
         });
 
-        let card = toast_tokens::surface(
-            div()
-                .id(ElementId::Name("plugin-update-toast".into()))
-                .debug_selector(|| "plugin-update-toast".to_string()),
+        let card = toast_card::ToastCard::new(
+            ElementId::Name("plugin-update-toast".into()),
+            ToastKind::Info,
+            tr!("updater_ui.update_available"),
+        )
+        .glyph("icons/extensions.svg", theme.accent_text)
+        .count(updates.len())
+        .content(rows)
+        .actions([
+            skip_button.into_any_element(),
+            update_button.into_any_element(),
+        ])
+        .on_close(
             &theme,
+            "plugin-update-close",
+            cx.listener(|this, _, _, cx| this.skip_plugin_updates(cx)),
         )
-        .w(toast_tokens::WIDTH)
-        .p(toast_tokens::padding(&theme))
-        .flex()
-        .items_start()
-        .gap(toast_tokens::content_gap(&theme))
-        .child(
-            // Inline with the title row, as on every toast card.
-            div()
-                .flex_none()
-                .h(toast_tokens::CLOSE_BUTTON.height(&theme))
-                .flex()
-                .items_center()
-                .child(icon(
-                    "icons/extensions.svg",
-                    toast_tokens::ICON.px(&theme),
-                    theme.accent_text,
-                )),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(toast_tokens::content_gap(&theme))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(toast_tokens::header_gap(&theme))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(toast_tokens::TITLE.px(&theme))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_primary)
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .min_w(toast_tokens::badge_min_width(&theme))
-                                .h(toast_tokens::badge_height(&theme))
-                                .px(toast_tokens::badge_padding_x(&theme))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(toast_tokens::BADGE_RADIUS.px(&theme))
-                                .bg(theme.overlay)
-                                .text_size(toast_tokens::BODY.px(&theme))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_secondary)
-                                .child(updates.len().to_string()),
-                        )
-                        .child(close_button),
-                )
-                .child(div().w_full().flex().flex_col().children(package_rows))
-                .child(
-                    div()
-                        .w_full()
-                        .h(toast_tokens::separator_size())
-                        .bg(theme.hairline()),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(toast_tokens::action_gap(&theme))
-                        .child(skip_button)
-                        .child(update_button),
-                ),
-        );
+        .debug_selector(|| "plugin-update-toast".to_string());
 
         if reduce_motion {
             card.into_any_element()
@@ -343,7 +237,7 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let id = toast.id;
-        let card = crate::ui::toast::ToastCard::new(
+        let card = toast_card::ToastCard::new(
             ElementId::Name(format!("toast-{id}-{}", toast.revision).into()),
             toast.kind,
             toast.title.clone(),
