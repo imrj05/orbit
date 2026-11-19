@@ -78,22 +78,44 @@ fn probe_host(host: &RemoteHost) -> RemoteHost {
     }
 }
 
+/// What saving the clone's host entry has to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloneEntry {
+    /// No entry for this server and folder yet: add one.
+    New,
+    /// An entry exists but was not linked to the local project: link it.
+    Linked,
+    /// An entry exists and already says which local folder it is.
+    Unchanged,
+}
+
 /// The host entry saved for the new folder: the server's connection details
-/// with the clone as its folder, under a name no other entry has. A saved
-/// entry for the same server and folder is reused as it is.
+/// with the clone as its folder, under a name no other entry has, linked to
+/// `local` (the project on this Mac) so its sessions list in that project's
+/// sidebar group. A saved entry for the same server and folder is reused; it
+/// only gains the link when it had none.
 pub(crate) fn host_for_clone(
     server: &RemoteHost,
     project: &str,
     dir: &str,
+    local: &Path,
     saved: &[RemoteHost],
-) -> (RemoteHost, bool) {
+) -> (RemoteHost, CloneEntry) {
+    let local_dir = Some(local.to_string_lossy().into_owned());
     if let Some(existing) = saved.iter().find(|host| {
         host.ssh == server.ssh
             && host.user == server.user
             && host.port == server.port
             && host.dir == dir
     }) {
-        return (existing.clone(), false);
+        if existing.local_path().is_some() {
+            return (existing.clone(), CloneEntry::Unchanged);
+        }
+        let linked = RemoteHost {
+            local_dir,
+            ..existing.clone()
+        };
+        return (linked, CloneEntry::Linked);
     }
     let base = tr!(
         "server_clone.host_name",
@@ -114,9 +136,10 @@ pub(crate) fn host_for_clone(
             name,
             dir: dir.to_string(),
             enabled: true,
+            local_dir,
             ..server.clone()
         },
-        true,
+        CloneEntry::New,
     )
 }
 
@@ -431,9 +454,19 @@ impl OrbitApp {
         self.server_clone = None;
         let dir = server_clone::session_dir(&clone_path, &source.subdir);
         let (saved, _) = remote_hosts::load();
-        let (host, is_new) = host_for_clone(&server, &source.name, &dir, &saved);
-        if is_new {
-            match remote_hosts::upsert(None, &host) {
+        let local = if source.subdir.is_empty() {
+            source.root.clone()
+        } else {
+            source.root.join(&source.subdir)
+        };
+        let (host, entry) = host_for_clone(&server, &source.name, &dir, &local, &saved);
+        let original = match entry {
+            CloneEntry::New => Some(None),
+            CloneEntry::Linked => Some(Some(host.name.clone())),
+            CloneEntry::Unchanged => None,
+        };
+        if let Some(original) = original {
+            match remote_hosts::upsert(original.as_deref(), &host) {
                 Ok(()) => self.reload_remote_hosts(),
                 Err(err) => {
                     self.toast_error(tr!("server_clone.save_failed", error = format!("{err:#}")))

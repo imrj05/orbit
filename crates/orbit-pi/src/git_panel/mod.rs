@@ -49,6 +49,7 @@ use crate::theme::tokens::{
 use crate::theme::{self, Theme, ThemeMode};
 use crate::ui::banner::{Banner, BannerTone};
 use crate::ui::button::IconButton;
+use crate::ui::feedback::{empty_state_with_action, EmptyFill};
 use crate::ui::field::TextField;
 use crate::ui::popover::{dropdown_above, dropdown_below, DropdownAlign};
 use crate::ui::popover::{popover_list, popover_picker, PopoverExt};
@@ -59,6 +60,7 @@ use crate::ui::prelude::{
 };
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::row::{list_row, RowState};
+use crate::ui::prelude::TipExt;
 use crate::ui::tooltip::Tooltip;
 
 mod failure;
@@ -114,6 +116,15 @@ const COMMIT_MODEL_LIST_MAX_H: f32 = 300.;
 
 /// Width of the "…" action dropdowns (branch actions, file actions).
 const ACTION_MENU_W: f32 = 220.;
+
+/// GitHub's answer for one opened commit. `Loading` carries the previous
+/// answer, if any, so a re-open keeps it on screen instead of blanking.
+#[derive(Debug, Clone)]
+enum CommitGithubState {
+    Loading(Option<gh::CommitGithub>),
+    Ready(gh::CommitGithub),
+    Failed(String),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GitTab {
@@ -253,6 +264,11 @@ pub struct GitPanel {
     unstaged: Vec<StatusRow>,
     changes_loading: bool,
     changes_error: Option<String>,
+    /// The workspace is not inside a Git work tree: the page shows the
+    /// Initialize state instead of the tabs' (empty) contents.
+    not_a_repo: bool,
+    /// `git init` is running for the workspace.
+    init_busy: bool,
     /// The last operation failure, painted as a persistent banner above the
     /// tab body. Cleared by a later success or the dismiss button.
     failure: Option<ActionError>,
@@ -275,6 +291,10 @@ pub struct GitPanel {
     /// The expanded commit's detail (message body + changed files).
     commit_detail: Option<git::CommitDetail>,
     commit_detail_loading: bool,
+    /// GitHub's facts about opened commits (pull requests, CI checks), by
+    /// hash. Re-asked on every open so checks stay current; the last answer
+    /// keeps painting while the new one is in flight.
+    commit_github: HashMap<String, CommitGithubState>,
     /// The commit row currently expanded, if any.
     selected_commit: Option<String>,
     /// Focus for the History / Issues / Pull requests list (`GitList`).
@@ -605,6 +625,8 @@ impl GitPanel {
             unstaged: Vec::new(),
             changes_loading: false,
             changes_error: None,
+            not_a_repo: false,
+            init_busy: false,
             failure: None,
             pending_discard: None,
             git_operation: None,
@@ -615,6 +637,7 @@ impl GitPanel {
             history_error: None,
             commit_detail: None,
             commit_detail_loading: false,
+            commit_github: HashMap::new(),
             selected_commit: None,
             list_focus: cx.focus_handle().tab_stop(true),
             list_cursor: None,
@@ -799,6 +822,8 @@ impl GitPanel {
     ) {
         if workspace != self.workspace {
             self.workspace = workspace;
+            self.not_a_repo = false;
+            self.init_busy = false;
             self.commit_model_menu_open = false;
             // The embedded review browser follows the workspace too, so its
             // diff reloads for the new repository.
@@ -817,6 +842,7 @@ impl GitPanel {
             self.status = None;
             self.selected_commit = None;
             self.commit_detail = None;
+            self.commit_github.clear();
             self.history_filter = git::HistoryFilter::default();
             self.file_menu = None;
             self.issues.clear();
@@ -1187,18 +1213,28 @@ impl GitPanel {
         self.spawn_data(
             cx,
             move || {
+                if !git::is_repo(&cwd) {
+                    return Ok(None);
+                }
                 let rows = git::status_rows(&cwd)?;
                 let operation = git_ops::operation_state(&cwd);
                 let conflicts = match operation {
                     Some(_) => git_ops::conflicted_files(&cwd),
                     None => Vec::new(),
                 };
-                Ok((rows, operation, conflicts))
+                Ok(Some((rows, operation, conflicts)))
             },
             |panel, result, cx| {
                 panel.changes_loading = false;
+                panel.not_a_repo = matches!(result, Ok(None));
                 match result {
-                    Ok((rows, operation, conflicts)) => {
+                    Ok(None) => {
+                        panel.staged.clear();
+                        panel.unstaged.clear();
+                        panel.git_operation = None;
+                        panel.conflicts.clear();
+                    }
+                    Ok(Some((rows, operation, conflicts))) => {
                         let staged: Vec<StatusRow> =
                             rows.iter().filter(|row| row.staged()).cloned().collect();
                         let unstaged: Vec<StatusRow> =
@@ -2607,6 +2643,7 @@ impl GitPanel {
         self.file_menu = None;
         cx.notify();
         let Some(cwd) = self.cwd() else { return };
+        self.load_commit_github(hash.clone(), cwd.clone(), cx);
         self.spawn_data(
             cx,
             move || git::commit_detail(&cwd, &hash),
@@ -2619,6 +2656,52 @@ impl GitPanel {
                 cx.notify();
             },
         );
+    }
+
+    /// Ask GitHub which pull requests carry `hash` and how its checks went.
+    /// Only for a GitHub remote with a signed-in `gh`; anywhere else the card
+    /// simply has no GitHub section, rather than a section that cannot load.
+    fn load_commit_github(&mut self, hash: String, cwd: PathBuf, cx: &mut Context<Self>) {
+        if !self.gh_installed || !self.gh_authenticated {
+            return;
+        }
+        let Some(remote) = self
+            .remote_web
+            .as_ref()
+            .filter(|remote| remote.forge == git::Forge::Github)
+        else {
+            return;
+        };
+        let (owner, name) = (remote.owner.clone(), remote.name.clone());
+        let previous = match self.commit_github.remove(&hash) {
+            Some(CommitGithubState::Ready(info) | CommitGithubState::Loading(Some(info))) => {
+                Some(info)
+            }
+            _ => None,
+        };
+        self.commit_github
+            .insert(hash.clone(), CommitGithubState::Loading(previous));
+        self.spawn_data(
+            cx,
+            {
+                let hash = hash.clone();
+                move || gh::commit_github(&cwd, &owner, &name, &hash)
+            },
+            move |panel, result, cx| {
+                let state = match result {
+                    Ok(info) => CommitGithubState::Ready(info),
+                    Err(err) => CommitGithubState::Failed(err),
+                };
+                panel.commit_github.insert(hash, state);
+                cx.notify();
+            },
+        );
+    }
+
+    /// Open one of a commit's pull requests on the Pull requests tab.
+    fn open_commit_pull(&mut self, number: u64, cx: &mut Context<Self>) {
+        self.set_tab(5, cx);
+        self.open_pull(number, cx);
     }
 
     /// Filter History to one path. `follow` tracks renames — that is the
@@ -2779,6 +2862,58 @@ impl GitPanel {
             move || git::discard_unstaged(&cwd),
             |panel, result, cx| panel.after_git(result, &tr!("git_panel.discarded_changes"), cx),
         );
+    }
+
+    /// Initialize Git in the workspace, then load the page as a repository.
+    fn init_repository(&mut self, cx: &mut Context<Self>) {
+        let Some(cwd) = self.cwd() else { return };
+        if self.init_busy {
+            return;
+        }
+        self.init_busy = true;
+        cx.notify();
+        self.spawn_data(
+            cx,
+            move || git::init_repository(&cwd),
+            |panel, result, cx| {
+                panel.init_busy = false;
+                if result.is_ok() {
+                    panel.not_a_repo = false;
+                }
+                panel.after_git(result, &tr!("git_panel.repo_initialized"), cx);
+            },
+        );
+    }
+
+    /// The page body outside a repository: what is wrong and the one action
+    /// that fixes it.
+    fn not_a_repo_state(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let folder = self
+            .cwd()
+            .map(|cwd| cwd.display().to_string())
+            .unwrap_or_default();
+        let detail = tr!("git_panel.not_a_repo_detail", folder = folder);
+        let init = Button::new("git-init-repository", ButtonVariant::Primary)
+            .label(if self.init_busy {
+                tr!("git_panel.initializing")
+            } else {
+                tr!("git_panel.init_repo")
+            })
+            .icon("icons/git-commit.svg")
+            .disabled(self.init_busy)
+            .on_click(
+                &theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.init_repository(cx)),
+            )
+            .into_any_element();
+        empty_state_with_action(
+            theme,
+            "icons/sidebar-git.svg",
+            &tr!("git_panel.fail_not_a_repo"),
+            Some(&detail),
+            EmptyFill::Grow,
+            Some(init),
+        )
     }
 
     fn after_git(&mut self, result: Result<(), String>, success: &str, cx: &mut Context<Self>) {
@@ -4934,7 +5069,7 @@ impl GitPanel {
                         entity.update(cx, |panel, cx| panel.filter_history_author(author, cx));
                     }
                 };
-                entry = entry.child(commit_row(
+                let row = commit_row(
                     commit,
                     url.as_deref(),
                     selected,
@@ -4945,34 +5080,20 @@ impl GitPanel {
                         move |this, _: &ClickEvent, _, cx| this.toggle_commit(hash.clone(), cx)
                     }),
                     on_author,
-                ));
-                if selected {
-                    match self
-                        .commit_detail
-                        .as_ref()
-                        .filter(|detail| detail.hash == commit.hash)
-                    {
-                        Some(detail) => {
-                            entry = entry.child(self.commit_detail_body(
-                                detail,
-                                url.as_deref(),
-                                theme,
-                                cx,
-                            ));
-                        }
-                        None => {
-                            entry = entry.child(detail_note(
-                                theme,
-                                &tr!(if self.commit_detail_loading {
-                                    "git_panel.reading_commit"
-                                } else {
-                                    "git_panel.commit_unavailable"
-                                }),
-                            ));
-                        }
-                    }
-                }
-                if ix + 1 < total {
+                );
+                entry = entry.child(if selected {
+                    let details = self.open_commit_details(&commit.hash, url.as_deref(), theme, cx);
+                    commit_card(row, details, theme)
+                } else {
+                    row
+                });
+                // The open card carries its own outline; a rule against it
+                // would draw a second edge.
+                let next_open = self
+                    .history
+                    .get(ix + 1)
+                    .is_some_and(|next| self.selected_commit.as_deref() == Some(next.hash.as_str()));
+                if ix + 1 < total && !selected && !next_open {
                     entry = entry.child(commit_separator(theme));
                 }
                 list = list.child(entry);
@@ -5064,6 +5185,28 @@ impl GitPanel {
 
     /// The expanded commit: full message, committer facts, and changed files
     /// with per-file actions.
+    /// The open card's lower half for `hash`: its details, or a one-line
+    /// note while they load or when they could not be read.
+    fn open_commit_details(
+        &self,
+        hash: &str,
+        url: Option<&str>,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        match self.commit_detail.as_ref().filter(|detail| detail.hash == hash) {
+            Some(detail) => self.commit_detail_body(detail, url, theme, cx),
+            None => detail_pending(
+                theme,
+                &tr!(if self.commit_detail_loading {
+                    "git_panel.reading_commit"
+                } else {
+                    "git_panel.commit_unavailable"
+                }),
+            ),
+        }
+    }
+
     fn commit_detail_body(
         &self,
         detail: &git::CommitDetail,
@@ -5073,45 +5216,70 @@ impl GitPanel {
     ) -> AnyElement {
         let nerd = nerd_font_family(cx);
         let dark = theme.mode == ThemeMode::Dark;
+        // The card's lower half: the message, a column of labeled facts,
+        // GitHub's pull requests and checks, then the files. Sections are
+        // separated by hairlines, not nested boxes.
+        // Inset to the row's own padding so labels start under the row's
+        // leading mark; the hairline above separates it from the row.
         let mut column = div()
-            .mx(DynamicSpacing::Base12.px(&theme))
-            .mb(DynamicSpacing::Base06.px(&theme))
-            .px(DynamicSpacing::Base12.px(&theme))
-            .py(DynamicSpacing::Base08.px(&theme))
-            .rounded(panel::RADIUS.px(&theme))
-            .border_1()
+            .debug_selector(|| "git-commit-detail".into())
+            .border_t_1()
             .border_color(theme.hairline())
-            .bg(theme.page_fill(theme.surface_elevated))
+            .px(DynamicSpacing::Base08.px(&theme))
+            .pt(DynamicSpacing::Base08.px(&theme))
+            .pb(DynamicSpacing::Base12.px(&theme))
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme));
         if !detail.body.is_empty() {
-            column = column.child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .line_height(theme.ui_px(18.))
-                    .text_color(theme.text_secondary)
-                    .whitespace_normal()
-                    .child(detail.body.clone()),
-            );
+            column = column
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .line_height(theme.ui_px(18.))
+                        .text_color(theme.text_secondary)
+                        .whitespace_normal()
+                        .child(detail.body.clone()),
+                )
+                .child(detail_rule(theme));
         }
-        let hash = detail.short.clone();
-        let mut meta = div()
+
+        // ── facts ──
+        let mut facts = div().flex().flex_col().gap(DynamicSpacing::Base02.px(&theme));
+        facts = facts.child(detail_fact(
+            &tr!("git_panel.detail_author"),
+            person_line(&detail.author, &detail.author_email, &detail.author_date, theme),
+            theme,
+        ));
+        if detail.committer != detail.author {
+            facts = facts.child(detail_fact(
+                &tr!("git_panel.detail_committer"),
+                person_line(&detail.committer, "", &detail.committer_date, theme),
+                theme,
+            ));
+        }
+        let hash = detail.hash.clone();
+        let mut commit_line = div()
             .flex()
             .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .text_size(TextSize::Small.px(&theme))
-            .text_color(theme.text_muted)
-            .child(format!("{} \u{b7} {}", detail.author, detail.author_date))
-            .when(detail.committer != detail.author, |row| {
-                row.child(format!(
-                    "committed by {} \u{b7} {}",
-                    detail.committer, detail.committer_date
-                ))
-            })
-            .child(div().flex_1());
+            .gap(DynamicSpacing::Base04.px(&theme))
+            .child(
+                div()
+                    .font_family(crate::theme::code_font_family())
+                    .text_color(theme.text_secondary)
+                    .child(detail.short.clone()),
+            )
+            .child(row_button(
+                "git-detail-copy-hash",
+                "icons/copy.svg",
+                "git_panel.tip_copy_hash",
+                theme,
+                move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(hash.clone()))
+                },
+            ));
         if let Some(url) = url.map(str::to_string) {
-            meta = meta.child(row_button(
+            commit_line = commit_line.child(row_button(
                 "git-detail-open",
                 "icons/arrow-up-right.svg",
                 "git_panel.open_on_github",
@@ -5119,16 +5287,62 @@ impl GitPanel {
                 move |_, _, cx| cx.open_url(&url),
             ));
         }
-        meta = meta.child(row_button(
-            "git-detail-copy-hash",
-            "icons/copy.svg",
-            "git_panel.tip_copy_hash",
-            theme,
-            move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(hash.clone())),
-        ));
-        column = column.child(meta);
+        facts = facts.child(detail_fact(&tr!("git_panel.detail_commit"), commit_line, theme));
+        if !detail.parents.is_empty() {
+            facts = facts.child(detail_fact(
+                &tr!("git_panel.detail_parents"),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .font_family(crate::theme::code_font_family())
+                    .text_color(theme.text_muted)
+                    .children(
+                        detail
+                            .parents
+                            .iter()
+                            .map(|parent| parent.chars().take(7).collect::<String>()),
+                    ),
+                theme,
+            ));
+        }
+        column = column.child(facts);
+
+        // ── GitHub: pull requests and checks ──
+        if let Some(state) = self.commit_github.get(&detail.hash) {
+            column = column
+                .child(detail_rule(theme))
+                .child(self.commit_github_section(state, theme, cx));
+        }
+
+        // ── files ──
+        let (additions, deletions) = detail
+            .files
+            .iter()
+            .fold((0, 0), |(a, d), file| (a + file.additions, d + file.deletions));
+        column = column.child(detail_rule(theme)).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_secondary)
+                        .child(tr!("git_panel.files_changed")),
+                )
+                .child(
+                    div()
+                        .text_color(theme.text_muted)
+                        .child(tr!("git_panel.files_count", count = detail.files.len())),
+                )
+                .child(div().flex_1())
+                .child(delta_stats(additions, deletions, theme)),
+        );
 
         let glyph_size = IconSize::XSmall.px(&theme);
+        let mut files = div().flex().flex_col();
         for file in detail.files.iter().take(MAX_FILE_ROWS) {
             let path = file.path.clone();
             let fallback = icon("icons/file.svg", glyph_size, theme.text_muted).into_any_element();
@@ -5136,7 +5350,7 @@ impl GitPanel {
                 crate::ui::prelude::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
             let color = status_color(file.status, theme);
             let hash = detail.hash.clone();
-            column = column.child(
+            files = files.child(
                 div()
                     .flex()
                     .items_center()
@@ -5170,6 +5384,7 @@ impl GitPanel {
                     )),
             );
         }
+        column = column.child(files);
         if detail.files.len() > MAX_FILE_ROWS {
             column = column.child(detail_note(
                 theme,
@@ -5180,6 +5395,217 @@ impl GitPanel {
             ));
         }
         column.into_any_element()
+    }
+
+    /// The commit card's GitHub rows: each pull request the commit belongs
+    /// to (who opened it, who merged it), then the CI checks — a one-line
+    /// tally, with only the checks that need a look listed under it.
+    fn commit_github_section(
+        &self,
+        state: &CommitGithubState,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let info = match state {
+            CommitGithubState::Ready(info) | CommitGithubState::Loading(Some(info)) => info,
+            CommitGithubState::Loading(None) => {
+                return detail_fact(
+                    &tr!("git_panel.detail_github"),
+                    div()
+                        .text_color(theme.text_muted)
+                        .child(tr!("git_panel.detail_github_loading")),
+                    theme,
+                );
+            }
+            CommitGithubState::Failed(err) => {
+                return detail_fact(
+                    &tr!("git_panel.detail_github"),
+                    div()
+                        .id("git-detail-github-error")
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.text_muted)
+                        .tip(err.clone())
+                        .child(tr!("git_panel.detail_github_failed")),
+                    theme,
+                );
+            }
+        };
+        let mut section = div().flex().flex_col().gap(DynamicSpacing::Base02.px(&theme));
+
+        // Pull requests.
+        if info.pulls.is_empty() {
+            section = section.child(detail_fact(
+                &tr!("git_panel.pull_request_kind"),
+                div()
+                    .text_color(theme.text_muted)
+                    .child(tr!("git_panel.detail_no_pull")),
+                theme,
+            ));
+        }
+        for (ix, pull) in info.pulls.iter().enumerate() {
+            let (label, color, glyph) = commit_pull_state(pull, theme);
+            let number = pull.number;
+            let title = if pull.title.is_empty() {
+                format!("#{number}")
+            } else {
+                format!("#{number} {}", pull.title)
+            };
+            let mut people = Vec::new();
+            if let Some(author) = &pull.author {
+                people.push(tr!("git_panel.detail_opened_by", login = author));
+            }
+            if let Some(merger) = &pull.merged_by {
+                people.push(tr!("git_panel.detail_merged_by", login = merger));
+            }
+            let mut line = div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(state_chip(&label, color, Some(glyph), theme))
+                .child(
+                    crate::ui::button::LinkButton::new(
+                        gpui::ElementId::NamedInteger("git-detail-pr".into(), number),
+                        title,
+                    )
+                    .grow()
+                    .on_click(&theme, cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.open_commit_pull(number, cx)
+                    })),
+                )
+                .when(!people.is_empty(), |line| {
+                    line.child(
+                        div()
+                            .flex_none()
+                            .text_color(theme.text_muted)
+                            .child(people.join(" \u{b7} ")),
+                    )
+                });
+            if !pull.url.is_empty() {
+                let url = pull.url.clone();
+                line = line.child(row_button(
+                    format!("git-detail-pr-web-{number}"),
+                    "icons/arrow-up-right.svg",
+                    "git_panel.open_on_github",
+                    theme,
+                    move |_, _, cx| cx.open_url(&url),
+                ));
+            }
+            let label = if ix == 0 {
+                tr!("git_panel.pull_request_kind")
+            } else {
+                String::new()
+            };
+            section = section.child(detail_fact(&label, line, theme));
+        }
+
+        // Checks.
+        let tally = check_tally(&info.checks);
+        let summary = match gh::checks_rollup(&info.checks) {
+            None => div()
+                .text_color(theme.text_muted)
+                .child(tr!("git_panel.no_checks"))
+                .into_any_element(),
+            Some(bucket) => {
+                let (_, color, glyph) = check_status_parts(bucket, theme);
+                let mut parts = Vec::new();
+                for (count, key) in [
+                    (tally.failed, "git_panel.detail_checks_failed"),
+                    (tally.pending, "git_panel.detail_checks_running"),
+                    (tally.passed, "git_panel.detail_checks_passed"),
+                    (tally.skipped, "git_panel.detail_checks_skipped"),
+                ] {
+                    if count > 0 {
+                        parts.push(tr!(key, count = count));
+                    }
+                }
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .child(icon(glyph, IconSize::XSmall.px(&theme), color))
+                    .child(
+                        div()
+                            .text_color(theme.text_secondary)
+                            .child(parts.join(" \u{b7} ")),
+                    )
+                    .into_any_element()
+            }
+        };
+        section = section.child(detail_fact(&tr!("git_panel.checks"), summary, theme));
+        // Passing and skipped checks are a count; the ones that need a look
+        // get a row each, worst first.
+        let mut attention: Vec<&gh::GhCheck> = info
+            .checks
+            .iter()
+            .filter(|check| {
+                matches!(
+                    check.bucket_kind(),
+                    gh::CheckBucket::Failed | gh::CheckBucket::Pending | gh::CheckBucket::Unknown
+                )
+            })
+            .collect();
+        attention.sort_by_key(|check| match check.bucket_kind() {
+            gh::CheckBucket::Failed => 0,
+            gh::CheckBucket::Pending => 1,
+            _ => 2,
+        });
+        for (ix, check) in attention.iter().take(MAX_CHECK_ROWS).enumerate() {
+            let (_, color, glyph) = check_status_parts(check.bucket_kind(), theme);
+            let name = if check.name.is_empty() {
+                check.context.clone()
+            } else {
+                check.name.clone()
+            };
+            let link = [&check.details_url, &check.target_url, &check.link]
+                .into_iter()
+                .find(|url| !url.is_empty())
+                .cloned();
+            let mut line = div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(icon(glyph, IconSize::XSmall.px(&theme), color))
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(220.))
+                        .truncate()
+                        .text_color(theme.text_primary)
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.text_muted)
+                        .child(check.description.clone()),
+                );
+            if let Some(link) = link {
+                line = line.child(row_button(
+                    format!("git-detail-check-{ix}"),
+                    "icons/arrow-up-right.svg",
+                    "git_panel.detail_open_check",
+                    theme,
+                    move |_, _, cx| cx.open_url(&link),
+                ));
+            }
+            section = section.child(detail_fact("", line, theme));
+        }
+        if attention.len() > MAX_CHECK_ROWS {
+            section = section.child(detail_fact(
+                "",
+                div().text_color(theme.text_muted).child(tr!(
+                    "git_panel.detail_more_checks",
+                    count = attention.len() - MAX_CHECK_ROWS
+                )),
+                theme,
+            ));
+        }
+        section.into_any_element()
     }
 
     /// The per-file actions menu: open, reveal, copy path, file history.
@@ -5299,7 +5725,7 @@ impl GitPanel {
                     .as_ref()
                     .map(|remote| remote.commit_url(&row.commit.hash));
                 let selected = self.selected_commit.as_deref() == Some(row.commit.hash.as_str());
-                list = list.child(graph_row(
+                let row_el = graph_row(
                     row,
                     url.as_deref(),
                     selected,
@@ -5309,33 +5735,14 @@ impl GitPanel {
                         let hash = row.commit.hash.clone();
                         move |this, _: &ClickEvent, _, cx| this.toggle_commit(hash.clone(), cx)
                     }),
-                ));
-                if selected {
-                    match self
-                        .commit_detail
-                        .as_ref()
-                        .filter(|detail| detail.hash == row.commit.hash)
-                    {
-                        Some(detail) => {
-                            list = list.child(self.commit_detail_body(
-                                detail,
-                                url.as_deref(),
-                                theme,
-                                cx,
-                            ));
-                        }
-                        None => {
-                            list = list.child(detail_note(
-                                theme,
-                                &tr!(if self.commit_detail_loading {
-                                    "git_panel.reading_commit"
-                                } else {
-                                    "git_panel.commit_unavailable"
-                                }),
-                            ));
-                        }
-                    }
-                }
+                );
+                list = list.child(if selected {
+                    let details =
+                        self.open_commit_details(&row.commit.hash, url.as_deref(), theme, cx);
+                    commit_card(row_el, details, theme)
+                } else {
+                    row_el
+                });
                 // No separator between Graph rows: the lane gutter spans each
                 // row's full height, so touching rows keep lanes drawn.
             }
@@ -7924,6 +8331,21 @@ impl Render for GitPanel {
         }
         let theme = *theme::get(cx);
         self.list_focused = self.list_focus.is_focused(window);
+        if self.not_a_repo {
+            return div()
+                .id("git-page")
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .h_full()
+                .bg(theme.page_canvas())
+                .font_family(theme::ui_font_family())
+                .flex()
+                .flex_col()
+                .children(self.failure_banner(theme, cx))
+                .child(self.not_a_repo_state(theme, cx))
+                .into_any_element();
+        }
         let content = match self.tab {
             GitTab::Changes => self.changes_tab(theme, cx),
             GitTab::History => self.history_tab(theme, cx),
@@ -8664,16 +9086,21 @@ fn commit_model_rows(models: &[ModelEntry], needle: &str) -> Vec<Option<usize>> 
 
 /// A small placeholder shown inside an expanding commit row while its detail
 /// loads (or when it could not be loaded).
+/// The open card's lower half while its details load or after they failed.
+fn detail_pending(theme: Theme, label: &str) -> AnyElement {
+    div()
+        .border_t_1()
+        .border_color(theme.hairline())
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .child(detail_note(theme, label))
+        .into_any_element()
+}
+
+/// A muted one-line note inside the commit card.
 fn detail_note(theme: Theme, label: &str) -> AnyElement {
     div()
-        .mx(DynamicSpacing::Base12.px(&theme))
-        .mb(DynamicSpacing::Base06.px(&theme))
-        .px(DynamicSpacing::Base12.px(&theme))
-        .py(DynamicSpacing::Base08.px(&theme))
-        .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.hairline())
-        .bg(theme.page_fill(theme.surface_elevated))
+        .py(DynamicSpacing::Base04.px(&theme))
         .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_muted)
         .child(label.to_string())
@@ -9494,6 +9921,126 @@ fn section_label(theme: Theme, label: &str) -> AnyElement {
         .into_any_element()
 }
 
+
+// ── Commit card pieces ─────────────────────────────────────────────────────
+
+/// Checks listed by name under the tally; the rest are counted.
+const MAX_CHECK_ROWS: usize = 8;
+
+/// The commit card's label column: wide enough for "Committer" in the
+/// shipped locales; a longer label truncates rather than pushing values.
+const DETAIL_LABEL_W: f32 = 92.;
+
+/// One labeled line of the commit card. An empty label continues the row
+/// above (a second pull request, a listed check) at the same indent.
+fn detail_fact(label: &str, value: impl IntoElement, theme: Theme) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base12.px(&theme))
+        .min_h(px(24.))
+        .text_size(TextSize::Small.px(&theme))
+        .child(
+            div()
+                .flex_none()
+                .w(px(DETAIL_LABEL_W))
+                .truncate()
+                .text_color(theme.text_muted)
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .text_color(theme.text_secondary)
+                .child(value),
+        )
+        .into_any_element()
+}
+
+/// The hairline between the commit card's sections.
+fn detail_rule(theme: Theme) -> AnyElement {
+    div().h(px(1.)).w_full().bg(theme.hairline()).into_any_element()
+}
+
+/// `avatar  Name · 3 days ago`, with the exact local time on hover.
+fn person_line(name: &str, email: &str, iso: &str, theme: Theme) -> AnyElement {
+    div()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .child(author_avatar(name, email, theme))
+        .child(
+            div()
+                .flex_none()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_secondary)
+                .child(name.to_string()),
+        )
+        .child(
+            div()
+                .id(gpui::SharedString::from(format!("git-detail-when-{name}-{iso}")))
+                .min_w_0()
+                .truncate()
+                .text_color(theme.text_muted)
+                .tip(absolute_time(iso))
+                .child(gh::relative_time(iso)),
+        )
+        .into_any_element()
+}
+
+/// An ISO-8601 timestamp in the viewer's local time, `Nov 19, 2026 14:05`;
+/// anything unparseable is shown as given.
+fn absolute_time(iso: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|when| {
+            when.with_timezone(&chrono::Local)
+                .format("%b %-d, %Y %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| iso.to_string())
+}
+
+/// The label, colour and glyph of a commit's pull request, matching the
+/// Pull requests tab.
+fn commit_pull_state(pull: &gh::CommitPull, theme: Theme) -> (String, Hsla, &'static str) {
+    if pull.is_merged() {
+        (tr!("git_panel.pr_merged"), theme.accent_text, "icons/git-merge.svg")
+    } else if pull.is_open() && pull.is_draft {
+        (tr!("git_panel.pr_draft"), theme.text_muted, "icons/git-pull-request.svg")
+    } else if pull.is_open() {
+        (tr!("git_panel.issue_open"), theme.success, "icons/git-pull-request.svg")
+    } else {
+        (tr!("git_panel.issue_closed"), theme.error, "icons/circle-x.svg")
+    }
+}
+
+/// How many checks landed in each bucket. Unknown results count as running:
+/// GitHub has not reported a conclusion yet.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CheckTally {
+    passed: usize,
+    failed: usize,
+    pending: usize,
+    skipped: usize,
+}
+
+fn check_tally(checks: &[gh::GhCheck]) -> CheckTally {
+    let mut tally = CheckTally::default();
+    for check in checks {
+        match check.bucket_kind() {
+            gh::CheckBucket::Passed => tally.passed += 1,
+            gh::CheckBucket::Failed => tally.failed += 1,
+            gh::CheckBucket::Skipped => tally.skipped += 1,
+            gh::CheckBucket::Pending | gh::CheckBucket::Unknown => tally.pending += 1,
+        }
+    }
+    tally
+}
+
 // ── Graph tab drawing ──────────────────────────────────────────────────────
 
 /// Horizontal pitch of one lane, padding around the gutter, and the fixed
@@ -9680,12 +10227,18 @@ fn commit_row_core(
         theme.text_muted,
     ));
 
+    // The open row is the header of its commit card (`commit_card`): the
+    // card supplies the margin, fill and outline, so the row keeps only its
+    // top corners and the keyboard cursor / hover wash.
     let element = div()
         .id(gpui::ElementId::Name(row_name.clone().into()))
         .group("git-row")
-        .mx(DynamicSpacing::Base12.px(&theme))
+        .when(!selected, |row| {
+            row.mx(DynamicSpacing::Base12.px(&theme))
+                .rounded(Radius::Medium.px(&theme))
+        })
+        .when(selected, |row| row.rounded_t(panel::RADIUS.px(&theme)))
         .px(DynamicSpacing::Base08.px(&theme))
-        .rounded(Radius::Medium.px(&theme))
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
@@ -9704,7 +10257,26 @@ fn commit_row_core(
                 .child(meta),
         )
         .child(trailing);
-    list_row(element, row_name, RowState::of(selected, cursor), &theme)
+    list_row(element, row_name, RowState::of(false, cursor), &theme)
+}
+
+/// An open commit: its row and its details as one card. The 1px outline sits
+/// inside the rows' usual margin, so the row's content (and the Graph's lanes)
+/// stays on the same x as the closed rows above and below it.
+fn commit_card(row: AnyElement, details: AnyElement, theme: Theme) -> AnyElement {
+    div()
+        .debug_selector(|| "git-commit-card".into())
+        .mx(DynamicSpacing::Base12.px(&theme) - px(1.))
+        .my(DynamicSpacing::Base04.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
+        .border_1()
+        .border_color(theme.hairline())
+        .bg(theme.page_fill(theme.surface_elevated))
+        .flex()
+        .flex_col()
+        .child(row)
+        .child(details)
+        .into_any_element()
 }
 
 /// One row in the Graph list: the lane drawing on the left, then the shared
@@ -10160,6 +10732,50 @@ mod tests {
                 assert!(panel.pr_comment_drafts.is_empty());
             })
         });
+    }
+
+    /// Outside a repository the page says so and offers `git init`; the
+    /// init makes the folder a repository and the page loads as one.
+    #[gpui::test]
+    fn a_plain_folder_offers_init_and_init_makes_a_repository(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
+        cx.executor().allow_parking();
+        let root = std::env::temp_dir().join(format!(
+            "orbit-git-panel-init-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let panel = cx.update(|cx| cx.new(GitPanel::new));
+        cx.update(|cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_context(
+                    Some(root.clone()),
+                    String::new(),
+                    String::new(),
+                    None,
+                    Vec::new(),
+                    cx,
+                );
+                panel.show(cx);
+            })
+        });
+        cx.run_until_parked();
+        assert!(
+            panel.read_with(cx, |panel, _| panel.not_a_repo),
+            "a plain folder is not a repository"
+        );
+
+        cx.update(|cx| panel.update(cx, |panel, cx| panel.init_repository(cx)));
+        cx.run_until_parked();
+        assert!(git::is_repo(&root), "init made it a repository");
+        let (not_a_repo, busy) =
+            panel.read_with(cx, |panel, _| (panel.not_a_repo, panel.init_busy));
+        assert!(!not_a_repo && !busy, "the page loads as a repository");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The History list's keyboard cursor: arrows and `j`/`k` step it without
@@ -11402,6 +12018,36 @@ mod tests {
         assert_eq!(commit_model_rows(&models, "claude"), vec![None, Some(1)]);
         assert_eq!(commit_model_rows(&models, "anthropic"), vec![None, Some(1)]);
         assert_eq!(commit_model_rows(&models, "missing"), vec![None]);
+    }
+
+    #[test]
+    fn commit_card_tallies_checks_and_counts_unknown_as_running() {
+        let check = |conclusion: &str, status: &str| gh::GhCheck {
+            name: "ci".into(),
+            conclusion: conclusion.into(),
+            status: status.into(),
+            ..gh::GhCheck::default()
+        };
+        let checks = [
+            check("SUCCESS", "COMPLETED"),
+            check("SUCCESS", "COMPLETED"),
+            check("FAILURE", "COMPLETED"),
+            check("", "IN_PROGRESS"),
+            check("SKIPPED", "COMPLETED"),
+            check("", ""),
+        ];
+        assert_eq!(
+            check_tally(&checks),
+            CheckTally { passed: 2, failed: 1, pending: 2, skipped: 1 }
+        );
+        assert_eq!(check_tally(&[]), CheckTally::default());
+    }
+
+    #[test]
+    fn commit_card_absolute_time_keeps_unparseable_input() {
+        assert_eq!(absolute_time("not a date"), "not a date");
+        let shown = absolute_time("2026-11-19T10:05:00+00:00");
+        assert!(shown.contains("2026"), "{shown}");
     }
 
     #[test]

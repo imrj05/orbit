@@ -70,6 +70,7 @@ fn remote_host(name: &str, dir: &str) -> crate::remote_hosts::RemoteHost {
         port: None,
         dir: dir.into(),
         enabled: true,
+        local_dir: None,
     }
 }
 

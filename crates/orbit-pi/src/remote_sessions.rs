@@ -126,6 +126,7 @@ mod tests {
             port: None,
             dir: dir.into(),
             enabled: true,
+            local_dir: None,
         }
     }
 

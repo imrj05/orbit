@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pull requests and checks on a commit.** Opening a commit on the Git
+  page's History or Graph tab now shows the pull request it belongs to (who
+  opened it, who merged it — click to open it on the Pull requests tab) and
+  its CI checks, with failing and running checks listed by name. The card is
+  also tidier: labeled Author / Committer / Commit / Parents rows with
+  relative times (exact time on hover), and a file-change total. Needs a
+  GitHub remote and a signed-in `gh`; one request per commit you open.
+
+- **Initialize Git from the Git page.** Opening Git in a folder that is not a
+  repository now says so and offers **Initialize Git repository**, instead of
+  showing empty tabs. It runs `git init` with your own default branch name.
+
+- **Git details for remote sessions.** On a remote session the Git page shows
+  the host's own Git state for the session's folder — repository root, branch,
+  upstream with ahead/behind, changed files, last commit and `origin` (any
+  credentials removed) — read over SSH without changing anything. A folder
+  that is not a repository, or a host without `git`, is said plainly.
+
+- **Remote sessions in their project's group.** A remote host entry can now be
+  linked to a project on this computer (Settings → Remote hosts → **Local
+  project folder**). With the sidebar grouped by project, that host's sessions
+  list inside the project's group, after its local sessions, instead of in a
+  group of their own at the bottom. **Add this project to a server…** links
+  the entry it saves to the project it cloned.
+
 - **Built-in backgrounds.** Settings → Appearance → Background now offers
   one-click backgrounds in four rows: Gradients (seven generated gradients),
   Nature, Anime (original anime-style illustrations) and Japanese art (woodblock
@@ -172,6 +197,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reopens docked after it is closed — ⌘J never changes two things at once.
 
 ### Changed
+
+- **The new-task dither field actually moves.** The dots in the background
+  behind a fresh session used to drift one noise cell every 29 seconds and be
+  re-rastered five times a second, so most frames came out identical and the
+  field read as a still image. It now drifts a cell every 2.5 seconds at 10 Hz
+  — the idle heartbeat's own ceiling — on a finer 7 px ruling with a slightly
+  wider density band, so the grain visibly flows without the grain catching up
+  with the watermark or the page leaving the theme's canvas. Reduce Motion still
+  holds the frame it was showing.
 
 - **Your messages and terminal output on glass.** With a wallpaper and Glass
   on, the bubble around your own messages is now frosted glass like the tool
@@ -353,6 +387,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeats the list, and a provider pi reports nothing for shows no list at all (#131).
 
 ### Fixed
+
+- **Commit details showed the wrong values.** An opened commit on the Git
+  page listed its committer date as **Parents** and folded its branch and
+  tag names into the message, because one field was read out of order. The
+  open commit and its details now also read as one card instead of two
+  stacked boxes.
 
 - **Dialogs grow to fit what they hold.** The Add account dialog on Models &
   providers cut its Cancel and Create account buttons off at the bottom, and the

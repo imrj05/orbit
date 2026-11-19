@@ -2042,6 +2042,9 @@ impl OrbitApp {
         // (see `close_git_for_review`).
         self.sidepane.update(cx, |pane, cx| pane.close(cx));
         self.git_panel.update(cx, |panel, cx| panel.show(cx));
+        if self.remote.is_some() {
+            self.refresh_remote_git(cx);
+        }
         self.sync_terminal_active(cx);
         cx.notify();
     }

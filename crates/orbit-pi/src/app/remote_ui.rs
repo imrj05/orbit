@@ -164,7 +164,8 @@ impl OrbitApp {
     }
 }
 
-/// The page body for Files / Git / Worktrees while the session is remote.
+/// The page body for Files / Worktrees while the session is remote (Git has
+/// its own read-only page, `remote_git_ui.rs`).
 pub(super) fn remote_unavailable(theme: Theme, host: &str) -> AnyElement {
     empty_state(
         theme,
@@ -187,6 +188,7 @@ mod tests {
             port: None,
             dir: "/srv".into(),
             enabled: true,
+            local_dir: None,
         }
     }
 

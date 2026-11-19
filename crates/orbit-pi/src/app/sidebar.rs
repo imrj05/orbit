@@ -1390,6 +1390,9 @@ pub(crate) fn render_side_row(
             let this_new = this.clone();
             let this_menu = this.clone();
             let menu = workspace_menu.filter(|m| m.label == label);
+            // The header whose menu is open keeps its wash while the pointer
+            // is over the menu, so the menu reads as belonging to this row.
+            let menu_open = menu.is_some();
             let mark = marks.get(cwd).cloned().unwrap_or_default();
             let workspace_logo = logos.get(cwd);
             let workspace_icon = workspace_icons.get(cwd);
@@ -1598,7 +1601,7 @@ pub(crate) fn render_side_row(
                     }),
                     format!("workspace-header-{label}"),
                     &theme,
-                    nav_row_fill(&theme, false, cursor),
+                    nav_row_fill(&theme, false, cursor || menu_open),
                 ))
                 .into_any_element()
         }
@@ -1787,6 +1790,9 @@ pub(crate) fn render_side_row(
             let this_for_row = this.clone();
             let this_for_menu = this.clone();
             let menu = session_menu.filter(|m| m.path == session.path);
+            // The row whose context menu is open holds its wash until the
+            // menu closes: moving onto the menu is a hover-leave for the row.
+            let menu_open = menu.is_some();
             // Session reorder (issue #143): dim the row in flight and draw the
             // insertion line on the row the drop would use. Only the grouped
             // list offers this — see `SidebarDragPaint::sessions`.
@@ -2222,7 +2228,7 @@ pub(crate) fn render_side_row(
                 card,
                 row_name,
                 &theme,
-                nav_row_fill(&theme, active, cursor),
+                nav_row_fill(&theme, active, cursor || menu_open),
             ));
             row.into_any_element()
         }
@@ -4800,10 +4806,15 @@ impl OrbitApp {
             ),
         };
         // The servers' sessions follow this Mac's, one group per remote host
-        // entry (`remote_sessions_ui.rs`). A search filters local sessions
-        // only, so they step aside while one is typed.
+        // entry (`remote_sessions_ui.rs`); grouped by project, an entry linked
+        // to a listed project lists inside that project's group. A search
+        // filters local sessions only, so they step aside while one is typed.
         if self.sidebar_query.is_empty() {
-            rows.extend(self.remote_session_rows());
+            if self.sidebar_group_by == SidebarGroupBy::Workspace {
+                self.place_remote_session_rows(&mut rows);
+            } else {
+                rows.extend(self.remote_session_rows());
+            }
         }
         rows
     }

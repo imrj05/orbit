@@ -1172,18 +1172,55 @@ impl Render for OrbitApp {
                                 left.child(leading)
                                     .child(window_drag_region(div().flex_1().min_w_0().h_full()))
                             } else {
+                                // `folder / session`: the folder the session
+                                // runs in, then its title. The folder keeps its
+                                // width; a long title truncates first.
+                                let folder = top_bar_folder_label(
+                                    self.remote.as_ref().map(|host| host.dir.as_str()),
+                                    self.current_workspace.as_deref(),
+                                );
                                 window_drag_region(left).child(
                                     div()
+                                        .debug_selector(|| "top-bar-title".into())
                                         .flex_1()
                                         .min_w_0()
-                                        .overflow_hidden()
-                                        .truncate()
+                                        .flex()
+                                        .items_center()
+                                        .gap(DynamicSpacing::Base06.px(&theme))
                                         .text_size(TextSize::Default.px(&theme))
-                                        .text_color(theme.text_secondary)
-                                        .child(session_display_title(
-                                            self.session_name.as_deref(),
-                                            self.current_title.as_deref(),
-                                        )),
+                                        .when_some(folder, |line, folder| {
+                                            line.child(icon(
+                                                "icons/folder.svg",
+                                                IconSize::Small.px(&theme),
+                                                theme.text_muted,
+                                            ))
+                                            .child(
+                                                div()
+                                                    .flex_shrink()
+                                                    .min_w_0()
+                                                    .max_w(px(200.))
+                                                    .truncate()
+                                                    .text_color(theme.text_muted)
+                                                    .child(folder),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_color(theme.text_muted)
+                                                    .child("/"),
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_color(theme.text_secondary)
+                                                .child(session_display_title(
+                                                    self.session_name.as_deref(),
+                                                    self.current_title.as_deref(),
+                                                )),
+                                        ),
                                 )
                             }
                         })
@@ -1214,10 +1251,13 @@ impl Render for OrbitApp {
                     // The expanded Review pane owns the page; the chat is not
                     // just covered, it is skipped — same as a feature page.
                     div().into_any_element()
-                } else if let (Some(host), true) = (
-                    self.remote_host_name(),
-                    viewer_open || self.git_open || self.worktrees_open,
-                ) {
+                } else if self.git_open && self.remote.is_some() {
+                    // The host's own Git facts for the session's folder; the
+                    // local Git page would describe this machine instead.
+                    self.render_remote_git_page(theme, cx)
+                } else if let (Some(host), true) =
+                    (self.remote_host_name(), viewer_open || self.worktrees_open)
+                {
                     // These pages read the local disk; on a remote session
                     // they would describe the wrong machine.
                     remote_unavailable(theme, host)

@@ -701,6 +701,7 @@ mod tests {
             port: None,
             dir: "/srv".into(),
             enabled: true,
+            local_dir: None,
         };
         assert_eq!(ssh_command(&host), "ssh deploy@vps.example");
         host.port = Some(2222);

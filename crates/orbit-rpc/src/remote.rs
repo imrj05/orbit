@@ -940,6 +940,51 @@ pub fn list_sessions_script(limit: usize) -> String {
     )
 }
 
+/// What [`git_status_script`] prints first; `key: value` lines follow.
+pub const GIT_STATUS_STARTED: &str = "orbit-git: started";
+
+/// Read-only Git facts about the host folder `target.dir`: whether `git` is
+/// installed, whether the folder is in a work tree, and if so its top level,
+/// branch, upstream, ahead/behind counts, number of changed paths, last
+/// commit and `origin` URL. One `key: value` line each (see the parser in
+/// `orbit-pi`'s `remote_hosts`). Writes nothing: every command is a read, and
+/// `GIT_OPTIONAL_LOCKS=0` keeps `git status` from refreshing the index.
+pub fn git_status_script(target: &RemoteTarget) -> Result<String> {
+    target.validate()?;
+    let dir = shell_quote(&target.dir);
+    let mut script = String::from("set -u\n");
+    script.push_str(&format!("printf '%s\\n' '{GIT_STATUS_STARTED}'\n"));
+    script.push_str(&format!(
+        "cd -- {dir} 2>/dev/null || {{ echo 'orbit: directory not found on host' >&2; exit 66; }}\n"
+    ));
+    script.push_str("export GIT_OPTIONAL_LOCKS=0\n");
+    script.push_str("command -v git >/dev/null 2>&1 || { echo 'git: missing'; exit 0; }\n");
+    script.push_str(
+        "[ \"$(git rev-parse --is-inside-work-tree 2>/dev/null)\" = true ] || { echo 'repo: no'; exit 0; }\n",
+    );
+    script.push_str("echo 'repo: yes'\n");
+    for (key, command) in [
+        ("root", "git rev-parse --show-toplevel"),
+        ("branch", "git branch --show-current"),
+        ("head", "git log -1 --format='%h %s'"),
+        (
+            "upstream",
+            "git rev-parse --abbrev-ref --symbolic-full-name '@{u}'",
+        ),
+        (
+            "ahead_behind",
+            "git rev-list --left-right --count 'HEAD...@{u}'",
+        ),
+        ("changed", "git status --porcelain | wc -l"),
+        ("origin", "git remote get-url origin"),
+    ] {
+        script.push_str(&format!(
+            "printf '%s: %s\\n' {key} \"$({command} 2>/dev/null | head -n 1)\"\n"
+        ));
+    }
+    Ok(script)
+}
+
 fn is_plain_file_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -958,6 +1003,35 @@ mod tests {
             port: None,
             dir: dir.into(),
         }
+    }
+
+    #[test]
+    fn git_status_script_reads_only_in_the_host_folder() {
+        let script = git_status_script(&target("/srv/it's")).expect("script");
+        assert!(script.contains(GIT_STATUS_STARTED));
+        assert!(script.contains("cd -- '/srv/it'\\''s'"), "{script}");
+        assert!(script.contains("GIT_OPTIONAL_LOCKS=0"));
+        for key in [
+            "root",
+            "branch",
+            "head",
+            "upstream",
+            "ahead_behind",
+            "changed",
+            "origin",
+        ] {
+            assert!(script.contains(&format!("'%s: %s\\n' {key} ")), "{key}");
+        }
+        for write in [
+            "git init",
+            "git add",
+            "git commit",
+            "git fetch",
+            "git checkout",
+        ] {
+            assert!(!script.contains(write), "read-only: {write}");
+        }
+        assert!(git_status_script(&target("relative")).is_err());
     }
 
     #[test]

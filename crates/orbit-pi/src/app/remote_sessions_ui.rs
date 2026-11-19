@@ -176,33 +176,81 @@ impl OrbitApp {
         for (host, sessions) in
             remote_sessions::group(&self.remote_hosts, &self.remote_session_lists)
         {
-            let status = self
-                .remote_session_status
-                .get(&host.account_key())
-                .cloned()
-                .unwrap_or_default();
-            let collapsed = self.remote_sessions_collapsed.contains(&host.name);
-            rows.push(SideRow::RemoteHost {
-                name: host.name.clone(),
-                count: sessions.len(),
-                collapsed,
-                status,
-            });
-            if !collapsed {
-                rows.extend(
-                    sessions
-                        .into_iter()
-                        .take(remote_sessions::GROUP_VISIBLE)
-                        .map(|session| {
-                            SideRow::RemoteSession(Box::new(RemoteSessionRow {
-                                host: host.clone(),
-                                session: session.clone(),
-                            }))
-                        }),
-                );
-            }
+            rows.extend(self.remote_host_group_rows(host, &sessions));
         }
         rows
+    }
+
+    /// One host entry's rows: its header and, unless collapsed, its newest
+    /// sessions.
+    fn remote_host_group_rows(
+        &self,
+        host: &RemoteHost,
+        sessions: &[&RemoteSession],
+    ) -> Vec<SideRow> {
+        let status = self
+            .remote_session_status
+            .get(&host.account_key())
+            .cloned()
+            .unwrap_or_default();
+        let collapsed = self.remote_sessions_collapsed.contains(&host.name);
+        let mut rows = vec![SideRow::RemoteHost {
+            name: host.name.clone(),
+            count: sessions.len(),
+            collapsed,
+            status,
+        }];
+        if !collapsed {
+            rows.extend(
+                sessions
+                    .iter()
+                    .take(remote_sessions::GROUP_VISIBLE)
+                    .map(|session| remote_row(host, session)),
+            );
+        }
+        rows
+    }
+
+    /// Lay the servers' rows into the workspace-grouped sidebar. An entry
+    /// linked to a local project (`RemoteHost::local_dir`) lists inside that
+    /// project's group, after its local sessions; a collapsed project keeps
+    /// only the open remote session visible, like its local rows. Entries with
+    /// no link, or linked to a project that is not listed, follow as groups
+    /// of their own.
+    pub(super) fn place_remote_session_rows(&self, rows: &mut Vec<SideRow>) {
+        let mut unlinked = Vec::new();
+        for (host, sessions) in
+            remote_sessions::group(&self.remote_hosts, &self.remote_session_lists)
+        {
+            let header = host
+                .local_path()
+                .map(|path| crate::sessions::workspace_label(&path))
+                .and_then(|label| {
+                    rows.iter().position(
+                        |row| matches!(row, SideRow::Workspace { label: l, .. } if *l == label),
+                    )
+                });
+            let Some(header) = header else {
+                unlinked.extend(self.remote_host_group_rows(host, &sessions));
+                continue;
+            };
+            let end = rows[header + 1..]
+                .iter()
+                .position(|row| matches!(row, SideRow::Workspace { .. }))
+                .map_or(rows.len(), |offset| header + 1 + offset);
+            let group: Vec<SideRow> = match &rows[header] {
+                SideRow::Workspace {
+                    collapsed: true, ..
+                } => sessions
+                    .iter()
+                    .filter(|session| self.is_active_remote_session(host, &session.path))
+                    .map(|session| remote_row(host, session))
+                    .collect(),
+                _ => self.remote_host_group_rows(host, &sessions),
+            };
+            rows.splice(end..end, group);
+        }
+        rows.extend(unlinked);
     }
 
     /// Whether `session` on `host` is the one on screen.
@@ -260,6 +308,13 @@ impl OrbitApp {
         self.composer_focus_pending = true;
         cx.notify();
     }
+}
+
+fn remote_row(host: &RemoteHost, session: &RemoteSession) -> SideRow {
+    SideRow::RemoteSession(Box::new(RemoteSessionRow {
+        host: host.clone(),
+        session: session.clone(),
+    }))
 }
 
 /// A server group's header: the server glyph and the entry's name, then a

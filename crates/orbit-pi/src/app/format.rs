@@ -49,6 +49,24 @@ pub(crate) fn queue_preview(text: &str) -> String {
 /// The title shown in the top bar and session lists. An explicit
 /// `set_session_name` value wins over pi's live auto-title; neither
 /// present is a new, unnamed task.
+/// The folder half of the top bar's `folder / session` title: the remote
+/// entry's folder on a remote session (the local workspace is not where it
+/// runs), the current workspace otherwise. `None` when neither is known.
+pub(crate) fn top_bar_folder_label(
+    remote_dir: Option<&str>,
+    workspace: Option<&std::path::Path>,
+) -> Option<String> {
+    if let Some(dir) = remote_dir {
+        let dir = dir.trim();
+        if dir.is_empty() {
+            return None;
+        }
+        let name = dir.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        return Some(if name.is_empty() { "/".into() } else { name.to_owned() });
+    }
+    workspace.map(crate::sessions::workspace_label)
+}
+
 pub(crate) fn session_display_title(
     session_name: Option<&str>,
     current_title: Option<&str>,

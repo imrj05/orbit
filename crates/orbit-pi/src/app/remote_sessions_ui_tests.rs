@@ -20,6 +20,7 @@ fn host(name: &str, dir: &str) -> RemoteHost {
         port: None,
         dir: dir.into(),
         enabled: true,
+        local_dir: None,
     }
 }
 
@@ -114,6 +115,67 @@ fn the_sidebar_lists_servers_except_while_searching(cx: &mut gpui::TestAppContex
             assert!(
                 !has_remote(app),
                 "a search filters this Mac's sessions only"
+            );
+        });
+    });
+}
+
+/// Grouped by project, an entry linked to a listed local project lists inside
+/// that project's group; the rest keep groups of their own at the end.
+#[gpui::test]
+fn a_linked_entry_lists_inside_its_local_project(cx: &mut gpui::TestAppContext) {
+    let app = app_with_hosts(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            app.sidebar_group_by = SidebarGroupBy::Workspace;
+            app.workspaces = vec![
+                PathBuf::from("/Users/me/code/demo"),
+                PathBuf::from("/Users/me/code/zeta"),
+            ];
+            app.remote_hosts[1].local_dir = Some("/Users/me/code/demo".into());
+            app.expanded_workspace_groups.insert("demo".into());
+            app.expanded_workspace_groups.insert("zeta".into());
+            let labels = |app: &OrbitApp| -> Vec<String> {
+                app.sidebar_rows(&[], &HashSet::new())
+                    .iter()
+                    .filter_map(|row| match row {
+                        SideRow::Workspace { label, .. } => Some(format!("@ {label}")),
+                        SideRow::RemoteHost { name, .. } => Some(format!("# {name}")),
+                        SideRow::RemoteSession(row) => Some(row.session.id.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            let rows = labels(app);
+            let at = |needle: &str| rows.iter().position(|row| row == needle).expect(needle);
+            assert!(
+                at("@ demo") < at("# demo on vps") && at("# demo on vps") < at("d0"),
+                "the linked entry sits inside its project: {rows:?}"
+            );
+            let demo_end = [at("@ zeta")]
+                .into_iter()
+                .chain(rows.iter().position(|row| row == "# vps"))
+                .filter(|ix| *ix > at("@ demo"))
+                .min()
+                .expect("a row after the demo group");
+            assert!(at("d0") < demo_end, "its sessions stay in the group");
+            assert_eq!(
+                rows[rows.len() - 2..],
+                ["# vps".to_string(), "o".to_string()],
+                "an unlinked entry keeps its own group, after the projects"
+            );
+
+            app.expanded_workspace_groups.remove("demo");
+            let rows = labels(app);
+            assert!(
+                !rows.iter().any(|row| row == "# demo on vps" || row == "d0"),
+                "a collapsed project hides its remote rows too: {rows:?}"
+            );
+
+            app.workspaces.remove(0);
+            assert!(
+                labels(app).iter().any(|row| row == "# demo on vps"),
+                "linked to a project that is not listed, the entry keeps its own group"
             );
         });
     });
@@ -230,5 +292,51 @@ fn the_server_groups_paint_in_the_sidebar(cx: &mut gpui::TestAppContext) {
     assert!(
         header.bottom() <= row.top() + px(1.),
         "rows sit under their header"
+    );
+}
+
+/// On a remote session the Git page reads the host's own facts for the
+/// session's folder; a read for another folder is dropped.
+#[gpui::test]
+fn the_git_page_shows_the_hosts_repository(cx: &mut gpui::TestAppContext) {
+    use crate::remote_hosts::{RemoteGit, RemoteGitRepo};
+    let app = app_with_hosts(cx);
+    let demo = host("demo on vps", "/home/deploy/demo");
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.remote = Some(demo.clone());
+            app.git_open = true;
+            app.refresh_remote_git(cx);
+            assert!(app.remote_git.loading);
+            app.finish_remote_git(
+                &host("vps", "/home/deploy"),
+                Ok(RemoteGit::NotARepository),
+                cx,
+            );
+            assert!(
+                app.remote_git.result.is_none(),
+                "another folder's read is dropped"
+            );
+            app.finish_remote_git(
+                &demo,
+                Ok(RemoteGit::Repository(RemoteGitRepo {
+                    branch: Some("main".into()),
+                    changed: Some(2),
+                    ..Default::default()
+                })),
+                cx,
+            );
+            assert!(!app.remote_git.loading);
+        });
+    });
+    let cx = cx.add_empty_window();
+    let _ = cx.draw(
+        gpui::point(px(0.), px(0.)),
+        gpui::size(px(1280.), px(900.)),
+        |_, _| app.clone(),
+    );
+    assert!(
+        cx.debug_bounds("remote-git-page").is_some(),
+        "the host's Git card replaces the local page"
     );
 }

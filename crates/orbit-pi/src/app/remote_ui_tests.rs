@@ -20,6 +20,7 @@ fn host(name: &str) -> RemoteHost {
         port: None,
         dir: "/srv/app".into(),
         enabled: true,
+        local_dir: None,
     }
 }
 

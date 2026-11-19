@@ -62,6 +62,8 @@ pub(crate) struct RemoteHostEditor {
     pub(super) user: Entity<ComposerInput>,
     pub(super) port: Entity<ComposerInput>,
     pub(super) dir: Entity<ComposerInput>,
+    /// The project on this Mac the entry belongs to (optional).
+    pub(super) local_dir: Entity<ComposerInput>,
     /// `~/.ssh/config` aliases, read once when the form opens.
     pub(super) aliases: Vec<String>,
     pub(super) error: Option<String>,
@@ -75,7 +77,14 @@ impl RemoteHostEditor {
     fn composing(&self, cx: &App) -> bool {
         crate::composer::any_composing(
             cx,
-            &[&self.name, &self.ssh, &self.user, &self.port, &self.dir],
+            &[
+                &self.name,
+                &self.ssh,
+                &self.user,
+                &self.port,
+                &self.dir,
+                &self.local_dir,
+            ],
         )
     }
 }
@@ -110,6 +119,7 @@ pub(crate) fn host_from_fields(
     user: &str,
     port: &str,
     dir: &str,
+    local_dir: &str,
 ) -> Result<RemoteHost, String> {
     let ssh = ssh.trim();
     if ssh.is_empty() {
@@ -134,6 +144,14 @@ pub(crate) fn host_from_fields(
         name => name.to_string(),
     };
     let user = Some(user.trim().to_string()).filter(|user| !user.is_empty());
+    let local_dir = match local_dir.trim() {
+        "" => None,
+        "/" => Some("/".to_string()),
+        local if local.starts_with('/') || local == "~" || local.starts_with("~/") => {
+            Some(local.trim_end_matches('/').to_string())
+        }
+        _ => return Err(tr!("remote_hosts.error_local_dir_absolute")),
+    };
     let host = RemoteHost {
         name,
         ssh: ssh.to_string(),
@@ -141,6 +159,7 @@ pub(crate) fn host_from_fields(
         port,
         dir: dir.to_string(),
         enabled: true,
+        local_dir,
     };
     host.target().map_err(|err| format!("{err:#}"))?;
     Ok(host)
@@ -241,6 +260,12 @@ impl OrbitApp {
             text(|h| h.dir.clone()),
             cx,
         );
+        let local_dir = field(
+            "remote-host-local-dir",
+            "remote_hosts.local_dir_placeholder",
+            text(|h| h.local_dir.clone().unwrap_or_default()),
+            cx,
+        );
         let name = field(
             "remote-host-name",
             "remote_hosts.name_placeholder",
@@ -257,6 +282,7 @@ impl OrbitApp {
             user,
             port,
             dir,
+            local_dir,
             aliases: remote_hosts::discover_ssh_aliases(),
             error: None,
             check: None,
@@ -299,6 +325,7 @@ impl OrbitApp {
             &read(&editor.user),
             &read(&editor.port),
             &read(&editor.dir),
+            &read(&editor.local_dir),
         ))
     }
 
@@ -1003,6 +1030,11 @@ impl OrbitApp {
                 editor.dir.clone(),
             ))
             .child(field(
+                tr!("remote_hosts.local_dir_label"),
+                Some(tr!("remote_hosts.local_dir_hint")),
+                editor.local_dir.clone(),
+            ))
+            .child(field(
                 tr!("remote_hosts.name_label"),
                 Some(tr!("remote_hosts.name_hint")),
                 editor.name.clone(),
@@ -1410,38 +1442,46 @@ mod tests {
 
     #[test]
     fn fields_become_a_host_or_a_reason() {
-        let host = host_from_fields("", "deploy@vps", "", "2222", "/srv/app").expect("valid");
+        let host = host_from_fields("", "deploy@vps", "", "2222", "/srv/app", "").expect("valid");
         assert_eq!(host.name, "vps", "the name defaults to the host");
         assert_eq!(host.port, Some(2222));
         assert!(host.user.is_none());
 
-        let host = host_from_fields("Prod", "vps", "deploy", "", " /srv ").expect("valid");
+        let host = host_from_fields("Prod", "vps", "deploy", "", " /srv ", "").expect("valid");
         assert_eq!(host.destination(), "deploy@vps");
         assert_eq!(host.dir, "/srv");
 
         assert!(
-            host_from_fields("", "", "", "", "/srv").is_err(),
+            host_from_fields("", "", "", "", "/srv", "").is_err(),
             "host required"
         );
         assert!(
-            host_from_fields("", "vps", "", "abc", "/srv").is_err(),
+            host_from_fields("", "vps", "", "abc", "/srv", "").is_err(),
             "port is a number"
         );
         assert!(
-            host_from_fields("", "vps", "", "0", "/srv").is_err(),
+            host_from_fields("", "vps", "", "0", "/srv", "").is_err(),
             "port 0"
         );
         assert!(
-            host_from_fields("", "vps", "", "", "").is_err(),
+            host_from_fields("", "vps", "", "", "", "").is_err(),
             "dir required"
         );
         assert!(
-            host_from_fields("", "vps", "", "", "~/app").is_err(),
+            host_from_fields("", "vps", "", "", "~/app", "").is_err(),
             "dir absolute"
         );
         assert!(
-            host_from_fields("", "-oProxy=x", "", "", "/srv").is_err(),
+            host_from_fields("", "-oProxy=x", "", "", "/srv", "").is_err(),
             "no option injection"
+        );
+
+        let host =
+            host_from_fields("", "vps", "", "", "/srv", " ~/code/app/ ").expect("valid");
+        assert_eq!(host.local_dir.as_deref(), Some("~/code/app"));
+        assert!(
+            host_from_fields("", "vps", "", "", "/srv", "code/app").is_err(),
+            "the local folder is absolute or under ~"
         );
     }
 }

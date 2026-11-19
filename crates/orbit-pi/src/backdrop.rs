@@ -25,44 +25,91 @@ use image::{Frame, RgbaImage};
 
 use crate::theme::Theme;
 
-const BAYER: [[u8; 8]; 8] = [
-    [0, 32, 8, 40, 2, 34, 10, 42],
-    [48, 16, 56, 24, 50, 18, 58, 26],
-    [12, 44, 4, 36, 14, 46, 6, 38],
-    [60, 28, 52, 20, 62, 30, 54, 22],
-    [3, 35, 11, 43, 1, 33, 9, 41],
-    [51, 19, 59, 27, 49, 17, 57, 25],
-    [15, 47, 7, 39, 13, 45, 5, 37],
-    [63, 31, 55, 23, 61, 29, 53, 21],
-];
+/// The ordered threshold matrix: an ordered Bayer 32×32, built from the 2×2
+/// kernel by the standard doubling (`M₂ₙ = [[4M, 4M+2], [4M+3, 4M+1]]`), so every
+/// threshold 0..1023 appears once and the screen is a true ordered dither.
+///
+/// 32×32 rather than 8×8 on purpose: an 8×8 tile over a 16 px area shows its
+/// blocks as bands across a smooth gradient, which is exactly the artefact the
+/// larger matrix removes.
+const BAYER: [[u16; 32]; 32] = bayer32();
+
+const fn bayer32() -> [[u16; 32]; 32] {
+    // 2×2 seed, then four doublings.
+    let mut matrix = [[0u16; 32]; 32];
+    matrix[0][1] = 2;
+    matrix[1][0] = 3;
+    matrix[1][1] = 1;
+    let mut size = 2;
+    while size < 32 {
+        let mut next = [[0u16; 32]; 32];
+        let mut y = 0;
+        while y < size * 2 {
+            let mut x = 0;
+            while x < size * 2 {
+                // Quadrant weight: top-left 0, top-right 2, bottom-left 3,
+                // bottom-right 1.
+                let quadrant = match (y / size, x / size) {
+                    (0, 0) => 0,
+                    (0, _) => 2,
+                    (1, 0) => 3,
+                    _ => 1,
+                };
+                next[y][x] = 4 * matrix[y % size][x % size] + quadrant;
+                x += 1;
+            }
+            y += 1;
+        }
+        matrix = next;
+        size *= 2;
+    }
+    matrix
+}
 
 // A logical-pixel screen caps CPU work and atlas size on high-DPI displays.
-// Update at 5 Hz, independent of the caller's faster UI heartbeat.
-const FPS: f32 = 5.;
-/// Cell pitch, in raster pixels: the ruling every dot sits on.
-const PITCH: f32 = 9.;
-/// Dot levels the screen quantizes into. Level 0 is bare canvas.
-const LEVELS: usize = 4;
-/// Dot radius per level, as a fraction of [`PITCH`]. Small on purpose: the
-/// screen is the page's paper, and a halftone carrying much more ink than this
-/// stops being texture and becomes a pattern. The steps are uneven because a
-/// dot's area grows with the square of its radius.
-const RADII: [f32; LEVELS] = [0., 0.10, 0.15, 0.20];
-/// Accent strength per level, as a fraction of the accent's own alpha. The
-/// accent is the dots' only job, so it tops out well short of full strength:
-/// the page reads as the theme's `background` carrying a faint dot grid, never
-/// as an accent-tinted plane.
-const LEVEL_INK: [f32; LEVELS] = [0., 0.32, 0.42, 0.52];
+// Update at 30 Hz, driven by the backdrop's own animation loop rather than by
+// the RPC heartbeat.
+//
+// The heartbeat idles at ~90 ms because that is how often the app must drain
+// pi's stdout; a field drawn on that beat could only ever reach ~11 Hz, which
+// is too few steps to animate a one-bit screen — at that rate each step turns
+// over several per cent of the plane and the grain boils instead of flowing.
+// The field's clock is therefore separate and page-scoped: it notifies, it
+// never drains events, and it costs nothing while no new-task page is on
+// screen (`advance_backdrop` short-circuits).
+//
+// 30 Hz is the measured ceiling, not a preference: a full-window raster is
+// ~5.6 ms at 1440×900, so a frame interval of 33 ms keeps the raster off the
+// critical path with room to spare. Matching the reference dither's 60 Hz would
+// need a GPU fragment shader, and gpui 0.2.2 exposes no API to paint one.
+const FPS: f32 = 30.;
+/// Tonal lattice, in raster pixels. The field is sampled on this coarse grid and
+/// interpolated per pixel; one noise lookup per lattice cell, not per pixel, is
+/// what makes a one-bit screen affordable on the CPU (measured at 1440×900:
+/// 5.6 ms here against ~20 ms on a 4 px lattice).
+const TONE_STEP: u32 = 8;
+/// Raster pixels per threshold cell. Two matches the reference dither's `0.5`
+/// scale: a 32×32 matrix over a 64 px tile.
+const THRESHOLD_TILE: u32 = 2;
+/// Accent strength of a lit pixel. The screen lights roughly a third of the
+/// plane, so a lit pixel carries about a third of the ink a round dot did — the
+/// mean accent across the page stays where the dot screen left it, and a lit
+/// pixel is still nowhere near the accent's own alpha.
+const FIELD_INK: f32 = 0.13;
 /// The field's resting density, before the noise swings it and the mark takes
-/// over. With [`SWING`] it spans roughly 0.16–0.44, so the screen ranges from
-/// bare cells to the middle of the ladder and never reaches a solid field.
-const DENSITY: f32 = 0.30;
+/// over. With [`SWING`] it spans roughly 0.16–0.50, and the screen reads it as
+/// the share of the plane that lights: a third of the page carries grain, the
+/// rest is the theme's canvas.
+const DENSITY: f32 = 0.33;
 /// How far the noise field can move the density, either side of [`DENSITY`].
-const SWING: f32 = 0.14;
+const SWING: f32 = 0.17;
 /// Density inside the glyphs when the light is elsewhere: denser than the page
-/// grain, so the watermark is always legible, and never the largest dot.
-const MARK_REST: f32 = 0.55;
-/// Density inside a glyph the light is crossing: the largest dot the screen has.
+/// grain at its densest, so the watermark always reads above it, and short of
+/// solid so the light crossing it still has somewhere to go. The grain itself
+/// settles near half the plane now (a one-bit screen lights its tone's share of
+/// pixels), so the resting glyph has to sit well above that to read at all.
+const MARK_REST: f32 = 0.82;
+/// Density inside a glyph the light is crossing: every pixel of the glyph lit.
 const MARK_LIT: f32 = 1.;
 /// Seconds for the light to cross the mark and come round again.
 const SWEEP_PERIOD: f32 = 20.;
@@ -313,9 +360,19 @@ fn noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     lerp(plane(0), plane(1), fz)
 }
 
+/// The two-layer noise field, in cells per second along the noise's third axis.
+///
+/// A cell is one unit of that axis, so 0.40 crosses one every 2.5 s — fast enough
+/// that the screen visibly moves between frames and slow enough to stay ambient
+/// light. The field it replaced drifted at 0.035 (one cell every 29 s), which at
+/// 5 Hz left most consecutive frames identical: the field was animating and
+/// still read as a still image.
+const DRIFT_A: f32 = 0.40;
+const DRIFT_B: f32 = 0.32;
+
 fn field(x: f32, y: f32, phase: f32) -> f32 {
-    let a = noise(x * 2.3 + 4., y * 2.3 + 7., phase * 0.035 + 3., 41);
-    let b = noise(x * 3.5 + 12., y * 3.5 + 5., phase * 0.024 + 9., 971);
+    let a = noise(x * 2.3 + 4., y * 2.3 + 7., phase * DRIFT_A + 3., 41);
+    let b = noise(x * 3.5 + 12., y * 3.5 + 5., phase * DRIFT_B + 9., 971);
     (0.5 + (a - 0.5) * 1.35 + (b - 0.5) * 0.85).clamp(0., 1.)
 }
 
@@ -464,81 +521,78 @@ fn sample(x: f32, y: f32, phase: f32, scale: f32, mark: Option<&Placed>) -> f32 
     (value * (1. - coverage) + glyph * coverage).clamp(0., 1.)
 }
 
-/// Quantize one cell's density through the ordered matrix: the whole part picks
-/// the level, the fractional part decides whether this cell rounds up.
-fn dither(value: f32, threshold: u8) -> usize {
-    let scaled = value * LEVELS as f32;
-    let base = scaled.floor();
-    let threshold = (threshold as f32 + 0.5) / 64.;
-    let level = if scaled - base > threshold {
-        base + 1.
-    } else {
-        base
-    };
-    (level.max(0.) as usize).min(LEVELS - 1)
-}
-
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0., 1.);
     t * t * (3. - 2. * t)
 }
 
-/// The screen, resolved into a cached image: the theme's `background` with a
-/// dot per cell, each dot sized and inked by its level.
+/// The screen, resolved into a cached image: every raster pixel is either the
+/// theme's `background` or one lit pixel of the accent, decided by comparing the
+/// field's density against an ordered threshold.
+///
+/// This is a true one-bit ordered dither, not a halftone of round dots on a grid.
+/// That difference is the whole look: a dot screen quantizes the tone into as
+/// many steps as it has dot sizes, so a drifting field steps between four values
+/// and reads as coarse no matter how often it is redrawn. Thresholding one pixel
+/// at a time gives the screen 1024 tone steps through the 32×32 matrix, which is
+/// what lets the grain resolve into a flow.
 fn raster(width: u32, height: u32, phase: f32, bg: [u8; 4], ink: [u8; 4]) -> RgbaImage {
     let (w, h) = (width as usize, height as usize);
-    let cols = (w as f32 / PITCH).ceil() as usize;
-    let rows = (h as f32 / PITCH).ceil() as usize;
+    let step = TONE_STEP as usize;
+    let cols = w.div_ceil(step) + 2;
+    let rows = h.div_ceil(step) + 2;
     let scale = width.min(height).max(1) as f32;
 
-    // The mark's mask at the resolution it is laid out at, so one sample per
-    // cell lands on the glyphs' own edges rather than the mask's coarse grid.
+    // The mark's mask at the resolution it is laid out at, so the tone lattice
+    // lands on the glyphs' own edges rather than the mask's coarse grid.
     let mark = Mark::get().rect(width, height).map(Mark::at);
-    let mark = mark.as_ref();
 
-    // The plane first: every pixel starts as the theme's canvas, and only the
-    // dots put accent on top of it.
-    let mut pixels = vec![0; w * h * 4];
-    for pixel in pixels.as_chunks_mut::<4>().0 {
-        *pixel = bg;
-    }
-
+    // One density per lattice cell. The field, the watermark and the light are
+    // all read here, once per cell, and interpolated per pixel below.
+    let mut tone = vec![0f32; cols * rows];
     for row in 0..rows {
         for col in 0..cols {
-            let center_x = (col as f32 + 0.5) * PITCH;
-            let center_y = (row as f32 + 0.5) * PITCH;
-            let value = sample(center_x, center_y, phase, scale, mark);
-            let level = dither(value, BAYER[row % 8][col % 8]);
-            let radius = PITCH * RADII[level];
-            if radius <= 0. {
-                continue;
-            }
-            // The accent's step for this level. Denser cells (the glyphs) get a
-            // larger dot, never a different colour.
-            let alpha = LEVEL_INK[level];
-            // The dot's own pixels, with a one-pixel feather so a half-covered
-            // edge pixel fades instead of stair-stepping the screen.
-            let x0 = ((center_x - radius - 1.).floor().max(0.)) as usize;
-            let y0 = ((center_y - radius - 1.).floor().max(0.)) as usize;
-            let x1 = ((center_x + radius + 1.).ceil() as usize).min(w);
-            let y1 = ((center_y + radius + 1.).ceil() as usize).min(h);
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let dx = x as f32 + 0.5 - center_x;
-                    let dy = y as f32 + 0.5 - center_y;
-                    let coverage = (radius + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0., 1.);
-                    if coverage <= 0. {
-                        continue;
-                    }
-                    let a = alpha * coverage;
-                    let pixel = &mut pixels[(y * w + x) * 4..][..4];
-                    for channel in 0..3 {
-                        let plane = f32::from(bg[channel]);
-                        let dot = f32::from(ink[channel]);
-                        pixel[channel] = (plane * (1. - a) + dot * a).round() as u8;
-                    }
-                }
-            }
+            let x = (col as f32 - 0.5) * step as f32;
+            let y = (row as f32 - 0.5) * step as f32;
+            tone[row * cols + col] = sample(x, y, phase, scale, mark.as_ref());
+        }
+    }
+
+    // The one lit colour: the accent carried at [`FIELD_INK`] over the canvas.
+    // Every lit pixel is this same value — a dither changes how much of the
+    // screen is lit, never how strong the ink is.
+    let lit: [u8; 3] = std::array::from_fn(|channel| {
+        let plane = f32::from(bg[channel]);
+        let accent = f32::from(ink[channel]);
+        (plane * (1. - FIELD_INK) + accent * FIELD_INK).round() as u8
+    });
+
+    let mut pixels = vec![0u8; w * h * 4];
+    let inv_step = 1. / step as f32;
+    for y in 0..h {
+        let row = (y / step) * cols;
+        let fy = ((y % step) as f32 + 0.5) * inv_step;
+        for x in 0..w {
+            let col = x / step;
+            let fx = ((x % step) as f32 + 0.5) * inv_step;
+            // Bilinear read of the tone lattice.
+            let (left, right) = (tone[row + col], tone[row + col + 1]);
+            let (below_left, below_right) =
+                (tone[row + cols + col], tone[row + cols + col + 1]);
+            let upper = left + (right - left) * fx;
+            let lower = below_left + (below_right - below_left) * fx;
+            let value = upper + (lower - upper) * fy;
+            let threshold = (f32::from(
+                BAYER[(y as u32 / THRESHOLD_TILE) as usize % 32]
+                    [(x as u32 / THRESHOLD_TILE) as usize % 32],
+            ) + 0.5)
+                / 1024.;
+            let pixel = if value > threshold {
+                [lit[0], lit[1], lit[2], 255]
+            } else {
+                bg
+            };
+            pixels[(y * w + x) * 4..][..4].copy_from_slice(&pixel);
         }
     }
     RgbaImage::from_raw(width, height, pixels).expect("raster dimensions match buffer")
@@ -686,29 +740,73 @@ mod tests {
         );
     }
 
+
+
+    /// TEMPORARY look-check — removed before hand-off.
     #[test]
-    fn bayer_has_all_thresholds() {
+    fn dump_and_measure_frames() {
+        let (bg, ink) = ([16, 16, 20, 255], [120, 150, 255, 255]);
+        let (w, h) = (1440u32, 900u32);
+        let mut previous: Option<image::RgbaImage> = None;
+        for step in 0..4 {
+            let phase = step as f32 / FPS;
+            let started = std::time::Instant::now();
+            let image = raster(w, h, phase, bg, ink);
+            let elapsed = started.elapsed();
+            if let Some(previous) = previous.as_ref() {
+                let changed = previous
+                    .pixels()
+                    .zip(image.pixels())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                println!(
+                    "frame {step}: {:>6.2}% of pixels changed, raster {:.2} ms",
+                    100. * changed as f64 / f64::from(w * h),
+                    elapsed.as_secs_f64() * 1000.
+                );
+            } else {
+                let lit = image.pixels().filter(|p| p.0 != bg).count();
+                println!(
+                    "frame {step}: {:>6.2}% of the plane lit, raster {:.2} ms",
+                    100. * lit as f64 / f64::from(w * h),
+                    elapsed.as_secs_f64() * 1000.
+                );
+            }
+            image.save(format!("/tmp/bit-{step}.png")).unwrap();
+            previous = Some(image);
+        }
+    }
+
+    #[test]
+    fn bayer_has_every_threshold_once() {
         let mut thresholds = BAYER.into_iter().flatten().collect::<Vec<_>>();
         thresholds.sort();
-        assert_eq!(thresholds, (0..64).collect::<Vec<_>>());
+        assert_eq!(
+            thresholds,
+            (0..1024).collect::<Vec<_>>(),
+            "an ordered matrix must use each threshold exactly once"
+        );
     }
 
     /// The page's one colour rule: the plane is the theme's own background and
-    /// the accent never leaves the dots. The screen used to paint full-strength
+    /// the accent never leaves the grain. The screen used to paint full-strength
     /// accent pixels, so the page read as an accent-tinted slab rather than as
     /// the palette's canvas carrying a texture.
     #[test]
-    fn the_plane_is_the_background_and_the_accent_only_inks_the_dots() {
+    fn the_plane_is_the_background_and_the_accent_only_inks_the_grain() {
         let (bg, ink) = ([8, 8, 10, 255], [255, 0, 0, 255]);
         let image = raster(320, 240, 0., bg, ink);
-        let top = LEVEL_INK[LEVELS - 1];
+        // The one lit value the screen is allowed to produce.
+        let lit = (f32::from(bg[0]) * (1. - FIELD_INK) + f32::from(ink[0]) * FIELD_INK).round() as u8;
         let (mut plain, mut inked) = (0, 0);
+        let mut share_total = 0f64;
         for pixel in image.pixels() {
             let pixel = pixel.0;
-            let share = f32::from(pixel[0] - bg[0]) / f32::from(ink[0] - bg[0]);
+            let share = f64::from(pixel[0] - bg[0]) / f64::from(ink[0] - bg[0]);
+            share_total += share;
             assert!(
-                share <= top + 0.01,
-                "the accent flooded the plane: {pixel:?} is {share} of full ink"
+                pixel == bg || pixel[0] == lit,
+                "a dither writes one of two pixels, not a blend: {pixel:?}"
             );
             if pixel == bg {
                 plain += 1;
@@ -716,20 +814,25 @@ mod tests {
                 inked += 1;
             }
         }
-        let total = f32::from((320 * 240) as u16);
+        let total = f64::from(320 * 240);
+        assert!(inked > 0, "the grain must still be there");
         assert!(
-            plain as f32 / total > 0.9,
-            "the page must stay the theme's background: {}% plain",
-            100. * plain as f32 / total
+            plain as f64 / total > 0.5,
+            "the page must mostly stay the theme's background: {}% plain",
+            100. * plain as f64 / total
         );
-        assert!(inked > 0, "the dots must still be there");
+        assert!(
+            share_total / total < 0.06,
+            "the accent washed the page: mean share {:.3}",
+            share_total / total
+        );
     }
 
     /// The field drifts, so the cached raster must change with the phase — and
-    /// the four dot levels must all appear, or the screen has collapsed into a
-    /// single hard mask again.
+    /// the tone must span from nearly bare to clearly inked, or the screen has
+    /// collapsed into one even field.
     #[test]
-    fn the_screen_drifts_and_uses_its_whole_ladder() {
+    fn the_screen_drifts_and_uses_its_whole_tone_range() {
         let (bg, ink) = ([8, 8, 10, 255], [255, 0, 0, 255]);
         let images = [
             raster(320, 240, 0., bg, ink),
@@ -742,16 +845,32 @@ mod tests {
             .count();
         assert!(changed > 100, "the field barely moved: {changed} pixels");
 
-        let share =
-            |pixel: &image::Rgba<u8>| f32::from(pixel.0[0] - bg[0]) / f32::from(ink[0] - bg[0]);
-        let brightest = images[0].pixels().map(share).fold(0., f32::max);
+        // Local lit share, in 16 px blocks: a dither's tone is how much of its
+        // own area lights, so the field's range shows up as the range of those
+        // shares.
+        const BLOCK: u32 = 16;
+        let (mut bare, mut dense) = (1f32, 0f32);
+        for block_y in 0..240 / BLOCK {
+            for block_x in 0..320 / BLOCK {
+                let mut lit = 0;
+                for y in 0..BLOCK {
+                    for x in 0..BLOCK {
+                        let pixel = images[0]
+                            .get_pixel(block_x * BLOCK + x, block_y * BLOCK + y)
+                            .0;
+                        lit += usize::from(pixel != bg);
+                    }
+                }
+                let share = lit as f32 / (BLOCK * BLOCK) as f32;
+                bare = bare.min(share);
+                dense = dense.max(share);
+            }
+        }
+        assert!(bare < 0.2, "no quiet part of the field: {bare}");
+        assert!(dense > 0.45, "no dense part of the field: {dense}");
         assert!(
-            brightest > LEVEL_INK[1] + 0.05,
-            "the field never reaches its larger dots: {brightest}"
-        );
-        assert!(
-            brightest <= LEVEL_INK[LEVELS - 1] + 0.01,
-            "a dot is stronger than the ladder allows: {brightest}"
+            dense - bare > 0.25,
+            "the field's tone barely varies: {bare} to {dense}"
         );
     }
 

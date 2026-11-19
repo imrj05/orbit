@@ -1440,6 +1440,9 @@ pub struct OrbitApp {
     /// shared by every host entry on that server (`remote_sessions_ui.rs`).
     remote_session_lists: HashMap<String, Vec<crate::remote_sessions::RemoteSession>>,
     remote_session_status: HashMap<String, remote_sessions_ui::RemoteListStatus>,
+    /// The Git page's view of the live remote session's folder
+    /// (`remote_git_ui.rs`).
+    remote_git: remote_git_ui::RemoteGitView,
     /// Server groups the user collapsed in the sidebar, by host entry name.
     remote_sessions_collapsed: HashSet<String>,
     /// Set while a remote session is being resumed, so its launch carries no
@@ -2757,6 +2760,7 @@ impl OrbitApp {
             server_clone: None,
             remote_session_lists: HashMap::new(),
             remote_session_status: HashMap::new(),
+            remote_git: Default::default(),
             remote_sessions_collapsed: HashSet::new(),
             remote_resuming: false,
             server_clone_focus: ModalFocus::default(),
@@ -4506,6 +4510,7 @@ mod plugin_update_ui;
 mod provider_accounts;
 mod remote_hosts_ui;
 mod remote_providers_ui;
+mod remote_git_ui;
 mod remote_sessions_ui;
 mod remote_ui;
 mod server_clone_ui;

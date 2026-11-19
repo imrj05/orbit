@@ -23,6 +23,7 @@ the local disk and are not remote-aware.
 | Host config (`~/.orbit-pi/remote-hosts.json`) | `crates/orbit-pi/src/remote_hosts.rs` |
 | Guarded spawn | `BundledExtensions::spawn_remote` (`crates/orbit-pi/src/bundled_extensions.rs`) |
 | App: picker rows, spawn seam, unavailable state | `crates/orbit-pi/src/app/remote_ui.rs` |
+| App: the host's Git page (read-only) | `crates/orbit-pi/src/app/remote_git_ui.rs` |
 | Settings → Remote hosts: list, form, test, remove | `crates/orbit-pi/src/app/remote_hosts_ui.rs` |
 | App tests | `crates/orbit-pi/src/app/remote_ui_tests.rs` |
 | Transport test with a fake ssh | `crates/orbit-rpc/tests/remote_fake_ssh.rs` |
@@ -261,6 +262,15 @@ pi writes a remote session's file on the host, so this Mac's
   containing its cwd, so `demo on vps` (`~/demo`) takes its sessions from a
   `vps` entry rooted at `~`. A group shows its newest eight; a search hides
   the groups (it filters local sessions only).
+- **Linked to a local project** (`RemoteHost::local_dir`, the `local_dir`
+  key; `~/` is the home folder): grouped by project, the entry's header and
+  sessions list inside that project's group, after its local sessions
+  (`place_remote_session_rows`), and a collapsed project hides them like its
+  own rows (the open remote session stays). "Add to a server" links the entry
+  to the project it cloned (an existing unlinked entry for the same folder
+  gains the link); Settings → Remote hosts edits it as **Local project
+  folder**. Unlinked entries, entries linked to a project that is not listed,
+  and the One list / Recent views keep the groups at the end.
 - **When:** at launch and on ⌘R without asking for anything (a server that
   wants a password says so on its group), after a remote turn settles (the
   new session becomes listable), and from a group's refresh button — the only
@@ -315,6 +325,7 @@ behind it is not installed on the host (only the access guard is).
 | Subagents (tool, Settings page) | subagents extension, local agent files | **Missing** | Install extension; agent files are the host's |
 | Quota / usage meters | quota extension + `get_entries` | **Missing**: no quota for remote sessions | Install the quota extension |
 | Usage page | local session files | Local history only | Read the host's sessions over ssh |
+| Git page | the host's own `git`, read over ssh (`orbit_rpc::remote::git_status_script`, read-only, `GIT_OPTIONAL_LOCKS=0`) | **Done (read-only)**: the session folder's repository root, branch (or detached HEAD), upstream with ahead/behind, changed-file count, last commit and `origin` (credentials stripped), or "not a repository" / "git is not installed"; refreshed when the page opens and from its Refresh button | Staging, commit and push on the host |
 | Sidebar sessions, resume | the host's own store, listed over ssh (`list_sessions_script`) | **Done**: a group per host entry; a click resumes on the host | — |
 | Settings → Skills, Plugins, MCP | local files, local `pi mcp list` | Describe this Mac | Per-host versions over ssh |
 | Files, Git, Review, Worktrees, Explorer | local disk | Off with an explanation (correct) | Remote file/Git over ssh |

@@ -542,14 +542,30 @@ impl OrbitApp {
         self.is_active()
     }
 
+    /// Step the new-task field on its own clock, and repaint when it reaches a
+    /// new frame. Returns whether the field is moving, so the clock can idle
+    /// while no page shows it.
+    ///
+    /// [`Self::tick`] calls [`Self::advance_backdrop`] too, on the RPC beat: two
+    /// callers, one owner of the phase. Whichever arrives first consumes the
+    /// frame change and repaints; the other finds nothing changed, so the page
+    /// still paints once per field frame.
+    pub fn tick_backdrop(&mut self, cx: &mut Context<Self>) -> bool {
+        let moving = self.backdrop_live && !theme::reduce_motion(cx);
+        if moving && self.advance_backdrop(false) {
+            cx.notify();
+        }
+        moving
+    }
+
     /// Step the new-task backdrop's field. Returns whether the field moved on to
     /// a new frame and the window should repaint.
     ///
-    /// The field is rastered at [`crate::backdrop::frame`]'s cadence, well
-    /// below the heartbeat's. Repainting on every beat rebuilt the whole window
-    /// two times in three for a frame that had not changed, on the one page a
-    /// fresh install opens on, which is wasted work on every machine and
-    /// competes with typing on a slow one.
+    /// The field is rastered at [`crate::backdrop::frame`]'s cadence, which sits
+    /// just under the idle heartbeat's own. Repainting on every beat rebuilt the
+    /// whole window two times in three for a frame that had not changed, on the
+    /// one page a fresh install opens on, which is wasted work on every machine
+    /// and competes with typing on a slow one.
     ///
     /// The phase is wall-clock seconds, not a tick counter: the heartbeat's
     /// cadence changes with the run state, and the field must not speed up

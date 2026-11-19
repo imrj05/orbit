@@ -2,7 +2,9 @@
 //! The scripts that run on the host are covered in `orbit_rpc::remote` and
 //! the local half (git, URLs, payload) in `crate::server_clone`.
 
-use super::server_clone_ui::{host_for_clone, ClonePhase, ServerCloneDialog, SourceState};
+use super::server_clone_ui::{
+    host_for_clone, CloneEntry, ClonePhase, ServerCloneDialog, SourceState,
+};
 use super::ssh_auth_ui::AuthThen;
 use super::*;
 use crate::remote_hosts::{ProbeFailure, RemoteHost};
@@ -17,6 +19,7 @@ fn host(name: &str) -> RemoteHost {
         port: None,
         dir: "/srv/app".into(),
         enabled: true,
+        local_dir: None,
     }
 }
 
@@ -68,36 +71,68 @@ fn open_dialog(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
 #[test]
 fn a_clone_gets_its_own_host_entry_or_reuses_one() {
     let server = host("vps");
-    let (new, is_new) = host_for_clone(
+    let local = std::path::Path::new("/Users/me/code/demo");
+    let (new, entry) = host_for_clone(
         &server,
         "demo",
         "/home/deploy/demo",
+        local,
         std::slice::from_ref(&server),
     );
-    assert!(is_new);
+    assert_eq!(entry, CloneEntry::New);
     assert_eq!(
         new.name,
         tr!("server_clone.host_name", project = "demo", host = "vps")
     );
     assert_eq!(new.dir, "/home/deploy/demo");
     assert_eq!(
+        new.local_dir.as_deref(),
+        Some("/Users/me/code/demo"),
+        "the entry is linked to the project it was cloned from"
+    );
+    assert_eq!(
         (new.ssh.as_str(), new.user.as_deref()),
         ("vps.example", Some("deploy"))
     );
 
-    let (again, is_new) = host_for_clone(
+    let (again, entry) = host_for_clone(
         &server,
         "demo",
         "/home/deploy/demo",
+        local,
         &[server.clone(), new.clone()],
     );
-    assert!(!is_new, "the same server and folder reuse the saved entry");
+    assert_eq!(
+        entry,
+        CloneEntry::Unchanged,
+        "the same server and folder reuse the saved entry"
+    );
     assert_eq!(again.name, new.name);
+
+    let unlinked = RemoteHost {
+        local_dir: None,
+        ..new.clone()
+    };
+    let (linked, entry) = host_for_clone(
+        &server,
+        "demo",
+        "/home/deploy/demo",
+        local,
+        std::slice::from_ref(&unlinked),
+    );
+    assert_eq!(
+        entry,
+        CloneEntry::Linked,
+        "an unlinked entry gains the link"
+    );
+    assert_eq!(linked.name, new.name);
+    assert_eq!(linked.local_dir.as_deref(), Some("/Users/me/code/demo"));
 
     let (other, _) = host_for_clone(
         &server,
         "demo",
         "/home/deploy/demo-2",
+        local,
         std::slice::from_ref(&new),
     );
     assert_eq!(other.name, format!("{} 2", new.name), "names stay unique");

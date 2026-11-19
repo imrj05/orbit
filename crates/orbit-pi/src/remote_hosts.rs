@@ -5,7 +5,7 @@
 //! writes it; hand edits keep working:
 //!
 //! ```jsonc
-//! { "hosts": [ { "name": "prod-vps", "ssh": "prod-vps", "user": "deploy", "port": 22, "dir": "/srv/app" } ] }
+//! { "hosts": [ { "name": "prod-vps", "ssh": "prod-vps", "user": "deploy", "port": 22, "dir": "/srv/app", "local_dir": "~/code/app" } ] }
 //! ```
 //!
 //! `ssh` is an `~/.ssh/config` alias or a hostname (`user@host` still works);
@@ -13,7 +13,7 @@
 //! on the host; files, Git and the explorer stay local (see
 //! `crates/orbit-pi/docs/remote-sessions.md`). Parsing is lenient: a bad entry
 //! is skipped with a reason, never a blocked launch. Writing is surgical: only
-//! the five keys Orbit owns change, so other keys on an entry and other
+//! the keys Orbit owns change, so other keys on an entry and other
 //! top-level keys survive a save.
 
 use std::path::{Path, PathBuf};
@@ -37,6 +37,12 @@ pub struct RemoteHost {
     /// it (Settings → Remote hosts toggle). Absent in the file means on.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// The folder on this machine the entry is the same project as (`~/` is
+    /// the home folder). Set, the entry's sessions list inside that project's
+    /// sidebar group instead of a group of their own. "Add to a server"
+    /// fills it with the project it cloned; Settings → Remote hosts edits it.
+    #[serde(default)]
+    pub local_dir: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -147,6 +153,32 @@ impl RemoteHost {
         } else {
             entry.insert("enabled".into(), Value::Bool(false));
         }
+        match self
+            .local_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|dir| !dir.is_empty())
+        {
+            Some(dir) => {
+                entry.insert("local_dir".into(), Value::String(dir.to_string()));
+            }
+            None => {
+                entry.remove("local_dir");
+            }
+        }
+    }
+
+    /// The linked local folder with `~/` expanded, when one is set.
+    pub fn local_path(&self) -> Option<PathBuf> {
+        let dir = self.local_dir.as_deref()?.trim();
+        if dir.is_empty() {
+            return None;
+        }
+        Some(match dir.strip_prefix("~/") {
+            Some(rest) => crate::platform::home_dir().join(rest),
+            None if dir == "~" => crate::platform::home_dir(),
+            None => PathBuf::from(dir),
+        })
     }
 }
 
@@ -652,6 +684,95 @@ pub fn list_sessions(
     Ok(crate::remote_sessions::parse(&stdout))
 }
 
+/// Git facts about a host entry's folder, read over ssh by
+/// [`git_status`]. Nothing here is fabricated: a field the host did not
+/// answer is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteGit {
+    /// `git` is not on the host's login PATH.
+    Missing,
+    /// The folder is not inside a Git work tree.
+    NotARepository,
+    Repository(RemoteGitRepo),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemoteGitRepo {
+    /// The work tree's top level on the host.
+    pub root: Option<String>,
+    /// `None` on a detached HEAD.
+    pub branch: Option<String>,
+    /// The last commit: short hash and subject.
+    pub head: Option<String>,
+    pub upstream: Option<String>,
+    /// Commits ahead of and behind the upstream, when there is one.
+    pub ahead_behind: Option<(u32, u32)>,
+    /// Changed paths in `git status --porcelain`.
+    pub changed: Option<u32>,
+    /// `origin`, with any password or token removed.
+    pub origin: Option<String>,
+}
+
+/// Read [`orbit_rpc::remote::git_status_script`]'s output.
+pub fn parse_git_status(stdout: &str) -> RemoteGit {
+    let mut repo = RemoteGitRepo::default();
+    let mut is_repo = false;
+    for line in stdout.lines() {
+        let Some((key, value)) = line.split_once(": ") else {
+            continue;
+        };
+        let value = value.trim();
+        let text = || Some(value.to_string()).filter(|v| !v.is_empty());
+        match key.trim() {
+            "git" if value == "missing" => return RemoteGit::Missing,
+            "repo" if value == "no" => return RemoteGit::NotARepository,
+            "repo" if value == "yes" => is_repo = true,
+            "root" => repo.root = text(),
+            "branch" => repo.branch = text(),
+            "head" => repo.head = text(),
+            "upstream" => repo.upstream = text(),
+            "ahead_behind" => {
+                let mut counts = value.split_whitespace().map(str::parse::<u32>);
+                repo.ahead_behind = match (counts.next(), counts.next()) {
+                    (Some(Ok(ahead)), Some(Ok(behind))) => Some((ahead, behind)),
+                    _ => None,
+                };
+            }
+            "changed" => repo.changed = value.parse().ok(),
+            "origin" => {
+                repo.origin = text().map(|url| crate::server_clone::strip_credentials(&url))
+            }
+            _ => {}
+        }
+    }
+    if is_repo {
+        RemoteGit::Repository(repo)
+    } else {
+        RemoteGit::NotARepository
+    }
+}
+
+/// The Git state of `host`'s folder. Read-only; blocking: call it off the
+/// UI thread.
+pub fn git_status(
+    host: &RemoteHost,
+    password: Option<&str>,
+) -> std::result::Result<RemoteGit, ProbeFailure> {
+    let target = host
+        .target()
+        .map_err(|err| ProbeFailure::Other(format!("{err:#}")))?;
+    let script = orbit_rpc::remote::git_status_script(&target)
+        .map_err(|err| ProbeFailure::Other(format!("{err:#}")))?;
+    let stdout = run_script_output(
+        &target,
+        &script,
+        password,
+        orbit_rpc::remote::GIT_STATUS_STARTED,
+        None,
+    )?;
+    Ok(parse_git_status(&stdout))
+}
+
 /// The models `host`'s pi can use (see
 /// [`orbit_rpc::remote::list_models_script`]), which is also the list of
 /// providers signed in there. Blocking: call it off the UI thread.
@@ -870,6 +991,7 @@ mod tests {
             port: None,
             dir: "/srv/app".into(),
             enabled: true,
+            local_dir: None,
         }
     }
 
@@ -946,6 +1068,7 @@ mod tests {
         let mut edited = host("a2");
         edited.user = Some("deploy".into());
         edited.port = Some(2200);
+        edited.local_dir = Some("~/code/app".into());
         upsert_at(&path, Some("a"), &edited).expect("rename");
         upsert_at(&path, None, &host("b")).expect("add");
 
@@ -961,7 +1084,12 @@ mod tests {
         );
         assert_eq!(entries[0]["user"], "deploy");
         assert_eq!(entries[0]["port"], 2200);
+        assert_eq!(entries[0]["local_dir"], "~/code/app");
         assert_eq!(entries[1]["name"], "b");
+        assert!(
+            entries[1].get("local_dir").is_none(),
+            "unlinked writes no key"
+        );
 
         // Clearing the optional fields removes them instead of writing null.
         upsert_at(&path, Some("a2"), &host("a2")).unwrap();
@@ -969,10 +1097,60 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(document["hosts"][0].get("user").is_none());
         assert!(document["hosts"][0].get("port").is_none());
+        assert!(document["hosts"][0].get("local_dir").is_none());
 
         let (hosts, skipped) = load_from(&path);
         assert!(skipped.is_empty());
         assert_eq!(hosts.len(), 2);
+        let linked = RemoteHost {
+            local_dir: Some("~/code/app".into()),
+            ..host("x")
+        };
+        assert_eq!(
+            linked.local_path(),
+            Some(crate::platform::home_dir().join("code/app")),
+            "~/ is the home folder"
+        );
+    }
+
+    #[test]
+    fn git_status_lines_become_facts() {
+        let stdout = concat!(
+            "orbit-git: started\n",
+            "repo: yes\n",
+            "root: /srv/app\n",
+            "branch: main\n",
+            "head: abc1234 fix: things\n",
+            "upstream: origin/main\n",
+            "ahead_behind: 2\t1\n",
+            "changed: 3\n",
+            "origin: https://user:secret@github.com/me/app.git\n",
+        );
+        let RemoteGit::Repository(repo) = parse_git_status(stdout) else {
+            panic!("a repository");
+        };
+        assert_eq!(repo.root.as_deref(), Some("/srv/app"));
+        assert_eq!(repo.branch.as_deref(), Some("main"));
+        assert_eq!(repo.head.as_deref(), Some("abc1234 fix: things"));
+        assert_eq!(repo.ahead_behind, Some((2, 1)));
+        assert_eq!(repo.changed, Some(3));
+        assert!(
+            !repo
+                .origin
+                .as_deref()
+                .unwrap_or_default()
+                .contains("secret"),
+            "credentials never reach the UI"
+        );
+
+        let detached = parse_git_status("repo: yes\nbranch: \nupstream: \nahead_behind: \n");
+        assert_eq!(
+            detached,
+            RemoteGit::Repository(RemoteGitRepo::default()),
+            "an unanswered field stays unknown"
+        );
+        assert_eq!(parse_git_status("repo: no\n"), RemoteGit::NotARepository);
+        assert_eq!(parse_git_status("git: missing\n"), RemoteGit::Missing);
     }
 
     #[test]
