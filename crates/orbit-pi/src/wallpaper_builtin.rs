@@ -340,6 +340,35 @@ mod tests {
         }
     }
 
+    /// `include_dir!` embeds the whole `assets/` tree, so an image left in
+    /// `assets/wallpapers/` ships in every binary even when no built-in uses
+    /// it. Only catalogued, credited images may live there; the user's own
+    /// pictures belong in the library folder (`wallpaper_library`).
+    #[test]
+    fn the_bundled_folder_holds_only_catalogued_images() {
+        let catalogued: Vec<&str> = BuiltinBackground::ALL
+            .iter()
+            .filter_map(|background| match background.source() {
+                Source::Image(file) => Some(file),
+                Source::Gradient(..) => None,
+            })
+            .collect();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/wallpapers");
+        for folder in [root.clone(), root.join("thumbs")] {
+            for entry in std::fs::read_dir(&folder).expect("wallpapers folder").flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry.path().is_dir() || name == "CREDITS.md" || name.starts_with('.') {
+                    continue;
+                }
+                assert!(
+                    catalogued.contains(&name.as_str()),
+                    "{} is bundled but no built-in uses it; move it to the library folder",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+
     #[test]
     fn every_category_lists_something() {
         for category in Category::ALL {

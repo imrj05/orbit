@@ -6379,8 +6379,6 @@ impl OrbitApp {
         let count = choices.len();
         let keyboard_choices = choices.clone();
         let keyboard_this = this.clone();
-        let thumb_h = ButtonSize::Medium.height(&theme);
-        let radius = Radius::Medium.px(&theme);
         let group_id = format!("builtin-{}", category.id());
         settings_radio_group(div().id(ElementId::Name(group_id.clone().into())), &theme)
             .debug_selector(move || group_id.clone())
@@ -6409,44 +6407,103 @@ impl OrbitApp {
             })
             .children(choices.into_iter().map(|background| {
                 let this = this.clone();
-                let active = current == Some(background);
-                div()
-                    .id(ElementId::Name(format!("builtin-{}", background.id()).into()))
-                    .debug_selector(move || format!("builtin-{}", background.id()))
-                    .flex_none()
-                    .p(DynamicSpacing::Base02.px(&theme))
-                    .rounded(radius + DynamicSpacing::Base02.px(&theme))
-                    .border_1()
-                    .border_color(if active {
-                        theme.accent
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .when(!active, |ring| ring.hover_border(&theme))
-                    .cursor_pointer()
-                    .tip(background.tooltip())
-                    .on_click(move |_, _, cx| {
+                let face = background_face(theme);
+                let face = match (background.gradient(), background.thumbnail()) {
+                    (Some(fill), _) => face.bg(fill),
+                    (None, Some(path)) => face.child(
+                        gpui::img(SharedString::from(path))
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover),
+                    ),
+                    (None, None) => face,
+                };
+                background_tile(
+                    format!("builtin-{}", background.id()),
+                    current == Some(background),
+                    background.tooltip(),
+                    face,
+                    theme,
+                    move |_, cx| {
                         this.update(cx, |app, cx| app.apply_builtin_background(background, cx));
-                    })
-                    .child({
-                        let face = div()
-                            .w(thumb_h * 1.6)
-                            .h(thumb_h)
-                            .rounded(radius)
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(theme.hairline());
-                        match (background.gradient(), background.thumbnail()) {
-                            (Some(fill), _) => face.bg(fill),
-                            (None, Some(path)) => face.child(
-                                gpui::img(SharedString::from(path))
-                                    .size_full()
-                                    .object_fit(gpui::ObjectFit::Cover),
-                            ),
-                            (None, None) => face,
-                        }
-                    })
-                    .into_any_element()
+                    },
+                )
+            }))
+            .into_any_element()
+    }
+
+    /// "Your backgrounds": the library folder's pictures as the same tiles
+    /// the built-in strips use, wrapping across the row's full width (there
+    /// can be any number of them). The one in use is the picture whose name
+    /// the current wallpaper carries, when that wallpaper is not a built-in.
+    fn library_backgrounds(
+        &self,
+        theme: Theme,
+        settings: &crate::wallpaper::WallpaperSettings,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        let builtin = settings
+            .path
+            .as_deref()
+            .and_then(crate::wallpaper_builtin::BuiltinBackground::of_path)
+            .is_some();
+        let current = (!builtin && settings.path.is_some())
+            .then(|| settings.label.clone())
+            .flatten()
+            .and_then(|label| {
+                self.wallpaper_library
+                    .iter()
+                    .position(|image| image.name == label)
+            });
+        let paths: Vec<PathBuf> = self
+            .wallpaper_library
+            .iter()
+            .map(|image| image.path.clone())
+            .collect();
+        let count = paths.len();
+        let keyboard_this = this.clone();
+        settings_radio_group(div().id("wallpaper-library"), &theme)
+            .debug_selector(|| "wallpaper-library".to_string())
+            .mx(DynamicSpacing::Base12.px(&theme))
+            .mb(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .on_key_down(move |event, _, cx| {
+                let index = current.unwrap_or(0);
+                let Some(next) = radio_step(event.keystroke.key.as_str(), index, count, count)
+                else {
+                    return;
+                };
+                cx.stop_propagation();
+                let path = paths[next].clone();
+                keyboard_this.update(cx, |app, cx| app.apply_library_background(path, cx));
+            })
+            .children(self.wallpaper_library.iter().enumerate().map(|(index, image)| {
+                let this = this.clone();
+                let path = image.path.clone();
+                let face = background_face(theme);
+                let face = if image.thumb_ready {
+                    face.child(
+                        gpui::img(image.thumb.clone())
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover),
+                    )
+                } else {
+                    // Until its thumbnail is made: a plain well, not a blank hole.
+                    face.bg(theme.card_fill(theme.surface_secondary))
+                };
+                background_tile(
+                    format!("library-{index}"),
+                    current == Some(index),
+                    image.name.clone(),
+                    face,
+                    theme,
+                    move |_, cx| {
+                        let path = path.clone();
+                        this.update(cx, |app, cx| app.apply_library_background(path, cx));
+                    },
+                )
             }))
             .into_any_element()
     }
@@ -6470,6 +6527,29 @@ impl OrbitApp {
                 None,
                 Some(self.builtin_backgrounds(category, theme, settings, this.clone())),
             ));
+        }
+        let library_folder = crate::skills::display_path(&crate::wallpaper_library::dir());
+        let library_description = if self.wallpaper_library.is_empty() {
+            tr!("wallpaper.library_empty")
+        } else {
+            tr!("wallpaper.library_description")
+        };
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.library"),
+            Some(&library_description),
+            Some(&library_folder),
+            Some(self.runtime_button(
+                "wallpaper-library-open",
+                &tr!("wallpaper.library_open"),
+                false,
+                theme,
+                this.clone(),
+                OrbitApp::wallpaper_library_open,
+            )),
+        ));
+        if !self.wallpaper_library.is_empty() {
+            rows.push(self.library_backgrounds(theme, settings, this.clone()));
         }
         if settings.path.is_none() {
             return rows;
@@ -7165,6 +7245,91 @@ impl OrbitApp {
 
     fn import_wallpaper(&mut self, source: PathBuf, cx: &mut Context<Self>) {
         self.import_wallpaper_from(source, None, cx);
+    }
+
+    /// Keep "Your backgrounds" current while Settings → Appearance shows it:
+    /// the first time it is shown, start the folder watch and list the folder;
+    /// after that, list it again whenever the watch reports a change. Changes
+    /// made while Appearance is hidden wait in the watch's channel.
+    pub(super) fn tick_wallpaper_library(&mut self, cx: &mut Context<Self>) {
+        if !(self.settings_open && self.settings_section == SettingsSection::Appearance) {
+            return;
+        }
+        if !self.wallpaper_library_started {
+            self.wallpaper_library_started = true;
+            self.wallpaper_library_watcher = crate::wallpaper_library::LibraryWatcher::start();
+            self.refresh_wallpaper_library(cx);
+        } else if self
+            .wallpaper_library_watcher
+            .as_ref()
+            .is_some_and(crate::wallpaper_library::LibraryWatcher::take_dirty)
+        {
+            self.refresh_wallpaper_library(cx);
+        }
+    }
+
+    /// List the library folder off the UI thread: first what is there with
+    /// the thumbnails already cached, then again once the missing ones are
+    /// made. A newer listing supersedes an older one still running.
+    fn refresh_wallpaper_library(&mut self, cx: &mut Context<Self>) {
+        self.wallpaper_library_generation += 1;
+        let generation = self.wallpaper_library_generation;
+        let dir = crate::wallpaper_library::dir();
+        let thumbs = crate::wallpaper_library::thumbs_dir();
+        cx.spawn(async move |this, cx| {
+            let listed = {
+                let (dir, thumbs) = (dir.clone(), thumbs.clone());
+                cx.background_executor()
+                    .spawn(async move { crate::wallpaper_library::list(&dir, &thumbs) })
+                    .await
+            };
+            let current = this
+                .update(cx, |app, cx| {
+                    let current = app.wallpaper_library_generation == generation;
+                    if current {
+                        app.wallpaper_library = listed.clone();
+                        cx.notify();
+                    }
+                    current
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let made = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut images = listed;
+                    crate::wallpaper_library::make_thumbnails(&mut images, &thumbs);
+                    images
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                if app.wallpaper_library_generation == generation {
+                    app.wallpaper_library = made;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Use a picture from the library: imported like a picked file, so the
+    /// library's own file is only read, never moved or changed.
+    pub(super) fn apply_library_background(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.import_wallpaper(path, cx);
+    }
+
+    /// Open the library folder in the file manager, creating it first.
+    pub(super) fn wallpaper_library_open(&mut self, cx: &mut Context<Self>) {
+        let dir = crate::wallpaper_library::dir();
+        cx.background_executor()
+            .spawn(async move {
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    crate::platform::open_path_default(&dir);
+                }
+            })
+            .detach();
     }
 
     /// Use a built-in background: render it into the managed folder, then
@@ -9115,6 +9280,51 @@ const WALLPAPER_PREVIEW_H: f32 = 148.;
 /// wraps the whole group, with arrows choosing inside it. gpui 0.2 has no
 /// `:focus-visible`, so a click must not move focus here or the ring would
 /// stay behind after a mouse choice; the option's own `on_click` still fires.
+/// The face of a background tile: the thumbnail's frame, at the strip's
+/// 1.6 ratio on a Medium button height. The caller fills it.
+fn background_face(theme: Theme) -> Div {
+    let thumb_h = ButtonSize::Medium.height(&theme);
+    div()
+        .w(thumb_h * 1.6)
+        .h(thumb_h)
+        .rounded(Radius::Medium.px(&theme))
+        .overflow_hidden()
+        .border_1()
+        .border_color(theme.hairline())
+}
+
+/// One background choice, built-in or from the library: the face in a
+/// ring that takes the accent when it is the one in use.
+fn background_tile(
+    id: String,
+    active: bool,
+    tip: String,
+    face: Div,
+    theme: Theme,
+    on_pick: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let radius = Radius::Medium.px(&theme);
+    let selector = id.clone();
+    div()
+        .id(ElementId::Name(id.into()))
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .p(DynamicSpacing::Base02.px(&theme))
+        .rounded(radius + DynamicSpacing::Base02.px(&theme))
+        .border_1()
+        .border_color(if active {
+            theme.accent
+        } else {
+            gpui::transparent_black()
+        })
+        .when(!active, |ring| ring.hover_border(&theme))
+        .cursor_pointer()
+        .tip(tip)
+        .on_click(move |_, window, cx| on_pick(window, cx))
+        .child(face)
+        .into_any_element()
+}
+
 fn settings_radio_group(el: Stateful<Div>, theme: &Theme) -> Stateful<Div> {
     let ring = theme.focus_ring;
     el.focusable()

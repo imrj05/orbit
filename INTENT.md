@@ -680,6 +680,22 @@ the ordinary wallpaper path, so placement, blur, effects, glass and
 accent-from-image apply unchanged; it replaces the current image as a picked file
 does. No network is involved.
 
+Your backgrounds (`wallpaper_library.rs`): below the built-in rows, Settings →
+Appearance → Background lists the pictures in `~/.orbit-pi/wallpapers/library/`
+as the same tiles, wrapping across the row, with **Open folder** (creating the
+folder first). Orbit only reads that folder: images there are never bundled,
+uploaded or changed, which is what lets a picture licensed for use on the user's
+own device (a Freepik download, say) be a background without Orbit distributing
+it. Listing runs off the UI thread in two passes: the folder with any cached
+thumbnails first, then the missing 240×150 thumbnails decoded into
+`~/.orbit-pi/wallpapers/library-thumbs/` (named by a hash of name, size and
+modification time; orphans pruned). It starts the first time Appearance is
+shown, and a debounced watch on the folder, polled on the heartbeat, lists it
+again when pictures come or go. Picking one imports it through the ordinary
+wallpaper path. Because `include_dir!` embeds all of `assets/`, a test
+(`the_bundled_folder_holds_only_catalogued_images`) fails if an image in
+`assets/wallpapers/` is not a catalogued, credited built-in.
+
 Glass pages over a full-window wallpaper: the feature pages (Git, Usage, Files,
 Worktrees, the expanded terminal) and the dock cards (Review, Explorer, session
 details) frame themselves with `SurfaceExt::page_card` — the panel radius, the

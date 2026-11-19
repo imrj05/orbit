@@ -636,6 +636,15 @@ pub struct OrbitApp {
     settings_open: bool,
     /// Active section within the settings surface.
     settings_section: SettingsSection,
+    /// Settings → Appearance → "Your backgrounds": the pictures in the
+    /// library folder, as last listed off-thread.
+    wallpaper_library: Vec<crate::wallpaper_library::LibraryImage>,
+    /// Watches the library folder once Appearance has been shown.
+    wallpaper_library_watcher: Option<crate::wallpaper_library::LibraryWatcher>,
+    /// The library has been listed (and its watch started) this launch.
+    wallpaper_library_started: bool,
+    /// Bumped per listing so a slow, superseded one never lands.
+    wallpaper_library_generation: u64,
     git_accounts_snapshot: Option<crate::git_accounts::Snapshot>,
     git_accounts_loading: bool,
     git_accounts_generation: u64,
@@ -2350,6 +2359,10 @@ impl OrbitApp {
             session_watcher: sessions::SessionWatcher::start(),
             workspace_watcher: None,
             workspace_watch_dir: None,
+            wallpaper_library: Vec::new(),
+            wallpaper_library_watcher: None,
+            wallpaper_library_started: false,
+            wallpaper_library_generation: 0,
             sidebar_list: ListState::new(0, ListAlignment::Top, px(44.)),
             sidebar_visible: true,
             sidebar_slide_gen: 0,

@@ -154,6 +154,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/wallpaper_builtin.rs built-in backgrounds: generated gradients + bundled images (assets/wallpapers/,
                         credits in its CREDITS.md), written into the managed wallpaper folder and imported
                         like a picked file
+  src/wallpaper_library.rs "Your backgrounds": lists the user's own pictures in
+                        ~/.orbit-pi/wallpapers/library/ (read-only, never bundled), cached
+                        240×150 thumbnails, and the debounced folder watch
   src/workspace_logo.rs workspace logo lookup for the new-task folder field (conventional paths, `.orbit-pi/icon.*` override, folder glyph fallback)
   src/workspace_mark.rs per-workspace sidebar mark: curated HugeIcons + semantic tints, persisted in workspaces.json
   src/worktree.rs       Git worktree lifecycle: `WorktreeManager` (list/create/remove/move/lock/unlock/prune/repair), porcelain parsing, name validation, worktree root + `.orbit/worktree.json`

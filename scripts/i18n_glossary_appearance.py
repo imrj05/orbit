@@ -7,6 +7,10 @@ galleries (dark and light) instead of a design-system switch.
 
 GLOSSARY = {
     "zh-CN": {
+        "Your backgrounds": "你的背景",
+        "Pictures from your own folder. They stay on this computer.": "来自你自己文件夹的图片，只保存在这台电脑上。",
+        "Put pictures in this folder to list them here. They stay on this computer.": "把图片放进这个文件夹即可在这里列出，它们只保存在这台电脑上。",
+        "Open folder": "打开文件夹",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "Orbit 为浅色和深色各保留一套配色，并随外观自动切换。",
         "Dark themes": "深色主题",
         "Gradients": "渐变",
@@ -51,6 +55,10 @@ GLOSSARY = {
         "Blend the bottom of the wallpaper into the theme background.": "让壁纸底部渐隐至主题背景。",
     },
     "ja": {
+        "Your backgrounds": "あなたの背景",
+        "Pictures from your own folder. They stay on this computer.": "自分のフォルダーにある画像です。このコンピューターから外には出ません。",
+        "Put pictures in this folder to list them here. They stay on this computer.": "このフォルダーに画像を入れると、ここに一覧表示されます。このコンピューターから外には出ません。",
+        "Open folder": "フォルダーを開く",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "Orbit はライト用とダーク用にそれぞれパレットを保持し、外観に合わせて切り替えます。",
         "Dark themes": "ダークテーマ",
         "Gradients": "グラデーション",
@@ -95,6 +103,10 @@ GLOSSARY = {
         "Blend the bottom of the wallpaper into the theme background.": "壁紙の下部をテーマの背景になじませます。",
     },
     "ko": {
+        "Your backgrounds": "내 배경",
+        "Pictures from your own folder. They stay on this computer.": "내 폴더에 있는 사진입니다. 이 컴퓨터 밖으로 나가지 않습니다.",
+        "Put pictures in this folder to list them here. They stay on this computer.": "이 폴더에 사진을 넣으면 여기에 표시됩니다. 이 컴퓨터 밖으로 나가지 않습니다.",
+        "Open folder": "폴더 열기",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "Orbit은 라이트용과 다크용 팔레트를 하나씩 기억하고 화면 모드에 따라 전환합니다.",
         "Dark themes": "다크 테마",
         "Gradients": "그라데이션",
@@ -139,6 +151,10 @@ GLOSSARY = {
         "Blend the bottom of the wallpaper into the theme background.": "배경 이미지 하단을 테마 배경에 자연스럽게 섞습니다.",
     },
     "es": {
+        "Your backgrounds": "Tus fondos",
+        "Pictures from your own folder. They stay on this computer.": "Imágenes de tu propia carpeta. No salen de este equipo.",
+        "Put pictures in this folder to list them here. They stay on this computer.": "Pon imágenes en esta carpeta para verlas aquí. No salen de este equipo.",
+        "Open folder": "Abrir carpeta",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "Orbit guarda una paleta para el modo claro y otra para el oscuro, y alterna entre ellas según la apariencia.",
         "Dark themes": "Temas oscuros",
         "Gradients": "Degradados",
@@ -183,6 +199,10 @@ GLOSSARY = {
         "Blend the bottom of the wallpaper into the theme background.": "Funde la parte inferior del fondo de pantalla con el fondo del tema.",
     },
     "fr": {
+        "Your backgrounds": "Vos arrière-plans",
+        "Pictures from your own folder. They stay on this computer.": "Des images de votre propre dossier. Elles restent sur cet ordinateur.",
+        "Put pictures in this folder to list them here. They stay on this computer.": "Placez des images dans ce dossier pour les voir ici. Elles restent sur cet ordinateur.",
+        "Open folder": "Ouvrir le dossier",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "Orbit garde une palette pour le mode clair et une pour le mode sombre, et passe de l'une à l'autre selon l'apparence.",
         "Dark themes": "Thèmes sombres",
         "Gradients": "Dégradés",
@@ -227,6 +247,10 @@ GLOSSARY = {
         "Blend the bottom of the wallpaper into the theme background.": "Fond le bas du fond d’écran dans l’arrière-plan du thème.",
     },
     "de": {
+        "Your backgrounds": "Deine Hintergründe",
+        "Pictures from your own folder. They stay on this computer.": "Bilder aus deinem eigenen Ordner. Sie bleiben auf diesem Computer.",
+        "Put pictures in this folder to list them here. They stay on this computer.": "Lege Bilder in diesen Ordner, um sie hier zu sehen. Sie bleiben auf diesem Computer.",
+        "Open folder": "Ordner öffnen",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "Orbit merkt sich je eine Palette für Hell und Dunkel und wechselt mit dem Erscheinungsbild.",
         "Dark themes": "Dunkle Designs",
         "Gradients": "Verläufe",
@@ -271,6 +295,10 @@ GLOSSARY = {
         "Blend the bottom of the wallpaper into the theme background.": "Blendet das Hintergrundbild am unteren Rand in den Designhintergrund über.",
     },
     "pt-BR": {
+        "Your backgrounds": "Seus fundos",
+        "Pictures from your own folder. They stay on this computer.": "Imagens da sua própria pasta. Elas ficam neste computador.",
+        "Put pictures in this folder to list them here. They stay on this computer.": "Coloque imagens nesta pasta para vê-las aqui. Elas ficam neste computador.",
+        "Open folder": "Abrir pasta",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "O Orbit guarda uma paleta para o modo claro e outra para o escuro, e alterna entre elas conforme a aparência.",
         "Dark themes": "Temas escuros",
         "Gradients": "Gradientes",
@@ -315,6 +343,10 @@ GLOSSARY = {
         "Blend the bottom of the wallpaper into the theme background.": "Faz a parte inferior da imagem de fundo se fundir com o fundo do tema.",
     },
     "ru": {
+        "Your backgrounds": "Ваши фоны",
+        "Pictures from your own folder. They stay on this computer.": "Изображения из вашей папки. Они остаются на этом компьютере.",
+        "Put pictures in this folder to list them here. They stay on this computer.": "Положите изображения в эту папку, чтобы они появились здесь. Они остаются на этом компьютере.",
+        "Open folder": "Открыть папку",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "Orbit хранит одну палитру для светлого режима и одну для тёмного и переключает их вместе с оформлением.",
         "Dark themes": "Тёмные темы",
         "Gradients": "Градиенты",
@@ -359,6 +391,10 @@ GLOSSARY = {
         "Blend the bottom of the wallpaper into the theme background.": "Плавно смешивает нижнюю часть обоев с фоном темы.",
     },
     "it": {
+        "Your backgrounds": "I tuoi sfondi",
+        "Pictures from your own folder. They stay on this computer.": "Immagini dalla tua cartella. Restano su questo computer.",
+        "Put pictures in this folder to list them here. They stay on this computer.": "Metti delle immagini in questa cartella per vederle qui. Restano su questo computer.",
+        "Open folder": "Apri cartella",
         "Orbit keeps one palette for light and one for dark, and switches between them with the appearance.": "Orbit conserva una palette per il chiaro e una per lo scuro, e passa dall'una all'altra in base all'aspetto.",
         "Dark themes": "Temi scuri",
         "Gradients": "Sfumature",

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Your backgrounds.** Settings → Appearance → Background now lists the
+  pictures in your own folder, `~/.orbit-pi/wallpapers/library/`, next to the
+  built-in ones; **Open folder** opens it, and pictures you add or remove show
+  up while Settings is open. Orbit only reads the folder, so your pictures stay
+  on your computer.
+
 - **Pull requests and checks on a commit.** Opening a commit on the Git
   page's History or Graph tab now shows the pull request it belongs to (who
   opened it, who merged it — click to open it on the Pull requests tab) and
