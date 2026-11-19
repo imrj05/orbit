@@ -699,7 +699,13 @@ Skills and Subagents list columns (their page roots stay clear like every other
 Settings section); wells nested inside Settings cards and the About banner take
 `card_fill` tints rather than opaque slabs. The sidebar's sticky project header
 frosts with the rail through `SurfaceExt::pane_sticky_frost` and keeps the opaque
-surface when Glass is off, so rows never print through it.
+surface when Glass is off, so rows never print through it. The reader's bubble
+is `SurfaceExt::edgeless_card` (the panel corner, `Theme::glass_fill`, frost only
+under glass, no hairline); `glass_fill` is also the composer's and the tool
+card's code plane's fill. Every Settings modal dims with `scrim_modal`, the Git
+page's in-page confirmations with `scrim`, the sidebar drag preview is an
+`elevation_2` floating layer, and the composer's second send disc rests on
+`overlay` like the controls around it.
 
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.

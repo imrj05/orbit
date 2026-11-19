@@ -73,14 +73,6 @@ use crate::ui::style::surface::SurfaceExt;
 /// exactly `base` otherwise — so without glass (no wallpaper, Glass off, or a
 /// renderer with no backdrop pass) the surface keeps its opaque plane instead
 /// of showing a sharp picture through text.
-fn glass_surface_fill(theme: Theme, base: Hsla) -> Hsla {
-    if theme.glass_sigma().is_some() {
-        theme.card_fill(base)
-    } else {
-        base
-    }
-}
-
 fn frosted_transcript_fill(theme: Theme) -> Hsla {
     if theme.glass_sigma().is_some() {
         theme.card_fill(theme.surface_secondary)
@@ -2412,13 +2404,11 @@ fn user_message_bubble(body: &str, theme: Theme, column_width: Option<Pixels>) -
             },
         )
         .max_w(px(USER_BUBBLE_MAX_WIDTH))
-        .rounded(panel::RADIUS.px(&theme))
         // Over wallpaper glass the reader's bubble is frosted like the cards
         // beside it: the contrast-floored tint over a blurred backdrop, so the
         // picture reads as a material and never as sharp detail under their
         // text. Without glass it keeps the palette's opaque surface.
-        .bg(glass_surface_fill(theme, theme.surface_elevated))
-        .frosted_pane(&theme)
+        .edgeless_card(&theme, theme.surface_elevated)
         .text_color(theme.text_primary)
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
@@ -5148,7 +5138,7 @@ fn render_tool_detail(
         let mut surface = div()
             .w_full()
             .min_w_0()
-            .bg(glass_surface_fill(theme, theme.code_bg))
+            .bg(theme.glass_fill(theme.code_bg))
             .flex()
             .flex_col()
             // The surface is always the card's last child, so it carries the
@@ -9641,7 +9631,7 @@ mod tests {
                 } else {
                     (theme.surface_elevated, theme.code_bg)
                 };
-                assert_eq!(glass_surface_fill(theme, theme.code_bg), code);
+                assert_eq!(theme.glass_fill(theme.code_bg), code);
                 let mut row = user_message_bubble("hi", theme, None);
                 assert_eq!(row.style().background, Some(bubble.into()));
                 if frosted {

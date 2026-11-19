@@ -2052,12 +2052,11 @@ impl OrbitApp {
     ) -> AnyElement {
         div()
             .w_full()
-            .bg(theme.surface_secondary)
-            .when_some(theme.glass_sigma(), |card, _| {
-                card.bg(theme.card_fill(theme.surface_secondary))
-            })
-            .frosted_card(&theme, theme.hairline(), panel::RADIUS.px(&theme))
-            .rounded(panel::RADIUS.px(&theme))
+            .card_surface(
+                &theme,
+                theme.hairline(),
+                theme.card_fill(theme.surface_secondary),
+            )
             .px(DynamicSpacing::Base12.px(&theme))
             .py(DynamicSpacing::Base40.px(&theme))
             .flex()
@@ -3926,20 +3925,8 @@ impl OrbitApp {
             )
             .child(modal_footer(&theme).child(close));
 
-        let scrim = match theme.mode {
-            ThemeMode::Dark => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.42,
-            },
-            ThemeMode::Light => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.22,
-            },
-        };
+        // The backdrop every modal shares (`ui::dialog::modal_scrim`'s role).
+        let scrim = theme.scrim_modal();
         Some(
             div()
                 .id("provider-usage-layer")
@@ -4099,20 +4086,8 @@ impl OrbitApp {
             )
             .child(modal_footer(&theme).child(cancel).child(save));
 
-        let scrim = match theme.mode {
-            ThemeMode::Dark => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.42,
-            },
-            ThemeMode::Light => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.22,
-            },
-        };
+        // The backdrop every modal shares (`ui::dialog::modal_scrim`'s role).
+        let scrim = theme.scrim_modal();
         Some(
             div()
                 .id("provider-key-layer")
@@ -4391,20 +4366,8 @@ impl OrbitApp {
         };
         card = card.child(modal_footer(&theme).child(cancel).child(save));
 
-        let scrim = match theme.mode {
-            ThemeMode::Dark => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.42,
-            },
-            ThemeMode::Light => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.22,
-            },
-        };
+        // The backdrop every modal shares (`ui::dialog::modal_scrim`'s role).
+        let scrim = theme.scrim_modal();
         Some(
             div()
                 .id("provider-editor-layer")

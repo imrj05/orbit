@@ -623,20 +623,8 @@ impl OrbitApp {
                     .child(create),
             );
 
-        let scrim = match theme.mode {
-            ThemeMode::Dark => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.42,
-            },
-            ThemeMode::Light => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.22,
-            },
-        };
+        // The backdrop every modal shares (`ui::dialog::modal_scrim`'s role).
+        let scrim = theme.scrim_modal();
         Some(
             div()
                 .id("provider-account-layer")

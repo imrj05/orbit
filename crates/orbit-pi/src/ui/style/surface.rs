@@ -94,6 +94,20 @@ pub(crate) trait SurfaceExt: Styled + ParentElement + Sized {
         }
     }
 
+    /// A rounded card with no edge (the reader's message bubble): the panel
+    /// corner and [`Theme::glass_fill`] of `base`, frosted only while
+    /// wallpaper glass is on. Unlike [`Self::card_surface`] it draws no
+    /// hairline; unlike [`Self::frosted_pane`] it is card-shaped.
+    fn edgeless_card(self, theme: &Theme, base: Hsla) -> Self {
+        let el = self
+            .rounded(crate::theme::tokens::panel::RADIUS.px(theme))
+            .bg(theme.glass_fill(base));
+        match theme.glass_sigma() {
+            Some(sigma) => el.border_color(gpui::backdrop_blur_marker(sigma)),
+            None => el,
+        }
+    }
+
     /// Frost an edge-less structural pane without adding a border or hairline.
     fn frosted_pane(self, theme: &Theme) -> Self {
         if let Some(sigma) = theme.glass_sigma() {
@@ -175,5 +189,48 @@ mod tests {
         let start = usage.find("fn skeleton(").expect("usage skeleton");
         let skeleton = &usage[start..start + 6000];
         assert!(!skeleton.contains(".bg(theme.surface_secondary)"));
+    }
+
+    /// The bubble shape: glass tint and frost only while glass is on, the
+    /// opaque base everywhere else, and never a hairline of its own.
+    #[test]
+    fn edgeless_card_is_glass_only_with_active_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            for (active, glass) in [(false, false), (false, true), (true, false), (true, true)] {
+                let theme = base.with_wallpaper(treatment(active, true, glass));
+                let mut card = div().edgeless_card(&theme, theme.surface_elevated);
+                let style = card.style();
+                assert_eq!(style.background, Some(theme.glass_fill(theme.surface_elevated).into()));
+                assert!(style.border_widths.left.is_none(), "no hairline");
+                if active && glass {
+                    assert!(theme.glass_fill(theme.surface_elevated).a < 1.0);
+                } else {
+                    assert_eq!(theme.glass_fill(theme.surface_elevated), theme.surface_elevated);
+                }
+            }
+        }
+    }
+
+    /// Material decided at a call site instead of by the theme: hand-mixed
+    /// modal scrims, a page-canvas film over the Git page, container opacity
+    /// on the sidebar drag preview, and a hand-rolled `card_surface`.
+    #[test]
+    fn material_stays_with_the_shared_helpers() {
+        for (name, source) in [
+            ("settings", include_str!("../../app/settings.rs")),
+            ("mcp", include_str!("../../app/mcp_ui.rs")),
+            ("accounts", include_str!("../../app/provider_accounts.rs")),
+        ] {
+            assert!(!source.contains("a: 0.42"), "{name} mixes its own modal scrim");
+        }
+        let git = include_str!("../../git_panel/mod.rs");
+        assert!(!git.contains("theme.background.opacity("));
+        let sidebar = include_str!("../../app/sidebar.rs");
+        let start = sidebar.find("fn drag_ghost(").expect("drag ghost");
+        let ghost = &sidebar[start..start + 900];
+        assert!(ghost.contains(".elevation_2(&theme)") && !ghost.contains(".opacity("));
+        let settings = include_str!("../../app/settings.rs");
+        let start = settings.find("fn empty_resource_card(").expect("empty card");
+        assert!(settings[start..start + 700].contains(".card_surface("));
     }
 }

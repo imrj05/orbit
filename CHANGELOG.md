@@ -395,6 +395,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frosted or tinted material as the surfaces around them instead of painting
   opaque panels. Without a wallpaper nothing changes.
 
+- **Dialogs and overlays now match.** Settings dialogs (provider usage and
+  key, account, MCP server) dim the window as much as every other dialog
+  instead of a darker hand-mixed shade; the Git page's confirmations dim it
+  the same way the command palette does. The sidebar's drag preview, the
+  composer's second send button and the empty-state cards in Settings
+  (no plugins, no matching providers or settings) now take the same glass
+  as the surfaces around them.
+
 - **Commit details showed the wrong values.** An opened commit on the Git
   page listed its committer date as **Parents** and folded its branch and
   tag names into the message, because one field was read out of order. The

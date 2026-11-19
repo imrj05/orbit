@@ -1571,10 +1571,18 @@ impl Theme {
     /// The chat composer uses the contrast-adjusted card treatment only with
     /// a supported, enabled wallpaper frost; otherwise retain its opaque fill.
     pub fn composer_fill(self) -> Hsla {
+        self.glass_fill(self.surface_secondary)
+    }
+
+    /// `base` as the card tint only while wallpaper glass actually frosts
+    /// behind it, and exactly `base` otherwise — for a surface whose text must
+    /// never sit over a sharp picture (the composer, the reader's bubble, a
+    /// code plane inside a frosted card).
+    pub fn glass_fill(self, base: Hsla) -> Hsla {
         if self.glass_sigma().is_some() {
-            self.card_fill(self.surface_secondary)
+            self.card_fill(base)
         } else {
-            self.surface_secondary
+            base
         }
     }
 

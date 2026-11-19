@@ -4597,7 +4597,9 @@ impl OrbitApp {
         .rounded_full()
         .border_1()
         .border_color(theme.hairline())
-        .bg(theme.surface_elevated)
+        // `overlay`, not an opaque raised face: the composer is glass over a
+        // wallpaper, and this disc is a control floating on it.
+        .bg(theme.overlay)
         .pressed_state(&theme, PressedRamp::Wash)
         .cursor_pointer()
         .on_mouse_up(
@@ -4614,7 +4616,7 @@ impl OrbitApp {
             button,
             "send-alternate-btn",
             &theme,
-            crate::motion::Hover::fill(theme.surface_elevated, theme.surface_hover)
+            crate::motion::Hover::fill(theme.overlay, theme.hover_wash())
                 .with_ink(theme.text_secondary, theme.text_primary),
         )
     }

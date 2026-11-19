@@ -1305,15 +1305,14 @@ impl Render for SessionDragGhost {
 /// Shared chip behind both drag ghosts: one line of the row's own name on the
 /// raised surface, so what is in flight is never in doubt.
 fn drag_ghost(text: String, cx: &mut App) -> AnyElement {
-    let theme = *theme::get(cx);
+    // A floating layer while it follows the pointer: the shared elevation
+    // gives it the frost, edge and shadow, instead of an opaque chip faded
+    // with container opacity.
+    let theme = theme::get(cx).for_floating();
     div()
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base04.px(&theme))
-        .rounded(list_item::RADIUS.px(&theme))
-        .bg(theme.surface_elevated)
-        .border_1()
-        .border_color(theme.hairline_subtle())
-        .opacity(0.92)
+        .elevation_2(&theme)
         .text_size(TextSize::Small.px(&theme))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_primary)
