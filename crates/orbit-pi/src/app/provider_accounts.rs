@@ -5,11 +5,12 @@
 //! Nothing here reads or copies a credential.
 use super::*;
 use crate::provider_accounts::{AccountProfile, CredentialKind};
-use crate::theme::tokens::{input, modal, panel, ButtonSize, DynamicSpacing, Radius, TextSize};
+use crate::theme::tokens::{input, modal, ButtonSize, DynamicSpacing, Radius, TextSize};
 use crate::ui::button::IconButton;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
 use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 use crate::ui::prelude::{
     input_label, modal_footer, modal_header, ButtonVariant, ModalSubtitle, ModalWidthExt,
 };
@@ -548,14 +549,7 @@ impl OrbitApp {
             );
         if let Some(error) = &editor.error {
             body = body.child(
-                div()
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.1))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.clone()),
+                Banner::note(BannerTone::Error, error.clone(), &theme),
             );
         }
 

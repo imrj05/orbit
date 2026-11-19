@@ -1,7 +1,7 @@
 {
   "app/auth_prompt.rs": 1,
   "app/composer_ops.rs": 1,
-  "app/mcp_ui.rs": 6,
+  "app/mcp_ui.rs": 5,
   "app/open_in.rs": 1,
   "app/provider_accounts.rs": 1,
   "app/session.rs": 1,

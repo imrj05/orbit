@@ -18,7 +18,7 @@ use gpui::{
 };
 
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{button, input, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
+use crate::theme::tokens::{button, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
 use crate::ui::dialog::ModalHeader;
 use crate::ui::prelude::{modal_card, modal_scrim, ModalWidthExt, PressedRamp, StatefulControlExt};
@@ -386,16 +386,11 @@ impl Render for Dialog {
                             .px(modal::section_padding_x(&theme, false))
                             .pb(modal::section_padding_bottom(&theme))
                             .flex_none()
+                            // The shared field, on `background` like every
+                            // other field inside a dialog card.
                             .child(
-                                div()
-                                    .min_h(input::min_height(&theme))
-                                    .px(input::padding_x(&theme))
-                                    .py(input::padding_y(&theme))
-                                    .rounded(input::RADIUS.px(&theme))
-                                    .border_1()
-                                    .border_color(theme.border_strong)
-                                    .bg(theme.surface_elevated)
-                                    .child(input.clone()),
+                                crate::ui::field::TextField::new(input.clone(), theme.background)
+                                    .render(&theme),
                             ),
                     );
                 }

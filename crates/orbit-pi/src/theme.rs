@@ -1570,6 +1570,25 @@ impl Theme {
 
     /// The chat composer uses the contrast-adjusted card treatment only with
     /// a supported, enabled wallpaper frost; otherwise retain its opaque fill.
+    /// The resting top-bar chip's gradient stops (top, bottom): the `overlay`
+    /// ink wash, denser at the top edge and eased off at the bottom, so a chip
+    /// catches light like a meter surface.
+    pub fn header_chip_fill(self) -> (Hsla, Hsla) {
+        (
+            self.overlay.opacity(self.overlay.a * 1.5),
+            self.overlay.opacity(self.overlay.a * 0.7),
+        )
+    }
+
+    /// [`Self::header_chip_fill`] for a lifted chip (hovered, or its surface
+    /// open): the same shape on `overlay_strong`, with a gentler slope.
+    pub fn header_chip_lift(self) -> (Hsla, Hsla) {
+        (
+            self.overlay_strong.opacity(self.overlay_strong.a * 1.15),
+            self.overlay_strong.opacity(self.overlay_strong.a * 0.85),
+        )
+    }
+
     pub fn composer_fill(self) -> Hsla {
         self.glass_fill(self.surface_secondary)
     }

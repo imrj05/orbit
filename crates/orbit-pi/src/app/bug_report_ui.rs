@@ -15,10 +15,11 @@ use super::*;
 use crate::ui::chip::FileChip;
 use crate::git_panel::widgets::action_button;
 use crate::issue_message::ReportKind;
-use crate::theme::tokens::{input, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{input, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::{FormRow, TextField};
 use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 use gpui::ClickEvent;
 
 /// The most screenshots one report may carry.
@@ -107,15 +108,8 @@ impl OrbitApp {
         let mut rows = vec![fields];
         if let Some(error) = self.bug_report_error.as_deref() {
             rows.push(
-                div()
+                Banner::note(BannerTone::Error, error.to_string(), &theme)
                     .w_full()
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.10))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.to_string())
                     .into_any_element(),
             );
         }

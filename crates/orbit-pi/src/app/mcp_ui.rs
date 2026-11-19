@@ -34,6 +34,7 @@ use crate::ui::chip::Pill;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::search_field;
 use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 
 /// How long after a configuration change the probe is debounced, so several
 /// quick edits share one `pi mcp list` run.
@@ -2290,14 +2291,7 @@ impl OrbitApp {
             );
         if let Some(error) = &editor.error {
             body = body.child(
-                div()
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.1))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.clone()),
+                Banner::note(BannerTone::Error, error.clone(), &theme),
             );
         }
 
@@ -2898,24 +2892,21 @@ fn mcp_error_hint(error: &str) -> Option<String> {
 }
 
 fn mcp_chip(label: String, theme: Theme) -> AnyElement {
-    div()
-        .flex_none()
-        .h(DynamicSpacing::Base20.px(&theme))
-        .px(DynamicSpacing::Base06.px(&theme))
-        .rounded(Radius::Medium.px(&theme))
-        .bg(theme.surface_elevated)
-        .border_1()
-        .border_color(theme.hairline())
-        .flex()
-        .items_center()
-        .text_size(TextSize::XSmall.px(&theme))
-        .text_color(theme.text_muted)
-        .child(label)
-        .into_any_element()
+    // An informational tag (scope, exposure, a tool): the shared badge on a
+    // card-tinted face, so it is translucent on a glass page.
+    crate::ui::chip::Badge::new(
+        label,
+        theme.text_muted,
+        crate::ui::chip::BadgeFill::Framed {
+            face: theme.card_fill(theme.surface_elevated),
+            edge: theme.hairline(),
+        },
+    )
+    .render(&theme)
 }
 
-/// The per-row enable switch. Mirrors `settings_toggle` but routes through an
-/// app entity so a server name can ride along.
+/// The per-row enable switch: `settings_toggle`'s shared switch, with an
+/// action that can capture a server name.
 fn mcp_switch(
     id: String,
     on: bool,
@@ -2923,26 +2914,10 @@ fn mcp_switch(
     this: Entity<OrbitApp>,
     action: impl Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 ) -> AnyElement {
-    let action = std::rc::Rc::new(action);
-    div()
-        .id(ElementId::Name(id.into()))
-        .w(px(36.))
-        .h(DynamicSpacing::Base20.px(&theme))
-        .rounded_full()
-        .p(DynamicSpacing::Base02.px(&theme))
-        .border_1()
-        .border_color(theme.hairline())
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .when(on, |t| t.bg(theme.accent).justify_end())
-        .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
-        .hover_border(&theme)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            this.update(cx, |app, cx| action(app, cx));
-        })
-        .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-        .into_any_element()
+    // The shared switch: focus ring, Space/Enter and the knob's motion.
+    crate::ui::switch::switch(id, on, &theme, move |_, cx| {
+        this.update(cx, |app, cx| action(app, cx));
+    })
 }
 
 /// An icon-only row action with a tooltip and press feedback.

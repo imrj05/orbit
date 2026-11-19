@@ -403,6 +403,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (no plugins, no matching providers or settings) now take the same glass
   as the surfaces around them.
 
+- **One look for errors and notices.** Error messages in dialogs (provider
+  key and editor, accounts, SSH password, remote hosts, MCP server, server
+  clone, bug report) share one tint, a failed turn in the transcript shows
+  the standard error notice, and a merge or rebase in progress on the Git
+  page uses the standard warning notice, as does the branch menu's
+  uncommitted-changes warning. The MCP server switch and the
+  Settings sidebar toggle are now the shared switch, so Tab reaches them and
+  Space or Enter flips them. The open Settings section now looks selected
+  rather than hovered.
+
 - **Commit details showed the wrong values.** An opened commit on the Git
   page listed its committer date as **Parents** and folded its branch and
   tag names into the message, because one field was read out of order. The

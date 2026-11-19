@@ -17,6 +17,7 @@ use crate::ui::field::search_field;
 use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 use crate::ui::style::surface::SurfaceExt;
 use gpui::{canvas, Bounds, DispatchPhase, Div, Hitbox, HitboxBehavior, MouseMoveEvent, Stateful};
 
@@ -754,7 +755,7 @@ impl OrbitApp {
                                         .cursor_pointer()
                                         .when(selected, |row| {
                                             row.font_weight(FontWeight::MEDIUM)
-                                                .bg(theme.hover_wash())
+                                                .bg(theme.selected_wash())
                                         })
                                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                                             this.update(cx, |app, cx| {
@@ -4024,14 +4025,7 @@ impl OrbitApp {
         }
         if let Some(error) = &editor.error {
             body = body.child(
-                div()
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.1))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.clone()),
+                Banner::note(BannerTone::Error, error.clone(), &theme),
             );
         }
 
@@ -4321,16 +4315,9 @@ impl OrbitApp {
 
         if let Some(error) = &editor.error {
             card = card.child(
-                div()
+                Banner::note(BannerTone::Error, error.clone(), &theme)
                     .mx(modal::section_padding_x(&theme, false))
-                    .mb(DynamicSpacing::Base04.px(&theme))
-                    .px(DynamicSpacing::Base06.px(&theme))
-                    .py(DynamicSpacing::Base04.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.1))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.clone()),
+                    .mb(DynamicSpacing::Base04.px(&theme)),
             );
         }
 
@@ -7283,28 +7270,17 @@ impl OrbitApp {
 
     /// The real sidebar toggle, wired to the same state as the top bar.
     pub(super) fn sidebar_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let on = self.sidebar_visible;
-        div()
-            .id("settings-sidebar-toggle")
-            .w(px(36.))
-            .h(DynamicSpacing::Base20.px(&theme))
-            .rounded_full()
-            .p(DynamicSpacing::Base02.px(&theme))
-            .border_1()
-            .border_color(theme.hairline())
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .when(on, |t| t.bg(theme.accent).justify_end())
-            .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
-            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+        switch(
+            "settings-sidebar-toggle",
+            self.sidebar_visible,
+            &theme,
+            move |window, cx| {
                 this.update(cx, |app, cx| {
                     app.toggle_sidebar(window, cx);
                     cx.notify();
                 });
-            })
-            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-            .into_any_element()
+            },
+        )
     }
 
     /// The palettes a gallery lists, in the order it paints them: every

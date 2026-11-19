@@ -232,5 +232,17 @@ mod tests {
         let settings = include_str!("../../app/settings.rs");
         let start = settings.find("fn empty_resource_card(").expect("empty card");
         assert!(settings[start..start + 700].contains(".card_surface("));
+        // The open Settings section is a selection, not a hover.
+        let start = settings.find("let row = div()\n                                        .id(ElementId::Name(format!(\"settings-nav-").expect("nav row");
+        assert!(settings[start..start + 1500].contains(".bg(theme.selected_wash())"));
+        // Switches are the shared one; the chrome's chip colours are theme roles.
+        let mcp = include_str!("../../app/mcp_ui.rs");
+        for (source, root) in [(mcp, "fn mcp_switch("), (settings, "fn sidebar_toggle(")] {
+            let start = source.find(root).expect("switch fn");
+            let body = &source[start..start + 700];
+            assert!(body.contains("switch(") && !body.contains("toggle_knob"), "{root} is hand-built");
+        }
+        let chrome = include_str!("../chrome.rs");
+        assert!(!chrome.contains(".a *="));
     }
 }

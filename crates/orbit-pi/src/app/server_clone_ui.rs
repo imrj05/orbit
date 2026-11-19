@@ -24,6 +24,7 @@ use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
 use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 
 /// Each dialog opening gets its own number, so a result for one that was
 /// closed (or reopened) lands nowhere.
@@ -877,12 +878,5 @@ fn ssh_failure_text(failure: ProbeFailure, host: &RemoteHost) -> String {
 
 /// A tinted line for an error inside the dialog (the key dialog's shape).
 fn error_box(message: String, theme: Theme) -> gpui::Div {
-    div()
-        .px(DynamicSpacing::Base08.px(&theme))
-        .py(DynamicSpacing::Base08.px(&theme))
-        .rounded(crate::theme::tokens::panel::RADIUS.px(&theme))
-        .bg(theme.error.opacity(0.1))
-        .text_size(TextSize::Small.px(&theme))
-        .text_color(theme.error)
-        .child(message)
+    Banner::note(BannerTone::Error, message, &theme)
 }

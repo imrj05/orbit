@@ -19,12 +19,13 @@ use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::ui::popover::anchored_menu;
 use crate::ui::button::{Button, ButtonVariant};
 use crate::remote_hosts::{self, RemoteHost};
-use crate::theme::tokens::{input, modal, panel, ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::theme::tokens::{input, modal, ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::ui::button::IconButton;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 
 /// How many `~/.ssh/config` aliases the form offers at once.
 const MAX_ALIAS_SUGGESTIONS: usize = 8;
@@ -1041,14 +1042,7 @@ impl OrbitApp {
             ));
         if let Some(error) = &editor.error {
             body = body.child(
-                div()
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.1))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.clone()),
+                Banner::note(BannerTone::Error, error.clone(), &theme),
             );
         }
 

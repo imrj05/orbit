@@ -27,6 +27,7 @@ use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 
 /// One host's provider listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -842,14 +843,7 @@ impl OrbitApp {
             );
         if let Some(error) = &editor.error {
             body = body.child(
-                div()
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(crate::theme::tokens::panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.1))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.clone()),
+                Banner::note(BannerTone::Error, error.clone(), &theme),
             );
         }
 

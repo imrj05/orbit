@@ -41,10 +41,7 @@ pub(crate) fn header_ctrl_radius(theme: &Theme) -> Pixels {
 /// with its alpha raised toward the top edge and eased off at the bottom,
 /// so chips catch light like a meter surface rather than a flat sticker.
 pub(crate) fn header_fill(theme: &Theme) -> gpui::Background {
-    let mut top = theme.overlay;
-    top.a *= 1.5;
-    let mut bottom = theme.overlay;
-    bottom.a *= 0.7;
+    let (top, bottom) = theme.header_chip_fill();
     linear_gradient(
         180.,
         linear_color_stop(top, 0.),
@@ -57,10 +54,7 @@ pub(crate) fn header_fill(theme: &Theme) -> gpui::Background {
 /// the chip off the titlebar. Shared by hover *and* open states so a
 /// toggle's panel reads as "still held" after the click.
 fn header_lifted(theme: &Theme) -> gpui::StyleRefinement {
-    let mut top = theme.overlay_strong;
-    top.a *= 1.15;
-    let mut bottom = theme.overlay_strong;
-    bottom.a *= 0.85;
+    let (top, bottom) = theme.header_chip_lift();
     gpui::StyleRefinement::default()
         .bg(linear_gradient(
             180.,

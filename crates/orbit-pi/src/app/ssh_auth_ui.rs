@@ -21,11 +21,12 @@ use super::remote_hosts_ui::HostCheck;
 use super::remote_providers_ui::RemoteModels;
 use super::*;
 use crate::remote_hosts::{self, ProbeFailure, RemoteHost};
-use crate::theme::tokens::{input, modal, panel, DynamicSpacing, TextSize};
+use crate::theme::tokens::{input, modal, DynamicSpacing, TextSize};
 use crate::ui::button::ButtonVariant;
 use crate::ui::dialog::modal_button;
 use crate::ui::field::TextField;
 use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 use orbit_rpc::remote::HostKeyProblem;
 
 /// Password tries per connection before Orbit stops asking.
@@ -613,15 +614,8 @@ impl OrbitApp {
             );
         if let Some(error) = &prompt.error {
             body = body.child(
-                div()
-                    .debug_selector(|| "remote-password-error".to_string())
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.1))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.clone()),
+                Banner::note(BannerTone::Error, error.clone(), &theme)
+                    .debug_selector(|| "remote-password-error".to_string()),
             );
         }
 

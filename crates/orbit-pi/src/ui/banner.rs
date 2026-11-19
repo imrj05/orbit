@@ -158,6 +158,43 @@ impl Banner {
         self
     }
 
+    /// A compact notice inside a form, dialog or menu (a failed save, a
+    /// rejected password, a dirty worktree before a branch switch): the
+    /// tone's own card tint, its glyph at `IconSize::Small`, and one wrapped
+    /// line of Small text. An error's text takes the error ink, as the
+    /// dialogs always showed it; every other tone keeps secondary ink and
+    /// lets the glyph carry the tone, since a status colour only reinforces.
+    /// `message` is localized by the caller; outer margins stay with it.
+    pub(crate) fn note(
+        tone: BannerTone,
+        message: impl Into<SharedString>,
+        theme: &Theme,
+    ) -> gpui::Div {
+        let (fill, _, glyph_ink) = tone.colors(theme);
+        let ink = match tone {
+            BannerTone::Error => theme.error,
+            BannerTone::Info | BannerTone::Success | BannerTone::Warning => theme.text_secondary,
+        };
+        div()
+            .px(DynamicSpacing::Base08.px(theme))
+            .py(DynamicSpacing::Base08.px(theme))
+            .rounded(panel::RADIUS.px(theme))
+            .bg(fill)
+            .flex()
+            .items_start()
+            .gap(DynamicSpacing::Base08.px(theme))
+            .text_size(TextSize::Small.px(theme))
+            .text_color(ink)
+            .child(icon(tone.glyph(), IconSize::Small.px(theme), glyph_ink))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .child(message.into()),
+            )
+    }
+
     /// A one-line notice across the top of a pane (Explorer's operation
     /// errors): full-bleed, a hairline below, Small text in the tone's ink, no
     /// glyph or card. `message` is localized by the caller.
@@ -299,5 +336,41 @@ mod tests {
             Some(theme.error)
         );
         assert_eq!(style.background, Some(theme.error.opacity(0.12).into()));
+    }
+
+    /// A note takes the tone's own card tint, so a dialog's inline error and
+    /// a page's error banner can never drift to different strengths.
+    #[test]
+    fn a_note_shares_the_banner_tint_and_takes_the_tone_ink() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            for tone in [BannerTone::Info, BannerTone::Success, BannerTone::Warning, BannerTone::Error] {
+                let mut note = Banner::note(tone, "x", &theme);
+                assert_eq!(note.style().background, Some(tone.colors(&theme).0.into()));
+            }
+            let mut error = Banner::note(BannerTone::Error, "x", &theme);
+            assert_eq!(error.style().text.as_ref().and_then(|t| t.color), Some(theme.error));
+        }
+    }
+
+    /// Inline errors and the other notices are built from this module, never
+    /// from a hand-mixed error tint at the call site.
+    #[test]
+    fn notices_are_not_hand_mixed_at_call_sites() {
+        for (name, source) in [
+            ("settings", include_str!("../app/settings.rs")),
+            ("accounts", include_str!("../app/provider_accounts.rs")),
+            ("ssh", include_str!("../app/ssh_auth_ui.rs")),
+            ("hosts", include_str!("../app/remote_hosts_ui.rs")),
+            ("mcp", include_str!("../app/mcp_ui.rs")),
+            ("remote providers", include_str!("../app/remote_providers_ui.rs")),
+            ("server clone", include_str!("../app/server_clone_ui.rs")),
+            ("bug report", include_str!("../app/bug_report_ui.rs")),
+            ("transcript", include_str!("../transcript_view.rs")),
+        ] {
+            assert!(!source.contains(".bg(theme.error.opacity(0.1"), "{name} mixes an error tint");
+        }
+        let git = include_str!("../git_panel/mod.rs");
+        assert!(!git.contains(".bg(theme.warning.opacity(0.1))"));
     }
 }

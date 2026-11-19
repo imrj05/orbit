@@ -4571,65 +4571,47 @@ impl GitPanel {
                 cx.listener(|this, _: &ClickEvent, _, cx| this.continue_operation(cx)),
             ));
 
+        // An operation in progress is a warning notice: the shared banner,
+        // with the operation's own glyph and the controls that finish it.
+        let conflict_chips = (!self.conflicts.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .children(self.conflicts.iter().take(8).map(|path| {
+                    let target = path.clone();
+                    Button::keyed(gpui::ElementId::Name(
+                            format!("git-conflict-{path}").into(),
+                        ), ButtonVariant::Secondary)
+.size(ButtonSize::Default)
+.render(&theme)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.open_path(target.clone(), window, cx)
+                    }))
+                    .child(path.clone())
+                }))
+        });
+        let mut banner = Banner::new(BannerTone::Warning)
+            .id("git-operation")
+            .glyph(icon(
+                "icons/git-merge.svg",
+                IconSize::Medium.px(&theme),
+                theme.warning,
+            ))
+            .title(tr!(op.label_key()))
+            .action(buttons);
+        if conflicts > 0 {
+            banner = banner.detail(count_label);
+        }
+        if let Some(chips) = conflict_chips {
+            banner = banner.line(chips);
+        }
         Some(
             div()
-                .id("git-operation")
                 .flex_none()
                 .mx(DynamicSpacing::Base20.px(&theme))
                 .mt(DynamicSpacing::Base12.px(&theme))
-                .bg(theme.warning.opacity(0.1))
-                .border_1()
-                .border_color(theme.warning.opacity(0.45))
-                .rounded(panel::RADIUS.px(&theme))
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base08.px(&theme))
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .child(icon(
-                            "icons/git-merge.svg",
-                            IconSize::Medium.px(&theme),
-                            theme.warning,
-                        ))
-                        .child(
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_primary)
-                                .child(tr!(op.label_key())),
-                        )
-                        .children((conflicts > 0).then(|| {
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_secondary)
-                                .child(count_label)
-                        }))
-                        .child(div().flex_1())
-                        .child(buttons),
-                )
-                .children((!self.conflicts.is_empty()).then(|| {
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .children(self.conflicts.iter().take(8).map(|path| {
-                            let target = path.clone();
-                            Button::keyed(gpui::ElementId::Name(
-                                    format!("git-conflict-{path}").into(),
-                                ), ButtonVariant::Secondary)
-.size(ButtonSize::Default)
-.render(&theme)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.open_path(target.clone(), window, cx)
-                            }))
-                            .child(path.clone())
-                        }))
-                }))
+                .child(banner.render(&theme))
                 .into_any_element(),
         )
     }
@@ -7656,30 +7638,9 @@ impl GitPanel {
         // A dirty worktree can block a switch, so say so before the list.
         if !self.staged.is_empty() || !self.unstaged.is_empty() {
             list = list.child(
-                div()
+                Banner::note(BannerTone::Warning, tr!("git_panel.dirty_switch_warning"), &theme)
                     .mx(DynamicSpacing::Base04.px(&theme))
-                    .mb(DynamicSpacing::Base04.px(&theme))
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base06.px(&theme))
-                    .rounded(Radius::Medium.px(&theme))
-                    .bg(theme.warning.opacity(0.1))
-                    .flex()
-                    .items_start()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .child(icon(
-                        "icons/info.svg",
-                        IconSize::Small.px(&theme),
-                        theme.warning,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .whitespace_normal()
-                            .child(tr!("git_panel.dirty_switch_warning")),
-                    ),
+                    .mb(DynamicSpacing::Base04.px(&theme)),
             );
         }
 

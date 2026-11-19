@@ -67,6 +67,7 @@ use crate::ui::prelude::{
     icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::ui::style::surface::SurfaceExt;
+use crate::ui::banner::{Banner, BannerTone};
 
 /// A raised transcript surface's own fill on glass: `base` at the
 /// contrast-floored card tint while wallpaper glass is frosting behind it, and
@@ -2785,67 +2786,40 @@ fn render_assistant_error(
         .child(tr!("transcript.retry"))
         .on_click(move |_, window, cx| opener(ix, window, cx))
     });
-    div()
-        .w_full()
-        .max_w_full()
-        .min_w_0()
-        .bg(theme.error.opacity(0.1))
-        .border_1()
-        .border_color(theme.error.opacity(0.45))
-        .rounded(panel::RADIUS.px(&theme))
-        .px(DynamicSpacing::Base12.px(&theme))
-        .py(DynamicSpacing::Base08.px(&theme))
-        .flex()
-        .items_start()
-        .gap_2p5()
-        .child(glyph(
-            "icons/info.svg",
-            IconSize::Medium.px(&theme),
-            theme.error,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_0p5()
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(tr!("transcript_view.agent_error")),
-                )
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .whitespace_normal()
-                        .child({
-                            let text: SharedString = error.to_string().into();
-                            let key = ElementId::NamedInteger("agent-error".into(), ix as u64);
-                            let scope = text_scope();
-                            let range = scope
-                                .as_ref()
-                                .and_then(|scope| scope.state.borrow().range_for(&key, &text));
-                            let runs = highlight_runs(
-                                vec![code_run(text.len(), theme.text_secondary, &ui_font())],
-                                range,
-                                selection_color(theme),
-                            );
-                            SelectableText::new(
-                                key,
-                                StyledText::new(text.clone()).with_runs(runs),
-                                text,
-                                Vec::new(),
-                                scope,
-                            )
-                        }),
-                ),
-        )
-        .children(retry_button)
-        .into_any_element()
+    let detail = div()
+        .text_size(TextSize::Small.px(&theme))
+        .text_color(theme.text_secondary)
+        .whitespace_normal()
+        .child({
+            let text: SharedString = error.to_string().into();
+            let key = ElementId::NamedInteger("agent-error".into(), ix as u64);
+            let scope = text_scope();
+            let range = scope
+                .as_ref()
+                .and_then(|scope| scope.state.borrow().range_for(&key, &text));
+            let runs = highlight_runs(
+                vec![code_run(text.len(), theme.text_secondary, &ui_font())],
+                range,
+                selection_color(theme),
+            );
+            SelectableText::new(
+                key,
+                StyledText::new(text.clone()).with_runs(runs),
+                text,
+                Vec::new(),
+                scope,
+            )
+        });
+    // The app's one error notice: the same anatomy, tint and glyph as every
+    // other failed operation, with the message selectable for copying.
+    let banner = Banner::new(BannerTone::Error)
+        .title(tr!("transcript_view.agent_error"))
+        .line(detail);
+    match retry_button {
+        Some(retry) => banner.action(retry),
+        None => banner,
+    }
+    .render(&theme)
 }
 
 /// The turn's activity summary: counts every tool kind and every thought

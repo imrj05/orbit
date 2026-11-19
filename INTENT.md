@@ -705,7 +705,14 @@ under glass, no hairline); `glass_fill` is also the composer's and the tool
 card's code plane's fill. Every Settings modal dims with `scrim_modal`, the Git
 page's in-page confirmations with `scrim`, the sidebar drag preview is an
 `elevation_2` floating layer, and the composer's second send disc rests on
-`overlay` like the controls around it.
+`overlay` like the controls around it. Inline errors in dialogs and forms are
+`Banner::note` (the tone's own card tint, a Small glyph, error ink for an error and
+secondary ink otherwise), as is the Git branch menu's dirty-worktree warning; the transcript's failed-turn
+card and the Git page's operation-in-progress card are ordinary `Banner`s. The
+MCP server switch and Settings' sidebar toggle are the shared `ui::switch`, MCP
+tags are `Badge`s on a card-tinted face, the extension dialog's input is a
+`TextField`, the open Settings section reads `selected_wash`, and the top-bar
+chips' gradient stops are `Theme::header_chip_fill` / `header_chip_lift`.
 
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
