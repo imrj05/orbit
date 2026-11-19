@@ -3414,7 +3414,9 @@ pub(crate) fn star_project_banner(
         .rounded(crate::theme::tokens::panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.hairline())
-        .bg(theme.surface_elevated)
+        // Sits on the About page beside a frosted card: the same tint, so
+        // it is not an opaque slab over the wallpaper.
+        .bg(theme.card_fill(theme.surface_elevated))
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))

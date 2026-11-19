@@ -694,7 +694,12 @@ appearance when Glass panes is off). `Theme::for_page` scopes all of it to
 full-window mode: hero wallpaper is never behind a page, so those pages, and
 every page without a wallpaper, resolve to their opaque palette fills exactly
 as before. The terminal grid keeps its own opaque background (ANSI owns its
-colours). Settings' nav column frosts like the session sidebar.
+colours). Settings' nav column frosts like the session sidebar, and so do the
+Skills and Subagents list columns (their page roots stay clear like every other
+Settings section); wells nested inside Settings cards and the About banner take
+`card_fill` tints rather than opaque slabs. The sidebar's sticky project header
+frosts with the rail through `SurfaceExt::pane_sticky_frost` and keeps the opaque
+surface when Glass is off, so rows never print through it.
 
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.

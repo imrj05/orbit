@@ -11,6 +11,7 @@ use crate::skills::{self, Skill, SkillScope};
 use crate::theme::tokens::{list_item, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::ui::field::search_field;
 use crate::ui::prelude::*;
+use crate::ui::style::surface::SurfaceExt;
 
 /// A Skills-page control, dispatched through one entry point.
 #[derive(Clone)]
@@ -41,7 +42,8 @@ impl OrbitApp {
             .min_w_0()
             .min_h_0()
             .flex()
-            .bg(theme.background)
+            // Clear, like every other Settings section: the surface root
+            // already paints `panel_fill(background)` behind it.
             .font_family(theme::ui_font_family())
             .child(self.skills_list(theme, this.clone(), cx))
             .child(self.skill_detail(theme, this))
@@ -70,7 +72,7 @@ impl OrbitApp {
             .h(px(30.))
             .px(DynamicSpacing::Base08.px(&theme))
             .rounded(list_item::RADIUS.px(&theme))
-            .bg(theme.surface_elevated)
+            .bg(theme.card_fill(theme.surface_elevated))
             .border_1()
             .border_color(theme.hairline())
             .flex()
@@ -158,7 +160,10 @@ impl OrbitApp {
             .w(px(320.))
             .h_full()
             .flex_shrink_0()
-            .bg(theme.surface)
+            // The Settings nav's twin: translucent and frosted over a
+            // full-window wallpaper, the palette's surface otherwise.
+            .bg(theme.panel_fill(theme.surface))
+            .frosted_pane(&theme.for_page())
             .border_r_1()
             .border_color(theme.hairline())
             .flex()

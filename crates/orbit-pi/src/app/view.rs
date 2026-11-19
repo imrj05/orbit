@@ -361,7 +361,8 @@ impl Render for OrbitApp {
                 .top(sticky.top_offset)
                 .left_0()
                 .w_full()
-                .bg(theme.surface)
+                // The rail under it frosts, so the band does too.
+                .pane_sticky_frost(&theme, theme.surface)
                 .child(render_side_row(
                     &side_rows,
                     &sessions_data,

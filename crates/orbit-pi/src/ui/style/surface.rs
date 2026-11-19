@@ -80,6 +80,20 @@ pub(crate) trait SurfaceExt: Styled + ParentElement + Sized {
         }
     }
 
+    /// A band pinned over a frosted structural pane's scrolling rows (the
+    /// sidebar's sticky project header). Under glass it takes the pane's own
+    /// translucent fill and frosts the rows sliding beneath, so it reads as
+    /// the same material as the rail around it. Without glass there is no
+    /// blur to hide those rows, so it keeps the opaque `base`.
+    fn pane_sticky_frost(self, theme: &Theme, base: Hsla) -> Self {
+        match theme.glass_sigma() {
+            Some(sigma) => self
+                .bg(theme.panel_fill(base))
+                .border_color(gpui::backdrop_blur_marker(sigma)),
+            None => self.bg(base),
+        }
+    }
+
     /// Frost an edge-less structural pane without adding a border or hairline.
     fn frosted_pane(self, theme: &Theme) -> Self {
         if let Some(sigma) = theme.glass_sigma() {
@@ -91,3 +105,75 @@ pub(crate) trait SurfaceExt: Styled + ParentElement + Sized {
 }
 
 impl<E: Styled + ParentElement> SurfaceExt for E {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::SurfaceTreatment;
+    use gpui::{div, Styled};
+
+    fn treatment(active: bool, full_window: bool, glass: bool) -> SurfaceTreatment {
+        SurfaceTreatment {
+            active,
+            full_window,
+            glass,
+            card_alpha: 0.8,
+            panel_alpha: 0.7,
+            ..SurfaceTreatment::OPAQUE
+        }
+    }
+
+    /// The sidebar's sticky header is the rail's material: the rail's
+    /// translucent fill under glass, the opaque surface everywhere else, so
+    /// rows scrolling beneath never print through a translucent band.
+    #[test]
+    fn pane_sticky_frost_matches_the_rail_and_stays_opaque_without_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            for (active, full_window, glass) in [
+                (false, false, false),
+                (true, true, false),
+                (true, false, true),
+                (true, true, true),
+            ] {
+                let theme = base.with_wallpaper(treatment(active, full_window, glass));
+                let mut band = div().pane_sticky_frost(&theme, theme.surface);
+                let expected = if theme.glass_sigma().is_some() {
+                    theme.panel_fill(theme.surface)
+                } else {
+                    theme.surface
+                };
+                assert_eq!(band.style().background, Some(expected.into()));
+                if active && full_window && glass {
+                    assert!(expected.a < 1.0, "glass lets the frost through");
+                }
+            }
+        }
+    }
+
+    /// Settings sections that own their layout (Skills, Subagents) must stay
+    /// clear like `settings_body`, and the surfaces this guard names must keep
+    /// their glass-aware fills instead of drifting back to opaque slabs.
+    #[test]
+    fn glass_surfaces_do_not_paint_opaque_slabs() {
+        let skills = include_str!("../../app/skills_ui.rs");
+        let subagents = include_str!("../../app/subagents_ui.rs");
+        for (name, source, root) in [
+            ("skills", skills, "fn render_skills_page("),
+            ("subagents", subagents, "fn render_subagents_page("),
+        ] {
+            let start = source.find(root).expect("page root");
+            let body = &source[start..start + 900];
+            assert!(!body.contains(".bg(theme.background)"), "{name} page root is opaque");
+            assert!(
+                source.contains(".bg(theme.panel_fill(theme.surface))\n            .frosted_pane(&theme.for_page())"),
+                "{name} list column is the Settings nav's twin"
+            );
+        }
+        let view = include_str!("../../app/view.rs");
+        assert!(view.contains(".pane_sticky_frost(&theme, theme.surface)"));
+        let usage = include_str!("../../usage/view.rs");
+        let start = usage.find("fn skeleton(").expect("usage skeleton");
+        let skeleton = &usage[start..start + 6000];
+        assert!(!skeleton.contains(".bg(theme.surface_secondary)"));
+    }
+}

@@ -25,6 +25,7 @@ use crate::ui::button::{ButtonGroup, SegmentFill};
 use crate::ui::field::search_field;
 use crate::ui::field::{FormRow, TextField};
 use crate::ui::prelude::*;
+use crate::ui::style::surface::SurfaceExt;
 
 /// One Skills-page-style dispatch point for every Subagents control.
 #[derive(Clone)]
@@ -149,7 +150,8 @@ impl OrbitApp {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(theme.background)
+            // Clear, like every other Settings section: the surface root
+            // already paints `panel_fill(background)` behind it.
             .font_family(theme::ui_font_family())
             .when_some(
                 self.subagent_inactive_banner(theme, this.clone()),
@@ -403,7 +405,10 @@ impl OrbitApp {
             .w(px(320.))
             .h_full()
             .flex_shrink_0()
-            .bg(theme.surface)
+            // The Settings nav's twin: translucent and frosted over a
+            // full-window wallpaper, the palette's surface otherwise.
+            .bg(theme.panel_fill(theme.surface))
+            .frosted_pane(&theme.for_page())
             .border_r_1()
             .border_color(theme.hairline())
             .flex()

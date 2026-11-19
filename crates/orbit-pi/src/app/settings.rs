@@ -2700,7 +2700,8 @@ impl OrbitApp {
                     .rounded(panel::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.hairline())
-                    .bg(theme.background)
+                    // A well inside a frosted card: tinted, not opaque.
+                    .bg(theme.card_fill(theme.background))
                     .flex()
                     .flex_col()
                     .gap(DynamicSpacing::Base04.px(&theme))
@@ -2875,7 +2876,8 @@ impl OrbitApp {
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.hairline())
-            .bg(theme.background)
+            // A well inside a frosted card: tinted, not opaque.
+            .bg(theme.card_fill(theme.background))
             .child(head);
 
         for window in &report.windows {
@@ -3595,7 +3597,7 @@ impl OrbitApp {
                 div()
                     .w_full()
                     .rounded(Radius::Large.px(&theme))
-                    .bg(theme.surface)
+                    .bg(theme.card_fill(theme.surface))
                     .border_1()
                     .border_color(theme.hairline_subtle())
                     .p(DynamicSpacing::Base08.px(&theme))

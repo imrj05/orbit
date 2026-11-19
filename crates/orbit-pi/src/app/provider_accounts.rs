@@ -239,7 +239,7 @@ impl OrbitApp {
                 div()
                     .w_full()
                     .rounded(Radius::Large.px(&theme))
-                    .bg(theme.surface)
+                    .bg(theme.card_fill(theme.surface))
                     .border_1()
                     .border_color(theme.hairline_subtle())
                     .p(DynamicSpacing::Base04.px(&theme))

@@ -388,6 +388,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Solid blocks over the wallpaper glass.** With a full-window wallpaper,
+  the sidebar's sticky project header, the Settings → Skills and Subagents
+  pages, the boxes inside provider, account and MCP cards, the About page's
+  star banner and the Usage page's loading placeholders now take the same
+  frosted or tinted material as the surfaces around them instead of painting
+  opaque panels. Without a wallpaper nothing changes.
+
 - **Commit details showed the wrong values.** An opened commit on the Git
   page listed its committer date as **Parents** and folded its branch and
   tag names into the message, because one field was read out of order. The

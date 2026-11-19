@@ -1002,21 +1002,21 @@ impl UsagePage {
                     .h(px(168.))
                     .w_full()
                     .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary),
+                    .bg(theme.page_fill(theme.surface_secondary)),
             )
             .child(
                 div()
                     .h(px(96.))
                     .w_full()
                     .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary),
+                    .bg(theme.page_fill(theme.surface_secondary)),
             )
             .child(
                 div()
                     .h(px(72.))
                     .w_full()
                     .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary),
+                    .bg(theme.page_fill(theme.surface_secondary)),
             );
 
         // Records: a header rule and a handful of rows.
@@ -1077,7 +1077,7 @@ impl UsagePage {
                     .h(px(96.))
                     .w_full()
                     .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary),
+                    .bg(theme.page_fill(theme.surface_secondary)),
             );
 
         div()

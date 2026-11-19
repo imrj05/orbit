@@ -1748,7 +1748,7 @@ impl OrbitApp {
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border_strong)
-            .bg(theme.surface_secondary)
+            .bg(theme.card_fill(theme.surface_secondary))
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base12.px(&theme))
