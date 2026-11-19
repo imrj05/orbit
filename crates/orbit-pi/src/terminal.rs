@@ -2084,7 +2084,7 @@ impl TerminalPanel {
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             // No leading panel glyph: every tab already carries its profile
             // mark, and a second terminal icon would only eat tab width.
             .child(strip.flex_1())
@@ -2255,7 +2255,7 @@ impl Render for TerminalPanel {
                 .flex_none()
                 .h(self.height)
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
         };
         panel
             .children((!page).then(|| self.splitter(theme)))

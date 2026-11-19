@@ -60,9 +60,9 @@ pub(crate) trait SurfaceExt: Styled + ParentElement + Sized {
                 .border_color(gpui::backdrop_blur_marker(sigma))
                 .bg(tint)
                 .child(body)
-                .child(frosted_edge(theme.border, radius)),
-            None if page.wallpaper.active => el.border_color(theme.border).bg(tint).child(body),
-            None => el.border_color(theme.border).child(body),
+                .child(frosted_edge(theme.hairline(), radius)),
+            None if page.wallpaper.active => el.border_color(theme.hairline()).bg(tint).child(body),
+            None => el.border_color(theme.hairline()).child(body),
         }
     }
 

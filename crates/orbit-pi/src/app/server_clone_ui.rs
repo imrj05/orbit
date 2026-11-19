@@ -602,7 +602,7 @@ impl OrbitApp {
             .items_center()
             .gap(crate::theme::tokens::modal::footer_gap(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .children(busy.then(|| {
                 spinner(
                     "server-clone-busy",
@@ -759,7 +759,7 @@ impl OrbitApp {
             .flex_col()
             .rounded(crate::theme::tokens::panel::RADIUS.px(&theme))
             .border_1()
-            .border_color(theme.border);
+            .border_color(theme.hairline());
         for (ix, file) in source.files.iter().enumerate() {
             let disabled = file.too_large();
             let toggle = this.clone();

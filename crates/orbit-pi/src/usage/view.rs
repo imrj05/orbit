@@ -387,7 +387,7 @@ impl UsagePage {
             .px(DynamicSpacing::Base20.px(&theme))
             .py(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_wrap()
             .items_center()
@@ -946,7 +946,7 @@ impl UsagePage {
                 .flex_none()
                 .rounded(panel::RADIUS.px(&theme))
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .bg(theme.page_fill(theme.surface_elevated))
                 .flex()
                 .flex_col()
@@ -959,7 +959,7 @@ impl UsagePage {
                         .flex()
                         .items_center()
                         .border_b_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .child(bar(96., 10.)),
                 )
                 .child(body)
@@ -972,7 +972,7 @@ impl UsagePage {
             .flex()
             .flex_wrap()
             .gap(DynamicSpacing::Base01.px(&theme))
-            .bg(theme.border);
+            .bg(theme.hairline());
         for _ in 0..4 {
             grid = grid.child(
                 div()
@@ -1034,7 +1034,7 @@ impl UsagePage {
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base12.px(&theme))
-                    .when(ix > 0, |row| row.border_t_1().border_color(theme.border))
+                    .when(ix > 0, |row| row.border_t_1().border_color(theme.hairline()))
                     .child(bar(140., 10.))
                     .child(div().flex_1())
                     .child(bar(72., 10.)),
@@ -1057,7 +1057,7 @@ impl UsagePage {
                         .flex_col()
                         .gap(DynamicSpacing::Base04.px(&theme))
                         .border_b_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .child(bar(120., 12.))
                         .child(bar(220., 10.)),
                 )
@@ -1268,10 +1268,10 @@ impl UsagePage {
                     .flex_col()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .when(row_ix > 0, |cell| {
-                        cell.border_t_1().border_color(theme.border)
+                        cell.border_t_1().border_color(theme.hairline())
                     })
                     .when(col_ix + 1 < chunk.len(), |cell| {
-                        cell.border_r_1().border_color(theme.border)
+                        cell.border_r_1().border_color(theme.hairline())
                     })
                     .when(cell.click.is_some(), |cell| {
                         cell.cursor_pointer().hover_state(&theme)
@@ -1354,7 +1354,7 @@ impl UsagePage {
             // Pad a short final row so its cells keep the grid's column widths.
             for _ in chunk.len()..cols {
                 row = row.child(div().flex_1().min_w(px(150.)).when(row_ix > 0, |cell| {
-                    cell.border_t_1().border_color(theme.border)
+                    cell.border_t_1().border_color(theme.hairline())
                 }));
             }
             grid = grid.child(row);
@@ -1364,7 +1364,7 @@ impl UsagePage {
             div()
                 .w_full()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .child(self.summary_strip(snapshot, theme, cols < 4, cx)),
         );
 
@@ -1703,10 +1703,10 @@ impl UsagePage {
                     .flex_1()
                     .min_w_0()
                     .when(ix < last && !stacked, |cell| {
-                        cell.border_r_1().border_color(theme.border)
+                        cell.border_r_1().border_color(theme.hairline())
                     })
                     .when(ix > 0 && stacked, |cell| {
-                        cell.border_t_1().border_color(theme.border)
+                        cell.border_t_1().border_color(theme.hairline())
                     })
                     .child(panel)
             }))
@@ -4297,7 +4297,7 @@ fn table_pager(
         let frame = icon_button_frame(div(), &theme, ButtonSize::Medium)
             .id(SharedString::from(format!("{id}-{key}")))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .when(enabled, |button| {
                 button
                     .cursor_pointer()
@@ -4719,7 +4719,7 @@ fn strip_panel(
                 .w_full()
                 .pt(DynamicSpacing::Base12.px(&theme))
                 .border_t_1()
-                .border_color(theme.border_subtle)
+                .border_color(theme.hairline_subtle())
                 .child(grid),
         )
         .children(trailing)

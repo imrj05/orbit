@@ -136,7 +136,7 @@ impl DiffRow {
                 .flex()
                 .justify_end()
                 .when(divider, |gutter| {
-                    gutter.border_r_1().border_color(theme.border)
+                    gutter.border_r_1().border_color(theme.hairline())
                 }),
             DiffGutter::Marker { width } => div()
                 .w(width)

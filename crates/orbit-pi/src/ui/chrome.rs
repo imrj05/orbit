@@ -92,7 +92,7 @@ pub(crate) fn header_lift<S: Styled>(el: S, theme: &Theme) -> S {
 pub(crate) fn header_chip<S: Styled + InteractiveElement>(el: S, theme: &Theme) -> S {
     let lifted = header_lifted(theme);
     el.border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(header_fill(theme))
         .hover(move |_| lifted)
 }

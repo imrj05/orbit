@@ -47,7 +47,7 @@ fn tree_guide(theme: &Theme) -> Div {
         .bottom_0()
         .left(tree_guide_x(theme))
         .w(BORDER_WIDTH)
-        .bg(theme.border_subtle)
+        .bg(theme.hairline_subtle())
 }
 
 /// Seat a row that belongs to a project group (a "show more/less" row) at the
@@ -1023,7 +1023,7 @@ fn project_icon(
         .overflow_hidden()
         .bg(theme.surface_elevated)
         .border_1()
-        .border_color(theme.border_subtle)
+        .border_color(theme.hairline_subtle())
         .flex()
         .items_center()
         .justify_center();
@@ -1311,7 +1311,7 @@ fn drag_ghost(text: String, cx: &mut App) -> AnyElement {
         .rounded(list_item::RADIUS.px(&theme))
         .bg(theme.surface_elevated)
         .border_1()
-        .border_color(theme.border_subtle)
+        .border_color(theme.hairline_subtle())
         .opacity(0.92)
         .text_size(TextSize::Small.px(&theme))
         .font_weight(FontWeight::MEDIUM)
@@ -3404,7 +3404,7 @@ pub(crate) fn star_project_banner(
         .py(DynamicSpacing::Base06.px(&theme))
         .rounded(crate::theme::tokens::panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.surface_elevated)
         .flex()
         .items_center()

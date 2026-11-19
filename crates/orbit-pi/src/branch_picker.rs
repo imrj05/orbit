@@ -534,7 +534,7 @@ impl Render for BranchPicker {
                 div()
                     .py(picker::list_padding_y(&theme))
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .child(
                         picker_entry(div(), &theme)
                             .h(picker::entry_height(&theme))

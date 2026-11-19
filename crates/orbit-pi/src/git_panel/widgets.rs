@@ -105,7 +105,7 @@ pub fn ref_badge(name: &str, kind: RefKind, theme: Theme) -> AnyElement {
     let (fg, border) = match kind {
         RefKind::Head => (theme.accent_text, theme.accent),
         RefKind::Branch => (theme.text_secondary, theme.border_strong),
-        RefKind::Remote => (theme.text_muted, theme.border),
+        RefKind::Remote => (theme.text_muted, theme.hairline()),
         RefKind::Tag => (theme.warning, theme.warning),
     };
     Badge::new(

@@ -66,7 +66,7 @@ pub(crate) fn working_folder_keyboard_hints(theme: &Theme) -> gpui::Div {
         .px(picker::search_padding_x(theme))
         .py(DynamicSpacing::Base06.px(theme))
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .text_size(TextSize::XSmall.px(theme))
         .text_color(theme.text_muted)
         .child(group(

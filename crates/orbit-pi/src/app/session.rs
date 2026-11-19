@@ -2308,7 +2308,7 @@ impl OrbitApp {
             .pl(DynamicSpacing::Base12.px(&theme))
             .pr(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .child(
                 div()
                     .flex_1()
@@ -2655,7 +2655,7 @@ impl OrbitApp {
                     .children(no_session)
                     .children(name_block),
             )
-            .child(environment.border_t_1().border_color(theme.border_subtle))
+            .child(environment.border_t_1().border_color(theme.hairline_subtle()))
             .child(model_section)
             .child(context_section)
             .children(changes_section)
@@ -2750,7 +2750,7 @@ impl OrbitApp {
         // Hairline between the account identity and the meter block: the
         // two halves of the chip answer different questions (whose usage /
         // how much is left) and deserve a visible seam.
-        let divider = || div().flex_none().w(px(1.)).h(px(13.)).bg(theme.border);
+        let divider = || div().flex_none().w(px(1.)).h(px(13.)).bg(theme.hairline());
 
         // The provider mark and name anchor every headline: the meter is
         // only truthful if the account it belongs to is named beside it.
@@ -2933,7 +2933,7 @@ impl OrbitApp {
             .px(DynamicSpacing::Base12.px(&theme))
             .py(px(10.))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
@@ -3405,7 +3405,7 @@ impl OrbitApp {
             .pt(DynamicSpacing::Base12.px(&theme))
             .pb(DynamicSpacing::Base06.px(&theme))
             .when(rule, |section| {
-                section.border_t_1().border_color(theme.border_subtle)
+                section.border_t_1().border_color(theme.hairline_subtle())
             })
             .child(
                 div()
@@ -4188,7 +4188,7 @@ fn quota_provider_card(
         .w_full()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.overlay)
         .px(DynamicSpacing::Base12.px(&theme))
         .py(px(10.))

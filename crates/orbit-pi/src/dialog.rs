@@ -420,7 +420,7 @@ impl Render for Dialog {
                 .items_center()
                 .gap(modal::footer_gap(&theme))
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_muted)
                 .child(hint),
@@ -556,7 +556,7 @@ impl Dialog {
                     .border_color(if highlighted {
                         theme.border_strong
                     } else {
-                        theme.border
+                        theme.hairline()
                     })
                     .flex()
                     .items_center()

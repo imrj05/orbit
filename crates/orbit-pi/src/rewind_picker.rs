@@ -429,7 +429,7 @@ impl Render for RewindPicker {
                     .px(picker::search_padding_x(&theme))
                     .py(DynamicSpacing::Base06.px(&theme))
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .flex_none()
                     .w_full()
                     .whitespace_normal()

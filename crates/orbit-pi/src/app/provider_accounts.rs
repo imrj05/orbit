@@ -241,7 +241,7 @@ impl OrbitApp {
                     .rounded(Radius::Large.px(&theme))
                     .bg(theme.surface)
                     .border_1()
-                    .border_color(theme.border_subtle)
+                    .border_color(theme.hairline_subtle())
                     .p(DynamicSpacing::Base04.px(&theme))
                     .flex()
                     .flex_col()

@@ -27,7 +27,7 @@ pub(crate) fn input_field_frame<E: Styled>(el: E, theme: &Theme) -> E {
         .gap(input::gap(theme))
         .rounded(input::RADIUS.px(theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .text_size(TextSize::Default.px(theme))
 }
 
@@ -48,7 +48,7 @@ pub(crate) fn picker_search_frame<E: Styled>(el: E, theme: &Theme) -> E {
         .gap(input::gap(theme))
         .overflow_hidden()
         .border_b_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .text_size(TextSize::Default.px(theme))
 }
 

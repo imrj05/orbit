@@ -542,7 +542,7 @@ pub fn session_usage_section(usage: &SessionUsage, theme: Theme) -> AnyElement {
         .flex()
         .flex_col()
         .gap(DynamicSpacing::Base06.px(&theme))
-        .child(div().w_full().h(px(1.)).bg(theme.border))
+        .child(div().w_full().h(px(1.)).bg(theme.hairline()))
         .child(
             div()
                 .text_size(TextSize::Small.px(&theme))

@@ -526,6 +526,12 @@ legacy app today:
 
 ### Implementation status (living)
 
+Settings → Appearance → Background offers a **Dithered Hero** preset for a
+chosen image: Hero only, Dither at 1× and 35% intensity, 40% image opacity, no
+image blur, and a bottom fade. The separate **Bottom fade** preference works in
+both Hero and Full window placements and blends into the live theme canvas at
+paint time, without modifying the source image or changing wallpaper defaults.
+
 The component layer (D22) is complete: every element family has one owner in
 `crates/orbit-pi/src/ui/`, surfaces import `crate::ui::prelude`, `app/helpers.rs`
 is gone, and `scripts/check_ui_owners.py` guards ownership. The Explorer,

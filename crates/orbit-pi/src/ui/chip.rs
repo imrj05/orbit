@@ -398,7 +398,7 @@ impl ChipButton {
                     .border_color(if open || marked || self.applied {
                         theme.border_strong
                     } else {
-                        theme.border
+                        theme.hairline()
                     })
                     .raised(
                         if open {
@@ -667,7 +667,7 @@ impl FileChip {
         );
         let mut chip = button_frame(div().id(self.id), theme, ButtonSize::Medium)
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .raised(theme.surface_elevated, theme)
             .hover_border(theme);
         if let Some(selector) = self.selector.clone() {

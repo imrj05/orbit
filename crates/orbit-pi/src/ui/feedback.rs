@@ -198,7 +198,7 @@ pub(crate) fn empty_state_glyph(theme: Theme, glyph: &'static str) -> AnyElement
         .flex_none()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.page_fill(theme.surface_elevated))
         .flex()
         .items_center()

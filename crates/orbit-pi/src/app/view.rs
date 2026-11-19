@@ -888,7 +888,7 @@ impl Render for OrbitApp {
                                                     .flex_1()
                                                     .min_w(DynamicSpacing::Base16.px(&theme))
                                                     .h(BORDER_WIDTH)
-                                                    .bg(theme.border_subtle),
+                                                    .bg(theme.hairline_subtle()),
                                             ),
                                     )
                                     .child(if side_rows.is_empty() {
@@ -995,7 +995,7 @@ impl Render for OrbitApp {
                                     .px(px(12.))
                                     .bg(theme.panel_fill(theme.surface_secondary))
                                     .border_t_1()
-                                    .border_color(theme.border)
+                                    .border_color(theme.hairline())
                                     .flex()
                                     .items_center()
                                     .child({
@@ -1996,7 +1996,7 @@ impl OrbitApp {
                             .py(DynamicSpacing::Base04.px(&theme))
                             .rounded(panel::RADIUS.px(&theme))
                             .border_1()
-                            .border_color(theme.border)
+                            .border_color(theme.hairline())
                             .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_secondary)
                             .tip(text.clone())
@@ -2058,7 +2058,7 @@ impl OrbitApp {
                 .py(DynamicSpacing::Base08.px(&theme))
                 .rounded(panel::RADIUS.px(&theme))
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .bg(theme.code_bg)
                 .font_family(theme::code_font_family())
                 .text_size(theme.code_px(12.))
@@ -2781,7 +2781,7 @@ impl OrbitApp {
         if file_drag_hovered {
             theme.accent
         } else {
-            theme.border
+            theme.hairline()
         }
     }
 
@@ -2955,7 +2955,7 @@ impl OrbitApp {
             .px(DynamicSpacing::Base08.px(&theme))
             .py(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .text_color(theme.text_secondary)
             .child(
                 div()
@@ -3257,7 +3257,7 @@ impl OrbitApp {
             .flex_none()
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .overflow_hidden()
             .children(facts.iter().enumerate().map(|(ix, fact)| {
                 div()
@@ -3269,7 +3269,7 @@ impl OrbitApp {
                     .py(DynamicSpacing::Base08.px(&theme))
                     // Rows are separated by a hairline, so the group reads as
                     // one panel rather than three.
-                    .when(ix > 0, |row| row.border_t_1().border_color(theme.border))
+                    .when(ix > 0, |row| row.border_t_1().border_color(theme.hairline()))
                     .child(
                         div()
                             .w(px(88.))
@@ -3317,7 +3317,7 @@ impl OrbitApp {
             .rounded(panel::RADIUS.px(&theme))
             .bg(theme.surface_elevated)
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .child(
                 div()
                     .text_size(TextSize::Default.px(&theme))
@@ -3370,7 +3370,7 @@ impl OrbitApp {
             .rounded(panel::RADIUS.px(&theme))
             .bg(theme.surface_elevated)
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base12.px(&theme))
@@ -3443,7 +3443,7 @@ impl OrbitApp {
                             .rounded(Radius::Small.px(&theme))
                             .bg(theme.code_bg)
                             .border_1()
-                            .border_color(theme.border)
+                            .border_color(theme.hairline())
                             .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.code_text)
                             .child(cmd),
@@ -4555,7 +4555,7 @@ impl OrbitApp {
         )
         .rounded_full()
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.surface_elevated)
         .pressed_state(&theme, PressedRamp::Wash)
         .cursor_pointer()
@@ -4642,7 +4642,7 @@ impl OrbitApp {
                     // renderer can blur.
                     .card_surface(
                         &theme,
-                        theme.border,
+                        theme.hairline(),
                         theme.card_fill(theme.surface_elevated),
                     )
                     .flex()
@@ -4691,7 +4691,7 @@ impl OrbitApp {
                     .py(px(7.))
                     .card_surface(
                         &theme,
-                        theme.border,
+                        theme.hairline(),
                         theme.card_fill(theme.surface_elevated),
                     )
                     .flex()
@@ -4989,7 +4989,7 @@ impl OrbitApp {
                             .mb(px(10.))
                             .rounded(panel::RADIUS.px(&theme))
                             .border_1()
-                            .border_color(theme.border)
+                            .border_color(theme.hairline())
                             .bg(theme.background)
                             .overflow_hidden()
                             .flex()
@@ -5002,7 +5002,7 @@ impl OrbitApp {
                                     .items_center()
                                     .gap(DynamicSpacing::Base06.px(&theme))
                                     .border_b_1()
-                                    .border_color(theme.border)
+                                    .border_color(theme.hairline())
                                     .child(icon(
                                         "icons/eye.svg",
                                         IconSize::XSmall.px(&theme),
@@ -5085,7 +5085,7 @@ impl OrbitApp {
                 .items_center()
                 .gap(DynamicSpacing::Base08.px(&theme))
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .child(
                     div()
                         .flex_1()
@@ -5304,7 +5304,7 @@ impl OrbitApp {
                 .mb(DynamicSpacing::Base08.px(&theme))
                 .card_surface(
                     &theme,
-                    theme.border,
+                    theme.hairline(),
                     theme.card_fill(theme.surface_elevated),
                 )
                 .flex()
@@ -5533,7 +5533,7 @@ impl OrbitApp {
             .px(DynamicSpacing::Base12.px(&theme))
             .py(px(7.))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .child(label)
             .child(body)
             .into_any_element()

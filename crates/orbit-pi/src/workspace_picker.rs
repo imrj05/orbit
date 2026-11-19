@@ -571,7 +571,7 @@ impl Render for WorkspacePicker {
                         // action's own box: the list's row count stays exactly
                         // what the reveal math assumes.
                         .when(action_ix == 0 || action.group_start, |row| {
-                            row.border_t_1().border_color(theme.border)
+                            row.border_t_1().border_color(theme.hairline())
                         })
                         .child(
                             picker_entry(
@@ -683,7 +683,7 @@ impl Render for WorkspacePicker {
                 div()
                     .py(picker::list_padding_y(&theme))
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .child(
                         picker_entry(div().id("workspace-browse-row"), &theme)
                             .h(px(row_h(&theme)))

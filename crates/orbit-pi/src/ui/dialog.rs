@@ -210,7 +210,7 @@ impl ModalHeader {
             .child(text)
             .children(self.trailing);
         if self.divider {
-            frame.border_b_1().border_color(theme.border)
+            frame.border_b_1().border_color(theme.hairline())
         } else {
             frame
         }
@@ -230,7 +230,7 @@ pub(crate) fn modal_footer(theme: &Theme) -> gpui::Div {
         .justify_end()
         .gap(modal::footer_gap(theme))
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
 }
 
 /// A modal footer's button as a keyboard stop: a [`Button`] tracking `focus`,

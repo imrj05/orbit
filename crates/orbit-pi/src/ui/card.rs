@@ -56,7 +56,7 @@ pub(crate) fn card(
         // The fill stays translucent behind wallpaper even without backdrop blur.
         .card_surface(
             &theme,
-            theme.border,
+            theme.hairline(),
             theme.card_fill(theme.surface_elevated),
         )
         .flex()
@@ -70,7 +70,7 @@ pub(crate) fn card(
                 .flex_col()
                 .gap(DynamicSpacing::Base04.px(&theme))
                 .border_b_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .child(
                     div()
                         .w_full()

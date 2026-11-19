@@ -192,7 +192,7 @@ impl OrbitApp {
                 &theme,
             )
             .child(primary)
-            .child(div().w(px(1.)).h_full().flex_none().bg(theme.border))
+            .child(div().w(px(1.)).h_full().flex_none().bg(theme.hairline()))
             .child(caret)
             .into_any_element(),
         )

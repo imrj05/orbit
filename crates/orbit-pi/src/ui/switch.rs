@@ -87,7 +87,7 @@ impl RenderOnce for Switch {
             // under the pointer.
             .when(focused, |track| track.border_color(theme.focus_ring))
             .when(!focused, |track| {
-                track.border_color(theme.border).hover_border(&theme)
+                track.border_color(theme.hairline()).hover_border(&theme)
             })
             .on_mouse_up(MouseButton::Left, {
                 let on_toggle = on_toggle.clone();

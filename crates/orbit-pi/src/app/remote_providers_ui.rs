@@ -860,7 +860,7 @@ impl OrbitApp {
             .items_center()
             .gap(crate::theme::tokens::modal::footer_gap(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .children(local_key.then(|| {
                 mcp_text_button(
                     "remote-key-use-local".into(),

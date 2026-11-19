@@ -54,7 +54,7 @@ pub fn render_file_header(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .border_b_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.page_fill(theme.surface_elevated))
         .child(icon(
             if collapsed {
@@ -130,7 +130,7 @@ pub fn render_section_header(
         .items_center()
         .gap(px(10.))
         .border_b_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         // The section head sits on the page's own canvas (clear over a
         // page's glass) — the raised surface is reserved for the file rows
         // below it.
@@ -166,7 +166,7 @@ pub fn render_section_header(
         )
         .child(div().flex_1())
         .when_some(actions, |row, actions| row.child(actions))
-        .child(div().w(px(1.)).h(px(14.)).flex_none().bg(theme.border))
+        .child(div().w(px(1.)).h(px(14.)).flex_none().bg(theme.hairline()))
         .child(
             div()
                 .min_w(px(42.))
@@ -212,7 +212,7 @@ pub fn render_hunk_header(content: &str, theme: Theme, wrap: bool) -> AnyElement
                 .min_h(px(REVIEW_HUNK_HEIGHT))
                 .flex_none()
                 .border_r_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .bg(theme.overlay),
         )
         .child(
@@ -375,7 +375,7 @@ pub fn render_split_row(
         .text_size(theme.code_px(DIFF_TEXT_SIZE))
         .line_height(theme.code_px(16.))
         .child(split_half(left, true, theme, wrap, row_height))
-        .child(div().w(px(1.)).flex_none().bg(theme.border))
+        .child(div().w(px(1.)).flex_none().bg(theme.hairline()))
         .child(split_half(right, false, theme, wrap, row_height))
         .into_any_element()
 }

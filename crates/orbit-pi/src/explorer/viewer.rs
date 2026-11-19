@@ -834,7 +834,7 @@ impl FileViewer {
                 f32::from(DynamicSpacing::Base16.px(&theme))
             }))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .child(tabs.flex_1().min_w_0())
             .child(
                 IconButton::new("viewer-close", "icons/x.svg")
@@ -873,7 +873,7 @@ impl FileViewer {
             .items_center()
             .gap(DynamicSpacing::Base12.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .font_family(theme::code_font_family())
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
@@ -938,7 +938,7 @@ impl FileViewer {
             color,
             BadgeFill::Framed {
                 face: theme.surface_elevated,
-                edge: theme.border,
+                edge: theme.hairline(),
             },
         );
         let badge = if tab.editable() {
@@ -1120,7 +1120,7 @@ impl FileViewer {
                     .flex()
                     .justify_end()
                     .border_r_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .text_color(theme.text_muted)
                     .child((index + 1).to_string()),
             )

@@ -1176,7 +1176,7 @@ impl ProjectPanel {
                     .border_color(if focused {
                         theme.focus_ring
                     } else {
-                        theme.border_subtle
+                        theme.hairline_subtle()
                     })
                     .overflow_hidden()
                     .text_size(TextSize::Small.px(&theme))
@@ -1317,7 +1317,7 @@ impl ProjectPanel {
             .flex_none()
             .px(DynamicSpacing::Base12.px(&theme))
             .border_t_1()
-            .border_color(theme.border_subtle)
+            .border_color(theme.hairline_subtle())
             .flex()
             .items_center()
             .text_size(TextSize::XSmall.px(&theme))

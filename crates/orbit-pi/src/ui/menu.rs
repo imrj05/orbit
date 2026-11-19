@@ -61,7 +61,7 @@ pub(crate) fn context_menu_separator(theme: &Theme) -> gpui::Div {
         .h(tokens::BORDER_WIDTH)
         .w_full()
         .my(list::separator_margin_y(theme))
-        .bg(theme.border)
+        .bg(theme.hairline())
 }
 
 #[derive(Clone, Copy, Debug, Default)]

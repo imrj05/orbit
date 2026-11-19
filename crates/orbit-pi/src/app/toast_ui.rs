@@ -161,7 +161,7 @@ impl OrbitApp {
                     div()
                         .w_full()
                         .h(toast_tokens::separator_size())
-                        .bg(theme.border)
+                        .bg(theme.hairline())
                         .into_any_element(),
                 );
             }
@@ -305,7 +305,7 @@ impl OrbitApp {
                     div()
                         .w_full()
                         .h(toast_tokens::separator_size())
-                        .bg(theme.border),
+                        .bg(theme.hairline()),
                 )
                 .child(
                     div()

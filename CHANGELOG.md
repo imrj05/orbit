@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dithered Hero wallpaper preset.** Apply fine dither, no image blur, and a
+  bottom fade to your chosen image on the new-task screen. The preset is opt-in
+  under Settings → Appearance → Background. The separate **Bottom fade** toggle
+  also blends full-window wallpaper into the active theme at the bottom edge.
+
 - **Frosted glass pages.** With a full-window wallpaper, the Git, Usage, Files and
   Worktrees pages, the expanded terminal, and the Review, Explorer and session-details
   docks are now frosted glass cards: the picture blurs softly behind them, their inner

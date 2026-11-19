@@ -1430,7 +1430,7 @@ impl SidePane {
             // never shares their row.
             .pr(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .child(
                 div()
                     .flex_1()
@@ -1543,7 +1543,7 @@ impl SidePane {
             .gap_2()
             .px(px(10.))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .children(source_chip)
             .child(div().flex_1())
             .when(truncated, |row| {
@@ -1599,7 +1599,7 @@ impl SidePane {
                         .items_center()
                         .px(DynamicSpacing::Base12.px(&theme))
                         .border_b_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.warning)
                         .child(tr!("sidepane.partial")),
@@ -2304,7 +2304,7 @@ impl SidePane {
             .flex()
             .when(two, |gutter| gutter.flex_col())
             .border_r_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .bg(theme.overlay);
         if expandable {
             for (button_index, direction) in directions.iter().copied().enumerate() {
@@ -2323,7 +2323,7 @@ impl SidePane {
                                 .h(px(16.))
                                 .flex_none()
                                 .border_b_1()
-                                .border_color(theme.border)
+                                .border_color(theme.hairline())
                         })
                         .cursor_pointer()
                         .hover_on_glass(&theme)
@@ -2424,7 +2424,7 @@ impl SidePane {
             .h_full()
             .min_h_0()
             .border_l_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .child(filter_row)

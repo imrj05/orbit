@@ -171,7 +171,7 @@ fn paint_cluster(
         corner_radii: Corners::all(px(10.)),
         background: theme.overlay.opacity(0.5).into(),
         border_widths: Edges::all(px(1.0)),
-        border_color: theme.border,
+        border_color: theme.hairline(),
         border_style: BorderStyle::Solid,
     });
 }

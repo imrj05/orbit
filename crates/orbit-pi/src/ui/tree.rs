@@ -186,7 +186,7 @@ impl TreeRow {
                         .bottom_0()
                         .left(px(INDENT_BASE + level as f32 * INDENT_STEP + chevron_mid))
                         .w(px(1.))
-                        .bg(theme.border_subtle),
+                        .bg(theme.hairline_subtle()),
                 );
             }
         }

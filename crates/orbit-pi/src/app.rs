@@ -644,6 +644,7 @@ pub struct OrbitApp {
     settings_select: Option<SettingsSelect>,
     /// Filter text for the open settings dropdown.
     settings_filter: Entity<ComposerInput>,
+    wallpaper_preset_focus: FocusHandle,
     /// Keyboard cursor in the open settings dropdown: an original option
     /// index. Filtering resets it to the first visible option; `<Enter>`
     /// picks it and the list keeps it in view.
@@ -2450,6 +2451,7 @@ impl OrbitApp {
             gh_latest: GhUpdateStatus::NotChecked,
             settings_select: None,
             settings_filter,
+            wallpaper_preset_focus: cx.focus_handle().tab_stop(true),
             settings_search: settings_search.clone(),
             _settings_search_sub: settings_search_sub,
             sidebar_search: sidebar_search.clone(),

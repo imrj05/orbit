@@ -356,7 +356,7 @@ impl Render for CustomUi {
                     .rounded(panel::RADIUS.px(&theme))
                     .bg(theme.surface_secondary)
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .child(icon(
                         "icons/extensions.svg",
                         IconSize::Medium.px(&theme),
@@ -391,7 +391,7 @@ impl Render for CustomUi {
             .rounded(panel::RADIUS.px(&theme))
             .bg(theme.code_bg)
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .min_h(px(f32::from(line_height)))
             .max_h(px((viewport_h * 0.68).max(f32::from(line_height) * 3.)))
             .overflow_scroll()
@@ -411,7 +411,7 @@ impl Render for CustomUi {
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .border_t_1()
-            .border_color(theme.border_subtle)
+            .border_color(theme.hairline_subtle())
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
             .child(icon(

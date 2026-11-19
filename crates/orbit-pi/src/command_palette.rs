@@ -939,7 +939,7 @@ impl Render for CommandPalette {
                     .items_center()
                     .gap(DynamicSpacing::Base16.px(&theme))
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_muted)
                     .child(tr!("command_palette.navigate"))

@@ -1573,6 +1573,32 @@ impl Theme {
         }
     }
 
+    /// The region seam (`border`) for an edge that may sit over the wallpaper.
+    ///
+    /// [`Self::hover_wash`]'s rule, for edges: `border` is an opaque palette
+    /// step, so on a translucent chip, pane or frosted popover it prints as a
+    /// near-black outline over a light picture. Over the wallpaper the seam is
+    /// ink at alpha instead — `overlay_strong`, which on the dark canvas reads
+    /// as the same weight `border` does — so it takes the colour of whatever
+    /// is behind it. With no wallpaper this is exactly `border`.
+    pub fn hairline(self) -> Hsla {
+        if self.wallpaper.active {
+            self.overlay_strong
+        } else {
+            self.border
+        }
+    }
+
+    /// [`Self::hairline`] for the quiet internal rule (`border_subtle`):
+    /// `overlay` over the wallpaper, `border_subtle` without one.
+    pub fn hairline_subtle(self) -> Hsla {
+        if self.wallpaper.active {
+            self.overlay
+        } else {
+            self.border_subtle
+        }
+    }
+
     /// The pressed wash: [`Self::hover_wash`]'s rule, one step deeper.
     ///
     /// Deepened from `overlay_strong`'s own alpha rather than from a new
@@ -3089,6 +3115,27 @@ mod tests {
             // Reduce Transparency / Increase Contrast restores the solid card.
             assert_eq!(theme.floating_glass_sigma_with(true), None, "{id:?}");
             assert_eq!(theme.floating_fill_with(base, true), base, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn hairlines_are_the_palette_edge_until_a_wallpaper_shows_through() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            // No wallpaper: exactly the palette's own opaque steps.
+            assert_eq!(theme.hairline(), theme.border, "{id:?}");
+            assert_eq!(theme.hairline_subtle(), theme.border_subtle, "{id:?}");
+            // Over the wallpaper: ink at alpha, so the edge takes the colour of
+            // the picture behind it instead of printing an opaque outline.
+            let glass = theme.with_wallpaper(SurfaceTreatment {
+                active: true,
+                ..SurfaceTreatment::OPAQUE
+            });
+            assert_eq!(glass.hairline(), theme.overlay_strong, "{id:?}");
+            assert_eq!(glass.hairline_subtle(), theme.overlay, "{id:?}");
+            assert!(glass.hairline().a < 1. && glass.hairline_subtle().a < 1., "{id:?}");
+            // The quiet rule stays quieter than the seam.
+            assert!(glass.hairline_subtle().a < glass.hairline().a, "{id:?}");
         }
     }
 

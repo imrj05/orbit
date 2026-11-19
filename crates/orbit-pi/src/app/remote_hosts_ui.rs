@@ -895,7 +895,7 @@ impl OrbitApp {
                     .ml(IconSize::Medium.px(&theme) + DynamicSpacing::Base12.px(&theme))
                     .pt(DynamicSpacing::Base12.px(&theme))
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .child(detail),
             )
             .into_any_element()

@@ -2238,7 +2238,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .card_surface(&theme, theme.border, frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .child(header);
     if expanded {
         card = card.child(
@@ -2246,7 +2246,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
                 .w_full()
                 .min_w_0()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .px(DynamicSpacing::Base12.px(&theme))
                 .py(DynamicSpacing::Base08.px(&theme))
                 .child(render_prose(
@@ -2310,7 +2310,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
                             .size(px(112.))
                             .rounded(panel::RADIUS.px(&theme))
                             .border_1()
-                            .border_color(theme.border)
+                            .border_color(theme.hairline())
                             .overflow_hidden()
                             .bg(theme.surface_elevated)
                             .when(opener.is_some(), |tile| {
@@ -2445,7 +2445,7 @@ fn user_file_chip(
         .gap(DynamicSpacing::Base06.px(&theme))
         .rounded(button::radius(ButtonSize::Medium).px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.card_fill(theme.surface_elevated))
         .flex()
         .items_center()
@@ -3043,7 +3043,7 @@ fn render_activity_group(
             .pl(DynamicSpacing::Base12.px(&theme))
             .pb(px(2.))
             .border_l_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme));
@@ -3227,7 +3227,7 @@ fn render_thinking_body(
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.overlay)
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
@@ -3468,7 +3468,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .card_surface(&theme, theme.border, frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -3805,7 +3805,7 @@ fn render_subagent_card(
         // The same quiet hairline as every activity card: a failure is said
         // by the child's glyph and the error line under the rows, so the
         // frame does not shout it a third time.
-        .card_surface(&theme, theme.border, frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -4049,7 +4049,7 @@ fn render_subagent_card(
         .debug_selector(|| "subagent-footer".to_string())
         .w_full()
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .when(!open, |footer| footer.rounded_b(panel::RADIUS.px(&theme)))
         .h(DynamicSpacing::Base32.px(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
@@ -4273,7 +4273,7 @@ fn render_subagent_strip(
         })
         .w_full()
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(tone.opacity(0.07))
         .when(round_bottom, |strip| {
             strip.rounded_b(panel::RADIUS.px(&theme))
@@ -4361,7 +4361,7 @@ fn render_subagent_detail(
         .w_full()
         .min_w_0()
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .rounded_b(panel::RADIUS.px(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
@@ -4718,7 +4718,7 @@ fn render_activity_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .card_surface(&theme, theme.border, frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .child(
             div()
                 .id(ElementId::NamedInteger(
@@ -5004,7 +5004,7 @@ fn render_tool_error_strip(tool: &ToolCall, round_bottom: bool, theme: Theme) ->
     div()
         .w_full()
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.error.opacity(0.07))
         .when(round_bottom, |s| s.rounded_b(panel::RADIUS.px(&theme)))
         .px(DynamicSpacing::Base08.px(&theme))
@@ -5105,7 +5105,7 @@ fn render_tool_detail(
                 .w_full()
                 .min_w_0()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 // With no sections below it, the diff is the card's last
                 // child and carries its bottom radius.
                 .when(!has_sections && images.is_empty(), |d| {
@@ -5138,14 +5138,14 @@ fn render_tool_detail(
             // Without a diff above it, the surface owns the rule that
             // separates it from the card header.
             .when(diff.is_none(), |s| {
-                s.border_t_1().border_color(theme.border)
+                s.border_t_1().border_color(theme.hairline())
             });
         for (section_ix, (section, label, content, lang, prompt)) in
             sections.into_iter().enumerate()
         {
             if section_ix > 0 {
                 surface =
-                    surface.child(div().w_full().h(BORDER_WIDTH).flex_none().bg(theme.border));
+                    surface.child(div().w_full().h(BORDER_WIDTH).flex_none().bg(theme.hairline()));
             }
             surface = surface.child(render_detail_section(
                 key,
@@ -5168,7 +5168,7 @@ fn render_tool_detail(
             div()
                 .w_full()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .rounded_b(panel::RADIUS.px(&theme))
                 .p(DynamicSpacing::Base08.px(&theme))
                 .flex()
@@ -5923,7 +5923,7 @@ fn render_edit_diff_row(
             .flex_none()
             .h(px(9.))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .into_any_element();
     }
     let line_id = ElementId::NamedInteger(
@@ -6266,7 +6266,7 @@ fn usage_breakdown_card(
             format_tokens(usage.cache_write),
             theme,
         ))
-        .child(div().w_full().h(px(1.)).bg(theme.border))
+        .child(div().w_full().h(px(1.)).bg(theme.hairline()))
         .child(usage_metric_row(
             "icons/usage-total.svg",
             tr!("transcript.total"),
@@ -6435,7 +6435,7 @@ fn render_turn_fold(
         .flex()
         .items_center()
         .gap(px(10.))
-        .child(div().h(px(1.)).flex_1().bg(theme.border))
+        .child(div().h(px(1.)).flex_1().bg(theme.hairline()))
         .child(
             disclosure_toggle(ElementId::NamedInteger("turn-fold".into(), ix as u64), &theme, ButtonSize::Default)
             .child(label)
@@ -6452,7 +6452,7 @@ fn render_turn_fold(
                 cx.refresh_windows();
             }),
         )
-        .child(div().h(px(1.)).flex_1().bg(theme.border))
+        .child(div().h(px(1.)).flex_1().bg(theme.hairline()))
 }
 
 fn working_wave_dots(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
@@ -8133,7 +8133,7 @@ fn render_block(
             scroller,
         )
         .into_any_element(),
-        Block::Rule => div().w_full().h(px(1.)).bg(theme.border).into_any_element(),
+        Block::Rule => div().w_full().h(px(1.)).bg(theme.hairline()).into_any_element(),
         Block::Alert(kind, lines) => {
             render_alert(*kind, lines, ix, id_namespace, block_ix, theme).into_any_element()
         }
@@ -8219,7 +8219,7 @@ fn render_markdown_image(
             // and the loaded image collapses to nothing.
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .object_fit(ObjectFit::Contain)
             .cursor_pointer()
             .with_fallback(move || markdown_image_fallback(&fallback_alt, theme))
@@ -8240,7 +8240,7 @@ fn markdown_image_fallback(alt: &str, theme: Theme) -> AnyElement {
         .py(DynamicSpacing::Base08.px(&theme))
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.overlay)
         .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_muted)
@@ -8499,7 +8499,7 @@ fn render_code_block(
         // rectangle, so the strip carries the card's top radius itself.
         .rounded_t(panel::RADIUS.px(&theme))
         .border_b_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .child(
             div()
                 .min_w_0()
@@ -8531,7 +8531,7 @@ fn render_code_block(
         .min_w_0()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.code_bg)
         .overflow_hidden()
         .child(header)
@@ -8561,7 +8561,7 @@ fn render_code_block(
                 .h(px(30.))
                 .px(DynamicSpacing::Base12.px(&theme))
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
@@ -8738,7 +8738,7 @@ fn render_mermaid_block(
         .bg(theme.overlay)
         .rounded_t(panel::RADIUS.px(&theme))
         .border_b_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .child(
             div()
                 .min_w_0()
@@ -8792,7 +8792,7 @@ fn render_mermaid_block(
         .h(px(30.))
         .px(DynamicSpacing::Base12.px(&theme))
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base06.px(&theme))
@@ -8826,7 +8826,7 @@ fn render_mermaid_block(
         .min_w_0()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.code_bg)
         .overflow_hidden()
         .child(header)
@@ -9072,7 +9072,7 @@ fn render_table(
                 .flex_none()
                 .flex()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .children((0..columns).map(|col| {
                     make_cell(
                         row.get(col).map(String::as_str).unwrap_or_default(),
@@ -9093,7 +9093,7 @@ fn render_table(
         .overflow_hidden()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .child(
             div()
                 .id(ElementId::NamedInteger(
@@ -9188,7 +9188,7 @@ pub(crate) fn render_changed_files(
         .flex()
         .flex_col()
         .border_t_1()
-        .border_color(theme.border_subtle);
+        .border_color(theme.hairline_subtle());
     for (path, added, removed) in files.iter().take(visible) {
         let label = workspace_relative_path(path, workspace);
         rows = rows.child(
@@ -9264,7 +9264,7 @@ pub(crate) fn render_changed_files(
                 .rounded(Radius::Large.px(&theme))
                 .bg(theme.surface_elevated)
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .flex()
                 .items_center()
                 .justify_center()
@@ -9311,7 +9311,7 @@ pub(crate) fn render_changed_files(
     let mut card = div()
         .w_full()
         .min_w_0()
-        .card_surface(&theme, theme.border, theme.card_fill(theme.background))
+        .card_surface(&theme, theme.hairline(), theme.card_fill(theme.background))
         .overflow_hidden()
         .child(header)
         .child(rows);
@@ -9334,7 +9334,7 @@ pub(crate) fn render_changed_files(
             .h(px(34.))
             .px(px(14.))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))

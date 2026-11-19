@@ -59,7 +59,7 @@ pub(crate) fn resize_handle(
             let strong = theme.border_strong;
             el.group(id.clone())
                 .border_l_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .group_hover(id, move |style| style.border_color(strong))
         }
         ResizeLook::Seam => {
@@ -71,7 +71,7 @@ pub(crate) fn resize_handle(
                     .bottom_0()
                     .right_0()
                     .w(BORDER_WIDTH)
-                    .bg(theme.border)
+                    .bg(theme.hairline())
                     .group_hover(id, move |style| style.bg(lit)),
             )
         }

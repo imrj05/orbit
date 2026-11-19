@@ -67,7 +67,7 @@ pub(crate) fn table_row(columns: &[Column], last: bool, theme: &Theme) -> gpui::
         .flex()
         .items_center()
         .when(!last, |row| {
-            row.border_b_1().border_color(theme.border_subtle)
+            row.border_b_1().border_color(theme.hairline_subtle())
         })
         .hover_state(theme)
 }
@@ -246,7 +246,7 @@ pub(crate) fn data_table(
         .items_center()
         .bg(theme.page_fill(theme.surface_secondary))
         .border_b_1()
-        .border_color(theme.border);
+        .border_color(theme.hairline());
     for (ix, column) in columns.iter().enumerate() {
         header = header.child(header_cell(id, ix, column, theme, handlers.clone()));
     }
@@ -287,7 +287,7 @@ pub(crate) fn data_table(
         .w_full()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .overflow_hidden()
         .child(
             div()
@@ -379,7 +379,7 @@ fn header_cell(
                     div()
                         .h_full()
                         .w(px(1.))
-                        .bg(theme.border.opacity(0.))
+                        .bg(theme.hairline().opacity(0.))
                         .hover_divider(&theme),
                 )
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
@@ -556,7 +556,7 @@ pub(crate) fn status_badge(label: String, status: Hsla, theme: Theme) -> AnyElem
         .h(theme.ui_px(22.))
         .rounded(Radius::Small.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .child(div().flex_none().size(px(6.)).rounded_full().bg(status))
         .child(
             div()

@@ -1196,7 +1196,7 @@ impl InteractionState {
     pub fn border(self, theme: &Theme) -> Option<Hsla> {
         match self {
             Self::Focused => Some(theme.focus_ring),
-            Self::Disabled => Some(theme.border_subtle),
+            Self::Disabled => Some(theme.hairline_subtle()),
             _ => None,
         }
     }

@@ -269,7 +269,7 @@ fn menu_footer(theme: Theme, left: AnyElement, right: AnyElement) -> AnyElement 
         .px(DynamicSpacing::Base06.px(&theme))
         .py(DynamicSpacing::Base04.px(&theme))
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .child(left)
         .child(right)
         .into_any_element()

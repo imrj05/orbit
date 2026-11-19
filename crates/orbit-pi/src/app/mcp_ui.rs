@@ -1082,7 +1082,7 @@ impl OrbitApp {
         })
         // Outlined to sit beside the labelled Add button at the same weight.
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .raised(theme.surface_elevated, &theme);
 
         let add = Button::keyed("mcp-add", ButtonVariant::Primary)
@@ -2759,7 +2759,7 @@ impl OrbitApp {
             .mt(DynamicSpacing::Base04.px(&theme))
             .pt(DynamicSpacing::Base06.px(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
@@ -2916,7 +2916,7 @@ fn mcp_chip(label: String, theme: Theme) -> AnyElement {
         .rounded(Radius::Medium.px(&theme))
         .bg(theme.surface_elevated)
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .flex()
         .items_center()
         .text_size(TextSize::XSmall.px(&theme))
@@ -2942,7 +2942,7 @@ fn mcp_switch(
         .rounded_full()
         .p(DynamicSpacing::Base02.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .flex()
         .items_center()
         .cursor_pointer()

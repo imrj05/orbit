@@ -46,9 +46,9 @@ impl BannerTone {
     /// every other tone sits on the trough and speaks through its glyph.
     fn colors(self, theme: &Theme) -> (Hsla, Hsla, Hsla) {
         match self {
-            Self::Info => (theme.surface_secondary, theme.border, theme.text_muted),
-            Self::Success => (theme.surface_secondary, theme.border, theme.success),
-            Self::Warning => (theme.surface_secondary, theme.border, theme.warning),
+            Self::Info => (theme.surface_secondary, theme.hairline(), theme.text_muted),
+            Self::Success => (theme.surface_secondary, theme.hairline(), theme.success),
+            Self::Warning => (theme.surface_secondary, theme.hairline(), theme.warning),
             Self::Error => (
                 theme.error.opacity(0.07),
                 theme.error.opacity(0.35),
@@ -165,7 +165,7 @@ impl Banner {
             .px(DynamicSpacing::Base08.px(theme))
             .py(DynamicSpacing::Base04.px(theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .bg(fill)
             .text_size(TextSize::Small.px(theme))
             .text_color(ink)

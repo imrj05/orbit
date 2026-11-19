@@ -331,7 +331,7 @@ pub(super) fn render_remote_host_row(
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .cursor_pointer()
                 .border_1()
-                .border_color(theme.border.opacity(0.))
+                .border_color(theme.hairline().opacity(0.))
                 .when(cursor, |row| row.border_color(theme.focus_ring))
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     toggle.update(cx, |app, cx| {
@@ -409,7 +409,7 @@ pub(super) fn render_remote_session_row(
         .min_h(ButtonSize::Medium.height(&theme))
         .rounded(list_item::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border.opacity(0.))
+        .border_color(theme.hairline().opacity(0.))
         .when(cursor, |card| card.border_color(theme.focus_ring))
         .when(active, |card| card.bg(theme.surface_selected))
         .flex()

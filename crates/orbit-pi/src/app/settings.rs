@@ -431,6 +431,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     ),
     (
         SettingsSection::Appearance,
+        "wallpaper.dithered_hero",
+        "wallpaper preset dithered hero bottom fade",
+    ),
+    (
+        SettingsSection::Appearance,
         "wallpaper.card_opacity",
         "wallpaper card opacity translucent surface",
     ),
@@ -645,7 +650,7 @@ impl OrbitApp {
                     // full-window wallpaper it frosts the picture the same way.
                     .frosted_pane(&theme.for_page())
                     .border_r_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .flex()
                     .flex_col()
                     // Window drag strip — same height as the session
@@ -817,7 +822,7 @@ impl OrbitApp {
                             .px(DynamicSpacing::Base16.px(&theme))
                             .py(DynamicSpacing::Base12.px(&theme))
                             .border_t_1()
-                            .border_color(theme.border)
+                            .border_color(theme.hairline())
                             .flex()
                             .items_center()
                             .gap(DynamicSpacing::Base06.px(&theme))
@@ -909,7 +914,7 @@ impl OrbitApp {
                         div()
                             .w_full()
                             .px(DynamicSpacing::Base24.px(&theme))
-                            .child(div().w_full().h(BORDER_WIDTH).bg(theme.border)),
+                            .child(div().w_full().h(BORDER_WIDTH).bg(theme.hairline())),
                     ),
             )
             .child(
@@ -2051,7 +2056,7 @@ impl OrbitApp {
             .when_some(theme.glass_sigma(), |card, _| {
                 card.bg(theme.card_fill(theme.surface_secondary))
             })
-            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+            .frosted_card(&theme, theme.hairline(), panel::RADIUS.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
             .px(DynamicSpacing::Base12.px(&theme))
             .py(DynamicSpacing::Base40.px(&theme))
@@ -2289,7 +2294,7 @@ impl OrbitApp {
                     .debug_selector(|| "providers-remote-notice".to_string())
                     .w_full()
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .rounded(panel::RADIUS.px(&theme))
                     .px(DynamicSpacing::Base12.px(&theme))
                     .py(DynamicSpacing::Base08.px(&theme))
@@ -2694,7 +2699,7 @@ impl OrbitApp {
                     .py(DynamicSpacing::Base08.px(&theme))
                     .rounded(panel::RADIUS.px(&theme))
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .bg(theme.background)
                     .flex()
                     .flex_col()
@@ -2869,7 +2874,7 @@ impl OrbitApp {
             .py(DynamicSpacing::Base08.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .bg(theme.background)
             .child(head);
 
@@ -3059,7 +3064,7 @@ impl OrbitApp {
             .rounded(Radius::Large.px(&theme))
             .bg(theme.surface_elevated)
             .border_1()
-            .border_color(theme.border_subtle)
+            .border_color(theme.hairline_subtle())
             .flex()
             .items_center()
             .justify_center()
@@ -3592,7 +3597,7 @@ impl OrbitApp {
                     .rounded(Radius::Large.px(&theme))
                     .bg(theme.surface)
                     .border_1()
-                    .border_color(theme.border_subtle)
+                    .border_color(theme.hairline_subtle())
                     .p(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .flex_col()
@@ -4481,7 +4486,7 @@ impl OrbitApp {
             .w_full()
             .card_surface(
                 &theme,
-                theme.border,
+                theme.hairline(),
                 theme.card_fill(theme.surface_secondary),
             )
             .flex()
@@ -4494,7 +4499,7 @@ impl OrbitApp {
                         .h(BORDER_WIDTH)
                         .flex_none()
                         .mx(DynamicSpacing::Base16.px(&theme))
-                        .bg(theme.border),
+                        .bg(theme.hairline()),
                 );
             }
         }
@@ -6407,7 +6412,7 @@ impl OrbitApp {
                 .items_center()
                 .rounded(Radius::Small.px(&theme))
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .bg(theme.surface_elevated)
                 .text_size(TextSize::XSmall.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
@@ -6525,7 +6530,7 @@ impl OrbitApp {
                         .size(px(ACCENT_SWATCH))
                         .rounded_full()
                         .border_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .bg(color.apply(base).accent),
                 )
                 .into_any_element()
@@ -6538,7 +6543,7 @@ impl OrbitApp {
                 .w(BORDER_WIDTH)
                 .h(px(ACCENT_SWATCH))
                 .mx(DynamicSpacing::Base04.px(&theme))
-                .bg(theme.border)
+                .bg(theme.hairline())
                 .into_any_element(),
         ];
         swatches.extend(AccentColor::ALL.into_iter().skip(1).map(swatch));
@@ -6596,6 +6601,24 @@ impl OrbitApp {
             Some(&tr!("wallpaper.mode_description")),
             None,
             Some(self.wallpaper_placement_control(theme, settings, this.clone())),
+        ));
+        let preset_app = this.clone();
+        let apply_preset = Button::new("wallpaper-dithered-hero", ButtonVariant::Secondary)
+            .label(tr!("wallpaper.apply_preset"))
+            .focus(&self.wallpaper_preset_focus)
+            .on_click(&theme, move |_, _, cx| {
+                preset_app.update(cx, |app, cx| {
+                    if let Some(next) = crate::wallpaper::settings().apply_dithered_hero() {
+                        app.set_wallpaper(next, cx);
+                    }
+                });
+            });
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.dithered_hero"),
+            Some(&tr!("wallpaper.dithered_hero_description")),
+            None,
+            Some(apply_preset.into_any_element()),
         ));
         rows.push(self.setting_row(
             theme,
@@ -6672,6 +6695,23 @@ impl OrbitApp {
                 theme,
                 this.clone(),
                 settings,
+            )),
+        ));
+        rows.push(self.setting_row(
+            theme,
+            &tr!("wallpaper.bottom_fade"),
+            Some(&tr!("wallpaper.bottom_fade_description")),
+            None,
+            Some(self.settings_toggle(
+                "wallpaper-bottom-fade",
+                settings.bottom_fade,
+                theme,
+                this.clone(),
+                |app, cx| {
+                    let mut next = crate::wallpaper::settings();
+                    next.bottom_fade = !next.bottom_fade;
+                    app.set_wallpaper(next, cx);
+                },
             )),
         ));
         if gpui::backdrop_blur_supported() {
@@ -6754,9 +6794,14 @@ impl OrbitApp {
             .h(px(WALLPAPER_PREVIEW_H))
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .overflow_hidden()
-            .child(Self::dot_backdrop(theme))
+            .when(settings.shows_bottom_fade(), |preview| {
+                preview.bg(theme.background)
+            })
+            .when(!settings.shows_bottom_fade(), |preview| {
+                preview.child(Self::dot_backdrop(theme))
+            })
             .children(if settings.enabled() {
                 crate::wallpaper::preview(theme)
             } else {
@@ -7113,7 +7158,7 @@ impl OrbitApp {
             .flex_1()
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .bg(theme.code_bg)
             .overflow_hidden()
             .flex()
@@ -7128,7 +7173,7 @@ impl OrbitApp {
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .bg(theme.surface)
                     .border_b_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .children(
                         [theme.error, theme.warning, theme.success]
                             .map(|color| div().size(px(7.)).rounded_full().bg(color)),
@@ -7319,7 +7364,7 @@ impl OrbitApp {
             .rounded_full()
             .p(DynamicSpacing::Base02.px(&theme))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .cursor_pointer()
@@ -9205,7 +9250,7 @@ fn choice_card(
                 .h(thumbnail_h)
                 .rounded(panel::RADIUS.px(theme))
                 .border_1()
-                .border_color(if active { theme.accent } else { theme.border })
+                .border_color(if active { theme.accent } else { theme.hairline() })
                 .when(!active, |frame| {
                     frame.group_hover("choice-card", move |style| style.border_color(strong))
                 })

@@ -1666,7 +1666,7 @@ impl OrbitApp {
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .child(
                 div()
                     .flex_1()
@@ -1890,7 +1890,7 @@ impl OrbitApp {
                         .overflow_y_scroll()
                         .bg(theme.background)
                         .border_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .rounded(Radius::Medium.px(&theme))
                         .p(DynamicSpacing::Base08.px(&theme))
                         .font_family(theme::code_font_family())
@@ -1962,7 +1962,7 @@ impl OrbitApp {
                 .min_w_0()
                 .bg(theme.page_fill(theme.surface_secondary))
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .rounded(panel::RADIUS.px(&theme))
                 .px(DynamicSpacing::Base16.px(&theme))
                 .py(DynamicSpacing::Base12.px(&theme))
@@ -2351,7 +2351,7 @@ impl OrbitApp {
                         .justify_end()
                         .gap(modal::footer_gap(&theme))
                         .border_t_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .pt(modal::footer_padding(&theme))
                         .child(clone_dialog_button(
                             "clone-dialog-cancel",
@@ -2468,7 +2468,7 @@ impl OrbitApp {
                 .max_h(px(160.))
                 .overflow_y_scroll()
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .rounded(panel::RADIUS.px(&theme))
                 .flex()
                 .flex_col();
@@ -2857,7 +2857,7 @@ impl OrbitApp {
             .justify_end()
             .gap(modal::footer_gap(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .pt(modal::footer_padding(&theme))
             .child(worktree_text_button(
                 "worktree-unavailable-dismiss",
@@ -2939,7 +2939,7 @@ impl OrbitApp {
             .justify_end()
             .gap(modal::footer_gap(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .pt(modal::footer_padding(&theme))
             .child(worktree_text_button(
                 "worktree-bi-cancel",
@@ -3510,7 +3510,7 @@ impl OrbitApp {
         div()
             .debug_selector(move || format!("work-in-row-{ix}"))
             .when(group_start, |cell| {
-                cell.border_t_1().border_color(theme.border)
+                cell.border_t_1().border_color(theme.hairline())
             })
             .child(
                 picker_entry(
@@ -3837,7 +3837,7 @@ where
         .justify_end()
         .gap(modal::footer_gap(&theme))
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .pt(modal::footer_padding(&theme))
         .child(worktree_text_button(
             "worktree-dialog-cancel",

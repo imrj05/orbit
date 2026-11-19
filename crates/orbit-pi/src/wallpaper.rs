@@ -31,8 +31,8 @@ use std::{
 };
 
 use gpui::{
-    div, img, prelude::*, Animation, AnimationExt, AnyElement, ElementId, Hsla, IntoElement,
-    ObjectFit, RenderImage,
+    div, img, linear_color_stop, linear_gradient, prelude::*, relative, Animation, AnimationExt,
+    AnyElement, ElementId, Hsla, IntoElement, ObjectFit, RenderImage,
 };
 use image::{Frame, RgbaImage};
 use serde_json::{json, Value};
@@ -140,6 +140,8 @@ pub struct WallpaperSettings {
     pub label: Option<String>,
     /// Image layer opacity, 0..=1.
     pub image_opacity: f32,
+    /// Fade the lower part of the wallpaper into the canvas.
+    pub bottom_fade: bool,
     /// Gaussian blur radius, 0..=40.
     pub blur: f32,
     /// Legacy persisted dim value, retained for round trips but not rendered.
@@ -165,6 +167,7 @@ impl Default for WallpaperSettings {
             path: None,
             label: None,
             image_opacity: 0.8,
+            bottom_fade: false,
             blur: 0.0,
             dim: 0.15,
             card_opacity: 0.82,
@@ -175,6 +178,23 @@ impl Default for WallpaperSettings {
 }
 
 impl WallpaperSettings {
+    /// Apply the starter look to an existing image, leaving pane preferences alone.
+    pub fn apply_dithered_hero(mut self) -> Option<Self> {
+        self.path.as_ref()?;
+        self.mode = WallpaperMode::Hero;
+        self.effect = Effect::Dither;
+        self.effect_intensity = 0.35;
+        self.effect_scale = 1.0;
+        self.image_opacity = 0.40;
+        self.blur = 0.0;
+        self.bottom_fade = true;
+        Some(self)
+    }
+
+    pub fn shows_bottom_fade(&self) -> bool {
+        self.bottom_fade && self.enabled()
+    }
+
     /// The wallpaper actually paints. A missing file still leaves the
     /// preference in place (the disk may come back), but it cannot make
     /// surfaces translucent without an image beneath them.
@@ -228,6 +248,11 @@ impl WallpaperSettings {
             IMAGE_OPACITY_RANGE,
             settings.image_opacity,
         );
+        settings.bottom_fade = value
+            .get("bottom_fade")
+            .and_then(Value::as_bool)
+            .or_else(|| value.get("hero_bottom_fade").and_then(Value::as_bool))
+            .unwrap_or_default();
         settings.blur = clamp_json(value.get("blur"), BLUR_RANGE, settings.blur);
         settings.dim = clamp_json(value.get("dim"), DIM_RANGE, settings.dim);
         settings.card_opacity = clamp_json(
@@ -258,6 +283,7 @@ impl WallpaperSettings {
                 "path": self.path.as_ref().map(|path| path.to_string_lossy()),
                 "label": self.label,
                 "image_opacity": self.image_opacity,
+                "bottom_fade": self.bottom_fade,
                 "blur": self.blur,
                 "dim": self.dim,
                 "card_opacity": self.card_opacity,
@@ -1198,7 +1224,24 @@ fn layer_inner(theme: Theme, reduce_motion: bool, id: &'static str) -> Option<An
                 .size_full()
                 .object_fit(ObjectFit::Cover)
                 .opacity(theme.wallpaper.image_opacity),
-        );
+        )
+        .when(settings.shows_bottom_fade(), |layer| {
+            // Fade the visible crop, not the source pixels, so resizing and
+            // cover fitting keep the fade anchored to the bottom of the placement.
+            layer.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(relative(0.60))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(theme.background.opacity(0.), 0.),
+                        linear_color_stop(theme.background, 1.),
+                    )),
+            )
+        });
     if reduce_motion {
         return Some(layer.into_any_element());
     }
@@ -1266,6 +1309,63 @@ mod tests {
         assert_eq!(parsed.dim, DIM_RANGE.1);
         assert_eq!(parsed.card_opacity, CARD_OPACITY_RANGE.0);
         assert!(!parsed.derive_accent);
+        assert!(!parsed.bottom_fade, "existing settings do not opt in");
+    }
+
+    #[test]
+    fn dithered_hero_requires_an_image_and_preserves_unrelated_settings() {
+        assert!(WallpaperSettings::default().apply_dithered_hero().is_none());
+        let original = WallpaperSettings {
+            mode: WallpaperMode::FullWindow,
+            effect: Effect::Halftone,
+            effect_scale: 2.5,
+            blur: 7.0,
+            path: Some(PathBuf::from("/tmp/a.png")),
+            label: Some("a.png".into()),
+            card_opacity: 0.7,
+            derive_accent: false,
+            glass: false,
+            ..WallpaperSettings::default()
+        };
+        let expected = WallpaperSettings {
+            mode: WallpaperMode::Hero,
+            effect: Effect::Dither,
+            effect_intensity: 0.35,
+            effect_scale: 1.0,
+            image_opacity: 0.40,
+            blur: 0.0,
+            bottom_fade: true,
+            ..original.clone()
+        };
+        assert_eq!(original.apply_dithered_hero(), Some(expected));
+    }
+
+    #[test]
+    fn bottom_fade_is_opt_in_for_both_visible_placements() {
+        for mode in WallpaperMode::ALL {
+            let mut settings = WallpaperSettings {
+                mode,
+                path: Some(PathBuf::from("/tmp/photo.png")),
+                ..WallpaperSettings::default()
+            };
+            assert!(!settings.shows_bottom_fade());
+            settings.bottom_fade = true;
+            assert_eq!(
+                settings.shows_bottom_fade(),
+                mode != WallpaperMode::Disabled
+            );
+            settings.path = None;
+            assert!(!settings.shows_bottom_fade());
+        }
+    }
+
+    #[test]
+    fn bottom_fade_reads_legacy_preference_unless_new_preference_is_set() {
+        assert!(WallpaperSettings::parse(r#"{"hero_bottom_fade":true}"#).bottom_fade);
+        assert!(
+            !WallpaperSettings::parse(r#"{"hero_bottom_fade":true,"bottom_fade":false}"#)
+                .bottom_fade
+        );
     }
 
     #[test]
@@ -1280,6 +1380,7 @@ mod tests {
             path: Some(PathBuf::from("/tmp/a.png")),
             label: Some("a.png".into()),
             image_opacity: 0.42,
+            bottom_fade: true,
             blur: 3.5,
             dim: 0.2,
             card_opacity: 0.7,
@@ -1743,6 +1844,12 @@ mod tests {
         settings.blur = 0.;
         let third = key_for(&settings, false).unwrap();
         assert_eq!(first, third, "returning to a previous blur reuses its key");
+        settings.bottom_fade = true;
+        assert_eq!(
+            first,
+            key_for(&settings, false).unwrap(),
+            "fade is paint-only"
+        );
         settings.effect = Effect::Ascii;
         let ascii = key_for(&settings, false).unwrap();
         assert_ne!(first, ascii, "the artwork effect is part of the identity");

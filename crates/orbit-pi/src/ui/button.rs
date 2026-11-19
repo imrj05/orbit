@@ -99,13 +99,13 @@ fn variant_treatment<E: Styled + StatefulInteractiveElement>(
             .pressed_state(theme, PressedRamp::Action),
         ButtonVariant::Secondary => press(
             el.border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .raised(theme.surface_elevated, theme)
                 .text_color(theme.text_secondary),
         ),
         ButtonVariant::Outline => press(
             el.border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .raised(theme.surface_elevated, theme)
                 .text_color(theme.text_primary),
         ),
@@ -116,7 +116,7 @@ fn variant_treatment<E: Styled + StatefulInteractiveElement>(
             .text_color(theme.accent_text),
         ButtonVariant::Danger => press(
             el.border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .raised(theme.surface_elevated, theme)
                 .text_color(theme.error),
         ),
@@ -876,7 +876,7 @@ impl ButtonGroup {
                 size,
                 SegmentPosition::at(index, count),
             )
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .font_weight(FontWeight::MEDIUM)
             .child(segment.label);
             if let Some(selector) = segment.selector {

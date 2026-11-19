@@ -342,7 +342,7 @@ impl OrbitApp {
             .px(px(14.))
             .py(DynamicSpacing::Base08.px(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base06.px(&theme))
@@ -405,7 +405,7 @@ impl OrbitApp {
             .flex_shrink_0()
             .bg(theme.surface)
             .border_r_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .child(search)
@@ -416,7 +416,7 @@ impl OrbitApp {
                     .mx(DynamicSpacing::Base12.px(&theme))
                     .mt(DynamicSpacing::Base06.px(&theme))
                     .h(BORDER_WIDTH)
-                    .bg(theme.border),
+                    .bg(theme.hairline()),
             )
             .child(list)
             .child(footer)
@@ -472,7 +472,7 @@ impl OrbitApp {
                     .rounded(Radius::Medium.px(&theme))
                     .bg(theme.surface_elevated)
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .flex()
                     .items_center()
                     .justify_center()
@@ -845,7 +845,7 @@ impl OrbitApp {
                 .flex_col()
                 .child(identity)
                 .child(confirm)
-                .child(div().h(BORDER_WIDTH).bg(theme.border))
+                .child(div().h(BORDER_WIDTH).bg(theme.hairline()))
                 .into_any_element();
         }
 
@@ -879,7 +879,7 @@ impl OrbitApp {
                         .w(BORDER_WIDTH)
                         .h(ButtonSize::Default.height(&theme))
                         .mx(DynamicSpacing::Base04.px(&theme))
-                        .bg(theme.border),
+                        .bg(theme.hairline()),
                 )
                 .child(
                     div()
@@ -906,7 +906,7 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .child(identity.flex_wrap().child(actions))
-            .child(div().h(BORDER_WIDTH).bg(theme.border))
+            .child(div().h(BORDER_WIDTH).bg(theme.hairline()))
             .into_any_element()
     }
 
@@ -1430,7 +1430,7 @@ impl OrbitApp {
                     .w_full()
                     .rounded(Radius::Medium.px(theme))
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .bg(theme.code_bg)
                     .p(DynamicSpacing::Base08.px(theme))
                     .font_family(theme::code_font_family())
@@ -1668,7 +1668,7 @@ impl OrbitApp {
                     .rounded(Radius::Medium.px(&theme))
                     .bg(theme.surface_elevated)
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1737,7 +1737,7 @@ impl OrbitApp {
                 row.pr(px(platform::WINDOW_CONTROLS_W))
             })
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap_3()
@@ -1992,7 +1992,7 @@ impl OrbitApp {
             .flex()
             .items_center()
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .rounded(button::radius(ButtonSize::Medium).px(&theme))
             .raised(theme.surface_elevated, &theme)
             .child(minus)
@@ -2820,7 +2820,7 @@ fn detail_badge(glyph: &'static str, theme: &Theme) -> impl IntoElement {
         .rounded(Radius::Large.px(theme))
         .bg(theme.surface_elevated)
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .flex()
         .items_center()
         .justify_center()
@@ -2837,7 +2837,7 @@ fn error_strip(error: &str, theme: &Theme) -> AnyElement {
         .px(DynamicSpacing::Base20.px(theme))
         .py(DynamicSpacing::Base08.px(theme))
         .border_b_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.error.opacity(0.07))
         .flex()
         .items_start()
