@@ -1,4 +1,4 @@
-import { type CSSProperties, type HTMLAttributes, type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { type CSSProperties, type HTMLAttributes, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { useLook } from './looks'
 import './phone.css'
 
