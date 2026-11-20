@@ -4119,6 +4119,12 @@ pub(crate) fn subagent_status_label(child: &crate::subagent::SubagentChild) -> S
         Phase::Spawning => tr!("transcript_view.subagent_starting"),
         Phase::Refused => tr!("transcript_view.subagent_refused"),
         Phase::Killed if child.timed_out => tr!("transcript_view.subagent_timed_out"),
+        Phase::Tool if matches!(child.status, Status::Running) => {
+            tr!("transcript_view.subagent_running_tool")
+        }
+        Phase::Blocked if matches!(child.status, Status::Running) => {
+            tr!("transcript_view.subagent_blocked")
+        }
         _ => match child.status {
             Status::Running => tr!("transcript_view.subagent_thinking"),
             Status::Done => tr!("transcript_view.subagent_done"),
@@ -4286,10 +4292,12 @@ fn render_subagent_card(
                 },
             )
             .into_any_element(),
+            // A finished child wears the success tone here as in its log,
+            // so the card and the pane never disagree about one outcome.
             Status::Done => glyph(
                 "icons/check.svg",
                 IconSize::Small.px(&theme),
-                theme.text_muted,
+                theme.success,
             )
             .into_any_element(),
             Status::Failed => {
@@ -4321,8 +4329,14 @@ fn render_subagent_card(
                 )
             })
             .child(
+                // The name gives way before the counts and the disclosure
+                // chevron do: at most 40% of the row, truncated, with the full
+                // name in the child's log one click down.
                 div()
-                    .flex_none()
+                    .flex_shrink()
+                    .min_w_0()
+                    .max_w(relative(0.4))
+                    .truncate()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text_primary)
                     .child(SharedString::from(child.label().to_string())),
@@ -4883,19 +4897,29 @@ pub(crate) fn render_subagent_panel(
                 ),
         );
     if !facts.is_empty() {
+        // One cell per fact, wrapping onto a second line in a narrow pane
+        // rather than clipping: the child's own cost is said nowhere else, so
+        // it must never fall off the edge. (`truncate()` is not an option
+        // here; see the step output lines.)
         header = header.child(
             div()
                 .debug_selector(|| "subagent-panel-facts".to_string())
                 .w_full()
                 .min_w_0()
                 .pl(indent)
-                // Clipped, not `truncate()`d: see the step output lines.
-                .overflow_hidden()
-                .whitespace_nowrap()
+                .flex()
+                .flex_wrap()
+                .gap_x(DynamicSpacing::Base12.px(&theme))
+                .gap_y(DynamicSpacing::Base02.px(&theme))
                 .text_size(TextSize::Small.px(&theme))
                 .font(crate::ui::style::text::num_font())
                 .text_color(theme.text_muted)
-                .child(SharedString::from(facts.join(" · "))),
+                .children(facts.into_iter().map(|fact| {
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(SharedString::from(fact))
+                })),
         );
     }
     // What it is doing this moment, while it is doing it.
@@ -4906,27 +4930,31 @@ pub(crate) fn render_subagent_panel(
                     .debug_selector(|| "subagent-panel-now".to_string())
                     .pl(indent)
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .min_w_0()
                     .child(
                         div()
                             .flex_none()
+                            // On the first line's centre, now that it wraps.
+                            .mt(theme.ui_px(5.5))
                             .size(px(6.))
                             .rounded_full()
                             .bg(theme.accent_text),
                     )
                     .child(
+                        // Wraps rather than clipping at the pane's edge, so a
+                        // long command reads in full; capped so one runaway
+                        // line cannot push the log below the fold.
                         div()
                             .flex_1()
                             .min_w_0()
-                            // Clipped, not `truncate()`d: see the step output lines.
-                            .overflow_hidden()
-                            .whitespace_nowrap()
+                            .whitespace_normal()
                             .font_family(theme::code_font_family())
                             .text_size(theme.code_px(12.))
+                            .line_height(theme.ui_px(17.))
                             .text_color(theme.text_secondary)
-                            .child(SharedString::from(current.to_string())),
+                            .child(SharedString::from(cap_chars(current, SUBAGENT_NOW_CHARS))),
                     ),
             );
         }
@@ -5382,6 +5410,8 @@ fn subagent_steps_section(
 /// How much of a child's reasoning the right pane shows: the newest part,
 /// enough to follow a live think without a wall of text.
 const SUBAGENT_REASONING_CHARS: usize = 1200;
+/// The longest "what it is doing now" line the side pane shows in full.
+const SUBAGENT_NOW_CHARS: usize = 240;
 
 /// How many lines of a step's output the right pane shows under its row.
 const SUBAGENT_OUTPUT_LINES: usize = 6;
@@ -10481,6 +10511,21 @@ fn starts_followup_turn(messages: &[ChatMessage], ix: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A running child names what it is actually doing: a tool call or a
+    /// guard's refusal is not "thinking", whatever the run status says.
+    #[test]
+    fn a_running_childs_status_word_follows_its_phase() {
+        let label = |phase: &str| {
+            subagent_status_label(&crate::subagent::SubagentChild::from_value(
+                &serde_json::json!({"agent": "scout", "status": "running", "phase": phase}),
+            ))
+        };
+        assert_eq!(label("thinking"), tr!("transcript_view.subagent_thinking"));
+        assert_eq!(label("tool"), tr!("transcript_view.subagent_running_tool"));
+        assert_eq!(label("blocked"), tr!("transcript_view.subagent_blocked"));
+        assert_eq!(label("queued"), tr!("transcript_view.subagent_waiting_slot"));
+    }
     use super::*;
 
     /// A thought card and a tool card are one material: both paint the shared

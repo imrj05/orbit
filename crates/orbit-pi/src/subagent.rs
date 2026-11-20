@@ -196,7 +196,7 @@ pub(crate) struct SubagentChild {
 }
 
 impl SubagentChild {
-    fn from_value(value: &Value) -> Self {
+    pub(crate) fn from_value(value: &Value) -> Self {
         let ended_at = value.get("endedAt").and_then(Value::as_i64);
         let status = Status::parse(value.get("status").and_then(Value::as_str)).unwrap_or(
             if ended_at.is_some() {

@@ -2,6 +2,8 @@
 
 GLOSSARY = {
     "zh-CN": {
+        "running a tool": "正在运行工具",
+        "blocked": "已阻止",
         "live": "实时",
         "Task": "任务",
         "Setup": "设置",
@@ -11,6 +13,8 @@ GLOSSARY = {
         "This delegation is no longer in the conversation.": "此委派已不在对话中。",
     },
     "ja": {
+        "running a tool": "ツールを実行中",
+        "blocked": "ブロック済み",
         "live": "ライブ",
         "Task": "タスク",
         "Setup": "設定",
@@ -20,6 +24,8 @@ GLOSSARY = {
         "This delegation is no longer in the conversation.": "この委任はもう会話にありません。",
     },
     "ko": {
+        "running a tool": "도구 실행 중",
+        "blocked": "차단됨",
         "live": "실시간",
         "Task": "작업",
         "Setup": "설정",
@@ -29,6 +35,8 @@ GLOSSARY = {
         "This delegation is no longer in the conversation.": "이 위임은 더 이상 대화에 없습니다.",
     },
     "es": {
+        "running a tool": "ejecutando una herramienta",
+        "blocked": "bloqueado",
         "live": "en vivo",
         "Task": "Tarea",
         "Setup": "Configuración",
@@ -38,6 +46,8 @@ GLOSSARY = {
         "This delegation is no longer in the conversation.": "Esta delegación ya no está en la conversación.",
     },
     "fr": {
+        "running a tool": "exécute un outil",
+        "blocked": "bloqué",
         "live": "en direct",
         "Task": "Tâche",
         "Setup": "Configuration",
@@ -47,6 +57,8 @@ GLOSSARY = {
         "This delegation is no longer in the conversation.": "Cette délégation ne figure plus dans la conversation.",
     },
     "de": {
+        "running a tool": "führt ein Werkzeug aus",
+        "blocked": "blockiert",
         "live": "live",
         "Task": "Aufgabe",
         "Setup": "Einrichtung",
@@ -56,6 +68,8 @@ GLOSSARY = {
         "This delegation is no longer in the conversation.": "Diese Delegation ist nicht mehr im Gespräch.",
     },
     "pt-BR": {
+        "running a tool": "executando uma ferramenta",
+        "blocked": "bloqueado",
         "live": "ao vivo",
         "Task": "Tarefa",
         "Setup": "Configuração",
@@ -65,6 +79,8 @@ GLOSSARY = {
         "This delegation is no longer in the conversation.": "Esta delegação não está mais na conversa.",
     },
     "ru": {
+        "running a tool": "запускает инструмент",
+        "blocked": "заблокирован",
         "live": "в реальном времени",
         "Task": "Задача",
         "Setup": "Настройка",
@@ -74,6 +90,8 @@ GLOSSARY = {
         "This delegation is no longer in the conversation.": "Этого поручения больше нет в разговоре.",
     },
     "it": {
+        "running a tool": "esegue uno strumento",
+        "blocked": "bloccato",
         "live": "dal vivo",
         "Task": "Attività",
         "Setup": "Configurazione",

@@ -279,6 +279,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   multi-select), its description always visible, and a **Recommended** badge where the label
   carries `(Recommended)`. A `select` no longer dims the window behind a modal; confirm, input
   and editor dialogs keep the modal. ⏎ / click answer, esc or × cancels.
+- **Subagent card and pane read in full.** In the side pane a child's time, tool count, tokens
+  and cost wrap onto a second line instead of being cut off at the edge, and its current activity
+  wraps instead of clipping. A running child says *running a tool* or *blocked* when that is what
+  it is doing, not always *thinking*. On the card a long agent name truncates before the counts
+  and chevron are pushed out, and a finished child's check is green, as it is in the pane.
 - **Queue and Steer are named on the send controls.** Mid-run with something typed, the
   primary send keeps its label (**Queue** or **Steer**) and the other lane is a labelled pill
   beside it, instead of two look-alike arrow discs. Queued rows tag their lane with a matching
