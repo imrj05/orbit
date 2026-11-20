@@ -526,6 +526,15 @@ legacy app today:
 
 ### Implementation status (living)
 
+Settings → About stars Orbit's repository through the user's signed-in `gh`
+(`gh api /user/starred/OWNER/REPO`; GET to read, PUT/DELETE on click). The
+state is read once per launch when About is first shown; a missing or
+signed-out `gh`, or a token without the scope, hides the button and the card
+keeps opening the repository in the browser. No token is collected by Orbit.
+Covered by unit tests for the slug, the 404 classification and the state
+machine; the live `gh` round trip and the card in the running app are not yet
+manually verified.
+
 The main window restores its frame and display from `~/.orbit-pi/window.json`,
 with windowed, maximized, and native fullscreen as distinct states. Fullscreen
 keeps the ordinary restore frame, so leaving it recovers the previous size;

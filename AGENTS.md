@@ -130,6 +130,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         surgical upsert/remove, `~/.ssh/config` alias discovery, the read-only probe
   docs/remote-sessions.md  agent-only SSH sessions: launch script, safety, what is off while remote
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
+  src/app/repo_star.rs  Settings → About's Star / Starred button: reads and toggles the user's
+                        star on Orbit's repo through their signed-in `gh` (browser fallback)
   src/app/view.rs       top-level chrome: sidebar, transcript, composer, status bar, onboarding, image lightbox
   src/app/open_in.rs    installed-editor/terminal detection and the "open in" menu
   src/app/worktrees.rs  Worktrees page + controller: list/create/open/rename/move/lock/remove, setup progress, settings rows

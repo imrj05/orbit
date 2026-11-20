@@ -57,6 +57,7 @@ impl OrbitApp {
         // user's policy marks idle. A no-op until enabled in Settings.
         self.run_session_retention_once(cx);
         self.tick_wallpaper_library(cx);
+        self.tick_repo_star(cx);
         self.tick_background(cx);
         // MCP: external-change detection, the debounced `pi mcp list` probe,
         // and a deferred restart that applies new server configuration while

@@ -3523,7 +3523,8 @@ where
 /// The "star the project" call to action: a bordered card with the star glyph
 /// over the repo name and a quiet reason, opening the repository in the OS
 /// browser. Shared by the sidebar (which passes its close button) and
-/// Settings → About (which mounts it permanently, `dismiss = None`).
+/// Settings → About (which mounts it permanently and passes its Star / Starred
+/// button when `gh` can star; that button stops the card's own click).
 ///
 /// `element_id` is the card's element/debug id; each mount passes its own so
 /// the two instances never collide.

@@ -16,7 +16,8 @@ use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::{
-    button_frame, context_menu_separator, menu_header, picker_entry, refresh_glyph, ControlExt,
+    button_frame, context_menu_separator, menu_section_header, picker_entry, picker_header,
+    refresh_glyph, ControlExt,
     PressedRamp, StatefulControlExt,
 };
 use chrono::Datelike;
@@ -461,7 +462,8 @@ pub fn multi_menu(
 /// contains. Both respect the current filters.
 pub fn export_menu(cx: &mut gpui::Context<UsagePage>, theme: Theme) -> AnyElement {
     let theme = theme.for_floating();
-    let mut children: Vec<AnyElement> = Vec::new();
+    // No title: the rows open the menu, on the list's own inset.
+    let mut children: Vec<AnyElement> = vec![list_end(theme)];
     for (format, label, hint) in [
         (
             ExportFormat::Csv,
@@ -494,6 +496,7 @@ pub fn export_menu(cx: &mut gpui::Context<UsagePage>, theme: Theme) -> AnyElemen
             |_, _, _| {},
         ));
     }
+    children.push(list_end(theme));
     let page = cx.entity();
     panel("usage-export-menu", Some(268.), theme, children, page)
 }
@@ -523,6 +526,7 @@ pub fn page_size_menu(
             |_, _, _| {},
         ));
     }
+    children.push(list_end(theme));
     let page = cx.entity();
     panel("usage-page-size-menu", None, theme, children, page)
 }
@@ -651,7 +655,7 @@ pub fn more_filters_menu(
             |_, _, _| {},
         ));
     }
-    children.push(menu_title(&tr!("usage.filter_cache"), theme));
+    children.push(section_title(&tr!("usage.filter_cache"), theme));
     for cache in CacheFilter::ALL {
         let entity = cx.entity();
         children.push(row(
@@ -748,7 +752,7 @@ pub fn highlight_menu(
         if breakdown.rows.len() < 2 {
             continue;
         }
-        entries.push(menu_title(&title, theme));
+        entries.push(section_title(&title, theme));
         for group in breakdown.rows.iter().take(HIGHLIGHT_ROWS) {
             let choice = make(group.id);
             let entity = cx.entity();
@@ -780,6 +784,7 @@ pub fn highlight_menu(
             .id("usage-highlight-list")
             .max_h(px(HIGHLIGHT_LIST_MAX_H))
             .overflow_y_scroll()
+            .pb(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
             .children(entries)
@@ -814,6 +819,7 @@ pub fn breakdown_page_size_menu(
             |_, _, _| {},
         ));
     }
+    children.push(list_end(theme));
     let page = cx.entity();
     panel(
         "usage-breakdown-page-size-menu",
@@ -890,6 +896,7 @@ pub fn bucket_page_size_menu(
             |_, _, _| {},
         ));
     }
+    children.push(list_end(theme));
     let page = cx.entity();
     panel("usage-bucket-page-size-menu", None, theme, children, page)
 }
@@ -960,13 +967,29 @@ pub fn failure_page_size_menu(
             |_, _, _| {},
         ));
     }
+    children.push(list_end(theme));
     let page = cx.entity();
     panel("usage-failure-page-size-menu", None, theme, children, page)
 }
 
-/// A small heading at the top of a menu: Zed's list sub-header.
+/// A small heading at the top of a menu: Zed's list sub-header, inset from
+/// the popover's top edge.
 fn menu_title(label: &str, theme: Theme) -> AnyElement {
-    menu_header(label.to_string(), &theme).into_any_element()
+    picker_header(label.to_string(), &theme).into_any_element()
+}
+
+/// A heading that opens a later section, under the rows of the one above.
+fn section_title(label: &str, theme: Theme) -> AnyElement {
+    menu_section_header(label.to_string(), &theme).into_any_element()
+}
+
+/// The list's bottom inset, for a menu whose last child is a row rather than
+/// a footer — so the final row's hover wash never meets the popover's edge.
+fn list_end(theme: Theme) -> AnyElement {
+    div()
+        .flex_none()
+        .h(picker::list_padding_y(&theme))
+        .into_any_element()
 }
 
 /// The date-range menu: presets, then a compact calendar for custom windows.
@@ -1008,8 +1031,15 @@ pub fn range_menu(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Th
         rows.push(context_menu_separator(&theme).into_any_element());
         rows.push(calendar(page, cx, theme));
     }
-    // The shell already pads the list top and bottom.
-    children.push(div().flex().flex_col().children(rows).into_any_element());
+    // The picker shell has no vertical inset of its own; the list carries it.
+    children.push(
+        div()
+            .py(picker::list_padding_y(&theme))
+            .flex()
+            .flex_col()
+            .children(rows)
+            .into_any_element(),
+    );
     let page = cx.entity();
     panel("usage-range-menu", Some(244.), theme, children, page)
 }

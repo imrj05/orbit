@@ -1376,7 +1376,11 @@ impl OrbitApp {
                 // the same name would just repeat it, so the group is
                 // headerless.
                 vec![
-                    star_project_banner(theme, "about-star-banner", None),
+                    star_project_banner(
+                        theme,
+                        "about-star-banner",
+                        self.repo_star_button(theme, cx),
+                    ),
                     self.settings_group(theme, about),
                 ]
             }

@@ -634,6 +634,9 @@ pub struct OrbitApp {
     settings_open: bool,
     /// Active section within the settings surface.
     settings_section: SettingsSection,
+    /// Settings → About: the user's star on Orbit's repository, via `gh`.
+    repo_star: repo_star::RepoStar,
+    repo_star_task: Option<gpui::Task<()>>,
     settings_back_focus: FocusHandle,
     settings_nav_focus: FocusHandle,
     settings_nav_cursor: usize,
@@ -2464,6 +2467,8 @@ impl OrbitApp {
             session_menu: None,
             settings_open: false,
             settings_section: SettingsSection::General,
+            repo_star: repo_star::RepoStar::Unknown,
+            repo_star_task: None,
             settings_back_focus: cx.focus_handle().tab_stop(true),
             settings_nav_focus: cx.focus_handle().tab_stop(true),
             settings_nav_cursor: 0,
@@ -4548,6 +4553,7 @@ mod pickers;
 mod plugin_update_ui;
 mod provider_accounts;
 mod remote_hosts_ui;
+mod repo_star;
 mod remote_providers_ui;
 mod remote_git_ui;
 mod remote_sessions_ui;

@@ -1429,8 +1429,90 @@ pub fn parse_commit_github(raw: &str) -> Result<CommitGithub, String> {
     Ok(CommitGithub { pulls, checks })
 }
 
+/// `owner/name` of a GitHub repository URL (`https://github.com/o/r`, with
+/// or without `.git` or a trailing slash). `None` for any other host or shape,
+/// so a fork that points its manifest elsewhere never stars the wrong repo.
+pub fn github_repo_slug(url: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    if parsed.host_str()? != "github.com" {
+        return None;
+    }
+    let mut parts = parsed.path_segments()?.filter(|part| !part.is_empty());
+    let owner = parts.next()?;
+    let name = parts.next()?.trim_end_matches(".git");
+    if parts.next().is_some() || owner.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((owner.to_string(), name.to_string()))
+}
+
+/// `gh api` answers a missing resource on stderr with `(HTTP 404)`. For
+/// `/user/starred/…` that is GitHub's "not starred", not a failure.
+fn is_not_found(stderr: &str) -> bool {
+    stderr.contains("HTTP 404")
+}
+
+/// Classify the starred probe's outcome: 204 (success) is starred, 404 is not;
+/// anything else — gh missing, signed out, a token without the scope — is an
+/// error the caller reads as "cannot star from here".
+fn starred_from(result: Result<String, String>) -> Result<bool, String> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(error) if is_not_found(&error) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether the account `gh` is signed in to has starred `owner/name`.
+/// Blocking: run it off the UI thread.
+pub fn repo_starred(owner: &str, name: &str) -> Result<bool, String> {
+    let path = format!("/user/starred/{owner}/{name}");
+    starred_from(run(&std::env::temp_dir(), &["api", path.as_str()]))
+}
+
+/// Star (`true`) or unstar `owner/name` as the signed-in `gh` account. Both
+/// are idempotent on GitHub's side. Blocking: run it off the UI thread.
+pub fn set_repo_starred(owner: &str, name: &str, starred: bool) -> Result<(), String> {
+    let path = format!("/user/starred/{owner}/{name}");
+    let method = if starred { "PUT" } else { "DELETE" };
+    run(
+        &std::env::temp_dir(),
+        &["api", "--method", method, path.as_str()],
+    )
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn github_repo_slug_reads_owner_and_name() {
+        let slug = |url: &str| super::github_repo_slug(url);
+        let pair = |o: &str, n: &str| Some((o.to_string(), n.to_string()));
+        assert_eq!(slug("https://github.com/imrj05/orbit"), pair("imrj05", "orbit"));
+        assert_eq!(slug("https://github.com/imrj05/orbit/"), pair("imrj05", "orbit"));
+        assert_eq!(slug("https://github.com/imrj05/orbit.git"), pair("imrj05", "orbit"));
+        assert_eq!(slug("https://gitlab.com/imrj05/orbit"), None);
+        assert_eq!(slug("https://github.com/imrj05"), None);
+        assert_eq!(slug("https://github.com/imrj05/orbit/issues"), None);
+        assert_eq!(slug("not a url"), None);
+    }
+
+    #[test]
+    fn starred_probe_reads_404_as_not_starred() {
+        assert_eq!(super::starred_from(Ok(String::new())), Ok(true));
+        assert_eq!(
+            super::starred_from(Err("gh: Not Found (HTTP 404)".into())),
+            Ok(false)
+        );
+        // Signed out or a missing scope is not "not starred": the card must
+        // fall back to the browser instead of offering a button that fails.
+        assert!(super::starred_from(Err(
+            "To get started with GitHub CLI, please run:  gh auth login".into()
+        ))
+        .is_err());
+        assert!(super::starred_from(Err("gh: Resource not accessible (HTTP 403)".into())).is_err());
+    }
+
     use super::*;
 
     #[test]

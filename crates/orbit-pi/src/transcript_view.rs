@@ -8344,22 +8344,30 @@ fn render_list_item(
     } else {
         theme.assistant_text
     };
+    // Bespoke: a block with a hanging indent and an absolutely placed marker,
+    // not a flex row. gpui 0.2.2's text element paints the wrap from its last
+    // measurement, and a `flex_1` text column is re-measured at a near-zero
+    // width after the row's height is settled — the item kept its height but
+    // painted one glyph per line. As a block child the text measures exactly
+    // like a paragraph.
+    let indent = 20. + 20. * item.depth as f32;
     div()
         .w_full()
         .min_w_0()
-        .flex()
-        .items_start()
-        .pl(px(20. + 20. * item.depth as f32))
+        .relative()
+        .pl(px(indent + 20.))
         .child(
             div()
-                .flex_none()
+                .absolute()
+                .top_0()
+                .left(px(indent))
                 .w(px(20.))
                 .flex()
                 .items_center()
                 .justify_start()
                 .child(marker),
         )
-        .child(div().min_w_0().flex_1().child(render_container_line(
+        .child(div().w_full().min_w_0().child(render_container_line(
             &item.text,
             ix,
             id_namespace,
@@ -13960,6 +13968,53 @@ mod tests {
                     .expect("build the fixture response"))
             })
         }
+    }
+
+    /// A wrapping list item in a document rendered outside the transcript
+    /// (the Git panel's issue body) must wrap at the column width, not paint
+    /// one glyph per line.
+    #[gpui::test]
+    fn document_list_items_wrap_at_column_width(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+
+        struct ListDocView;
+        impl gpui::Render for ListDocView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div()
+                    .id("list-doc")
+                    .w(px(600.))
+                    .debug_selector(|| "list-doc".to_string())
+                    .child(render_markdown_document(
+                        "- **edit / write** — the change as a diff (reuse `src/diff_view.rs` and the paint-only lexer in `highlight.rs`), with the file path and a one-line summary.\n- **todo** — the checklist with its state.",
+                        theme::Theme::for_id(theme::ThemeId::Orbit),
+                    ))
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| ListDocView));
+        let paint = |cx: &mut gpui::VisualTestContext| {
+            let view = view.clone();
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(800.), px(4000.)),
+                move |_, _| view.clone(),
+            );
+        };
+        paint(cx);
+        cx.run_until_parked();
+        paint(cx);
+
+        let host = cx
+            .debug_bounds("list-doc")
+            .expect("the document is visible");
+        // Two short-wrapped items fit in a handful of 26px lines at 600px;
+        // a glyph-per-line wrap would run to thousands of pixels.
+        assert!(
+            host.size.height < px(26. * 6.),
+            "list items must wrap at the column width, got {:?}",
+            host.size.height
+        );
     }
 
     /// A standalone markdown image (the `<img>` tag GitHub stores for a
