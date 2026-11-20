@@ -890,3 +890,43 @@ fn the_folder_picker_follows_a_window_resize(cx: &mut gpui::TestAppContext) {
         "and stays inside it: {narrow:?}"
     );
 }
+
+
+/// Closing the folder picker hands focus back to the folder control, and focus
+/// draws a ring. The ring must cost no layout: the control, its name and the
+/// branch chip beside it stay exactly where they were before the picker opened
+/// (they once moved 1-2 px, because focus added a border the rest state lacked).
+#[gpui::test]
+fn closing_the_folder_picker_moves_nothing_in_the_header(cx: &mut gpui::TestAppContext) {
+    let app = new_task_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.branch = Some(crate::app::BranchStatus {
+                name: "main".into(),
+                ahead_behind: None,
+            });
+            app.worktree_repo_root = app.current_workspace.clone();
+            cx.notify();
+        });
+    });
+    let cx = cx.add_empty_window();
+    let pieces = ["new-task-folder", "new-task-folder-name", "branch-chip"];
+    let measure = |cx: &mut gpui::VisualTestContext| -> Vec<_> {
+        pieces
+            .iter()
+            .map(|piece| cx.debug_bounds(piece).expect("laid out"))
+            .collect()
+    };
+    draw(cx, &app, 1100., 720.);
+    let before = measure(cx);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_workspace_picker(window, cx)));
+    draw(cx, &app, 1100., 720.);
+    assert_eq!(measure(cx), before, "opening the picker moves nothing");
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_workspace_picker(window, cx)));
+    draw(cx, &app, 1100., 720.);
+    let focused = cx.update(|window, cx| app.read(cx).new_task_folder_focus.is_focused(window));
+    assert!(focused, "closing hands focus back to the folder control");
+    assert_eq!(measure(cx), before, "the focus ring costs no layout");
+}

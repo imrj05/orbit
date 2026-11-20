@@ -248,7 +248,7 @@ fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
         f32::from(entries_group.size.height)
     );
     let action_rows = expected_action_rows();
-    if action_rows == 0 {
+    if action_rows == 1 {
         // No configured host: the "new project" verb is still there, so the
         // machine group exists with exactly that one row.
         let actions_group = actions_group.expect("the verb row laid out");
@@ -260,7 +260,7 @@ fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
         );
     } else {
         let actions_group = actions_group.expect("the action rows laid out");
-        let expected_actions = action_rows as f32 * row_h;
+        let expected_actions = action_rows as f32 * row_h + 1.;
         assert!(
             (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
             "{action_rows} action rows tile at {row_h}px each (plus the hairline): expected ~{expected_actions}, was {}",
@@ -334,7 +334,7 @@ fn a_filter_that_matches_nothing_keeps_the_action_rows(cx: &mut gpui::TestAppCon
         f32::from(rows.size.height)
     );
     let action_rows = expected_action_rows();
-    if action_rows == 0 {
+    if action_rows == 1 {
         // No configured host: the "new project" verb still keeps the group.
         let actions = actions.expect("the verb row stayed");
         let expected_actions = row_h + 1.; // one row plus its hairline
@@ -346,18 +346,25 @@ fn a_filter_that_matches_nothing_keeps_the_action_rows(cx: &mut gpui::TestAppCon
     } else {
         let actions = actions.expect("the verbs stayed");
         assert!(
-            (f32::from(actions.size.height) - action_rows as f32 * row_h).abs() <= 2.,
+            (f32::from(actions.size.height) - (action_rows as f32 * row_h + 1.)).abs() <= 2.,
             "all {action_rows} machine rows remain: was {}",
             f32::from(actions.size.height)
         );
     }
 }
 
-/// The machine rows the picker builds: one row per configured remote host.
-/// Hosts come from the machine's own `remote-hosts.json`, so the count is
-/// read, not assumed.
+/// The machine rows the picker builds: one row per enabled remote host, then
+/// "Add this project to a server…" when there is a host (the picker is open
+/// over a project), then "New project". Hosts come from the machine's own
+/// `remote-hosts.json`, so the count is read, not assumed; `1` means no host.
 fn expected_action_rows() -> usize {
-    OrbitApp::remote_actions(&crate::remote_hosts::load().0).len()
+    let hosts: Vec<_> = crate::remote_hosts::load()
+        .0
+        .into_iter()
+        .filter(|host| host.enabled)
+        .collect();
+    let add_to_server = usize::from(!hosts.is_empty());
+    OrbitApp::remote_actions(&hosts).len() + add_to_server + 1
 }
 
 /// Open the picker over a repository with one linked worktree: enough folder

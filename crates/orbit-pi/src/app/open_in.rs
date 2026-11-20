@@ -14,6 +14,9 @@ use crate::ui::prelude::*;
 /// window blits it 1:1.
 const APP_ICON: IconSize = IconSize::Custom(18. / BASE_REM_PX);
 
+/// Hover group of the header's open-in split, so its seam can follow the lift.
+const OPEN_IN_SPLIT: &str = "open-in-split";
+
 impl OrbitApp {
     /// Resolve installed folder-capable apps once, off-thread.
     pub(crate) fn detect_open_in_apps(&self, cx: &mut Context<Self>) {
@@ -181,20 +184,33 @@ impl OrbitApp {
         .children(self.open_in_menu_popup(&this, path, preferred_id, theme, cx))
         .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_caret));
 
+        // The seam between the halves belongs to the chip's frame: header chips
+        // rest ghost, so it shows only while the split is lifted (hovered or
+        // its menu open) and never floats as a stray rule in the bar.
+        let menu_open = self.open_in_menu_open;
+        let seam = div()
+            .w(px(1.))
+            .h_full()
+            .flex_none()
+            .when(menu_open, |seam| seam.bg(theme.hairline()))
+            .group_hover(OPEN_IN_SPLIT, |seam| seam.bg(theme.hairline()));
+        let split = header_chip(
+            div()
+                .group(OPEN_IN_SPLIT)
+                .h(px(HEADER_CTRL_H))
+                .rounded(header_ctrl_radius(&theme))
+                .flex_none()
+                .flex()
+                .items_center(),
+            &theme,
+        );
         Some(
-            header_chip(
-                div()
-                    .h(px(HEADER_CTRL_H))
-                    .rounded(header_ctrl_radius(&theme))
-                    .flex_none()
-                    .flex()
-                    .items_center(),
-                &theme,
-            )
-            .child(primary)
-            .child(div().w(px(1.)).h_full().flex_none().bg(theme.hairline()))
-            .child(caret)
-            .into_any_element(),
+            split
+                .when(menu_open, |split| header_lift(split, &theme))
+                .child(primary)
+                .child(seam)
+                .child(caret)
+                .into_any_element(),
         )
     }
 

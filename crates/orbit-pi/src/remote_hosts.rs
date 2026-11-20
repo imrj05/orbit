@@ -752,6 +752,78 @@ pub fn parse_git_status(stdout: &str) -> RemoteGit {
     }
 }
 
+/// The local branches of `host`'s folder, newest commit first, as this
+/// Mac's branch picker lists its own (`orbit_rpc::remote::list_branches_script`).
+/// Empty when git is missing or the folder is not a repository. Read-only;
+/// blocking: call it off the UI thread.
+pub fn list_branches(
+    host: &RemoteHost,
+    password: Option<&str>,
+) -> std::result::Result<Vec<crate::git::BranchEntry>, ProbeFailure> {
+    let other = |err: anyhow::Error| ProbeFailure::Other(format!("{err:#}"));
+    let target = host.target().map_err(other)?;
+    let script = orbit_rpc::remote::list_branches_script(&target).map_err(other)?;
+    let stdout = run_script_output(
+        &target,
+        &script,
+        password,
+        orbit_rpc::remote::BRANCHES_STARTED,
+        None,
+    )?;
+    Ok(parse_branch_lines(&stdout))
+}
+
+/// The `name<TAB>date` lines after the script's start marker.
+pub fn parse_branch_lines(stdout: &str) -> Vec<crate::git::BranchEntry> {
+    stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty() && *line != orbit_rpc::remote::BRANCHES_STARTED)
+        .map(crate::git::parse_branch_entry)
+        .collect()
+}
+
+/// Switch `host`'s folder to branch `name`, or with `create` make it and
+/// switch (`orbit_rpc::remote::switch_branch_script`). The outer `Err` is
+/// about reaching the host; the inner one is git's own last line.
+pub fn switch_branch(
+    host: &RemoteHost,
+    password: Option<&str>,
+    name: &str,
+    create: bool,
+) -> std::result::Result<std::result::Result<(), String>, ProbeFailure> {
+    let other = |err: anyhow::Error| ProbeFailure::Other(format!("{err:#}"));
+    let target = host.target().map_err(other)?;
+    let script = orbit_rpc::remote::switch_branch_script(&target, name, create).map_err(other)?;
+    let stdout = run_script_output(
+        &target,
+        &script,
+        password,
+        orbit_rpc::remote::SWITCH_BRANCH_STARTED,
+        None,
+    )?;
+    Ok(parse_switch_result(&stdout))
+}
+
+/// `Ok` when the script ended with `orbit-branch: ok`; otherwise git's last
+/// line (the most specific) as the reason.
+pub fn parse_switch_result(stdout: &str) -> std::result::Result<(), String> {
+    if stdout.lines().any(|line| line == "orbit-branch: ok") {
+        return Ok(());
+    }
+    let detail = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("orbit-branch: detail "))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    Err(detail
+        .iter()
+        .find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
+        .or(detail.last())
+        .map(|line| line.to_string())
+        .unwrap_or_else(|| tr!("remote_git.switch_failed_unknown")))
+}
+
 /// The Git state of `host`'s folder. Read-only; blocking: call it off the
 /// UI thread.
 pub fn git_status(

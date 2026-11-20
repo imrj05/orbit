@@ -29,7 +29,7 @@ need a running build.
 | Phase | What ships | Status | Gate |
 |---|---|---|---|
 | P0 | Baseline capture and the motion test harness | Harness in; captures pending | Two `⌘⌥P` captures stored beside `docs/performance-baseline.md` |
-| P1 | `src/motion/` primitives (`Transition`, `Spring`, `Disclosure`, `Travel`, `bezier`) | Complete | `cargo test -p orbit-pi motion::` — 29 tests, headless |
+| P1 | `src/motion/` primitives (`Transition`, `Travel`, `bezier`; `Spring` and `Disclosure` were built, never adopted, and removed — restore from git history for P4e) | Complete | `cargo test -p orbit-pi motion::` — 29 tests, headless |
 | P2 | `Motion::Travel`, three-way `MotionPreference`, the `nominal()` leak | Complete | Preference resolves in one place; `check_motion.py` forbids `nominal()` |
 | P3 | The interaction layer, adopted control by control | P3a complete (hover, `control`, `state`); P3b is a per-site rollout — 208 `hover_state` sites | `hover_fades_*`, `a_control_tracks_hover_and_selection_separately` pass |
 | P4a | One `disclosure_chevron`, adopted by every swap site | Complete — 0 glyph swaps left | No `chevron-down`/`chevron-right` ternary remains outside the helper |

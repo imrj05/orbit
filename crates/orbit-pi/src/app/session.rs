@@ -894,6 +894,15 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.settings_open {
+            let search = self.settings_search.read(cx);
+            if search.focus_handle(cx).is_focused(window) {
+                if !search.is_composing() {
+                    window.focus(&self.settings_nav_focus);
+                }
+                return;
+            }
+        }
         // Only the main composer owns the completion menu — picker filter
         // inputs share the `Composer` key context but must never reach it. A
         // field in a form modal takes Tab as the modal's focus ring instead.
@@ -1047,7 +1056,7 @@ impl OrbitApp {
                 cx.notify();
                 return;
             }
-            self.close_settings(cx);
+            self.close_settings_with_focus(window, cx);
             return;
         }
         if self.model_selector.is_some() {
@@ -2722,15 +2731,14 @@ impl OrbitApp {
         }
         let theme = *theme::get(cx);
 
-        // A persistent glass chip rather than an invisible hit target: the
-        // hairline border and ink wash read as a dedicated meter surface at
-        // rest, and the hover/open state lifts it (deeper fill, stronger
-        // border) instead of the chip appearing from nothing. It shares the
-        // top bar's chip glass, so the meter sits in the same row as the
-        // buttons without looking like one.
+        // A top-bar chip like its neighbours: the meter's ink rests on the
+        // titlebar, and the hover/open state lifts it onto the shared chip
+        // glass (fill, stronger border), so the whole row reads as one quiet
+        // instrument line until the pointer reaches it.
         let mut chip = press(header_chip(
             div()
                 .id("top-quota")
+                .debug_selector(|| "top-quota".to_string())
                 .group(BUTTON_GROUP)
                 .relative()
                 .h(px(HEADER_CTRL_H))
@@ -2755,27 +2763,22 @@ impl OrbitApp {
         // how much is left) and deserve a visible seam.
         let divider = || div().flex_none().w(px(1.)).h(px(13.)).bg(theme.hairline());
 
-        // The provider mark and name anchor every headline: the meter is
-        // only truthful if the account it belongs to is named beside it.
+        // The provider mark anchors every headline: the meter is only
+        // truthful if the account it belongs to is identified beside it. The
+        // mark alone keeps the status row short; its tooltip names the
+        // provider, and the popover's cards spell every name out.
         let provider_head = |report: &QuotaReport| {
             div()
+                .id("status-quota-provider")
+                .debug_selector(|| "status-quota-provider".to_string())
                 .flex()
                 .items_center()
-                .gap(DynamicSpacing::Base06.px(&theme))
+                .tip(providers::provider_display_name(&report.provider))
                 .child(icon_dyn(
                     provider_icon(&report.provider),
                     IconSize::XSmall.px(&theme),
                     provider_mark_color(&report.provider, &theme, theme.text_muted),
                 ))
-                .child(
-                    div()
-                        .max_w(px(96.))
-                        .truncate()
-                        .text_size(TextSize::Small.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_secondary)
-                        .child(providers::provider_display_name(&report.provider)),
-                )
         };
 
         match self.quota.headline(&self.model_provider) {
@@ -2799,11 +2802,16 @@ impl OrbitApp {
                 }
                 if let Some(fraction) = window.fraction() {
                     // Tabular figures keep the number from jittering as
-                    // usage ticks during a run, and the state tint (green →
-                    // amber → red) makes the ring's verdict readable even
-                    // without the gauge — the same pairing the composer's
-                    // context meter uses.
-                    let tint = quota_tint(fraction, theme);
+                    // usage ticks during a run. Like the context meter beside
+                    // it, the chip stays neutral with room to spare and takes
+                    // amber, then red, as the window runs out — colour
+                    // appearing is the signal. The popover keeps the full
+                    // green → amber → red scale for its per-window meters.
+                    let tint = if fraction >= QUOTA_WARN_FRACTION {
+                        quota_tint(fraction, theme)
+                    } else {
+                        theme.text_secondary
+                    };
                     chip = chip
                         .child(
                             div()
@@ -2813,7 +2821,11 @@ impl OrbitApp {
                                 .text_color(tint)
                                 .child(format!("{}%", (fraction * 100.0).round() as i32)),
                         )
-                        .child(context_ring(fraction, tint, theme.surface_elevated));
+                        .child(context_ring(
+                            fraction,
+                            tint,
+                            crate::context_meter::ring_track(Some(fraction), &theme),
+                        ));
                 }
             }
             // A balance-only account (DeepSeek, OpenRouter) has no window to
@@ -2835,8 +2847,8 @@ impl OrbitApp {
             }
             // Nothing metered anywhere (notes, errors): the chip keeps the
             // popover reachable. With MCP servers configured it becomes the
-            // MCP status chip — the pane behind it is now the only place
-            // their state is visible from the top bar.
+            // MCP status chip — the pane behind it is the only place their
+            // state is visible from the top bar.
             QuotaHeadline::Quiet => match mcp_chip {
                 Some((dot, label)) => {
                     chip = chip
@@ -3035,6 +3047,8 @@ impl OrbitApp {
             .child(header)
             .child(body);
 
+        // The chip sits in the top bar, so the popover hangs below it,
+        // end-aligned with the chip's right edge.
         Some(
             dropdown_below(
                 DropdownAlign::End,
@@ -3047,7 +3061,7 @@ impl OrbitApp {
         )
     }
 
-    /// The eye toggle on a provider card in the top-bar quota popover: hides
+    /// The eye toggle on a provider card in the quota popover: hides
     /// the provider from the list, or restores one from the "Hidden" group.
     /// A Compact glyph so it sits inside a card header without inflating the
     /// row. The element id varies with the state so the visible and hidden
@@ -4073,10 +4087,13 @@ impl OrbitApp {
 
 /// Meter/accent color for a consumed fraction. Green → amber → red at the
 /// same thresholds the Settings quota meters use, so the two surfaces agree.
+/// The used fraction at which a quota meter turns `warning`.
+const QUOTA_WARN_FRACTION: f32 = 0.75;
+
 fn quota_tint(fraction: f32, theme: Theme) -> Hsla {
     if fraction >= 0.9 {
         theme.error
-    } else if fraction >= 0.75 {
+    } else if fraction >= QUOTA_WARN_FRACTION {
         theme.warning
     } else {
         theme.success

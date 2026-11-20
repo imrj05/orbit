@@ -235,3 +235,101 @@ fn workspace_store_reads_the_view_choices() {
     assert_eq!(bad.group_by, SidebarGroupBy::Workspace);
     assert_eq!(bad.archived_filter, SidebarArchivedFilter::Hide);
 }
+
+/// Local noon today: far enough from midnight that whole-day offsets (even
+/// across a DST change) land on the intended calendar date.
+fn local_noon() -> SystemTime {
+    let noon = chrono::Local::now()
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .expect("noon is a valid time");
+    SystemTime::from(
+        noon.and_local_timezone(chrono::Local)
+            .earliest()
+            .expect("noon exists in the local zone"),
+    )
+}
+
+fn days_before(now: SystemTime, days: u64) -> SystemTime {
+    now - Duration::from_secs(days * 86_400)
+}
+
+#[test]
+fn date_buckets_follow_local_calendar_days() {
+    let now = local_noon();
+    for (days, expected) in [
+        (0, DateBucket::Today),
+        (1, DateBucket::Yesterday),
+        (2, DateBucket::ThisWeek),
+        (6, DateBucket::ThisWeek),
+        (7, DateBucket::ThisMonth),
+        (29, DateBucket::ThisMonth),
+        (30, DateBucket::Older),
+        (400, DateBucket::Older),
+    ] {
+        assert_eq!(
+            DateBucket::of(days_before(now, days), now),
+            expected,
+            "{days} day(s) ago"
+        );
+    }
+    // A timestamp ahead of the clock still lists, as today.
+    assert_eq!(
+        DateBucket::of(now + Duration::from_secs(3_600), now),
+        DateBucket::Today
+    );
+}
+
+#[test]
+fn date_rows_section_sessions_newest_first_with_pins_on_top() {
+    let now = local_noon();
+    let at = |days| {
+        days_before(now, days)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+    };
+    let sessions = vec![
+        store_session("old", "/work/alpha", at(45)),
+        store_session("today_early", "/work/alpha", at(0) - 3_600),
+        store_session("yesterday", "/work/beta", at(1)),
+        store_session("today_late", "/work/beta", at(0)),
+        store_session("pinned_old", "/work/beta", at(90)),
+    ];
+    let pinned: HashSet<PathBuf> = [sessions[4].path.clone()].into_iter().collect();
+    let rows = build_date_sidebar_rows(&sessions, &pinned, now);
+
+    let shape: Vec<String> = rows
+        .iter()
+        .map(|row| match row {
+            SideRow::DateSection { bucket, count } => format!("{bucket:?}:{count}"),
+            SideRow::Session(ix) => sessions[*ix].id.clone(),
+            _ => "other".into(),
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            "Pinned:1",
+            "pinned_old",
+            "Today:2",
+            "today_late",
+            "today_early",
+            "Yesterday:1",
+            "yesterday",
+            "Older:1",
+            "old",
+        ]
+    );
+    // Every session is listed exactly once, and empty buckets get no label.
+    let mut listed = session_indices(&rows);
+    listed.sort_unstable();
+    assert_eq!(listed, vec![0, 1, 2, 3, 4]);
+    assert!(build_date_sidebar_rows(&[], &HashSet::new(), now).is_empty());
+}
+
+#[test]
+fn group_by_date_round_trips_through_its_store_key() {
+    assert_eq!(SidebarGroupBy::from_key(SidebarGroupBy::Date.as_str()), SidebarGroupBy::Date);
+    assert!(SidebarGroupBy::ALL.contains(&SidebarGroupBy::Date));
+}

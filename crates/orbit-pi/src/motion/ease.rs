@@ -1,12 +1,12 @@
 //! The layer's easing curves: the one place a transition's shape is defined.
 //!
 //! `DESIGN.md` §Motion System puts easing inside the role. `Motion::easing`
-//! resolves `Interaction` / `Layout` / `Travel` through [`ease_out_quint`] and
-//! `Instant` through [`linear`]; `theme::tokens::chart::ease` resolves through
-//! [`bezier`]. Keeping both here means a chart curve and a panel curve are built
-//! by the same code even though they are different curves.
+//! resolves every role through [`ease_out_quint`]; a settled `Transition`
+//! rests on [`linear`]; `theme::tokens::chart::ease` resolves through
+//! [`bezier`]. Keeping them here means a chart curve and a panel curve are
+//! built by the same code even though they are different curves.
 
-/// A linear ramp. The `Instant` role's easing: feedback is not travel.
+/// A linear ramp: the easing a settled transition rests on.
 pub(crate) fn linear(delta: f32) -> f32 {
     delta.clamp(0.0, 1.0)
 }
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn the_layer_easings_are_the_ones_the_roles_name() {
-        // `Instant` is linear and feedback-shaped, not travel-shaped.
+        // Linear is the identity on the unit interval.
         assert_eq!(linear(0.0), 0.0);
         assert_eq!(linear(0.5), 0.5);
         assert_eq!(linear(1.0), 1.0);

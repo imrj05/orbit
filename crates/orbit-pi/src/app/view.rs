@@ -299,6 +299,9 @@ impl Render for OrbitApp {
                 .collect(),
         );
         let side_rows = Rc::new(self.sidebar_rows(&sidebar_sessions, &pinned));
+        // The section label's count: the local sessions the list shows (a
+        // collapsed group still counts its sessions in its own header).
+        let listed_sessions = sidebar_sessions.len();
         let old = self.sidebar_list.item_count();
         if old != side_rows.len() {
             self.sidebar_list.splice(0..old, side_rows.len());
@@ -546,8 +549,8 @@ impl Render for OrbitApp {
 
         // ── top-bar right controls ──
         // When Review owns the right edge, or the chat column is tight, the
-        // title and the chips collide. Compact the quota label and drop the
-        // +/− chip (Review already shows the same stats).
+        // title and the chips collide. Compact the quota label (the window
+        // name drops, the percentage stays).
         // The top bar spans the whole main area, so the docks do not squeeze
         // it — compact only when the main area itself is tight.
         let compact_chrome =
@@ -879,11 +882,28 @@ impl Render for OrbitApp {
                                                         SidebarGroupBy::Recent => {
                                                             tr!("sidebar.recent")
                                                         }
+                                                        SidebarGroupBy::Date => {
+                                                            tr!("sidebar.all_sessions")
+                                                        }
                                                         SidebarGroupBy::Workspace => {
                                                             tr!("sidebar.projects")
                                                         }
                                                     }),
                                             )
+                                            // How many sessions the list holds,
+                                            // in the label's own quiet ink.
+                                            .when(listed_sessions > 0, |label| {
+                                                label.child(
+                                                    div()
+                                                        .debug_selector(|| {
+                                                            "sidebar-session-count".into()
+                                                        })
+                                                        .flex_none()
+                                                        .text_size(TextSize::XSmall.px(&theme))
+                                                        .text_color(theme.text_muted)
+                                                        .child(listed_sessions.to_string()),
+                                                )
+                                            })
                                             .child(
                                                 div()
                                                     .flex_1()
@@ -1120,7 +1140,7 @@ impl Render for OrbitApp {
             // ── main ──
             .child(if self.settings_open {
                 // Settings owns the whole column — it has its own nav.
-                self.render_settings(cx).into_any_element()
+                self.render_settings(window, cx).into_any_element()
             } else if !self.dependencies_ready() {
                 // Missing runtime pieces (pi / node): show the setup page
                 // with install commands instead of the empty composer.
@@ -2158,6 +2178,7 @@ impl OrbitApp {
         window: &Window,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
+        let theme = *theme::get(cx);
         let modes = div()
             .flex()
             .flex_wrap()
@@ -2174,8 +2195,19 @@ impl OrbitApp {
             .when(compact, |row| row.w_full())
             .when(!compact, |row| row.flex_1())
             .child(div().flex_1().min_w_0())
-            .child(self.model_chip(compact, cx))
-            .children(self.thinking_chip(cx))
+            // Model and thinking level read as one setting — "Opus 5.5
+            // Medium ▾" — so they sit nearly flush, with the caret on the end.
+            // Each half still opens its own picker; the hairline gap keeps
+            // their hover washes from merging into one blob.
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .child(self.model_chip(compact, cx))
+                    .children(self.thinking_chip(cx)),
+            )
             .child(self.send_controls(window, cx));
         div()
             .id("composer-row")
@@ -2609,16 +2641,19 @@ impl OrbitApp {
             })
     }
 
-    /// The model chip: provider glyph + model name + caret. Ghost style —
-    /// configuration is secondary to the prompt, so chips carry no border
-    /// or fill until hovered/open. `compact` clamps the label so narrow
-    /// windows keep Send reachable.
+    /// The model chip: provider glyph + model name, then a caret only when no
+    /// thinking chip follows. Ghost style — configuration is secondary to the
+    /// prompt, so chips carry no border or fill until hovered/open. `compact`
+    /// clamps the label so narrow windows keep Send reachable.
     pub(super) fn model_chip(&self, compact: bool, cx: &Context<Self>) -> impl IntoElement + use<> {
         let theme = *theme::get(cx);
         // A run in flight dims the chip and swallows clicks until it settles.
         let disabled = self.is_running();
         let open = !disabled && self.picker_is_open(PickerKind::Model);
         let chip = ChipButton::new("model-chip", ChipStyle::Quiet)
+            // The thinking level is the pair's trailing half and carries the
+            // one caret; without it the model chip ends the unit itself.
+            .caret(!self.can_choose_thinking())
             .size(ButtonSize::Medium)
             .selector("model-chip")
             .shrink()
@@ -2650,8 +2685,10 @@ impl OrbitApp {
             .child(chip)
     }
 
-    /// The thinking-level chip: level icon + reasoning level + caret. Ghost
-    /// style, same hierarchy as the model chip.
+    /// The thinking-level chip: the reasoning level in muted ink + caret,
+    /// flush after the model chip so the two read as one "Model Level ▾"
+    /// setting. No level glyph — the word names the level, and a second
+    /// icon beside the provider mark doubled the toolbar's iconography.
     ///
     /// Absent when the active model offers nothing to pick. pi reports `["off"]`
     /// for a model without reasoning, and an empty list before the levels have
@@ -2666,11 +2703,11 @@ impl OrbitApp {
         // A run in flight dims the chip and swallows clicks until it settles.
         let disabled = self.is_running();
         let open = !disabled && self.picker_is_open(PickerKind::Thinking);
-        let (path, _) = thinking_icon(&self.thinking_label, &theme);
         let chip = ChipButton::new("thinking-chip", ChipStyle::Quiet)
             .size(ButtonSize::Medium)
             .selector("thinking-chip")
-            .icon(path)
+            .subdued()
+            .tip(commands::tooltip(CommandId::ChooseThinking, false))
             .label(thinking_display(&self.thinking_label))
             .disabled(disabled)
             .open(open)
@@ -3008,11 +3045,13 @@ impl OrbitApp {
             )
             // Branch and working-directory controls describe the local
             // repository, so a remote task leaves them out.
-            .children(
-                (!remote)
-                    .then(|| self.branch_chip(theme, true, cx))
-                    .flatten(),
-            )
+            .children(if remote {
+                // The host's own branch, read over ssh: read-only, since a
+                // checkout there would change the server's files.
+                self.remote_branch_chip(theme, true, cx)
+            } else {
+                self.branch_chip(theme, true, cx)
+            })
             .child(div().flex_1().min_w_0())
             .children((!remote).then(|| self.work_in_chip(cx)).flatten());
 
@@ -3553,6 +3592,11 @@ impl OrbitApp {
                 folder_row_owns_location && theme.wallpaper.active && !theme.wallpaper.full_window,
             )
             .leading(remote_chip)
+            .leading(
+                remote
+                    .filter(|_| !folder_row_owns_location)
+                    .and_then(|_| self.remote_branch_chip(theme, false, cx)),
+            )
             .leading(folder_chip)
             .leading(work_in)
             // The new-task header owns the branch until the dock completes;
@@ -3613,90 +3657,122 @@ impl OrbitApp {
         let branch = self.branch.as_ref()?;
         let open = self.branch_picker.is_some();
         let pending = self.branch_operation_pending;
-        let name = branch.name.clone();
-        Some(
-            div()
-                // It yields before the row can crowd: a long ref truncates in
-                // the name instead of pushing the folder chip or the status
-                // readout off the line.
-                .min_w_0()
-                .max_w(px(220.))
-                .child(
-                    div()
-                        .relative()
-                        .min_w_0()
-                        .max_w_full()
-                        .child(
-                            // Bespoke: a trigger with a live pending state (dimmed, inert while a branch
-                            // operation runs) and ahead/behind counts; ChipButton has no pending state yet.
-                            button_frame(div().id("branch-chip"), &theme, ButtonSize::Default)
-                                .min_w_0()
-                                .max_w_full()
-                                .debug_selector(|| "branch-chip".to_string())
-                                // The status row and composer header share the
-                                // same compact type size.
-                                .text_size(TextSize::Small.px(&theme))
-                                .when(!pending, |chip| chip.cursor_pointer())
-                                .when(open, |chip| {
-                                    chip.bg(theme.pressed_wash()).text_color(theme.text_primary)
-                                })
-                                .when(!open && !pending, |chip| chip.hover_quiet(&theme))
-                                .when(pending, |chip| chip.opacity(0.6))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|app, _, window, cx| {
-                                        if !app.branch_operation_pending {
-                                            app.toggle_branch_picker(window, cx);
-                                        }
-                                    }),
-                                )
-                                .child(icon(
-                                    "icons/branch.svg",
-                                    ButtonSize::Default.icon_size().px(&theme),
-                                    theme.text_muted,
-                                ))
-                                .child(
-                                    div()
-                                        // A long branch truncates inside the
-                                        // chip; the tooltip keeps the whole ref
-                                        // inspectable without widening the row.
-                                        .min_w_0()
-                                        .max_w(px(220.))
-                                        .truncate()
-                                        .tip(name.clone())
-                                        .child(name),
-                                )
-                                .children(
-                                    branch
-                                        .ahead_behind
-                                        // `↑0 ↓0` is a row of arrows that says
-                                        // nothing; the counts appear when there
-                                        // is something to push or pull.
-                                        .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
-                                        .map(|(ahead, behind)| {
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap(DynamicSpacing::Base06.px(&theme))
-                                                .child(format!("↑{ahead}"))
-                                                .child(format!("↓{behind}"))
-                                        }),
-                                )
-                                .child(Self::chip_caret(
-                                    open,
-                                    theme.text_primary,
-                                    "branch-caret-turn",
-                                    cx,
-                                )),
-                        )
-                        .children(if opens_below {
-                            self.branch_picker_popup_below(&theme)
-                        } else {
-                            self.branch_picker_popup(&theme)
-                        }),
-                )
-                .into_any_element(),
+        let face = Self::branch_chip_face(
+            "branch-chip",
+            branch.name.clone(),
+            branch.ahead_behind,
+            open,
+            pending,
+            None,
+            theme,
+            cx,
         )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|app, _, window, cx| {
+                if !app.branch_operation_pending {
+                    app.toggle_branch_picker(window, cx);
+                }
+            }),
+        );
+        let popup = if opens_below {
+            self.branch_picker_popup_below(&theme)
+        } else {
+            self.branch_picker_popup(&theme)
+        };
+        Some(Self::branch_chip_shell(face, popup))
+    }
+
+    /// The branch chip's slot: it yields before the row can crowd, so a long
+    /// ref truncates in the name instead of pushing the folder chip or the
+    /// status readout off the line. `popup` is the picker hanging off it.
+    pub(super) fn branch_chip_shell(
+        face: gpui::Stateful<gpui::Div>,
+        popup: Option<AnyElement>,
+    ) -> AnyElement {
+        div()
+            .min_w_0()
+            .max_w(px(220.))
+            .child(
+                div()
+                    .relative()
+                    .min_w_0()
+                    .max_w_full()
+                    .child(face)
+                    .children(popup),
+            )
+            .into_any_element()
+    }
+
+    /// One look for every branch chip — this Mac's and a remote host's — so
+    /// the two never drift: the branch glyph, the name (truncated, the whole
+    /// ref on hover), ahead/behind when there is something to push or pull,
+    /// and the caret. The caller attaches the press. `tip` names the control
+    /// when it is not the local picker (the remote chip says whose branch).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn branch_chip_face(
+        id: &'static str,
+        name: String,
+        ahead_behind: Option<(usize, usize)>,
+        open: bool,
+        pending: bool,
+        tip: Option<String>,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        // Bespoke: a trigger with a live pending state (dimmed, inert while a branch
+        // operation runs) and ahead/behind counts; ChipButton has no pending state yet.
+        button_frame(div().id(id), &theme, ButtonSize::Default)
+            .min_w_0()
+            .max_w_full()
+            .debug_selector(move || id.to_string())
+            // The status row and composer header share the
+            // same compact type size.
+            .text_size(TextSize::Small.px(&theme))
+            .when(!pending, |chip| chip.cursor_pointer())
+            .when(open, |chip| {
+                chip.bg(theme.pressed_wash()).text_color(theme.text_primary)
+            })
+            .when(!open && !pending, |chip| chip.hover_quiet(&theme))
+            .when(pending, |chip| chip.opacity(0.6))
+            .when_some(tip, |chip, tip| chip.tip(tip))
+            .child(icon(
+                "icons/branch.svg",
+                ButtonSize::Default.icon_size().px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    // A long branch truncates inside the
+                    // chip; the tooltip keeps the whole ref
+                    // inspectable without widening the row.
+                    .min_w_0()
+                    .max_w(px(220.))
+                    .truncate()
+                    .tip(name.clone())
+                    .child(name),
+            )
+            .children(
+                ahead_behind
+                    // `↑0 ↓0` is a row of arrows that says
+                    // nothing; the counts appear when there
+                    // is something to push or pull.
+                    .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
+                    .map(|(ahead, behind)| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base06.px(&theme))
+                            .child(format!("↑{ahead}"))
+                            .child(format!("↓{behind}"))
+                    }),
+            )
+            .child(Self::chip_caret(
+                open,
+                theme.text_primary,
+                "branch-caret-turn",
+                cx,
+            ))
     }
 
     pub(super) fn context_button(&self, cx: &Context<Self>) -> impl IntoElement + use<> {

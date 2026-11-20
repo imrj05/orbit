@@ -16,7 +16,7 @@
 use super::mcp_ui::mcp_text_button;
 use super::*;
 use crate::ui::chip::{ChipButton, ChipStyle};
-use crate::ui::popover::anchored_menu;
+use crate::ui::popover::{dropdown_below, DropdownAlign};
 use crate::ui::button::{Button, ButtonVariant};
 use crate::remote_hosts::{self, RemoteHost};
 use crate::theme::tokens::{input, modal, ButtonSize, DynamicSpacing, IconSize, TextSize};
@@ -179,23 +179,6 @@ impl OrbitApp {
 
     pub(super) fn remote_hosts_section_opened(&mut self, cx: &mut Context<Self>) {
         self.reload_remote_hosts();
-        cx.notify();
-    }
-
-    /// Open Settings → Remote hosts, optionally straight into the Add form.
-    /// The command palette's "Remote hosts" entry lands here.
-    #[allow(dead_code)]
-    pub(super) fn open_remote_hosts_settings(
-        &mut self,
-        add: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings_open = true;
-        self.set_settings_section(SettingsSection::RemoteHosts, cx);
-        if add {
-            self.remote_host_add(window, cx);
-        }
         cx.notify();
     }
 
@@ -475,7 +458,14 @@ impl OrbitApp {
         self.remote_host_editor_test(cx);
     }
 
+    /// Open or close a card's ⋯ menu. The press that lands on ⋯ while its menu
+    /// is open first dismisses the menu as an outside click (mouse-down); its
+    /// mouse-up must not re-open it, so the gesture guard swallows it — the
+    /// same rule every other menu trigger follows.
     pub(super) fn toggle_remote_host_menu(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.menu_dismissed_at.swallows() {
+            return;
+        }
         self.remote_host_menu = if self.remote_host_menu.as_deref() == Some(name.as_str()) {
             None
         } else {
@@ -541,25 +531,25 @@ impl OrbitApp {
     // ── rendering ─────────────────────────────────────────────────────────
 
     pub(super) fn remote_hosts_toolbar(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        // The button's own fade (`faded`), not a `motion::hover` wrapped around
+        // a button that already carries its hover: under Reduce Motion the
+        // wrapper falls back to a second `.hover()` and GPUI panics.
         let add = Button::new("remote-host-add", ButtonVariant::Primary)
             .size(ButtonSize::Large)
             .icon("icons/plus.svg")
             .label(tr!("remote_hosts.add"))
-            .on_mouse_up(&theme, move |_, window, cx| {
-                this.update(cx, |app, cx| app.remote_host_add(window, cx))
-            })
-            .debug_selector(|| "remote-host-add".to_string());
+            .faded(&theme, move |el| {
+                el.on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                    this.update(cx, |app, cx| app.remote_host_add(window, cx))
+                })
+                .debug_selector(|| "remote-host-add".to_string())
+            });
         div()
             .w_full()
             .flex()
             .items_center()
             .justify_end()
-            .child(crate::motion::hover(
-                add,
-                "remote-host-add",
-                &theme,
-                crate::motion::Hover::fill(theme.action, theme.action_hover),
-            ))
+            .child(add)
             .into_any_element()
     }
 
@@ -737,6 +727,10 @@ impl OrbitApp {
         let switch_name = name.clone();
         let menu_name = name.clone();
         let menu_this = this.clone();
+        // The button's own fade (`faded`), as for Add host: wrapping it in a
+        // second `motion::hover` panics under Reduce Motion.
+        let menu = menu_open.then(|| remote_host_menu(&name, theme, this.clone()));
+        let more_selector = format!("remote-host-more-{name}");
         let more = IconButton::new(
             ElementId::Name(format!("remote-host-more-{name}").into()),
             "icons/more.svg",
@@ -744,14 +738,19 @@ impl OrbitApp {
         .open(menu_open)
         .ink(theme.text_secondary)
         .tip(tr!("remote_hosts.more"))
-        .on_mouse_up(&theme, move |_, _, cx| {
-            cx.stop_propagation();
-            menu_this.update(cx, |app, cx| {
-                app.toggle_remote_host_menu(menu_name.clone(), cx)
-            });
-        })
-        .relative()
-        .children(menu_open.then(|| remote_host_menu(&name, theme, this.clone())));
+        .faded(&theme, move |button| {
+            button
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    menu_this.update(cx, |app, cx| {
+                        app.toggle_remote_host_menu(menu_name.clone(), cx)
+                    });
+                })
+                // The menu's zero-size anchor is positioned against this box.
+                .relative()
+                .debug_selector(move || more_selector.clone())
+                .children(menu)
+        });
 
         let header = div()
             .w_full()
@@ -799,12 +798,7 @@ impl OrbitApp {
                             }
                         },
                     ))
-                    .child(crate::motion::hover(
-                        more,
-                        format!("remote-host-more-{name}"),
-                        &theme,
-                        crate::motion::Hover::wash(&theme),
-                    )),
+                    .child(more),
             );
 
         // The detail area under a hairline: where it runs, and what the last
@@ -1066,9 +1060,15 @@ impl OrbitApp {
             &self.modal_cancel_focus,
         )
         .size(ButtonSize::Large)
-        .on_click(&theme, {
+        // The buttons' own fade, not a second `motion::hover` (it panics under
+        // Reduce Motion: the button already carries a hover).
+        .faded(&theme, {
             let this = this.clone();
-            move |_, _, cx| this.update(cx, |app, cx| app.remote_host_editor_close(cx))
+            move |el| {
+                el.on_click(move |_, _, cx| {
+                    this.update(cx, |app, cx| app.remote_host_editor_close(cx))
+                })
+            }
         });
         let save = modal_button(
             "remote-host-editor-save",
@@ -1077,9 +1077,13 @@ impl OrbitApp {
             &self.modal_confirm_focus,
         )
         .size(ButtonSize::Large)
-        .on_click(&theme, {
+        .faded(&theme, {
             let this = this.clone();
-            move |_, _, cx| this.update(cx, |app, cx| app.remote_host_editor_save(cx))
+            move |el| {
+                el.on_click(move |_, _, cx| {
+                    this.update(cx, |app, cx| app.remote_host_editor_save(cx))
+                })
+            }
         });
 
         let footer = modal_footer(&theme)
@@ -1119,18 +1123,8 @@ impl OrbitApp {
                         _ => None,
                     }),
             )
-            .child(crate::motion::hover(
-                cancel,
-                "remote-host-editor-cancel",
-                &theme,
-                crate::motion::Hover::fill(theme.surface_elevated, theme.surface_hover),
-            ))
-            .child(crate::motion::hover(
-                save,
-                "remote-host-editor-save",
-                &theme,
-                crate::motion::Hover::fill(theme.action, theme.action_hover),
-            ));
+            .child(cancel)
+            .child(save);
 
         let card = modal_card(&theme)
             .debug_selector(|| "remote-host-editor".to_string())
@@ -1252,8 +1246,12 @@ fn remote_host_menu(name: &str, theme: Theme, this: Entity<OrbitApp>) -> AnyElem
             this.clone(),
             Box::new(move |app, _, cx| app.remote_host_request_remove(remove.clone(), cx)),
         ));
+    let selector = format!("remote-host-menu-{name}");
     let popup = popover_picker(div(), &theme)
-        .w(px(220.))
+        .debug_selector(move || selector.clone())
+        // Sized to its longest label, so "Add a project from this Mac…" (and
+        // its longer translations) is not cut off.
+        .min_w(crate::theme::tokens::context_menu::MIN_WIDTH)
         .dismiss_on_outside(move |_, _, cx| {
             this.update(cx, |app, cx| {
                 app.menu_dismissed_at.arm();
@@ -1262,10 +1260,17 @@ fn remote_host_menu(name: &str, theme: Theme, this: Entity<OrbitApp>) -> AnyElem
             })
         })
         .child(body);
-    anchored_menu(Corner::TopRight, point(
-            px(0.),
-            ButtonSize::Default.height(&theme) + crate::theme::tokens::popover::MENU_OFFSET,
-        ), popup)
+    // Hung from a zero-size anchor at the "…" button's bottom-right corner.
+    // An `anchored` dropped straight into the button's flex flow took the
+    // static position of its own menu child centred in the 28px button, so
+    // the menu opened ~100px to the left of its trigger and above it.
+    dropdown_below(
+        DropdownAlign::End,
+        crate::theme::tokens::popover::MENU_OFFSET,
+        popup,
+        format!("remote-host-menu-in-{name}"),
+        &theme,
+    )
 }
 
 /// pi is missing: **Install pi** runs pi's own installer on the host (plus
@@ -1422,6 +1427,70 @@ fn check_line(id: &str, check: &HostCheck, theme: Theme) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host card's "…" menu hangs under its trigger, right edges aligned.
+    /// Mounted as a bare `anchored` inside the centred button, it took the
+    /// static position of its own 220px body and opened ~100px to the left of
+    /// the button and above it.
+    #[gpui::test]
+    fn host_menu_opens_under_its_trigger(cx: &mut gpui::TestAppContext) {
+        // Reduced motion paints the menu at rest on the first frame.
+        let mut theme = Theme::for_id(crate::theme::ThemeId::Orbit);
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        cx.update(|cx| cx.set_global(theme));
+        let (app, cx) = cx.add_window_view(|_, cx| OrbitApp::new(cx));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings_open = true;
+                app.settings_section = SettingsSection::RemoteHosts;
+                // In memory only: nothing here reads or writes the host file.
+                app.remote_hosts = vec![RemoteHost {
+                    name: "prod".into(),
+                    ssh: "vps".into(),
+                    user: None,
+                    port: None,
+                    dir: "/srv/app".into(),
+                    enabled: true,
+                    local_dir: None,
+                }];
+                app.remote_hosts_skipped.clear();
+                cx.notify();
+            })
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(1200.), px(820.)),
+                |_, _| app.clone(),
+            );
+        };
+        draw(cx);
+        // The page says the feature is experimental, and what that means.
+        assert!(
+            cx.debug_bounds("experimental-badge").is_some(),
+            "Remote hosts carries the Experimental tag"
+        );
+        assert!(
+            cx.debug_bounds("remote-hosts-experimental-note").is_some(),
+            "the page explains what Experimental means"
+        );
+        let more = cx
+            .debug_bounds("remote-host-more-prod")
+            .expect("the host card's menu button");
+        cx.simulate_click(more.center(), gpui::Modifiers::none());
+        draw(cx);
+        let menu = cx
+            .debug_bounds("remote-host-menu-prod")
+            .expect("the host menu opened");
+        assert!(
+            menu.top() >= more.bottom(),
+            "the menu must open below its trigger: menu {menu:?}, trigger {more:?}"
+        );
+        assert!(
+            (menu.right() - more.right()).abs() <= px(1.),
+            "the menu's right edge must line up with the trigger's: menu {menu:?}, trigger {more:?}"
+        );
+    }
 
     #[test]
     fn suggestions_rank_prefix_matches_first_and_skip_the_exact_alias() {

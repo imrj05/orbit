@@ -985,6 +985,94 @@ pub fn git_status_script(target: &RemoteTarget) -> Result<String> {
     Ok(script)
 }
 
+/// What [`list_branches_script`] prints first.
+pub const BRANCHES_STARTED: &str = "orbit-branches: started";
+
+/// The host folder's local branches, newest commit first: one
+/// `name<TAB>committer-date` line each, the same `for-each-ref` this Mac's
+/// branch picker reads. Prints nothing more when git is missing or the folder
+/// is not a repository. Read-only.
+pub fn list_branches_script(target: &RemoteTarget) -> Result<String> {
+    target.validate()?;
+    let dir = shell_quote(&target.dir);
+    Ok(format!(
+        r#"set -u
+printf '%s\n' '{BRANCHES_STARTED}'
+cd -- {dir} 2>/dev/null || {{ echo 'orbit: directory not found on host' >&2; exit 66; }}
+export GIT_OPTIONAL_LOCKS=0
+command -v git >/dev/null 2>&1 || exit 0
+git for-each-ref --sort=-committerdate refs/heads/ --format='%(refname:short)%09%(committerdate:iso-strict)' 2>/dev/null
+exit 0
+"#
+    ))
+}
+
+/// What [`switch_branch_script`] prints first; it ends with
+/// `orbit-branch: ok` or `orbit-branch: failed`, after git's last lines as
+/// `orbit-branch: detail …`.
+pub const SWITCH_BRANCH_STARTED: &str = "orbit-branch: started";
+
+/// Whether `name` is a branch name the scripts may pass to git: git's own
+/// ref rules (no whitespace or control characters, none of `~^:?*[\`, no
+/// `..`, `@{`, `//`, leading `-` or `/`, trailing `/`, `.` or `.lock`, no
+/// component starting with `.`). The host's git checks again.
+pub fn is_branch_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name != "@"
+        && !name.starts_with(['-', '/'])
+        && !name.ends_with(['/', '.'])
+        && !name.ends_with(".lock")
+        && !name.contains("..")
+        && !name.contains("@{")
+        && !name.contains("//")
+        && !name.split('/').any(|part| part.starts_with('.'))
+        && !name.chars().any(|c| {
+            c.is_whitespace()
+                || c.is_control()
+                || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+}
+
+/// Switch the host folder to branch `name`, or with `create` make it from
+/// HEAD and switch to it (uncommitted changes come along, as `git switch`
+/// carries them). `git switch` first; the fallback is `git checkout NAME --`,
+/// whose `--` makes git read `NAME` as a branch only — never as a file to
+/// restore over the user's changes. Git's errors stay on stdout and the
+/// script exits 0 for them, like [`clone_script`], so the ssh runner never
+/// reads them as the server's own login problems.
+pub fn switch_branch_script(target: &RemoteTarget, name: &str, create: bool) -> Result<String> {
+    target.validate()?;
+    if !is_branch_name(name) {
+        bail!("`{name}` is not a valid branch name");
+    }
+    let dir = shell_quote(&target.dir);
+    let name = shell_quote(name);
+    let (switch, checkout) = if create {
+        (
+            format!("git switch -c {name}"),
+            format!("git checkout -b {name}"),
+        )
+    } else {
+        (
+            format!("git switch {name}"),
+            format!("git checkout {name} --"),
+        )
+    };
+    Ok(format!(
+        r#"set -u
+printf '%s\n' '{SWITCH_BRANCH_STARTED}'
+cd -- {dir} 2>/dev/null || {{ echo 'orbit: directory not found on host' >&2; exit 66; }}
+export GIT_TERMINAL_PROMPT=0
+command -v git >/dev/null 2>&1 || {{ echo 'orbit-branch: detail git is not installed on this server'; echo 'orbit-branch: failed'; exit 0; }}
+if out=$({switch} 2>&1 </dev/null); then echo 'orbit-branch: ok'; exit 0; fi
+if out2=$({checkout} 2>&1 </dev/null); then echo 'orbit-branch: ok'; exit 0; fi
+printf '%s\n%s\n' "$out" "$out2" | grep -v '^$' | tail -n 3 | while IFS= read -r line; do printf 'orbit-branch: detail %s\n' "$line"; done
+echo 'orbit-branch: failed'
+"#
+    ))
+}
+
 fn is_plain_file_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -1995,6 +2083,114 @@ mod tests {
             String::from_utf8_lossy(&one.stdout).lines().count(),
             2,
             "limit holds"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn branch_names_follow_gits_rules() {
+        for ok in ["main", "feat/remote-ssh", "fix_1.2", "release/v2"] {
+            assert!(is_branch_name(ok), "{ok}");
+        }
+        for bad in [
+            "", "-f", "/a", "a/", "a.", "a.lock", "a..b", "a@{1}", "a//b", "a/.b", "a b", "a~1",
+            "a^", "a:b", "a?", "a*", "a[", "a\\b", "@",
+        ] {
+            assert!(!is_branch_name(bad), "{bad:?}");
+        }
+        assert!(switch_branch_script(&target("/a"), "x; rm -rf ~", false).is_err());
+        let script = switch_branch_script(&target("/srv/app"), "feat/x", false).unwrap();
+        assert!(script.contains("git switch 'feat/x'"));
+        assert!(
+            script.contains("git checkout 'feat/x' --"),
+            "the fallback never reads the name as a file"
+        );
+        let create = switch_branch_script(&target("/srv/app"), "feat/x", true).unwrap();
+        assert!(create.contains("git switch -c 'feat/x'"));
+        assert!(create.contains("git checkout -b 'feat/x'"));
+    }
+
+    /// Against a real repository: list newest first, switch, create, and a
+    /// failed switch reported on stdout with exit 0 while the file of the same
+    /// name keeps its edits.
+    #[cfg(unix)]
+    #[test]
+    fn the_branch_scripts_list_switch_and_create() {
+        let Some((home, path)) = script_sandbox("branches") else {
+            return;
+        };
+        let repo = home.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("HOME", &home)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("notes"), "v1\n").unwrap();
+        git(&["add", "notes"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "one",
+        ]);
+        git(&["branch", "older"]);
+        let target = RemoteTarget {
+            host: "vps".into(),
+            port: None,
+            dir: repo.display().to_string(),
+        };
+        let stdout = |script: String| {
+            let out = run_in(&home, &path, &script, None);
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+
+        let listed = stdout(list_branches_script(&target).unwrap());
+        let names: Vec<&str> = listed
+            .lines()
+            .skip(1)
+            .map(|line| line.split('\t').next().unwrap())
+            .collect();
+        assert_eq!(listed.lines().next(), Some(BRANCHES_STARTED));
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"main") && names.contains(&"older"));
+        assert!(listed.lines().nth(1).unwrap().contains('\t'), "dated");
+
+        assert!(
+            stdout(switch_branch_script(&target, "older", false).unwrap())
+                .ends_with("orbit-branch: ok\n")
+        );
+        let created = stdout(switch_branch_script(&target, "feat/new", true).unwrap());
+        assert!(created.ends_with("orbit-branch: ok\n"), "{created}");
+        let head = std::fs::read_to_string(repo.join(".git/HEAD")).unwrap();
+        assert!(head.contains("refs/heads/feat/new"));
+
+        // A file named like a missing branch keeps its edits.
+        std::fs::write(repo.join("notes"), "edited\n").unwrap();
+        let failed = stdout(switch_branch_script(&target, "notes", false).unwrap());
+        assert!(failed.ends_with("orbit-branch: failed\n"), "{failed}");
+        assert!(failed.contains("orbit-branch: detail "));
+        assert_eq!(
+            std::fs::read_to_string(repo.join("notes")).unwrap(),
+            "edited\n"
         );
         let _ = std::fs::remove_dir_all(&home);
     }

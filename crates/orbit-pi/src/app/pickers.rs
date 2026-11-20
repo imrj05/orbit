@@ -303,6 +303,8 @@ impl OrbitApp {
                 // `apply_default_model`, which skips a model the host lacks).
                 if self.remote.is_some() {
                     self.default_model_armed = true;
+                    // The header's branch chip shows the host's own branch.
+                    self.refresh_remote_git(cx);
                 }
                 self.mcp_stamp = self.mcp.fingerprint_for(self.current_workspace.as_deref());
                 self.send(CommandBody::GetState, "get_state");
@@ -823,6 +825,12 @@ impl OrbitApp {
         self.workspace_picker = None;
         self.session_menu = None;
         self.dismiss_work_in_menu();
+        // A remote session's branches are the host's: the same picker, read
+        // and switched over ssh (`remote_git_ui.rs`).
+        if self.remote.is_some() {
+            self.open_remote_branch_picker(window, cx);
+            return;
+        }
 
         let cwd = match self
             .current_workspace

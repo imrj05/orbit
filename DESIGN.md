@@ -234,7 +234,7 @@ does today, so this section never describes a surface that has not shipped.
 | Density over air: 28px rows, 13–14px body | `ButtonSize::Medium` 28px, `list_item` rows, `TextSize::Default` | Shipped |
 | Accent and action are separate roles | `accent` marks identity; primary fills read `action`, which a palette may key to the accent | Shipped |
 | Restrained UI type, 400–600 | `TextSize` 11–16 at default settings; a separate monospace family serves code | Shipped |
-| Motion is fast and decelerating | `Motion` roles (`Instant` / `Interaction` / `Layout` / `Travel`) plus `motion::hover` · `control` · `state` · `enter` · `disclosure_chevron` · `switch` | Shipped in §Motion System; the hover fade covers the whole sidebar (rows, workspace headers, group rows, menu entries, every control), the Settings back/search/action controls, the transcript copy button, the changelog link and the caption buttons; every other pane still swaps on one frame |
+| Motion is fast and decelerating | `Motion` roles (`Interaction` / `Layout` / `Travel`) plus `motion::hover` · `control` · `state` · `enter` · `disclosure_chevron` · `switch` | Shipped in §Motion System; the hover fade covers the whole sidebar (rows, workspace headers, group rows, menu entries, every control), the Settings back/search/action controls, the transcript copy button, the changelog link and the caption buttons; every other pane still swaps on one frame |
 | Interactive surfaces share state treatments | `interaction::InteractionState` resolves colours; `motion::hover` fades them | Primitives shipped and press treatments adopted; the sidebar and part of Settings fade their hovers, the rest of the app still swaps on one frame (see §The interaction layer) |
 | Keyboard is a first-class path | Command registry + palette; every chip has a `command()` route | Shipped |
 
@@ -500,8 +500,8 @@ existing contact-shadow exception is listed separately below:
   menus, dropdowns, tooltips, popovers.
 - **`ElevationIndex::ModalSurface`** (`elevation_3`, one restrained layer): modals,
   dialogs, the command palette.
-- **`ElevationIndex::Background` / `Surface` / `EditorSurface`** cast nothing. A panel
-  is a tonal step and a hairline, not a shadow.
+- Structural chrome (panels, panes, title bar) is not an elevation and casts nothing.
+  A panel is a tonal step and a hairline, not a shadow.
 - **`Theme::composer_shadow`** is a tight contact-shadow treatment for the chat
   composer and the Git commit box that mirrors it. It is an exception to the flat
   structural default, not permission to add shadows to ordinary cards: usage-board
@@ -625,7 +625,7 @@ Every component below has **one owner** in `crates/orbit-pi/src/ui/`
 - **Raised:** every filled button (primary, accent, danger, chip) paints its face
   through `RaisedExt::raised`, which is a flat fill: the color and its 1px border carry
   the affordance, with no gradient and no lift shadow. Segmented controls use
-  `raised_flat`. Ghost and disabled buttons stay flat too.
+  the same `raised` face. Ghost and disabled buttons stay flat too.
 - **Ghost:** no fill until hover (`surface_hover`); used for every icon action in a header.
 - **Disabled:** `overlay` fill with `text_disabled` content; never opacity-faded color.
 
@@ -740,7 +740,7 @@ Do not give two competing actions the same visual weight.
 Focus is a first-class state, not a stronger hover state. It is one token, drawn one way.
 
 - Pointer hover fills `surface_hover`.
-- Keyboard focus draws a **1px border in `focus_ring`** (`FOCUS_RING_WIDTH`), never a
+- Keyboard focus draws a **1px border in `focus_ring`** (`BORDER_WIDTH`), never a
   fill and never an outline that changes layout. On a filled control the border sits
   on the control's own edge; on a row it sits on the row's rounded rect.
 - Focus is never signalled by accent color alone — the ring is its own role, and it is
@@ -1113,19 +1113,19 @@ Chart reveals and morphs use the separate data-visualisation cadence below:
 
 | Role | Duration | Band | Used for | Status |
 | -- | --: | -- | -- | -- |
-| `Instant` | 50ms | 0–80ms | Press acknowledgement, focus, simple visual feedback | Shipped |
+| `Instant` | 50ms | 0–80ms | Press acknowledgement, focus, simple visual feedback | Not built — press and focus swap on one frame; add the role back to `Motion` with its first caller |
 | `Interaction` | 150ms | 120–160ms | Hover, selection, menu appearance | Shipped |
 | `Layout` | 200ms | 160–220ms | Panel open/close, disclosure, dialog entrance, contextual transitions | Shipped |
 | `Travel` | 260ms | 220–320ms | A surface moving as a whole, composer dock, send morph | Shipped |
 
-`Instant` and `Interaction` are Zed's own values (`AnimationDuration::Instant` /
-`Fast`), so a surface ported from Zed keeps its cadence. `Layout` is Orbit's: Zed's
+`Interaction` is Zed's own value (`AnimationDuration::Fast`; `Instant` would be
+`AnimationDuration::Instant`), so a surface ported from Zed keeps its cadence. `Layout` is Orbit's: Zed's
 `Slow` is 300ms, which reads as hesitation on a workbench panel. `Travel` is Orbit's
 too: a card crossing 200px in 150ms reads as a teleport, and in 260ms it reads as
 travel.
 
-- **Easing is part of the role.** `Instant` is linear (it is feedback, not travel);
-  `Interaction`, `Layout`, and `Travel` decelerate (ease-out quint). Nothing bounces,
+- **Easing is part of the role.** `Interaction`, `Layout`, and `Travel` decelerate
+  (ease-out quint); `Instant`, when built, is linear (it is feedback, not travel). Nothing bounces,
   nothing overshoots.
 - **Streaming is not a role.** Content updates are driven by incoming state and must
   not introduce layout animation; nothing animates text position.
@@ -1146,14 +1146,14 @@ swap states instantly rather than transitioning.
 | Hover out | the same | `Interaction` | the same fade in reverse, from what is on screen | both swap |
 | Press | button, icon button, chip, segment | `Instant` | the pressed ramp; the toolkit offers no transform for a box, so a press cannot scale | the ramp still applies |
 | Release | the same | settle | back to rest, no overshoot | snap to rest |
-| Focus | field, row, card, dialog | `Instant` | the focus ring fades in; the control reserves that 1px border at rest so no layout moves | ring appears at once |
+| Focus | field, row, card, dialog | `Instant` (not built) | the ring appears at once; the control reserves that 1px border at rest so no layout moves | ring appears at once |
 | Selection | row, tab, segment | `Interaction` | selected wash and ink crossfade, on top of the hover's own fade (`motion::control` owns both) | swap |
-| Disclosure | chevron, expandable section | `Interaction` | the chevron turns a quarter turn (`helpers::disclosure_chevron`); the section's height is measured at the current width, then eased | rotation completes instantly, height snaps |
+| Disclosure | chevron, expandable section | `Interaction` | the chevron turns a quarter turn (`helpers::disclosure_chevron`); the section's height snaps | rotation completes instantly, height snaps |
 | Picker caret | chip, dropdown trigger | `Interaction` | the trailing caret points down at rest and turns a half turn to point up while the menu is open (`helpers::dropdown_chevron`); the menu opens below the trigger | rotation completes instantly |
 | Switch | settings toggle (`helpers::switch`) | `Interaction` | the knob travels 18px (the track's inner span) and the track crossfades `surface_elevated` → `accent` | the knob jumps |
 | Menu / popover open | anchored card, context menu | `Interaction` + travel | fade plus an 8px travel out of the anchor edge, as one card; `anchored_popover_at` (a context menu at the pointer) fades only, because it has no edge | the card appears at once |
 | Dialog open | modal card | `Layout` | the card fades in over the scrim; it cannot scale for the reason below | the card appears at once |
-| Panel open / close | sidebar, side pane, explorer, terminal, Git | `Layout` / `Spring` | the panel's own width; chips on its edge ride the same curve | panels snap |
+| Panel open / close | sidebar, side pane, explorer, terminal, Git | `Layout` | the panel's own width; chips on its edge ride the same curve | panels snap |
 | Send morph | composer submit | `Travel` (state) + `Interaction` (hover) | the square grows into a labelled button that names the action, and folds back to a square while a turn runs; width and label ride one transition | the end state is drawn immediately |
 | Composer dock | first send from the new-task page | `Travel` | the composer leaves the page's centered column for the session's: the space below it closes, the column widens 800 → 960, the folder row collapses, and the transcript's ink fades in, all on one clock (`new_task::settle`) | the session frame is painted on the frame of the send |
 
@@ -1187,21 +1187,15 @@ because a future upgrade can reopen them:
 
 ### Primitives
 
-Every treatment above resolves to one of five primitives, kept together in
+Every treatment above resolves to one of these primitives, kept together in
 `src/motion/` so a call site composes them rather than inventing a curve:
 
 - **`Transition`** — `from` / `to` / `started` / `generation`. `retarget()` samples the
   value currently on screen and fades from there, so a reversal resumes instead of
   snapping. `SectionHover` in `transcript_view.rs` is the shape it generalises.
-- **`Spring`** — critically damped, velocity preserved across a retarget, exact settle
-  within 0.2px. It reaches the target without passing it, which is what keeps it inside
-  *nothing bounces*.
-- **`Disclosure`** — measures the child at the current width and interpolates its
-  height, so a section that grows while the window is being resized eases from a real
-  measurement instead of an estimate.
 - **`Travel`** — fade plus an offset out of an anchor side, for popovers and dialogs.
-- **`bezier(t, x1, y1, x2, y2)`** — the one easing-curve builder; `Motion::easing` and
-  `chart::ease` both resolve through it.
+- **`bezier(t, x1, y1, x2, y2)`** / **`ease_out_quint`** — the easing curves;
+  `chart::ease` resolves through `bezier`, every `Motion` role through `ease_out_quint`.
 
 A frame-driven primitive owns its own start instant and is sampled at paint; it does
 not start a timer that competes with the display. Each exposes its curve as a pure
@@ -1787,10 +1781,10 @@ below are before that preference.
 | Control heights | 16 / 18 / 22 / 28 / 32px | `ButtonSize` |
 | Icons | 10 / 12 / 14 / 16px | `IconSize`, or `ButtonSize::icon_size` inside a button |
 | Type | 11 / 12 / 14 / 16px | `TextSize` |
-| Spacing | 0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48px | `DynamicSpacing` |
+| Spacing | 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48px | `DynamicSpacing` |
 | Separators | 1px | `BORDER_WIDTH` |
-| Focus ring | 1px border | `FOCUS_RING_WIDTH` |
-| Motion | 50 / 150 / 200 / 260ms | `Motion` |
+| Focus ring | 1px border | `BORDER_WIDTH` in `focus_ring` |
+| Motion | 150 / 200 / 260ms | `Motion` |
 
 ### Verification
 

@@ -287,7 +287,21 @@ pi writes a remote session's file on the host, so this Mac's
   remote host…** (opens Settings → Remote hosts with the form) or **Edit remote
   hosts…** (opens the page).
 - **Shown as remote:** the folder chip and the status bar name the host
-  (tooltip `ssh:dir`); the branch and Work-in controls are left out.
+  (tooltip `ssh:dir`). The branch chip shows the **host's** branch and
+  ahead/behind (`remote_git_ui::remote_branch_chip`), from the same read-only
+  `git_status_script` the remote Git page uses, read when the session starts,
+  after each settled turn and when the Git page opens. It is read-only — a
+  checkout would change the server's files — and a press opens the remote Git
+  page; a detached HEAD or a folder that is not a repository shows no chip.
+  Since then the chip is the same branch **selector** as this Mac's
+  (`branch_chip_face` + `BranchPicker`): it opens on the host's branches,
+  newest first (`list_branches_script`, read when the chip is pressed), and a
+  pick or **Create and checkout new branch…** runs on the host
+  (`switch_branch_script`: `git switch`, falling back to `git checkout NAME --`
+  so the name is never read as a file to restore; names checked against git's
+  ref rules first). Git's errors come back as the toast; the folder is read
+  again after every switch.
+  The Work-in control is left out.
 - **Off while remote:** Files, Git and Worktrees render "Files live on
   <host>"; the Explorer and Review toggles explain with a toast and stay closed;
   `@` mentions return nothing. The local terminal still works: it is a real

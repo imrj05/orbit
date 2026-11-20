@@ -347,6 +347,11 @@ impl OrbitApp {
                     // A remote session joins its server's sidebar list once
                     // it has a message; refetch that server.
                     self.refresh_active_remote_sessions(cx);
+                    // The turn may have switched branches or committed: the
+                    // header's remote branch chip reads the host again.
+                    if self.remote.is_some() {
+                        self.refresh_remote_git(cx);
+                    }
                     self.abort_requested = false;
                     self.abort_sent_at = None;
                     self.busy = false;

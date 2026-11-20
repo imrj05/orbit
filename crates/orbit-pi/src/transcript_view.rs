@@ -6134,8 +6134,21 @@ fn render_message_footer(
     footer
 }
 
-/// Compact `↑in ↓out · $cost` footer metric with a hover breakdown card.
-/// `None` when the turn has no reported usage, so the footer stays clean.
+/// The footer metric's resting text: tokens in and out, nothing else. Cache
+/// share, cost and output rate are the hover card's ([`usage_breakdown_card`]
+/// lists each), so a settled answer ends in one short quiet readout instead
+/// of a line of statistics under every response.
+fn footer_metric_label(usage: &MessageUsage) -> String {
+    format!(
+        "↑{} ↓{}",
+        format_tokens(usage.input),
+        format_tokens(usage.output)
+    )
+}
+
+/// Compact `↑in ↓out` footer metric with a hover breakdown card (input,
+/// output, cache, total, rate and cost). `None` when the turn has no reported
+/// usage, so the footer stays clean.
 fn usage_metric(
     usage: Option<MessageUsage>,
     generation: Option<Duration>,
@@ -6145,30 +6158,7 @@ fn usage_metric(
 ) -> Option<AnyElement> {
     let usage = usage?;
     let hovered = hovered_usage.get() == Some(ix);
-    let label = {
-        let mut label = format!(
-            "↑{} ↓{}",
-            format_tokens(usage.input),
-            format_tokens(usage.output)
-        );
-        if usage.cache_read > 0 {
-            if let Some(percent) = usage.cache_read_percent() {
-                label.push_str(&tr!(
-                    "transcript_view.cached_share",
-                    percent = hit_percent_label(percent)
-                ));
-            }
-        }
-        if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
-            label.push_str(" · ");
-            label.push_str(&format_message_cost(cost));
-        }
-        if let Some(tps) = generation_tps(&usage, generation) {
-            label.push_str(" · ");
-            label.push_str(&tr!("transcript_view.tps_value", rate = format_tps(tps)));
-        }
-        label
-    };
+    let label = footer_metric_label(&usage);
     let mut metric = div()
         .id(ElementId::NamedInteger("usage-metric".into(), ix as u64))
         .relative()
@@ -6413,13 +6403,15 @@ fn render_turn_fold(
     scroller: MessageScrollerState,
 ) -> impl IntoElement {
     let label = fold_label(elapsed);
+    // A quiet, left-aligned disclosure at the head of the turn — the same
+    // reading line as the activity group's summary row, not a centred divider
+    // ruled across the column. The answer below stays the first thing read.
     div()
         .w_full()
         .h(px(24.))
         .flex()
         .items_center()
-        .gap(px(10.))
-        .child(div().h(px(1.)).flex_1().bg(theme.hairline()))
+        .debug_selector(move || format!("turn-fold-{ix}"))
         .child(
             disclosure_toggle(ElementId::NamedInteger("turn-fold".into(), ix as u64), &theme, ButtonSize::Default)
             .child(label)
@@ -6436,7 +6428,6 @@ fn render_turn_fold(
                 cx.refresh_windows();
             }),
         )
-        .child(div().h(px(1.)).flex_1().bg(theme.hairline()))
 }
 
 fn working_wave_dots(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
@@ -9139,10 +9130,10 @@ fn workspace_relative_path(path: &str, workspace: Option<&Path>) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// End-of-task changed-files summary: a hairlined group on the transcript
-/// canvas (canvas fill — not a raised/shadowed slab), "Changed N files"
-/// with a ±delta underneath, a Review chip, and roomy file rows. Shows 3
-/// rows; expanded shows up to 12 with a clip note.
+/// End-of-task changed-files summary: a borderless tonal well
+/// (`surface_secondary`, frosted on glass) — no hairline, no icon tile — with
+/// one header line ("Changed N files +a −d" and a Review chip) and roomy file
+/// rows. Shows 3 rows; expanded shows up to 12 with a clip note.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_changed_files(
     files: &[ChangedFile],
@@ -9166,13 +9157,13 @@ pub(crate) fn render_changed_files(
         files.len().min(CHANGED_FILES_PREVIEW_LIMIT)
     };
 
+    // The well's tone groups header and rows; no rule between them.
     let mut rows = div()
         .w_full()
         .min_w_0()
         .flex()
         .flex_col()
-        .border_t_1()
-        .border_color(theme.hairline_subtle());
+        .pb(DynamicSpacing::Base04.px(&theme));
     for (path, added, removed) in files.iter().take(visible) {
         let label = workspace_relative_path(path, workspace);
         rows = rows.child(
@@ -9234,38 +9225,31 @@ pub(crate) fn render_changed_files(
         .on_click(move |_, window, cx| review(turn, window, cx))
     });
 
+    // One header line: the diff glyph bare (no tile), the title, the total
+    // delta beside it, and the Review chip at the end.
     let mut header = div()
-        .min_h(px(56.))
+        .debug_selector(move || format!("changed-files-header-{message_ix}"))
+        .min_h(px(44.))
         .px(px(14.))
-        .py(px(10.))
+        .py(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_center()
-        .gap(px(10.))
-        .child(
-            div()
-                .size(px(28.))
-                .flex_none()
-                .rounded(Radius::Large.px(&theme))
-                .bg(theme.surface_elevated)
-                .border_1()
-                .border_color(theme.hairline())
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(glyph(
-                    "icons/file-diff.svg",
-                    IconSize::Small.px(&theme),
-                    theme.text_secondary,
-                )),
-        )
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(glyph(
+            "icons/file-diff.svg",
+            IconSize::Small.px(&theme),
+            theme.text_muted,
+        ))
         .child(
             div()
                 .min_w_0()
                 .flex_1()
                 .flex()
-                .flex_col()
+                .items_baseline()
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
+                        .min_w_0()
                         .truncate()
                         .text_size(TextSize::Default.px(&theme))
                         .line_height(theme.ui_px(17.))
@@ -9275,11 +9259,10 @@ pub(crate) fn render_changed_files(
                 )
                 .child(
                     div()
-                        .mt(px(2.))
+                        .flex_none()
                         .flex()
-                        .gap(DynamicSpacing::Base06.px(&theme))
+                        .gap(DynamicSpacing::Base04.px(&theme))
                         .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(14.))
                         .child(
                             div()
                                 .text_color(theme.success)
@@ -9292,10 +9275,18 @@ pub(crate) fn render_changed_files(
         header = header.child(review);
     }
 
+    // A tonal well, not a framed card: the edge is transparent (the frost
+    // still applies on glass) and `surface_secondary` alone sets it apart
+    // from the transcript canvas.
     let mut card = div()
+        .debug_selector(move || format!("changed-files-{message_ix}"))
         .w_full()
         .min_w_0()
-        .card_surface(&theme, theme.hairline(), theme.card_fill(theme.background))
+        .card_surface(
+            &theme,
+            gpui::transparent_black(),
+            theme.card_fill(theme.surface_secondary),
+        )
         .overflow_hidden()
         .child(header)
         .child(rows);
@@ -9317,8 +9308,6 @@ pub(crate) fn render_changed_files(
             ))
             .h(px(34.))
             .px(px(14.))
-            .border_t_1()
-            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
@@ -10039,6 +10028,77 @@ mod tests {
         assert_eq!(format_tps(7.44), "7.4");
         assert_eq!(format_tps(0.0), "0");
         assert_eq!(format_tps(f64::NAN), "0");
+    }
+
+    /// The resting footer metric is tokens in and out only; cache share, cost
+    /// and output rate live in the hover breakdown card.
+    #[test]
+    fn footer_metric_rests_on_tokens_in_and_out() {
+        let usage = MessageUsage {
+            input: 141_400,
+            output: 24_700,
+            cache_read: 135_000,
+            cache_write: 0,
+            total: 166_100,
+            cost: Some(0.42),
+        };
+        let label = footer_metric_label(&usage);
+        assert_eq!(label, "↑141.4K ↓24.7K");
+        assert!(!label.contains('·'), "no trailing statistics: {label}");
+    }
+
+    /// The changed-files summary is a borderless well with ONE header line:
+    /// title and delta side by side (not stacked under an icon tile), three
+    /// file rows, and the "show more" toggle for the rest.
+    #[gpui::test]
+    fn changed_files_well_has_a_one_line_header(cx: &mut gpui::TestAppContext) {
+        struct Probe {
+            files: Vec<crate::turn_review::ChangedFile>,
+            scroller: MessageScrollerState,
+        }
+        impl gpui::Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let theme = Theme::for_id(theme::ThemeId::Orbit);
+                div().w(px(640.)).child(render_changed_files(
+                    &self.files,
+                    theme,
+                    None,
+                    0,
+                    None,
+                    false,
+                    Rc::default(),
+                    self.scroller.clone(),
+                    None,
+                ))
+            }
+        }
+
+        cx.update(|cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+        let files = (0..5)
+            .map(|ix| (format!("src/file_{ix}.rs"), 10 + ix as u64, ix as u64))
+            .collect();
+        let (view, cx) = cx.add_window_view(|_, _| Probe {
+            files,
+            scroller: MessageScrollerState::new(1),
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(700.), px(400.)),
+            |_, _| view.clone(),
+        );
+        let header = cx
+            .debug_bounds("changed-files-header-0")
+            .expect("changed-files header laid out");
+        assert!(
+            header.size.height <= px(44.51),
+            "the header is one line, not a stacked title and delta: {header:?}"
+        );
+        let card = cx.debug_bounds("changed-files-0").expect("changed-files well");
+        // Header, three 32px rows, the bottom inset and the 34px toggle.
+        assert!(
+            card.size.height <= header.size.height + px(3. * 32. + 4. + 34. + 2.5),
+            "the well shows three rows and its toggle: card {card:?}, header {header:?}"
+        );
     }
 
     #[test]

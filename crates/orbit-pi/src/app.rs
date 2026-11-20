@@ -62,9 +62,7 @@ use crate::dialog::{ApprovalRequest, Dialog, DialogRequest, DialogResponse};
 use crate::git as git_ops;
 use crate::git_panel::GitPanel;
 use crate::mentions::{self, AcEntry, SharedAutocomplete, SlashCommand, Trigger, TriggerKind};
-use crate::model_selector::{
-    provider_icon, thinking_display, thinking_icon, ModelSelector, PickerKind,
-};
+use crate::model_selector::{provider_icon, thinking_display, ModelSelector, PickerKind};
 use crate::notifications;
 use crate::onboarding::{self, Dependency};
 use crate::platform::{self, ExternalApp};
@@ -636,6 +634,11 @@ pub struct OrbitApp {
     settings_open: bool,
     /// Active section within the settings surface.
     settings_section: SettingsSection,
+    settings_back_focus: FocusHandle,
+    settings_nav_focus: FocusHandle,
+    settings_nav_cursor: usize,
+    settings_nav_scroll: ScrollHandle,
+    settings_return_focus: crate::ui::dialog::ReturnFocus,
     /// Settings → Appearance → "Your backgrounds": the pictures in the
     /// library folder, as last listed off-thread.
     wallpaper_library: Vec<crate::wallpaper_library::LibraryImage>,
@@ -2461,6 +2464,11 @@ impl OrbitApp {
             session_menu: None,
             settings_open: false,
             settings_section: SettingsSection::General,
+            settings_back_focus: cx.focus_handle().tab_stop(true),
+            settings_nav_focus: cx.focus_handle().tab_stop(true),
+            settings_nav_cursor: 0,
+            settings_nav_scroll: ScrollHandle::new(),
+            settings_return_focus: crate::ui::dialog::ReturnFocus::default(),
             git_accounts_snapshot: None,
             git_accounts_loading: false,
             git_accounts_generation: 0,
@@ -2983,7 +2991,11 @@ impl OrbitApp {
         let focus_lost = cx.on_focus_lost(window, |app, window, cx| {
             app.input.read(cx).focus(window);
         });
-        self._window_watchers = vec![activation, closed, focus_lost];
+        let settings_nav = cx.on_focus_in(&self.settings_nav_focus, window, |app, _, cx| {
+            app.settings_nav_scroll.scroll_to_item(app.settings_nav_cursor);
+            cx.notify();
+        });
+        self._window_watchers = vec![activation, closed, focus_lost, settings_nav];
     }
 
     /// Remember where the main window is, so the next launch reopens it
@@ -3010,6 +3022,7 @@ impl OrbitApp {
                 app.window_state.as_ref(),
                 window.window_bounds(),
                 window.is_maximized(),
+                window.is_fullscreen(),
                 display,
             );
             if app.window_state.as_ref() == Some(&state) {
@@ -3410,6 +3423,9 @@ enum SideRow {
     },
     /// A session on a remote host; opening it resumes it there.
     RemoteSession(Box<remote_sessions_ui::RemoteSessionRow>),
+    /// A day section in the date-grouped list: its bucket and how many
+    /// sessions follow it. A label, not a control — nothing to open.
+    DateSection { bucket: DateBucket, count: usize },
 }
 
 /// The value carried by a project-group drag: the header's group label (the
@@ -3569,16 +3585,21 @@ pub(crate) enum SidebarGroupBy {
     /// then the most recent of the rest. Not a filter on the project list —
     /// a smaller list for a smaller question.
     Recent,
+    /// Every session in one list under day sections — Pinned, Today,
+    /// Yesterday, This week, This month, Older — by last activity.
+    Date,
 }
 
 impl SidebarGroupBy {
-    pub(crate) const ALL: [SidebarGroupBy; 3] = [Self::Workspace, Self::OneList, Self::Recent];
+    pub(crate) const ALL: [SidebarGroupBy; 4] =
+        [Self::Workspace, Self::Date, Self::OneList, Self::Recent];
 
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
             Self::OneList => "one_list",
             Self::Recent => "recent",
+            Self::Date => "date",
         }
     }
 
@@ -3587,6 +3608,7 @@ impl SidebarGroupBy {
             "workspace" => Self::Workspace,
             "one_list" => Self::OneList,
             "recent" => Self::Recent,
+            "date" => Self::Date,
             // A store written while the tree mode existed falls back to the
             // grouped default rather than an unknown state.
             _ => Self::default(),
@@ -3598,6 +3620,7 @@ impl SidebarGroupBy {
             Self::Workspace => "sidebar.group_workspace",
             Self::OneList => "sidebar.group_one_list",
             Self::Recent => "sidebar.group_recent",
+            Self::Date => "sidebar.group_date",
         }
     }
 
@@ -3606,6 +3629,9 @@ impl SidebarGroupBy {
             Self::Workspace => "icons/folder.svg",
             Self::OneList => "icons/unified-view.svg",
             Self::Recent => "icons/clock.svg",
+            // Sessions stacked by recency under day labels: the sort glyph,
+            // since no calendar mark is bundled and clock already means Recent.
+            Self::Date => "icons/sort.svg",
         }
     }
 }
@@ -4592,6 +4618,8 @@ mod queue_edit_tests;
 #[cfg(test)]
 mod refresh_tests;
 #[cfg(test)]
+mod remote_branch_chip_tests;
+#[cfg(test)]
 mod remote_sessions_ui_tests;
 #[cfg(test)]
 mod remote_ui_tests;
@@ -4658,6 +4686,7 @@ mod worktree_howto_tests;
 
 pub(crate) use crate::theme::tokens::{Motion, RaisedExt};
 use sidebar::sessions_with_placeholder;
+use sidebar::DateBucket;
 
 #[cfg(test)]
 mod catalog_thinking_tests {

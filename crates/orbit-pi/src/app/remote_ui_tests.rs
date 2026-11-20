@@ -563,6 +563,21 @@ fn the_card_menu_opens_closes_and_leaves_with_the_section(cx: &mut gpui::TestApp
             app.toggle_remote_host_menu("vps".into(), cx);
             assert!(app.remote_host_menu.is_none(), "a second press closes it");
             app.toggle_remote_host_menu("vps".into(), cx);
+            // Pressing ⋯ while its menu is open: mouse-down dismisses it as an
+            // outside click, and that press's mouse-up must not re-open it.
+            app.remote_host_menu = None;
+            app.menu_dismissed_at.arm();
+            app.toggle_remote_host_menu("vps".into(), cx);
+            assert!(
+                app.remote_host_menu.is_none(),
+                "the click that dismissed the menu does not re-open it"
+            );
+            app.toggle_remote_host_menu("vps".into(), cx);
+            assert_eq!(
+                app.remote_host_menu.as_deref(),
+                Some("vps"),
+                "the next press opens it"
+            );
             app.set_settings_section(SettingsSection::General, cx);
             assert!(app.remote_host_menu.is_none(), "leaving the page closes it");
         })
@@ -865,4 +880,82 @@ fn leaving_the_section_closes_the_key_dialog(cx: &mut gpui::TestAppContext) {
             assert!(app.remote_key_editor.is_none());
         })
     });
+}
+
+/// The card menu is as wide as its longest label, so "Add a project from this
+/// Mac…" is not cut off, and it still hangs from the ⋯ button's right edge.
+#[gpui::test]
+fn the_card_menu_fits_its_longest_label(cx: &mut gpui::TestAppContext) {
+    let app = settings_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.remote_hosts = vec![host("vps")];
+            app.remote_hosts_skipped.clear();
+            app.remote_host_menu = Some("vps".into());
+        })
+    });
+    draw(cx, &app);
+    let menu = cx.debug_bounds("remote-host-menu-vps").expect("menu open");
+    let more = cx.debug_bounds("remote-host-more-vps").expect("⋯ button");
+    let theme = cx.update(|_, cx| *cx.global::<crate::theme::Theme>());
+    let label = cx.update(|window, _| {
+        crate::ui::style::text::text_width(
+            window,
+            &tr!("server_clone.menu_item"),
+            crate::theme::tokens::context_menu::TEXT.px(&theme),
+        )
+    });
+    let icon = crate::theme::tokens::context_menu::ICON.px(&theme);
+    assert!(
+        menu.size.width >= label + icon * 2.,
+        "menu {:?} is narrower than its label {label:?} plus its icon",
+        menu.size.width
+    );
+    assert!(
+        (menu.right() - more.right()).abs() <= px(1.),
+        "the menu stays aligned to the ⋯ button's right edge"
+    );
+}
+
+/// A real press on ⋯ toggles its menu both ways. The press on an open menu's
+/// button is an outside click to the menu (mouse-down dismisses it), and the
+/// same press's mouse-up must not re-open it.
+#[gpui::test]
+fn pressing_the_more_button_toggles_the_card_menu(cx: &mut gpui::TestAppContext) {
+    /// The app as the window's root, so a click is hit-tested against the real
+    /// frame (an empty window repaints its empty root before dispatching).
+    struct Root(Entity<OrbitApp>);
+    impl Render for Root {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.0.clone()
+        }
+    }
+
+    let app = settings_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            app.remote_hosts = vec![host("vps")];
+            app.remote_hosts_skipped.clear();
+        })
+    });
+    let root = app.clone();
+    let (_, cx) = cx.add_window_view(|_, _| Root(root));
+    cx.run_until_parked();
+    let menu_open = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| app.read(cx).remote_host_menu.is_some())
+    };
+    let more = cx
+        .debug_bounds("remote-host-more-vps")
+        .expect("⋯ button")
+        .center();
+
+    cx.simulate_click(more, gpui::Modifiers::none());
+    assert!(menu_open(cx), "the first press opens the menu");
+    cx.run_until_parked();
+    cx.simulate_click(more, gpui::Modifiers::none());
+    assert!(!menu_open(cx), "a second press on ⋯ closes it");
+    cx.run_until_parked();
+    cx.simulate_click(more, gpui::Modifiers::none());
+    assert!(menu_open(cx), "and the next press opens it again");
 }

@@ -111,7 +111,7 @@ pub fn list_branch_entries(cwd: &Path) -> Result<Vec<BranchEntry>, String> {
         .collect())
 }
 
-fn parse_branch_entry(line: &str) -> BranchEntry {
+pub(crate) fn parse_branch_entry(line: &str) -> BranchEntry {
     let (name, date) = match line.split_once('\t') {
         Some((name, date)) => (name, Some(date.trim())),
         None => (line, None),

@@ -37,18 +37,6 @@ pub(crate) fn header_ctrl_radius(theme: &Theme) -> Pixels {
     button::RADIUS.px(theme)
 }
 
-/// The glass fill every resting top-bar chip shares: the text-wash overlay
-/// with its alpha raised toward the top edge and eased off at the bottom,
-/// so chips catch light like a meter surface rather than a flat sticker.
-pub(crate) fn header_fill(theme: &Theme) -> gpui::Background {
-    let (top, bottom) = theme.header_chip_fill();
-    linear_gradient(
-        180.,
-        linear_color_stop(top, 0.),
-        linear_color_stop(bottom, 1.),
-    )
-}
-
 /// The lift a chip gets under the cursor (or while its surface is open):
 /// denser glass, a stronger hairline, and a tight contact shadow that pulls
 /// the chip off the titlebar. Shared by hover *and* open states so a
@@ -78,16 +66,20 @@ pub(crate) fn header_lift<S: Styled>(el: S, theme: &Theme) -> S {
     el
 }
 
-/// Dress a top-bar chip: the [`header_fill`] glass in a hairline box, lifting
-/// on hover. The caller owns the size and the rounding — a control may opt into
+/// Dress a top-bar chip: ghost at rest, lifting onto the glass on hover. The
+/// caller owns the size and the rounding — a control may opt into
 /// `rounded_full` when it is genuinely circular, while the rest of the row takes
 /// [`header_ctrl_radius`] — and a radius set here would override whichever it
 /// picked. The helper must not set a second hover of its own.
+///
+/// At rest the chip carries no fill and a transparent 1px edge: a row of six
+/// framed chips read as a toolbar of stickers, so the glass and hairline are
+/// the hover / open affordance ([`header_lift`]) and the bar rests as ink on
+/// the titlebar. The edge is reserved so lifting never moves the row.
 pub(crate) fn header_chip<S: Styled + InteractiveElement>(el: S, theme: &Theme) -> S {
     let lifted = header_lifted(theme);
     el.border_1()
-        .border_color(theme.hairline())
-        .bg(header_fill(theme))
+        .border_color(gpui::transparent_black())
         .hover(move |_| lifted)
 }
 

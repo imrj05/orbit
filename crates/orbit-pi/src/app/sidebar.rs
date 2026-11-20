@@ -463,6 +463,127 @@ pub(crate) fn build_recent_sidebar_rows(
     leading.into_iter().map(SideRow::Session).collect()
 }
 
+/// A day section of the date-grouped sidebar. Pinned sessions keep their own
+/// section on top; everything else falls in the bucket of its last activity,
+/// counted in local calendar days so "Yesterday" means the date, not 24h ago.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum DateBucket {
+    Pinned,
+    Today,
+    Yesterday,
+    /// Two to six calendar days ago.
+    ThisWeek,
+    /// Seven to twenty-nine calendar days ago.
+    ThisMonth,
+    Older,
+}
+
+impl DateBucket {
+    /// The bucket for a session last touched at `modified`, seen from `now`.
+    /// A timestamp in the future (clock skew, a file from another machine)
+    /// counts as today rather than vanishing.
+    pub(crate) fn of(modified: SystemTime, now: SystemTime) -> Self {
+        let day = |at: SystemTime| chrono::DateTime::<chrono::Local>::from(at).date_naive();
+        match (day(now) - day(modified)).num_days() {
+            i64::MIN..=0 => Self::Today,
+            1 => Self::Yesterday,
+            2..=6 => Self::ThisWeek,
+            7..=29 => Self::ThisMonth,
+            _ => Self::Older,
+        }
+    }
+
+    pub(crate) fn label(self) -> String {
+        match self {
+            Self::Pinned => tr!("sidebar.date_pinned"),
+            Self::Today => tr!("sidebar.date_today"),
+            Self::Yesterday => tr!("sidebar.date_yesterday"),
+            Self::ThisWeek => tr!("sidebar.date_this_week"),
+            Self::ThisMonth => tr!("sidebar.date_this_month"),
+            Self::Older => tr!("sidebar.date_older"),
+        }
+    }
+}
+
+/// The date-grouped rows: a [`SideRow::DateSection`] per non-empty bucket,
+/// then that bucket's sessions newest first. Pins lead under their own
+/// section, so a pinned session is never listed twice. Ties on `modified`
+/// break by path, so rows cannot swap between frames.
+pub(crate) fn build_date_sidebar_rows(
+    sessions: &[SessionInfo],
+    pinned: &HashSet<PathBuf>,
+    now: SystemTime,
+) -> Vec<SideRow> {
+    let mut ixs: Vec<usize> = (0..sessions.len()).collect();
+    ixs.sort_by(|a, b| {
+        sessions[*b]
+            .modified
+            .cmp(&sessions[*a].modified)
+            .then_with(|| sessions[*a].path.cmp(&sessions[*b].path))
+    });
+    let bucket = |ix: usize| {
+        if pinned.contains(&sessions[ix].path) {
+            DateBucket::Pinned
+        } else {
+            DateBucket::of(sessions[ix].modified, now)
+        }
+    };
+    // Stable: within a bucket the newest-first order above holds.
+    ixs.sort_by_key(|&ix| bucket(ix));
+    let mut rows = Vec::with_capacity(ixs.len() + 6);
+    let mut start = 0;
+    while start < ixs.len() {
+        let current = bucket(ixs[start]);
+        let end = ixs[start..]
+            .iter()
+            .position(|&ix| bucket(ix) != current)
+            .map_or(ixs.len(), |offset| start + offset);
+        rows.push(SideRow::DateSection {
+            bucket: current,
+            count: end - start,
+        });
+        rows.extend(ixs[start..end].iter().copied().map(SideRow::Session));
+        start = end;
+    }
+    rows
+}
+
+/// A day section's label: the bucket name and its count in the same quiet
+/// eyebrow ink as the list's section heading, on a Header-height row so the
+/// sessions under it keep the shared 28px rhythm. Not interactive — the keyboard
+/// cursor may rest on it (and shows that it does), but nothing opens.
+fn date_section_row(bucket: DateBucket, count: usize, cursor: bool, theme: &Theme) -> AnyElement {
+    // Padding, not margin: the virtual list measures each item's border-box.
+    let label = nav_row(
+        div()
+            .id(ElementId::Name(format!("sidebar-date-{bucket:?}").into()))
+            .debug_selector(move || format!("sidebar-date-{bucket:?}")),
+        theme,
+        NavRowHeight::Header,
+        cursor,
+    )
+    .px(DynamicSpacing::Base08.px(theme))
+    .gap(DynamicSpacing::Base06.px(theme))
+    .child(
+        div()
+            .text_size(TextSize::XSmall.px(theme))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme.text_muted)
+            .child(bucket.label()),
+    )
+    .child(
+        div()
+            .text_size(TextSize::XSmall.px(theme))
+            .text_color(theme.text_muted)
+            .child(count.to_string()),
+    );
+    div()
+        .w_full()
+        .pt(DynamicSpacing::Base06.px(theme))
+        .child(label)
+        .into_any_element()
+}
+
 /// Apply the archived-session filter. `Show` keeps every session, `Hide`
 /// drops archived ones, and `Only` keeps just the archived ones. Runs before
 /// row building so `SideRow::Session` indices stay aligned with the list the
@@ -1136,7 +1257,7 @@ fn session_card(hover: &SessionTooltip, theme: &Theme) -> impl IntoElement {
                 .items_center()
                 .flex_wrap()
                 .gap(DynamicSpacing::Base06.px(theme))
-                .child(icon("icons/branch.svg", icon_size, theme.syn_function))
+                .child(icon("icons/branch.svg", icon_size, theme.text_muted))
                 .child(
                     div()
                         .min_w_0()
@@ -1714,6 +1835,7 @@ pub(crate) fn render_side_row(
             cursor,
             theme,
         ),
+        SideRow::DateSection { bucket, count } => date_section_row(*bucket, *count, cursor, &theme),
         SideRow::ShowLess { label } => {
             let this = this.clone();
             let label_for_click = label.clone();
@@ -2144,10 +2266,13 @@ pub(crate) fn render_side_row(
                                     )
                                 })
                                 .when_some(branch.as_ref(), |line, branch| {
+                                    // Monochrome, like the age: a row's ink is
+                                    // its meta tone, so status colour stays the
+                                    // one thing in the list that can stand out.
                                     line.child(icon(
                                         "icons/branch.svg",
                                         IconSize::XSmall.px(&theme),
-                                        theme.syn_function,
+                                        meta_ink,
                                     ))
                                     .child(
                                         div()
@@ -2159,7 +2284,9 @@ pub(crate) fn render_side_row(
                                             .tip(branch.name.clone())
                                             .child(branch.name.clone()),
                                     )
-                                    .when_some(ahead.clone(), |line, ahead| {
+                                    // Divergence is read on the open session's row;
+                                    // every other row carries it in its hover card.
+                                    .when_some(ahead.clone().filter(|_| active), |line, ahead| {
                                         line.child(
                                             div()
                                                 .flex_none()
@@ -2169,7 +2296,7 @@ pub(crate) fn render_side_row(
                                         )
                                     })
                                     .when_some(
-                                        behind.clone(),
+                                        behind.clone().filter(|_| active),
                                         |line, behind| {
                                             line.child(
                                                 div()
@@ -4790,6 +4917,7 @@ impl OrbitApp {
             SidebarGroupBy::Recent => {
                 build_recent_sidebar_rows(sessions, pinned, &self.current_session_path, &running)
             }
+            SidebarGroupBy::Date => build_date_sidebar_rows(sessions, pinned, SystemTime::now()),
             SidebarGroupBy::Workspace => build_sidebar_rows(
                 sessions,
                 &self.workspaces,
@@ -5622,6 +5750,8 @@ impl OrbitApp {
                 let (host, session) = (row.host.clone(), row.session.clone());
                 self.open_remote_session(host, session, cx);
             }
+            // A day label opens nothing; Enter on it is a no-op.
+            SideRow::DateSection { .. } => {}
         }
         cx.notify();
     }

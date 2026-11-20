@@ -637,6 +637,11 @@ impl Render for WorkspacePicker {
                                     row = row.mono();
                                 }
                                 row.into_element(&theme)
+                            })
+                            // A remote host is an experimental feature; its
+                            // row says so where the machine is chosen.
+                            .when(action.id == "remote-host", |entry| {
+                                entry.child(crate::ui::chip::experimental_badge(&theme))
                             }),
                         ),
                 );

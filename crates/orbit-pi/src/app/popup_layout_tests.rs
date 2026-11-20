@@ -803,7 +803,12 @@ fn chip_click_does_not_let_the_composer_steal_picker_focus(cx: &mut gpui::TestAp
 fn quota_popup_scrolls_instead_of_clipping_its_last_card(cx: &mut gpui::TestAppContext) {
     use crate::theme::{Theme, ThemeId};
 
-    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    // Reduced motion paints the popover at its resting place on the first
+    // frame, so the placement checks below read where it lands, not the
+    // first frame of its entrance slide.
+    let mut theme = Theme::for_id(ThemeId::Orbit);
+    theme.ui.motion = crate::theme::MotionPreference::Reduced;
+    cx.update(|cx| cx.set_global(theme));
     let cx = cx.add_empty_window();
     let app = cx.update(|_, cx| cx.new(OrbitApp::new));
     let _ = cx.draw(
@@ -865,6 +870,29 @@ fn quota_popup_scrolls_instead_of_clipping_its_last_card(cx: &mut gpui::TestAppC
     assert!(
         body.size.height < popup.size.height,
         "the card list did not leave room for the header: body {body:?}, popup {popup:?}"
+    );
+    // The chip is a top-bar meter: it sits above the composer, and its
+    // popover hangs below it without covering it.
+    let chip = cx
+        .debug_bounds("top-quota")
+        .expect("quota chip laid out in the top bar");
+    let composer = cx.debug_bounds("composer-box").expect("composer laid out");
+    assert!(
+        chip.bottom() <= composer.top(),
+        "the quota chip is not in the top bar: chip {chip:?}, composer {composer:?}"
+    );
+    assert!(
+        popup.top() >= chip.bottom(),
+        "the popover must open below its chip: popup {popup:?}, chip {chip:?}"
+    );
+    // The chip identifies the provider by its mark alone (the tooltip and the
+    // popover's cards carry the name), so the identity is one icon wide.
+    let mark = cx
+        .debug_bounds("status-quota-provider")
+        .expect("the chip shows the provider mark");
+    assert!(
+        mark.size.width <= px(16.),
+        "the chip shows the provider name, not just its mark: {mark:?}"
     );
 }
 

@@ -138,10 +138,11 @@ pub fn open(cx: &mut App) {
     cx.activate(true);
 }
 
-/// Where the main window opens: the frame it last had (#131), clamped onto
-/// a display that is still attached, or — on first launch, or when that
-/// display is gone — maximized over a centred restore frame sized to the
-/// primary display so it fits even on small or scaled screens.
+/// Where the main window opens: the frame and windowed/maximized/fullscreen
+/// state it last had (#131), clamped onto a display that is still attached, or
+/// — on first launch, or when that display is gone — maximized over a centred
+/// restore frame sized to the primary display so it fits even on small or
+/// scaled screens.
 ///
 /// Also returns the state the window opened as, which seeds the bounds
 /// watcher: macOS reports a zoomed window's zoomed frame, so the restore
@@ -170,6 +171,7 @@ fn initial_bounds(
             window_state::Saved {
                 bounds: restore.bounds,
                 maximized: restore.maximized,
+                fullscreen: restore.fullscreen,
                 display: infos[restore.display].uuid.clone(),
             },
         );
@@ -189,6 +191,7 @@ fn initial_bounds(
         window_state::Saved {
             bounds: restore_bounds,
             maximized: true,
+            fullscreen: false,
             display: None,
         },
     )

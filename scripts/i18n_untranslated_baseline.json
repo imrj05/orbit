@@ -169,6 +169,7 @@
  "es": [
   "app.name",
   "autocomplete.scope_orbit",
+  "common.experimental",
   "context_meter.tokens_of",
   "context_meter.total",
   "git_accounts.scope_global",
@@ -704,6 +705,7 @@
   "app.name",
   "autocomplete.scope_orbit",
   "branch_picker.branches",
+  "common.experimental",
   "context_meter.tokens_of",
   "context_meter.total",
   "git_accounts.scope_global",

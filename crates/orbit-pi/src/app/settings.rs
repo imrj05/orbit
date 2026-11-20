@@ -620,6 +620,30 @@ enum PluginOp {
     Remove,
 }
 
+/// Whether a Settings navigation row draws the focus ring: only for the
+/// keyboard cursor, and only when it rests *away* from the open section. On
+/// the selected row the selected fill already says where you are, so clicking
+/// a section (which focuses the list) never leaves a ring around it.
+fn settings_nav_ring(list_focused: bool, cursor: usize, index: usize, selected: bool) -> bool {
+    list_focused && cursor == index && !selected
+}
+
+#[cfg(test)]
+mod settings_nav_ring_tests {
+    use super::settings_nav_ring;
+
+    #[test]
+    fn the_ring_marks_only_a_cursor_away_from_the_selection() {
+        // A click: the list is focused and the cursor is the selected row.
+        assert!(!settings_nav_ring(true, 3, 3, true));
+        // Arrowing onto another row: that row shows where Enter will go.
+        assert!(settings_nav_ring(true, 4, 4, false));
+        // Every other row, and an unfocused list, draw nothing.
+        assert!(!settings_nav_ring(true, 4, 3, true));
+        assert!(!settings_nav_ring(false, 4, 4, false));
+    }
+}
+
 impl OrbitApp {
     // ── settings surface ───────────────────────────────────────────
     // Left nav (Back + sections), right column of setting
@@ -627,10 +651,14 @@ impl OrbitApp {
     // real pi/runtime facts (PRODUCT.md: nothing decorative that
     // pretends to be functional).
 
-    pub(super) fn render_settings(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+    pub(super) fn render_settings(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
         let this = cx.entity();
         let theme = *theme::get(cx);
-        let sections = SETTINGS_SECTIONS;
+        let nav_focused = self.settings_nav_focus.is_focused(window);
 
         div()
             .flex_1()
@@ -670,6 +698,8 @@ impl OrbitApp {
                                 press(
                                     div()
                                         .id("settings-back")
+                                        .track_focus(&self.settings_back_focus)
+                                        .focus_ring_reserved(&theme)
                                         .w_full()
                                         .h(ButtonSize::Large.height(&theme))
                                         .px(DynamicSpacing::Base08.px(&theme))
@@ -679,7 +709,7 @@ impl OrbitApp {
                                         .gap(DynamicSpacing::Base08.px(&theme))
                                         .cursor_pointer(),
                                 )
-                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_back))
+                                .on_click(cx.listener(Self::on_settings_back))
                                 .child(icon(
                                     "icons/arrow-left.svg",
                                     IconSize::Small.px(&theme),
@@ -717,19 +747,28 @@ impl OrbitApp {
                         div()
                             .id("settings-navigation")
                             .debug_selector(|| "settings-navigation".to_string())
+                            .track_focus(&self.settings_nav_focus)
+                            .on_key_down(cx.listener(Self::on_settings_nav_key))
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
+                            .track_scroll(&self.settings_nav_scroll)
                             .px(DynamicSpacing::Base12.px(&theme))
                             .pb(DynamicSpacing::Base12.px(&theme))
                             .flex()
                             .flex_col()
                             .gap(DynamicSpacing::Base02.px(&theme))
-                            .children(sections.iter().map(
-                                |&(section, section_icon, label_key)| {
+                            .children(SETTINGS_SECTIONS.iter().enumerate().map(
+                                |(index, &(section, section_icon, label_key))| {
                                     let this = this.clone();
                                     let label = tr!(label_key).to_string();
                                     let selected = self.settings_section == section;
+                                    let focused = settings_nav_ring(
+                                        nav_focused,
+                                        self.settings_nav_cursor,
+                                        index,
+                                        selected,
+                                    );
                                     // Group starts: Runtime opens the agent
                                     // block, Skills opens the extensions
                                     // block, and About closes the list alone.
@@ -748,6 +787,12 @@ impl OrbitApp {
                                         .debug_selector(move || format!("settings-nav-{label_key}"))
                                         .px(DynamicSpacing::Base08.px(&theme))
                                         .rounded(Radius::Medium.px(&theme))
+                                        .border_1()
+                                        .border_color(if focused {
+                                            theme.focus_ring
+                                        } else {
+                                            gpui::transparent_black()
+                                        })
                                         .text_size(TextSize::Default.px(&theme))
                                         .flex()
                                         .items_center()
@@ -757,9 +802,10 @@ impl OrbitApp {
                                             row.font_weight(FontWeight::MEDIUM)
                                                 .bg(theme.selected_wash())
                                         })
-                                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                                        .on_click(move |_, window, cx| {
                                             this.update(cx, |app, cx| {
-                                                app.set_settings_section(section, cx);
+                                                window.focus(&app.settings_nav_focus);
+                                                app.activate_settings_nav_row(index, cx);
                                             });
                                         })
                                         .child(icon(
@@ -782,7 +828,12 @@ impl OrbitApp {
                                                     theme.text_secondary
                                                 })
                                                 .child(label.to_string()),
-                                        );
+                                        )
+                                        .when(section == SettingsSection::RemoteHosts, |row| {
+                                            row.child(crate::ui::chip::experimental_badge(
+                                                &theme,
+                                            ))
+                                        });
                                     // The open section holds its wash; the
                                     // others fade it in under the pointer.
                                     let row = if selected {
@@ -1127,12 +1178,21 @@ impl OrbitApp {
             })
             .child(
                 div()
-                    .debug_selector(|| "settings-page-title".to_string())
-                    .text_size(HeadlineSize::Large.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .line_height(BufferLineHeight::Standard.relative())
-                    .text_color(theme.text_primary)
-                    .child(title.to_string()),
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-page-title".to_string())
+                            .text_size(HeadlineSize::Large.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .line_height(BufferLineHeight::Standard.relative())
+                            .text_color(theme.text_primary)
+                            .child(title.to_string()),
+                    )
+                    .when(self.settings_section == SettingsSection::RemoteHosts, |line| {
+                        line.child(crate::ui::chip::experimental_badge(&theme))
+                    }),
             )
             .child(
                 div()
@@ -1140,6 +1200,16 @@ impl OrbitApp {
                     .text_color(theme.text_secondary)
                     .child(subtitle.to_string()),
             )
+            // What "Experimental" means here, said once on the page itself.
+            .when(self.settings_section == SettingsSection::RemoteHosts, |header| {
+                header.child(
+                    div()
+                        .debug_selector(|| "remote-hosts-experimental-note".to_string())
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!("remote_hosts.experimental_note")),
+                )
+            })
     }
 
     /// The rows for the active section, as card elements. `this` rides
@@ -8328,10 +8398,18 @@ impl OrbitApp {
     pub(super) fn on_open_settings(
         &mut self,
         _: &crate::OpenSettings,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.focus_settings_back(window, cx);
         self.open_settings(cx);
+    }
+
+    fn focus_settings_back(&mut self, window: &mut Window, cx: &App) {
+        if !self.settings_open {
+            self.settings_return_focus.capture(&self.settings_back_focus, window, cx);
+        }
+        window.focus(&self.settings_back_focus);
     }
 
     /// App-menu “About Orbit Pi”: the same surface Settings → About owns, so
@@ -8339,9 +8417,10 @@ impl OrbitApp {
     pub(super) fn on_open_about(
         &mut self,
         _: &crate::OpenAbout,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.focus_settings_back(window, cx);
         self.refresh_updater(cx);
         self.settings_open = true;
         self.set_settings_section(SettingsSection::About, cx);
@@ -8351,29 +8430,73 @@ impl OrbitApp {
     pub(super) fn on_settings_gear_click(
         &mut self,
         _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Toggle: the gear sits in the sessions sidebar, which stays visible
-        // while settings is open, so clicking it again should go back.
-        if self.settings_open {
-            self.close_settings(cx);
-        } else {
-            self.open_settings(cx);
-            return;
-        }
-        cx.notify();
-    }
-
-    pub(super) fn on_settings_back(
-        &mut self,
-        _: &MouseUpEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.close_settings(cx) {
-            self.input.read(cx).focus(window);
+        if self.settings_open {
+            self.close_settings_with_focus(window, cx);
+        } else {
+            self.focus_settings_back(window, cx);
+            self.open_settings(cx);
         }
+    }
+
+    fn on_settings_back(
+        &mut self,
+        _: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_settings_with_focus(window, cx);
+    }
+
+    pub(super) fn close_settings_with_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut opener = std::mem::take(&mut self.settings_return_focus);
+        if self.close_settings(cx) {
+            self.return_focus(opener.take(), window, cx);
+        } else {
+            self.settings_return_focus = opener;
+        }
+    }
+
+    fn on_settings_nav_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let index = self.settings_nav_cursor;
+        let last = SETTINGS_SECTIONS.len() - 1;
+        let next = match event.keystroke.key.as_str() {
+            "up" => index.saturating_sub(1),
+            "down" => (index + 1).min(last),
+            "home" => 0,
+            "end" => last,
+            "enter" | "space" => {
+                if !event.is_held {
+                    self.activate_settings_nav_row(index, cx);
+                }
+                index
+            }
+            _ => return,
+        };
+        self.settings_nav_cursor = next;
+        self.settings_nav_scroll.scroll_to_item(next);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn activate_settings_nav_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.settings_nav_cursor = index;
+        let (section, _, _) = SETTINGS_SECTIONS[index];
+        self.set_settings_section(section, cx);
+        if self.settings_section == section && !self.settings_search.read(cx).text().is_empty() {
+            self.settings_search.update(cx, |search, cx| search.clear(cx));
+        }
+        cx.notify();
     }
 
     pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) -> bool {
@@ -8387,6 +8510,7 @@ impl OrbitApp {
     pub(super) fn close_settings_unchecked(&mut self, cx: &mut Context<Self>) {
         self.subagent_editor = None;
         self.settings_open = false;
+        self.settings_return_focus = Default::default();
         self.provider_editor = None;
         self.provider_key_editor = None;
         self.account_editor = None;
@@ -8426,6 +8550,10 @@ impl OrbitApp {
             self.subagent_editor = None;
         }
         self.settings_section = section;
+        if let Some(index) = SETTINGS_SECTIONS.iter().position(|entry| entry.0 == section) {
+            self.settings_nav_cursor = index;
+            self.settings_nav_scroll.scroll_to_item(index);
+        }
         if section != SettingsSection::ReportBug
             && self.settings_select == Some(SettingsSelect::ReportModel)
         {

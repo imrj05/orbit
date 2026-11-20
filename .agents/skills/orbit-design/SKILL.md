@@ -66,9 +66,9 @@ Resolve tokens through the current theme and verify scaling at the call site.
 | Spacing | `DynamicSpacing`: 0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 at default settings; density and UI scaling apply. |
 | Radius | `Radius::px`: 0, 2, 4, 5, 6, 8, 10, 12px, and full, before the corner-rounding preference. Use component role tokens rather than assuming a radius from an enum name. |
 | Controls | `ButtonSize` reference heights: 16, 18, 22, 28, 32px; `IconSize` has 10, 12, 14, 16 and 48px plus custom. |
-| Border and focus | `BORDER_WIDTH` and `FOCUS_RING_WIDTH` are 1px. Validate that focus remains visible in real contexts rather than copying a web outline rule. |
+| Border and focus | `BORDER_WIDTH` is 1px, and the focus ring is a `BORDER_WIDTH` border in `focus_ring`. Validate that focus remains visible in real contexts rather than copying a web outline rule. |
 | Depth | Flat structural surfaces; `ElevationIndex` reserves restrained shadows for elevated surfaces and modals. |
-| Motion | `Motion`: 50ms instant, 150ms interaction, 200ms layout, 260ms travel; reduced motion resolves centrally. Loops and chart cadences have separate contracts. |
+| Motion | `Motion`: 150ms interaction, 200ms layout, 260ms travel (50ms instant is specified but not built); reduced motion resolves centrally. Loops and chart cadences have separate contracts. |
 
 The values above are resolved by their respective tokens; they do not all scale
 in the same way. `TextSize::XSmall` resolves to 11px despite its stale 10px
@@ -89,7 +89,7 @@ All pixel values here are base values before user preferences, unless noted.
 | Component corners | Compact/none buttons and list entries use `Medium` 5px; default/medium/large buttons and inputs use `Large` 6px; the chat composer has a fixed 12px radius independent of preferences; panels use `XLarge` 8px; badges use `Small` 4px. Resolve through component tokens. |
 | Controls | Button heights are `None` 16, `Compact` 18, `Default` 22, `Medium` 28 and `Large` 32px before UI scaling. Match the icon to the button's `icon_size`; the icon scale is 10, 12, 14, 16 and 48px, plus custom. Visual size is not proof of usable hit area. |
 | Edges and depth | Borders and focus rings are 1px. Keep structural regions flat; floating surfaces may combine a hairline with a restrained shadow. Existing composer contact shadows are a documented exception, not a general card treatment. Focus remains distinct from selection. |
-| Motion | Instant 50ms, interaction 150ms, layout 200ms and travel 260ms; instant is linear and the others decelerate. Hover, press, focus and selection do not use travel; a control changing size and meaning may. No bounce by default. Reduced motion resolves to the end state. |
+| Motion | Interaction 150ms, layout 200ms and travel 260ms, all decelerating; instant (50ms, linear) is specified but not built — add it to `Motion` with its first caller. Hover, press, focus and selection do not use travel; a control changing size and meaning may. No bounce by default. Reduced motion resolves to the end state. |
 
 ### Colour roles and theme compatibility
 
@@ -240,7 +240,7 @@ has adopted each treatment.
 
 | Interaction | Starting point |
 | --- | --- |
-| Hover, selection, press and focus | Shared interaction helpers and `Motion::Interaction` / `Instant`; retarget from the painted value and never delay the action. `.hover_state(...)` and its siblings swap on one frame — wrap the finished element in `motion::hover` (with a stable, unique name) when the surface should fade. Press is `pressed_state`/`press`, never a hand-picked fill. |
+| Hover, selection, press and focus | Shared interaction helpers and `Motion::Interaction`; retarget from the painted value and never delay the action. `.hover_state(...)` and its siblings swap on one frame — wrap the finished element in `motion::hover` (with a stable, unique name) when the surface should fade. Press is `pressed_state`/`press`, never a hand-picked fill. |
 | Disclosure and switch | Existing disclosure and switch helpers; keep layout and indicator state consistent. |
 | Menu, popover and dialog | `anchored_popover` applies entrance motion; `modal_card` supplies the frame, not animation. See `dialog.rs` for composing the card with `motion::enter`. Preserve the spatial relationship to the trigger. |
 | New-task composer dock | One `Motion::Travel`: the gap under the composer closes, the column widens to the session's, the folder row collapses and the transcript's ink fades in, all from `new_task::settle`. Its cubic ease-out softens the long slide; the clock starts on the first visible chat frame. A resumed session never replays it. |

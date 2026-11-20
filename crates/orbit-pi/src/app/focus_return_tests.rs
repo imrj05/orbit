@@ -23,6 +23,7 @@ fn open_app(cx: &mut gpui::TestAppContext) -> (Entity<OrbitApp>, &mut gpui::Visu
 
     cx.update(|cx| {
         cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.set_global(crate::theme::AppearancePrefs::default());
         crate::bind_keys(cx);
     });
     let (app, cx) = cx.add_window_view(|window, cx| {
@@ -46,6 +47,66 @@ fn open_app(cx: &mut gpui::TestAppContext) -> (Entity<OrbitApp>, &mut gpui::Visu
     });
     cx.run_until_parked();
     (app, cx)
+}
+
+#[gpui::test]
+fn settings_keyboard_navigation_moves_focus_before_opening_a_section(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (app, cx) = open_app(cx);
+    cx.simulate_resize(gpui::size(px(960.), px(640.)));
+    cx.simulate_keystrokes(crate::platform::shortcuts::FOCUS_SESSIONS);
+    cx.simulate_keystrokes(crate::platform::shortcuts::SETTINGS);
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(app.settings_back_focus.is_focused(window));
+        assert!(app.settings_section == SettingsSection::General);
+    });
+
+    cx.simulate_keystrokes("tab");
+    cx.update(|window, cx| assert!(app.read(cx).settings_nav_focus.is_focused(window)));
+    cx.simulate_keystrokes("down");
+    cx.update(|_, cx| {
+        let app = app.read(cx);
+        assert_eq!(app.settings_nav_cursor, 1);
+        assert!(app.settings_section == SettingsSection::General);
+    });
+    cx.simulate_keystrokes("enter");
+    cx.update(|_, cx| assert!(app.read(cx).settings_section == SettingsSection::Appearance));
+
+    cx.simulate_keystrokes("end");
+    cx.update(|_, cx| {
+        let app = app.read(cx);
+        let viewport = app.settings_nav_scroll.bounds();
+        let row = app
+            .settings_nav_scroll
+            .bounds_for_item(app.settings_nav_cursor)
+            .expect("the focused row is laid out");
+        let offset = app.settings_nav_scroll.offset().y;
+        assert!(row.bottom() + offset <= viewport.bottom());
+        assert!(app.settings_section == SettingsSection::Appearance);
+    });
+    cx.simulate_keystrokes("home space");
+    cx.update(|_, cx| assert!(app.read(cx).settings_section == SettingsSection::General));
+
+    cx.simulate_keystrokes("shift-tab");
+    cx.update(|window, cx| assert!(app.read(cx).settings_back_focus.is_focused(window)));
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").expect("a valid key"),
+    });
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(!app.settings_open);
+        assert!(app.sidebar_focus.is_focused(window));
+    });
+
+    cx.simulate_keystrokes(crate::platform::shortcuts::SETTINGS);
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(!app.settings_open);
+        assert!(app.sidebar_focus.is_focused(window));
+    });
 }
 
 /// Opens the update modal over the focused session list and lets it take

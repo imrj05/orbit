@@ -35,6 +35,24 @@ pub(crate) enum BadgeFill {
     Framed { face: Hsla, edge: Hsla },
 }
 
+/// The "Experimental" tag on a feature that is not stable yet (remote SSH
+/// sessions): an outline badge in the warning tone. The word carries the
+/// meaning; the tone only reinforces it.
+pub(crate) fn experimental_badge(theme: &Theme) -> AnyElement {
+    gpui::div()
+        .flex_none()
+        .debug_selector(|| "experimental-badge".to_string())
+        .child(
+            Badge::new(
+                tr!("common.experimental"),
+                theme.warning,
+                BadgeFill::Outline(theme.warning),
+            )
+            .render(theme),
+        )
+        .into_any_element()
+}
+
 /// A one-line label at Compact height, `Radius::Small`, XSmall medium ink.
 pub(crate) struct Badge {
     label: SharedString,
@@ -190,6 +208,7 @@ pub(crate) struct ChipButton {
     mono: bool,
     label_tip: Option<SharedString>,
     applied: bool,
+    subdued: bool,
 }
 
 /// What a chip that is not a trigger reports.
@@ -232,7 +251,16 @@ impl ChipButton {
             mono: false,
             label_tip: None,
             applied: false,
+            subdued: false,
         }
+    }
+
+    /// Rest the label on muted ink: the qualifier half of a joined pair (the
+    /// thinking level after the model name) reads as a modifier of its
+    /// neighbour, not a second control. Open and lit still take primary ink.
+    pub(crate) fn subdued(mut self) -> Self {
+        self.subdued = true;
+        self
     }
 
     /// The full value on hover over a truncated label — a folder path, a long
@@ -449,6 +477,8 @@ impl ChipButton {
             theme.text_disabled
         } else if lit {
             theme.text_primary
+        } else if self.subdued {
+            theme.text_muted
         } else {
             theme.text_secondary
         };

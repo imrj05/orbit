@@ -85,6 +85,237 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// The live remote session's repository as the host last reported it:
+    /// `None` until a read for this session's folder has come back, and for a
+    /// folder that is not a repository or a read that failed.
+    pub(super) fn remote_repo(&self) -> Option<&RemoteGitRepo> {
+        let host = self.remote.as_ref()?;
+        if self.remote_git.key != remote_git_key(host) {
+            return None;
+        }
+        match &self.remote_git.result {
+            Some(Ok(RemoteGit::Repository(repo))) => Some(repo),
+            _ => None,
+        }
+    }
+
+    /// The branch chip while the session runs on a host: this Mac's branch
+    /// selector (`branch_chip_face`, the same `BranchPicker`) showing the
+    /// host's own branch, ahead/behind and branches, read over ssh. A pick or
+    /// "Create and checkout" switches the folder **on the host**. Absent on a
+    /// detached HEAD or a folder that is not a repository, like the local chip.
+    pub(super) fn remote_branch_chip(
+        &self,
+        theme: Theme,
+        opens_below: bool,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let host = self.remote.as_ref()?;
+        let repo = self.remote_repo()?;
+        let name = repo.branch.clone()?;
+        let open = self.branch_picker.is_some();
+        let face = Self::branch_chip_face(
+            "remote-branch-chip",
+            name,
+            repo.ahead_behind
+                .map(|(ahead, behind)| (ahead as usize, behind as usize)),
+            open,
+            self.branch_operation_pending,
+            (!open).then(|| tr!("remote_git.branch_chip_tip", host = host.name.clone())),
+            theme,
+            cx,
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|app, _, window, cx| app.toggle_branch_picker(window, cx)),
+        );
+        let popup = if opens_below {
+            self.branch_picker_popup_below(&theme)
+        } else {
+            self.branch_picker_popup(&theme)
+        };
+        Some(Self::branch_chip_shell(face, popup))
+    }
+
+    /// Open the branch picker on the host's branches. The list is read over
+    /// ssh first (the chip dims meanwhile), then the same `BranchPicker` this
+    /// Mac uses opens with it.
+    pub(super) fn open_remote_branch_picker(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.remote.clone() else {
+            return;
+        };
+        let Some(current) = self.remote_repo().and_then(|repo| repo.branch.clone()) else {
+            return;
+        };
+        self.branch_operation_pending = true;
+        cx.notify();
+        // Tests build the app without a network.
+        if cfg!(test) {
+            return;
+        }
+        let secret = self.remote_secret(&host);
+        cx.spawn_in(window, async move |this, cx| {
+            let list_host = host.clone();
+            let listed = cx
+                .background_executor()
+                .spawn(async move { remote_hosts::list_branches(&list_host, secret.as_deref()) })
+                .await;
+            let _ = this.update_in(cx, |app, window, cx| {
+                app.branch_operation_pending = false;
+                match listed {
+                    Ok(branches) => {
+                        app.show_remote_branch_picker(&host, branches, current, window, cx)
+                    }
+                    Err(failure) => app.toast_error(tr!(
+                        "pickers.branch_list_failed",
+                        error = super::remote_providers_ui::failure_text(failure, &host)
+                    )),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn show_remote_branch_picker(
+        &mut self,
+        host: &RemoteHost,
+        mut branches: Vec<crate::git::BranchEntry>,
+        current: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The session may have left this host while the list was read.
+        if self.remote.as_ref().map(remote_git_key) != Some(remote_git_key(host)) {
+            return;
+        }
+        if !branches.iter().any(|entry| entry.name == current) {
+            branches.insert(
+                0,
+                crate::git::BranchEntry {
+                    name: current.clone(),
+                    commit_date: None,
+                },
+            );
+        }
+        let label = host
+            .dir
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&host.name)
+            .to_string();
+        let this = cx.weak_entity();
+        let on_checkout = Box::new(move |branch: String, _window: &mut Window, cx: &mut App| {
+            this.update(cx, |app, cx| app.switch_remote_branch(branch, false, cx))
+                .ok();
+        }) as Box<dyn Fn(String, &mut Window, &mut App)>;
+        let this = cx.weak_entity();
+        let on_create = Box::new(move |name: String, _window: &mut Window, cx: &mut App| {
+            this.update(cx, |app, cx| app.switch_remote_branch(name, true, cx))
+                .ok();
+        }) as Box<dyn Fn(String, &mut Window, &mut App)>;
+        let this = cx.weak_entity();
+        let on_dismiss = Box::new(move |by_mouse: bool, _window: &mut Window, cx: &mut App| {
+            this.update(cx, |app, cx| {
+                if by_mouse {
+                    app.menu_dismissed_at.arm();
+                }
+                app.branch_picker = None;
+                cx.notify();
+            })
+            .ok();
+        }) as Box<dyn Fn(bool, &mut Window, &mut App)>;
+        let picker = cx.new(|cx| {
+            crate::branch_picker::BranchPicker::new(
+                label,
+                branches,
+                current,
+                on_checkout,
+                on_create,
+                on_dismiss,
+                cx,
+            )
+        });
+        window.focus(&picker.read(cx).focus_handle(cx));
+        self.branch_picker = Some(picker);
+    }
+
+    /// Switch the host's folder to `branch` (or create it from HEAD with
+    /// `create`), then read the folder again so the chip and the Git page
+    /// follow.
+    pub(super) fn switch_remote_branch(
+        &mut self,
+        branch: String,
+        create: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.remote.clone() else {
+            return;
+        };
+        let branch = branch.trim().to_string();
+        if !orbit_rpc::remote::is_branch_name(&branch) {
+            self.toast_error(tr!("git.branch_name_invalid"));
+            cx.notify();
+            return;
+        }
+        self.branch_operation_pending = true;
+        self.branch_picker = None;
+        cx.notify();
+        if cfg!(test) {
+            return;
+        }
+        let secret = self.remote_secret(&host);
+        cx.spawn(async move |this, cx| {
+            let run_host = host.clone();
+            let name = branch.clone();
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    remote_hosts::switch_branch(&run_host, secret.as_deref(), &name, create)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.finish_remote_branch_switch(&host, branch, create, outcome, cx);
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn finish_remote_branch_switch(
+        &mut self,
+        host: &RemoteHost,
+        branch: String,
+        create: bool,
+        outcome: Result<Result<(), String>, ProbeFailure>,
+        cx: &mut Context<Self>,
+    ) {
+        self.branch_operation_pending = false;
+        match outcome {
+            Ok(Ok(())) if create => {
+                self.toast_success(tr!("pickers.created_and_switched", label = branch))
+            }
+            Ok(Ok(())) => self.toast_success(tr!("pickers.switched_to", label = branch)),
+            Ok(Err(reason)) if create => {
+                self.toast_error(tr!("pickers.branch_create_failed", err = reason))
+            }
+            Ok(Err(reason)) => {
+                self.toast_error(tr!("pickers.branch_switch_failed", error = reason))
+            }
+            Err(failure) => self.toast_error(tr!(
+                "pickers.branch_switch_failed",
+                error = super::remote_providers_ui::failure_text(failure, host)
+            )),
+        }
+        self.refresh_remote_git(cx);
+        cx.notify();
+    }
+
     /// The page body for Git while the session is remote.
     pub(super) fn render_remote_git_page(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
         let Some(host) = self.remote.as_ref() else {

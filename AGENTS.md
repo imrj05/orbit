@@ -199,7 +199,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         `ui/*` may use theme/motion/i18n/gpui and must NOT import a surface
                         (`scripts/check_ui_layers.py`); no element gets a second owner
                         (`scripts/check_ui_owners.py`). See docs/plans/ui-component-layer.md
-  src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_1/2/3, component metrics) resolved through the Theme; see INTENT.md D11
+  src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_2/3, component metrics) resolved through the Theme; see INTENT.md D11
   src/providers.rs      provider catalog + models.json / auth.json read/write for Settings → Providers (provider metadata introspected from pi-ai; curated table is the fallback)
   src/provider_accounts.rs  extra provider accounts: ~/.orbit-pi/accounts.json (name, provider,
                         `<provider>~<slug>` alias), v1 migration, the alias label registry
@@ -764,7 +764,11 @@ tests; a successful run with zero selected tests is not coverage.
   stable. Do not routinely run `cargo clean`, change `RUSTFLAGS`, or create a
   fresh `CARGO_TARGET_DIR`: these can invalidate cached work.
 - `Cargo.toml` deliberately sets `[profile.dev] incremental = false` after
-  arm64 linker failures. Do not flip it as a speed shortcut. GPUI's
+  arm64 linker failures. Do not flip it as a speed shortcut. The app crate
+  itself builds at `opt-level = 0` with `debug = "line-tables-only"`
+  (`[profile.dev.package.orbit-pi]`); dependencies stay at `opt-level = 1`.
+  That cut an app rebuild from ~113 s to ~17 s — keep it unless a debugger
+  session needs full variable info, and then change it locally only. GPUI's
   `test-support` dev feature also makes test builds differ from normal app
   builds; a filtered test reduces execution, not compilation of the app crate.
 - If a check is slow, report its command and whether it is waiting on a lock,

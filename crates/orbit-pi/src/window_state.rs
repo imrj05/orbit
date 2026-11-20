@@ -6,6 +6,7 @@
 //! {
 //!   "x": 120, "y": 80, "width": 1280, "height": 820,
 //!   "maximized": false,
+//!   "fullscreen": false,
 //!   "display": "8F1A…"   // the display's UUID, when the platform has one
 //! }
 //! ```
@@ -36,6 +37,8 @@ pub struct Saved {
     pub bounds: Bounds<Pixels>,
     /// Whether the window was maximized (or full screen) when last seen.
     pub maximized: bool,
+    /// Whether the window was in native fullscreen when last seen.
+    pub fullscreen: bool,
     /// UUID of the display the window was on, when the platform reports one.
     pub display: Option<String>,
 }
@@ -52,13 +55,16 @@ pub struct DisplayInfo {
 pub struct Restore {
     pub bounds: Bounds<Pixels>,
     pub maximized: bool,
+    pub fullscreen: bool,
     pub display: usize,
 }
 
 impl Restore {
     /// The [`WindowBounds`] to hand GPUI's `WindowOptions`.
     pub fn window_bounds(&self) -> WindowBounds {
-        if self.maximized {
+        if self.fullscreen {
+            WindowBounds::Fullscreen(self.bounds)
+        } else if self.maximized {
             WindowBounds::Maximized(self.bounds)
         } else {
             WindowBounds::Windowed(self.bounds)
@@ -86,12 +92,18 @@ impl Saved {
         if w <= 0. || h <= 0. {
             return None;
         }
+        let fullscreen = value
+            .get("fullscreen")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Some(Self {
             bounds: Bounds::new(point(px(x), px(y)), size(px(w), px(h))),
-            maximized: value
-                .get("maximized")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            maximized: fullscreen
+                || value
+                    .get("maximized")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            fullscreen,
             display: value
                 .get("display")
                 .and_then(Value::as_str)
@@ -116,6 +128,7 @@ impl Saved {
             "width": f32::from(self.bounds.size.width),
             "height": f32::from(self.bounds.size.height),
             "maximized": self.maximized,
+            "fullscreen": self.fullscreen,
         });
         if let Some(display) = &self.display {
             body["display"] = json!(display);
@@ -129,24 +142,30 @@ impl Saved {
     /// [`WindowBounds::Maximized`]. macOS reports a zoomed window as
     /// `Windowed` with the zoomed frame, so `is_maximized` is the only
     /// signal; there the restore frame is the one remembered before the
-    /// zoom, when there is one. Full screen restores as maximized: reopening
-    /// into a separate Space is more than the user asked a relaunch to do.
+    /// zoom, when there is one. X11 likewise reports fullscreen only through
+    /// `is_fullscreen`, while the other backends use [`WindowBounds::Fullscreen`].
     pub fn observe(
         previous: Option<&Saved>,
         reported: WindowBounds,
         is_maximized: bool,
+        is_fullscreen: bool,
         display: Option<String>,
     ) -> Saved {
-        let (bounds, maximized) = match reported {
-            WindowBounds::Windowed(bounds) if is_maximized => {
-                (previous.map_or(bounds, |p| p.bounds), true)
+        let (bounds, maximized, fullscreen) = match reported {
+            WindowBounds::Fullscreen(bounds) => (bounds, true, true),
+            WindowBounds::Windowed(bounds) | WindowBounds::Maximized(bounds) if is_fullscreen => {
+                (previous.map_or(bounds, |p| p.bounds), true, true)
             }
-            WindowBounds::Windowed(bounds) => (bounds, false),
-            WindowBounds::Maximized(bounds) | WindowBounds::Fullscreen(bounds) => (bounds, true),
+            WindowBounds::Windowed(bounds) if is_maximized => {
+                (previous.map_or(bounds, |p| p.bounds), true, false)
+            }
+            WindowBounds::Windowed(bounds) => (bounds, false, false),
+            WindowBounds::Maximized(bounds) => (bounds, true, false),
         };
         Saved {
             bounds,
             maximized,
+            fullscreen,
             display,
         }
     }
@@ -178,6 +197,7 @@ pub fn restore(saved: &Saved, displays: &[DisplayInfo], min_size: Size<Pixels>) 
     Some(Restore {
         bounds: clamp(saved.bounds, displays[display].bounds, min_size),
         maximized: saved.maximized,
+        fullscreen: saved.fullscreen,
         display,
     })
 }
@@ -256,6 +276,7 @@ mod tests {
         Saved {
             bounds,
             maximized,
+            fullscreen: false,
             display: display.map(str::to_owned),
         }
     }
@@ -285,6 +306,17 @@ mod tests {
         let frame = rect(40., 30., 1200., 800.);
         let got = restore(&saved(frame, true, Some("laptop")), &[laptop()], min()).unwrap();
         assert!(matches!(got.window_bounds(), WindowBounds::Maximized(b) if b == frame));
+    }
+
+    #[test]
+    fn a_fullscreen_window_reopens_fullscreen_with_its_restore_frame() {
+        let frame = rect(40., 30., 1200., 800.);
+        let state = Saved {
+            fullscreen: true,
+            ..saved(frame, true, Some("laptop"))
+        };
+        let got = restore(&state, &[laptop()], min()).unwrap();
+        assert!(matches!(got.window_bounds(), WindowBounds::Fullscreen(b) if b == frame));
     }
 
     #[test]
@@ -370,12 +402,18 @@ mod tests {
     #[test]
     fn observe_keeps_the_restore_frame_through_a_macos_zoom() {
         let windowed = rect(100., 100., 1200., 800.);
-        let before = Saved::observe(None, WindowBounds::Windowed(windowed), false, None);
+        let before = Saved::observe(None, WindowBounds::Windowed(windowed), false, false, None);
         assert_eq!(before, saved(windowed, false, None));
 
         // macOS: zoomed, reported as Windowed with the full-screen frame.
         let zoomed = rect(0., 25., 1512., 957.);
-        let after = Saved::observe(Some(&before), WindowBounds::Windowed(zoomed), true, None);
+        let after = Saved::observe(
+            Some(&before),
+            WindowBounds::Windowed(zoomed),
+            true,
+            false,
+            None,
+        );
         assert_eq!(after, saved(windowed, true, None));
 
         // Windows/Linux: the restore frame comes with the report.
@@ -383,12 +421,49 @@ mod tests {
             Some(&before),
             WindowBounds::Maximized(rect(5., 5., 900., 700.)),
             true,
+            false,
             Some("d".into()),
         );
         assert_eq!(reported, saved(rect(5., 5., 900., 700.), true, Some("d")));
+    }
 
-        let full = Saved::observe(None, WindowBounds::Fullscreen(windowed), false, None);
-        assert!(full.maximized, "full screen relaunches maximized");
+    #[test]
+    fn observe_preserves_fullscreen_and_its_restore_frame() {
+        let windowed = rect(100., 100., 1200., 800.);
+        let before = saved(windowed, false, None);
+        let full = Saved::observe(
+            Some(&before),
+            WindowBounds::Fullscreen(windowed),
+            true,
+            true,
+            None,
+        );
+        assert_eq!(
+            full,
+            Saved {
+                fullscreen: true,
+                ..saved(windowed, true, None)
+            }
+        );
+
+        // X11 reports fullscreen separately from its Windowed bounds.
+        let x11 = Saved::observe(
+            Some(&before),
+            WindowBounds::Windowed(rect(0., 0., 1512., 982.)),
+            false,
+            true,
+            None,
+        );
+        assert_eq!(x11, full);
+
+        let exited = Saved::observe(
+            Some(&full),
+            WindowBounds::Windowed(windowed),
+            false,
+            false,
+            None,
+        );
+        assert_eq!(exited, before);
     }
 
     #[test]
@@ -399,6 +474,10 @@ mod tests {
         for state in [
             saved(rect(-1200.5, 40., 1000., 700.), true, Some("ABC-123")),
             saved(rect(0., 0., 1280., 800.), false, None),
+            Saved {
+                fullscreen: true,
+                ..saved(rect(20., 30., 1100., 750.), true, Some("ABC-123"))
+            },
         ] {
             state.persist_to(&path);
             assert_eq!(Saved::load_from(&path), Some(state));
@@ -435,6 +514,21 @@ mod tests {
         assert_eq!(
             Saved::load_from(&path),
             Some(saved(rect(1., 2., 1200., 800.), false, None))
+        );
+        // Fullscreen implies maximized when only the newer flag is present;
+        // persist also writes `maximized` for older app versions.
+        std::fs::write(
+            &path,
+            r#"{"x":1,"y":2,"width":1200,"height":800,"fullscreen":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Saved::load_from(&path),
+            Some(Saved {
+                maximized: true,
+                fullscreen: true,
+                ..saved(rect(1., 2., 1200., 800.), false, None)
+            })
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

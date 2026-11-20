@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The server's branch on remote sessions.** The header and status bar show the branch (and
+  ahead/behind) of the session's folder **on the server** — never this Mac's — in the same
+  branch selector as local sessions: search, the server's branches newest first, and
+  **Create and checkout new branch…**. Picking or creating a branch switches it on the server
+  over ssh; git's own error is shown if it refuses (for example over uncommitted changes).
+- **Sidebar "By date" view.** The sidebar view menu has a new **By date**
+  grouping: one list under day sections (Pinned, Today, Yesterday, This week,
+  This month, Older), counted in local calendar days and newest first inside
+  each section. Pinned sessions keep their own section on top, so no session
+  is listed twice. The choice is remembered across restarts.
+
 - **Your backgrounds.** Settings → Appearance → Background now lists the
   pictures in your own folder, `~/.orbit-pi/wallpapers/library/`, next to the
   built-in ones; **Open folder** opens it, and pictures you add or remove show
@@ -202,7 +213,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docks keep their place, since a page is the column, not the window, and the panel
   reopens docked after it is closed — ⌘J never changes two things at once.
 
+### Fixed
+
+- **The Remote hosts card's ⋯ menu closes when ⋯ is pressed again.** The press
+  first dismissed the menu as an outside click and its release re-opened it, so
+  the menu could only be closed by clicking elsewhere. The menu is also sized to
+  its labels now, so "Add a project from this Mac…" is no longer cut off.
+
+- **Fullscreen is remembered across launches.** Closing or quitting while the main
+  window is in native fullscreen now reopens it in fullscreen, not merely maximized.
+  The ordinary window frame is still remembered and restored when leaving fullscreen;
+  maximized remains a separate state (#131).
+
 ### Changed
+
+- **Quieter chrome.** Top-bar controls (quota, details, open-in, review,
+  terminal, explorer) no longer sit in framed chips. They rest as plain icons
+  and text and pick up their glass only on hover or while their panel is
+  open. The provider-quota meter shows the provider's mark only (its name is
+  in the tooltip and the popover). The model and
+  thinking-level chips now read as one setting ("Opus 5.5 Medium ▾"): the
+  level loses its icon and sits in muted ink after the model name, and each
+  half still opens its own picker. The composer placeholder now mentions `@`
+  files and `/` commands. Both meters stay neutral until they need attention:
+  the context meter turns amber at 70% and red at 90%, and the quota chip
+  turns amber at 75% and red at 90%.
+
+- **A calmer transcript.** The "Worked for 20s" row at the head of a settled
+  turn is now a quiet left-aligned disclosure instead of a centred divider
+  with rules on both sides. Under each answer, the footer shows only tokens
+  in and out (`↑141.4K ↓24.7K`); cache share, cost and output rate are in
+  its hover card, which already listed them. The end-of-task changed-files
+  summary is a borderless tonal panel with a one-line header ("Changed 3
+  files +247 −104" and Review) instead of a framed card with an icon tile and
+  rules between its sections. It still shows three files, then "Show N more".
+
+- **Quieter session rows.** The branch icon on a session row (and in its
+  hover card) is monochrome, and ahead/behind counts show on the open
+  session's row only; every row's hover card still lists them. The sidebar's
+  section label shows how many sessions it lists.
+
+- **Remote hosts are marked Experimental.** Settings → Remote hosts, its
+  navigation entry and each server in the new-task folder picker carry an
+  *Experimental* tag, and the page says what that means: remote sessions may
+  misbehave or change between releases.
 
 - **The new-task dither field actually moves.** The dots in the background
   behind a fresh session used to drift one noise cell every 29 seconds and be
@@ -393,6 +447,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeats the list, and a provider pi reports nothing for shows no list at all (#131).
 
 ### Fixed
+
+- **No focus ring on the selected Settings section.** Clicking a section in
+  the Settings list left a focus outline around it on top of its selected
+  fill. The ring now shows only when the keyboard cursor rests on a
+  different row, where it marks the row Enter will open.
+
+- **Remote host menu opens under its button.** The "…" menu on a Settings →
+  Remote hosts card opened about 100 px to the left of its button and above
+  it, over the card. It now hangs right-aligned under the button, like every
+  other dropdown.
+
+- **Settings → Remote hosts no longer crashes with Reduce Motion on.** The
+  Add host button, each card's "…" button and the host editor's Cancel/Save
+  had their hover set twice, which GPUI rejects when Reduce Motion is on.
+  They now use the buttons' own fade.
+
+- **Navigate Settings without a mouse.** Tab reaches Back and the section
+  list. Arrow keys move focus without switching pages; Enter or Space opens
+  the focused section. Back and Escape return focus to the previous control.
+
+- **Extension confirmations default to No.** Enter answers No when the
+  dialog opens, even if the pointer is over Yes. Tab moves between the
+  buttons without answering.
+
+- **The folder selector no longer nudges its row.** Closing the new-task
+  folder picker (or tabbing onto any button) moved the folder name and the
+  branch chip 1–2 px, because the focus ring added a border the button did
+  not have at rest. Buttons now keep that 1 px edge transparent until they
+  are focused, so focus only changes its colour.
 
 - **Solid blocks over the wallpaper glass.** With a full-window wallpaper,
   the sidebar's sticky project header, the Settings → Skills and Subagents

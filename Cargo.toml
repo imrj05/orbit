@@ -35,3 +35,11 @@ opt-level = 1
 # with `ld: symbol(s) not found for architecture arm64`. Build non-incrementally
 # so `cargo build`/`bacon` links reliably; a from-scratch app rebuild is ~25s.
 incremental = false
+
+# The app crate is one ~240k-line unit and, with incremental off, every save
+# rebuilds all of it. Compile it unoptimized with line tables only (backtraces
+# keep file:line); dependencies — gpui above all — stay at the profile's
+# opt-level 1, so rendering in a debug build stays usable.
+[profile.dev.package.orbit-pi]
+opt-level = 0
+debug = "line-tables-only"

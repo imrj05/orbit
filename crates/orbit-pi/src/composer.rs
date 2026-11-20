@@ -2530,7 +2530,7 @@ mod tests {
         let queue =
             resolve_placeholder(Some("composer.placeholder_follow_up"), "", &[], Some("en"));
         let steer = resolve_placeholder(Some("composer.placeholder_steer"), "", &[], Some("en"));
-        assert_eq!(idle, "Describe the task…");
+        assert_eq!(idle, "Describe the task · @ files, / commands");
         assert_eq!(queue, "Queue a follow-up…");
         assert_eq!(steer, "Steer the current task…");
         assert_ne!(idle, queue);

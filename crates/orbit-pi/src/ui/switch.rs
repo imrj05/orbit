@@ -71,8 +71,11 @@ impl RenderOnce for Switch {
         let focused = focus.is_focused(window);
         let padding = DynamicSpacing::Base02.px(&theme);
         let travel = switch_travel(&theme);
+        let selector = id.clone();
         let track = div()
             .id(gpui::ElementId::Name(id.clone()))
+            // Tests find a switch by its id.
+            .debug_selector(move || selector.to_string())
             .track_focus(&focus)
             .key_context("Switch")
             .w(px(36.))

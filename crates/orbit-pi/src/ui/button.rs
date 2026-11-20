@@ -430,7 +430,7 @@ pub(crate) fn button_frame<E: Styled + InteractiveElement>(
         .whitespace_nowrap()
         .text_size(button::label_size(size).px(theme))
         .line_height(relative(1.))
-        .focus_state(theme)
+        .focus_ring_reserved(theme)
 }
 
 /// Geometry and focus treatment for an icon-only button; callers own its content and actions.
@@ -445,7 +445,7 @@ pub(crate) fn icon_button_frame<E: Styled + InteractiveElement>(
         .items_center()
         .justify_center()
         .rounded(button::radius(size).px(theme))
-        .focus_state(theme)
+        .focus_ring_reserved(theme)
 }
 
 /// A text disclosure: a medium, muted label beside a `disclosure_chevron`,
