@@ -13,6 +13,59 @@ use gpui::{
 use crate::mentions;
 use crate::theme::{tokens::Radius, Theme, ThemeMode};
 
+/// How an [`icon_tile`] carries its tone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum TileLook {
+    /// A 22px square washed with the glyph's own tone: a transcript activity
+    /// (a tool row, a thought). The tone is the state — running, failed or
+    /// settled ink — so the wash says it twice, quietly.
+    Tinted(Hsla),
+    /// A 28px neutral raised square inside a hairline: the leading mark of a
+    /// two-line picker or legend row. It never carries an accent, so the row's
+    /// own selection stays the one accent mark (the One Accent Rule). 28px
+    /// matches the sidebar's session chips, so HugeIcons with small artwork in
+    /// their 24×24 box (the thinking level "minimal" is a dot) still read.
+    Raised,
+}
+
+impl TileLook {
+    /// The tile's edge. Fixed per look so every row of a kind lines up.
+    pub(crate) fn size(self) -> Pixels {
+        match self {
+            Self::Tinted(_) => px(22.),
+            Self::Raised => px(28.),
+        }
+    }
+}
+
+/// A glyph centred in a square tile — the one owner of the "icon in a box"
+/// mark. The caller sizes and colours the glyph; the tile owns the square,
+/// its corner and its fill.
+pub(crate) fn icon_tile(glyph: impl IntoElement, look: TileLook, theme: &Theme) -> gpui::Div {
+    let tile = div()
+        .size(look.size())
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center();
+    let tile = match look {
+        TileLook::Tinted(tone) => {
+            let wash = match theme.mode {
+                ThemeMode::Dark => 0.16,
+                ThemeMode::Light => 0.12,
+            };
+            tile.rounded(Radius::Medium.px(theme))
+                .bg(tone.opacity(wash))
+        }
+        TileLook::Raised => tile
+            .rounded(Radius::Large.px(theme))
+            .bg(theme.surface_elevated)
+            .border_1()
+            .border_color(theme.hairline()),
+    };
+    tile.child(glyph)
+}
+
 /// Render a compile-time-embedded raster image (PNG) at a fixed height, with
 /// the width derived from the source's aspect ratio.
 ///

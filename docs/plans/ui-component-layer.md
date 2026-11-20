@@ -27,7 +27,7 @@ every declared pixel change).
 | Segmented control | `ui/button.rs` `ButtonGroup`, `SegmentFill`, `segmented_segment` | ✅ all 11 segmented controls; `settings_segment` / `active_segment` deleted |
 | Link | `ui/button.rs` `LinkButton` | ✅ updater changelog link, transcript tool URL, Subagents' *Undo* |
 | Trigger / choice / toggle chip | `ui/chip.rs` `ChipButton` (`open` / `selected` / `checked` / `applied`, caret control, + size, leading / trailing, mono, `label_tip`, `label_max_w`, disabled, shrink (truncating), `render`) | ✅ Usage filters + toggles, composer chips, Settings select, Machine, Review source, MCP/provider kinds, permissions scope, subagent tool/thinking, model scope tabs, Git triggers (branch, commit-model, label filter), merge-mode choices, the transcript activity fold, ssh alias suggestions. **Decided: neutral selected** — `surface_selected` fill, a check glyph on toggles, never an accent fill. Usage's narrowed-filter token stays `// Bespoke:` (a static chip with an inline clear) |
-| File chip | `ui/chip.rs` `FileChip` (visual, name, meta, `on_open`, `on_remove`) | ✅ composer attachments + screenshots; only the nested ✕ removes |
+| File chip | `ui/chip.rs` `FileChip` (visual, name or `name_element`, meta, `face`, `on_open`, `on_remove`) | ✅ composer attachments + screenshots + a sent message's files (read-only: no hover); only the nested ✕ removes |
 | Badge | `ui/chip.rs` `Badge` (+ `Framed`, leading glyph) | ✅ owner; Git refs, provider badges, Explorer save state |
 | Pill | `ui/chip.rs` `Pill` (bare / faced) | ✅ MCP status, composer queue count (the save-state chip proved to be a `Badge`) |
 | Banner / error card | `ui/banner.rs` `Banner` (Info/Success/Warning/Error, glyph, `strip`), `error_state` | ✅ run error (via `error_state`), Git failure, Explorer notice strip, worktree setup |
@@ -44,6 +44,7 @@ every declared pixel change).
 | Resize handle | `ui/resize.rs` | ✅ all 5 |
 | Window chrome | `ui/chrome.rs` | ✅ moved (no API change) |
 | Glyphs (file, provider, images) | `ui/glyph.rs`, `ui/icon.rs` (+ chevrons) | ✅ moved |
+| Icon tile (glyph in a square) | `ui/glyph.rs` `icon_tile` + `TileLook::{Tinted, Raised}` | ✅ transcript activity badges (22px tinted), picker/legend leading tiles (28px raised) |
 | Card / section | `ui/card.rs`, `SurfaceExt::card_surface` | ✅ titled board (Usage) + the card treatment at 13 sites (transcript activity/ask/subagent cards, composer strips, queue bar, Settings board) |
 | Field frame / label / search / form | `ui/field.rs` `input_field_frame`, `input_label`, `picker_search_frame`, `search_field`, `TextField` (+ `multiline`), `FormRow`, `form_label` | ✅ `search_field` at 20 sites; `TextField` at 21; `FormRow` for the worktree, subagent and bug-report forms. 8 raw frames left, each with a real difference (icon inside, margins + strong border, top-aligned multi-line, fixed-height panel field) |
 | Switch, keycap, tooltip view | `ui/switch.rs`, `ui/kbd.rs`, `ui/tooltip.rs` | ✅ moved |

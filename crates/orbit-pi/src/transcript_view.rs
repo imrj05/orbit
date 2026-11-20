@@ -53,14 +53,15 @@ use crate::message_scroller::{self, MessageScrollerState};
 use crate::motion::Hover;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
-    button, context_menu, looping, panel, picker, popover, BufferLineHeight, ButtonSize,
-    DynamicSpacing, IconSize, Motion, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    context_menu, looping, panel, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
+    IconSize, Motion, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, HistoryCard, Step, SummaryRow, ToolCall, ToolFacts};
 use crate::turn_review::{ChangedFile, TurnFiles};
 use crate::ui::button::{IconButton, IconButtonVariant};
-use crate::ui::chip::{Badge, BadgeFill, ChipButton, ChipStyle};
+use crate::ui::chip::{Badge, BadgeFill, ChipButton, ChipStyle, FileChip, Pill};
+use crate::ui::glyph::{icon_tile, TileLook};
 use crate::ui::popover::{popover_list, PopoverExt};
 use crate::ui::prelude::{
     anchored_popover_at, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
@@ -2594,7 +2595,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
                 cx.refresh_windows();
             }
         })
-        .child(activity_badge(icon, theme.accent_text, theme))
+        .child(activity_badge(icon, theme.accent_text, &theme))
         .child(
             div()
                 .flex_none()
@@ -2823,48 +2824,29 @@ fn user_file_chip(
         range,
         selection_color(theme),
     );
-    div()
-        .debug_selector(move || format!("user-file-{ix}-{file_ix}"))
-        .flex_none()
-        .h(ButtonSize::Medium.height(&theme))
-        // One line box tall, exactly like `button_frame`: a taller inherited
-        // line height centres the box but leaves the glyphs sitting low in it,
-        // which reads as the icon being too high beside the path.
-        .line_height(relative(1.))
-        // Symmetric inset: the icon and the path's trailing edge sit the same
-        // distance from the chip's borders, so the pair reads centred.
-        .px(DynamicSpacing::Base06.px(&theme))
-        .gap(DynamicSpacing::Base06.px(&theme))
-        .rounded(button::radius(ButtonSize::Medium).px(&theme))
-        .border_1()
-        .border_color(theme.hairline())
-        .bg(theme.card_fill(theme.surface_elevated))
-        .flex()
-        .items_center()
-        .child(
-            div()
-                .debug_selector(move || format!("user-file-tile-{ix}-{file_ix}"))
-                .flex_none()
-                .child(file_icon_tile(cx, path, theme.ui_px(20.), theme)),
-        )
-        // A deep path is clipped, never allowed to push the bubble past its
-        // reading column; the full text still rides the selection and copy.
-        .child(
-            div()
-                .debug_selector(move || format!("user-file-text-{ix}-{file_ix}"))
-                .min_w_0()
-                .max_w(px(360.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .child(SelectableText::new(
-                    key,
-                    StyledText::new(path.to_string()).with_runs(runs),
-                    path.to_string().into(),
-                    Vec::new(),
-                    scope,
-                )),
-        )
-        .into_any_element()
+    // A read-out FileChip: no remove, no open, so it takes no hover. The
+    // bubble's glass-aware face keeps it legible over wallpaper.
+    FileChip::new(
+        key.clone(),
+        div()
+            .debug_selector(move || format!("user-file-tile-{ix}-{file_ix}"))
+            .flex_none()
+            .child(file_icon_tile(cx, path, theme.ui_px(20.), theme)),
+        path.to_string(),
+    )
+    .selector(format!("user-file-{ix}-{file_ix}"))
+    .face(theme.card_fill(theme.surface_elevated))
+    // A deep path is clipped, never allowed to push the bubble past its
+    // reading column; the full text still rides the selection and copy.
+    .max_name_width(px(360.))
+    .name_element(SelectableText::new(
+        key,
+        StyledText::new(path.to_string()).with_runs(runs),
+        path.to_string().into(),
+        Vec::new(),
+        scope,
+    ))
+    .render(&theme)
 }
 
 /// Whether a turn's trailing work is pulled up above its answer.
@@ -3210,8 +3192,8 @@ fn render_assistant_error(
 }
 
 /// The turn's activity summary: counts every tool kind and every thought
-/// across the turn's steps — "Ran 7 commands · 4 thoughts", "Ran 1 file
-/// read · 1 thought", "Ran 2 commands · 3 file reads · 1 file edit".
+/// across the turn's steps — "Ran 7 commands · 4 thoughts", "Read 1 file
+/// · 1 thought", "Ran 2 commands · Read 3 files · Edited 1 file".
 fn activity_title(steps: &[Step], live: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     let (mut delegations, mut commands, mut reads, mut edits, mut other, mut thoughts) =
@@ -3564,16 +3546,23 @@ fn render_thinking_body(
         handle.scroll_to_bottom();
     }
     let id = (key.0 as u64) << 16 | key.1 as u64;
-    // The reasoning glyph: brand accent while the card streams (with a slow
-    // opacity pulse, reduce-motion aware), muted once it settles.
+    // The reasoning glyph sits in the same 22px tile as a tool row's badge,
+    // so "Thought" and "Run"/"Edit" start on one column: brand accent while
+    // the card streams (with a slow opacity pulse, reduce-motion aware), the
+    // settled tool ink once it is done.
+    let badge = activity_badge(
+        "icons/tools/thinking.svg",
+        if live {
+            theme.accent_text
+        } else {
+            theme.text_secondary
+        },
+        &theme,
+    );
     let thought_icon: AnyElement = if live && !theme.reduce_motion() {
         div()
             .flex_none()
-            .child(glyph(
-                "icons/tools/thinking.svg",
-                IconSize::Small.px(&theme),
-                theme.accent_text,
-            ))
+            .child(badge)
             .with_animation(
                 ElementId::NamedInteger("thought-icon".into(), id),
                 Animation::new(looping::PULSE).repeat(),
@@ -3581,16 +3570,7 @@ fn render_thinking_body(
             )
             .into_any_element()
     } else {
-        glyph(
-            "icons/tools/thinking.svg",
-            IconSize::Small.px(&theme),
-            if live {
-                theme.accent_text
-            } else {
-                theme.text_muted
-            },
-        )
-        .into_any_element()
+        badge.into_any_element()
     };
     // The same card treatment as the tool and activity cards beside it, so a
     // thought and an edit read as one material: frosted over wallpaper glass,
@@ -3598,17 +3578,21 @@ fn render_thinking_body(
     let mut card = div()
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
         .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
-        .px(DynamicSpacing::Base12.px(&theme))
-        .py(DynamicSpacing::Base08.px(&theme))
+        // Header geometry matches `render_activity_card`: Base08 inset and a
+        // Base32 row, so badge, title and caret line up with the tool rows.
+        .px(DynamicSpacing::Base08.px(&theme))
+        .when(!collapsed, |card| {
+            card.pb(DynamicSpacing::Base08.px(&theme))
+        })
         .flex()
         .flex_col()
-        .gap(px(5.))
         .child(
             div()
                 .id(ElementId::NamedInteger("thought-toggle".into(), id))
                 .group(BUTTON_GROUP)
                 .w_full()
                 .min_w_0()
+                .h(DynamicSpacing::Base32.px(&theme))
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base08.px(&theme))
@@ -3703,9 +3687,11 @@ fn render_thinking_body(
                         );
                     }
                 })
-                .font_family(theme::code_font_family())
-                .text_size(theme.code_px(12.))
-                .line_height(theme.code_px(18.))
+                // Reasoning is prose, not code: the UI face (orbit-design
+                // › UI typography), inset to the title's reading edge.
+                .px(DynamicSpacing::Base04.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(theme.ui_px(19.))
                 .text_color(theme.text_secondary)
                 .whitespace_normal()
                 .child({
@@ -3718,7 +3704,7 @@ fn render_thinking_body(
                         .as_ref()
                         .and_then(|scope| scope.state.borrow().range_for(&body_key, &detail));
                     let runs = highlight_runs(
-                        vec![code_run(detail.len(), theme.text_secondary, &mono_font())],
+                        vec![code_run(detail.len(), theme.text_secondary, &ui_font())],
                         range,
                         selection_color(theme),
                     );
@@ -5693,7 +5679,7 @@ fn render_activity_card(
                 })
                 .when(has_detail, |row| row.cursor_pointer())
                 .hover_on_glass(&theme)
-                .child(activity_badge(icon, tone, theme))
+                .child(activity_badge(icon, tone, &theme))
                 .child(
                     div()
                         .flex_none()
@@ -5719,14 +5705,15 @@ fn render_activity_card(
                                 .text_size(theme.code_px(12.))
                                 .child(div().flex_none().text_color(theme.text_muted).child("$"))
                                 .child(
-                                    div().min_w_0().overflow_hidden().whitespace_nowrap().child(
-                                        syntax_styled(
-                                            &detail,
-                                            tokens.first().map(Vec::as_slice),
-                                            theme.text_secondary,
-                                            theme,
-                                        ),
-                                    ),
+                                    // `truncate` ellipsizes at the painted
+                                    // width; gpui shapes styled runs through
+                                    // the same `truncate_line`.
+                                    div().flex_1().min_w_0().truncate().child(syntax_styled(
+                                        &detail,
+                                        tokens.first().map(Vec::as_slice),
+                                        theme.text_secondary,
+                                        theme,
+                                    )),
                                 ),
                         )
                     } else if let Some(url) = tool_url(tool) {
@@ -5782,31 +5769,8 @@ fn render_activity_card(
                 .when(has_diff, |row| {
                     row.child(render_line_delta(added, removed, theme, 12.5))
                 })
-                .when(pulse, |row| {
-                    row.child(crate::ui::prelude::spinner(
-                        ElementId::NamedInteger(
-                            "activity-spin".into(),
-                            (key.0 as u64) << 16 | key.1 as u64,
-                        ),
-                        IconSize::XSmall.px(&theme),
-                        theme.accent_text,
-                        theme,
-                    ))
-                })
-                .when(tool.failed, |row| {
-                    row.child(glyph(
-                        "icons/stop.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.error,
-                    ))
-                })
-                .when(complete && !tool.failed, |row| {
-                    row.child(glyph(
-                        "icons/check.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.text_muted,
-                    ))
-                })
+                // Optional controls sit left of the status mark and the
+                // caret, so ✓ and › hold one column down the whole turn.
                 .when_some(diff.clone(), |row, rows| {
                     let copied = copied_sections
                         .borrow()
@@ -5846,6 +5810,31 @@ fn render_activity_card(
                             cx.refresh_windows();
                         }),
                     )
+                })
+                .when(pulse, |row| {
+                    row.child(crate::ui::prelude::spinner(
+                        ElementId::NamedInteger(
+                            "activity-spin".into(),
+                            (key.0 as u64) << 16 | key.1 as u64,
+                        ),
+                        IconSize::XSmall.px(&theme),
+                        theme.accent_text,
+                        theme,
+                    ))
+                })
+                .when(tool.failed, |row| {
+                    row.child(glyph(
+                        "icons/stop.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.error,
+                    ))
+                })
+                .when(complete && !tool.failed, |row| {
+                    row.child(glyph(
+                        "icons/check.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_muted,
+                    ))
                 })
                 // Always drawn, so the row height is stable either way; with no
                 // detail it is simply invisible.
@@ -5902,20 +5891,14 @@ fn truncation_label(facts: &ToolFacts) -> Option<String> {
 fn truncation_chip(facts: &ToolFacts, theme: Theme) -> Option<AnyElement> {
     let label = truncation_label(facts)?;
     Some(
-        div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base03.px(&theme))
-            .text_size(TextSize::Small.px(&theme))
-            .line_height(theme.ui_px(15.))
-            .text_color(theme.warning)
-            .child(glyph(
+        Pill::new(label, theme.warning)
+            .leading(glyph(
                 "icons/tools/truncated.svg",
                 IconSize::XSmall.px(&theme),
                 theme.warning,
             ))
-            .child(label)
+            .render(&theme)
+            .flex_none()
             .into_any_element(),
     )
 }
@@ -7713,7 +7696,7 @@ fn activity_preview(tool: &ToolCall) -> String {
                 .lines()
                 .find(|line| !line.trim().is_empty())
                 .unwrap_or("");
-            return snippet(first.trim(), 72);
+            return snippet(first.trim(), HEADER_PREVIEW_CAP);
         }
     }
     // A command tool's pi summary is the raw JSON arguments; show the shell
@@ -7722,8 +7705,13 @@ fn activity_preview(tool: &ToolCall) -> String {
     // Headers are single-line. A literal newline in a heredoc would make
     // the fixed-height preview paint several clipped lines; full arguments
     // and copy still use the original command.
-    snippet(&summary, 72)
+    snippet(&summary, HEADER_PREVIEW_CAP)
 }
+
+/// Upper bound on a tool header's preview, in graphemes. It only bounds the
+/// text handed to the shaper; the visible cut is the row's own ellipsis at
+/// its painted width, so a wide window shows the whole command.
+const HEADER_PREVIEW_CAP: usize = 400;
 
 /// The shell command a command-running tool was invoked with, when the tool
 /// carries one in its arguments. `None` for edit/read/other tools.
@@ -10402,20 +10390,12 @@ fn activity_icon_rank(icon: &'static str) -> usize {
 /// of the prose column so a tool row reads as a control at a glance, in every
 /// palette. `tone` is the state color while the call runs/fails, the work
 /// kind's tint once it settles (see `work_tint`).
-fn activity_badge(icon: &'static str, tone: Hsla, theme: Theme) -> impl IntoElement {
-    let wash = match theme.mode {
-        ThemeMode::Dark => 0.16,
-        ThemeMode::Light => 0.12,
-    };
-    div()
-        .flex_none()
-        .size(px(22.))
-        .rounded(Radius::Medium.px(&theme))
-        .bg(tone.opacity(wash))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(glyph(icon, IconSize::Small.px(&theme), tone))
+fn activity_badge(icon: &'static str, tone: Hsla, theme: &Theme) -> gpui::Div {
+    icon_tile(
+        glyph(icon, IconSize::Small.px(theme), tone),
+        TileLook::Tinted(tone),
+        theme,
+    )
 }
 
 /// Split a Pi MCP tool name (`mcp__<server>__<tool>`) into `(server, tool)`
@@ -10816,11 +10796,11 @@ mod tests {
         ];
         assert_eq!(
             activity_title(&steps, false),
-            "Ran 1 command · Ran 1 file read · Ran 1 file edit · 2 thoughts"
+            "Ran 1 command · Read 1 file · Edited 1 file · 2 thoughts"
         );
         assert_eq!(
             activity_title(&steps, true),
-            "Ran 1 command · Ran 1 file read · Ran 1 file edit · Thinking"
+            "Ran 1 command · Read 1 file · Edited 1 file · Thinking"
         );
         assert_eq!(activity_title(&[], false), "Worked");
     }
@@ -11414,6 +11394,34 @@ mod tests {
             "python3 - <<'PY' print('hello') PY"
         );
         assert_eq!(tool_command(&tool).as_deref(), Some(command));
+    }
+
+    #[test]
+    fn long_command_preview_is_left_to_the_row_ellipsis() {
+        // Regression: the header used to cut every command at 72 graphemes,
+        // leaving half a wide row empty after `-D warn…`.
+        let command = "source ~/.cargo/env && cargo clippy -p orbit-pi --all-targets -- -D warnings 2>&1 | tail -40";
+        let tool = ToolCall {
+            name: "bash".into(),
+            summary: command.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({ "command": command })),
+            output: None,
+            failed: false,
+            facts: Default::default(),
+            details: None,
+        };
+        assert!(command.len() > 72);
+        assert_eq!(activity_preview(&tool), command);
+        let huge = "x".repeat(HEADER_PREVIEW_CAP + 10);
+        let tool = ToolCall {
+            args: Some(serde_json::json!({ "command": huge })),
+            ..tool
+        };
+        assert!(activity_preview(&tool).ends_with('…'));
     }
 
     #[test]
@@ -14211,7 +14219,7 @@ mod tests {
             .debug_bounds("user-file-0-0")
             .expect("the folded mention block renders as a file chip");
         let tile = cx.debug_bounds("user-file-tile-0-0").expect("file tile");
-        let text = cx.debug_bounds("user-file-text-0-0").expect("path text");
+        let text = cx.debug_bounds("user-file-0-0-name").expect("path text");
 
         // The icon and the path share one centreline: a taller inherited line
         // height used to centre the text's box while its glyphs sat low, making

@@ -58,6 +58,7 @@ TYPES = {
     "MenuCursor": "ui/menu.rs",
     "PickerRow": "ui/row.rs",
     "Column": "ui/table.rs",
+    "TileLook": "ui/glyph.rs",
 }
 
 # Owning functions: name → the one file that defines it (top level only).
@@ -95,6 +96,7 @@ FUNCTIONS = {
     "kbd_key": "ui/kbd.rs",
     "resize_handle": "ui/resize.rs",
     "switch": "ui/switch.rs",
+    "icon_tile": "ui/glyph.rs",
 }
 
 # Named exceptions: a same-named item that is data, not an element. Each says

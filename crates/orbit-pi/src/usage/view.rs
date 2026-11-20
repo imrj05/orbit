@@ -65,12 +65,13 @@ use super::page::{
 use super::sparkline;
 use super::table::{FailureSort, TableKind};
 use crate::composer::ComposerInput;
-use crate::model_selector::{leading_tile, provider_icon};
+use crate::model_selector::provider_icon;
 use crate::theme::tokens::{
     context_menu, panel, picker, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::transcript_view::activity_icon;
+use crate::ui::glyph::{icon_tile, TileLook};
 use crate::ui::prelude::{
     button_frame, context_menu_separator, empty_state_glyph, icon, icon_button_frame, icon_dyn,
     picker_entry, press, provider_mark_color, ControlExt,
@@ -4492,9 +4493,10 @@ fn legend_row(
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
-        .child(leading_tile(
-            theme,
-            icon_dyn(path, context_menu::ICON.px(&theme), color).into_any_element(),
+        .child(icon_tile(
+            icon_dyn(path, context_menu::ICON.px(&theme), color),
+            TileLook::Raised,
+            &theme,
         ))
         .child(
             div()

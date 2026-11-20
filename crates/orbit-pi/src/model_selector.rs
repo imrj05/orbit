@@ -49,12 +49,13 @@ use crate::model_selector_match::is_model_selected;
 use crate::providers::provider_display_name;
 use crate::recent_models::Recents;
 use crate::theme::tokens::{
-    context_menu, list, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius,
+    context_menu, list, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
     TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::ui::button::IconButton;
 use crate::ui::field::search_field;
+use crate::ui::glyph::{icon_tile, TileLook};
 use crate::ui::popover::PopoverExt;
 use crate::ui::prelude::{
     button_frame, icon, icon_dyn, picker_entry, picker_surface, provider_mark_color, ControlExt,
@@ -1275,12 +1276,6 @@ fn thinking_hint(level: &str) -> String {
     }
 }
 
-/// Leading tile shared by the model and thinking rows — sized like sidebar
-/// session chips so HugeIcons glyphs read clearly (some levels use small
-/// artwork in the 24×24 viewBox, e.g. minimal's dot). The glyph inside is a
-/// picker-row icon (`context_menu::ICON`).
-const LEADING_TILE: f32 = 28.;
-
 fn trailing_check(selected: bool, theme: Theme) -> impl IntoElement + use<> {
     div()
         .w(context_menu::ICON.px(&theme))
@@ -1300,29 +1295,12 @@ fn trailing_check(selected: bool, theme: Theme) -> impl IntoElement + use<> {
         })
 }
 
-/// The neutral leading tile for the two-line pickers: a 28px raised square with
-/// an 8px corner. It stays neutral in every state — selection is carried by the
-/// row's own fill and the trailing accent check, so the tile never adds a second
-/// accent mark to the same row (the One Accent Rule).
-pub(crate) fn leading_tile(theme: Theme, glyph: AnyElement) -> impl IntoElement + use<> {
-    div()
-        .size(px(LEADING_TILE))
-        .flex_none()
-        .rounded(Radius::Large.px(&theme))
-        .bg(theme.surface_elevated)
-        .border_1()
-        .border_color(theme.hairline())
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(glyph)
-}
-
 fn thinking_chip(level: &str, theme: Theme) -> impl IntoElement + use<> {
     let (path, color) = thinking_icon(level, &theme);
-    leading_tile(
-        theme,
-        icon(path, context_menu::ICON.px(&theme), color).into_any_element(),
+    icon_tile(
+        icon(path, context_menu::ICON.px(&theme), color),
+        TileLook::Raised,
+        &theme,
     )
 }
 
@@ -1728,14 +1706,14 @@ fn render_row(
             let model_ix = *model_ix;
             let this_fav = this.clone();
             row_shell(div())
-                .child(leading_tile(
-                    theme,
+                .child(icon_tile(
                     icon_dyn(
                         provider_icon(&model.provider),
                         context_menu::ICON.px(&theme),
                         provider_mark_color(&model.provider, &theme, theme.text_muted),
-                    )
-                    .into_any_element(),
+                    ),
+                    TileLook::Raised,
+                    &theme,
                 ))
                 .child(div().flex_1().min_w_0().tip(details).child(label_column(
                     name,

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tool-call cards in the transcript.** A command's preview now fills the row and ends in an
+  ellipsis at the card's edge instead of stopping at 72 characters. The ✓ and disclosure caret
+  hold one column down the turn, with the edit card's copy button moved to their left. The
+  **Thought** card's header uses the same badge, inset and height as the tool rows beside it, and
+  its reasoning text is set in the UI face rather than the code font. The turn summary now reads
+  "Read 3 files · Edited 1 file" instead of "Ran 3 file reads · Ran 1 file edit".
+- **A sent message's file chip no longer lights up on hover.** It has nothing to open or remove,
+  so it now renders as a read-only `FileChip` and gives no hover response.
+
+### Changed
+
+- **One owner for icon tiles and file chips.** The transcript's activity badge and the pickers'
+  and Usage legend's leading tile are now `ui::glyph::icon_tile` (`TileLook::Tinted` / `Raised`);
+  the tool card's truncation mark is a `Pill`; a sent message's file chip is a `FileChip`.
+  `scripts/check_ui_owners.py` now guards `icon_tile` and `TileLook`.
+
 ## [0.2.20] - 2026-11-20
 
 ### Added
