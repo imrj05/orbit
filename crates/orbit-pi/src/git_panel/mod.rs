@@ -9323,6 +9323,9 @@ where
         .id(gpui::ElementId::Name(name.clone().into()))
         .debug_selector(|| "github-row".into())
         .group("git-row")
+        // The list is a bounded, scrolling column: a shrinkable row would give
+        // up height until the clip below left only the header line.
+        .flex_none()
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
         .rounded(Radius::Large.px(&theme))
@@ -11220,6 +11223,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    struct RowListProbe {
+        count: usize,
+    }
+
+    impl Render for RowListProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = *theme::get(cx);
+            // The list's own shape: a bounded, scrolling flex column.
+            let mut list = div()
+                .id("row-list-probe")
+                .size_full()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col();
+            for number in 0..self.count as u64 {
+                list = list.child(github_list_row(
+                    GithubRowParts {
+                        kind: "issue",
+                        number,
+                        glyph: "icons/circle-dot.svg",
+                        color: theme.success,
+                        state: tr!("git_panel.issue_kind"),
+                        draft: false,
+                        time: "13h ago".into(),
+                        title: "Fix the flaky test",
+                        url: "https://github.com/orbit/app/issues/7",
+                        labels: &[],
+                        emphasized: true,
+                    },
+                    false,
+                    false,
+                    theme,
+                    |_, _, _| {},
+                ));
+            }
+            list
+        }
+    }
+
+    /// A list longer than its pane scrolls; it never squeezes its rows. A
+    /// shrinkable row in a bounded column gives up height until only the
+    /// header line survives the row's clip, and the title vanishes.
+    #[gpui::test]
+    fn github_rows_keep_their_height_in_an_overflowing_list(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(320.), px(600.)), |_, cx| {
+            cx.new(|_| RowListProbe { count: 1 })
+        });
+        let natural = cx.debug_bounds("github-row").unwrap().size.height;
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(320.), px(600.)), |_, cx| {
+            cx.new(|_| RowListProbe { count: 40 })
+        });
+        let row = cx.debug_bounds("github-row").unwrap();
+        let title = cx.debug_bounds("github-row-title").unwrap();
+        assert_eq!(row.size.height, natural, "an overflowing list shrank its rows");
+        assert!(title.bottom() <= row.bottom(), "{title:?} {row:?}");
     }
 
     #[test]

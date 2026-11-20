@@ -215,6 +215,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Issue and pull request rows show their title and labels again.** A list
+  longer than the pane squeezed every row down to its first line, so each row
+  read only "Issue · #154" with the time. Rows now keep their full height and
+  the list scrolls.
+
 - **The Remote hosts card's ⋯ menu closes when ⋯ is pressed again.** The press
   first dismissed the menu as an outside click and its release re-opened it, so
   the menu could only be closed by clicking elsewhere. The menu is also sized to
