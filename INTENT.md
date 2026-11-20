@@ -220,10 +220,10 @@ dialogs — every on-scale `p/px/py/pl/pr/pt/pb/m*/gap(px(N))` site in the app n
 `DynamicSpacing`. What stays px on purpose: 1–2px optical nudges (dot / badge insets), the
 legacy 6–10px rhythm values with no token equivalent (10/14/18/22 — folded into the scale or
 retired by design, pending), and bespoke geometry (widths, heights, icon and dot sizes).
-The palette set is twelve: ten Classic palettes plus the opt-in Operational pair. The blue design
-holds **Orbit Azure** / **Orbit Azure Light** and is the appearance default, while **Orbit** /
-**Orbit Light** carry the original ember identity. **Operational** / **Operational Light** are
-selected by the Design-system control, not by a Classic palette choice. Primary
+The palette set is thirteen, in one design system (D15): seven dark and six light. The blue
+design holds **Orbit Azure** / **Orbit Azure Light** and is the appearance default, while
+**Orbit** / **Orbit Light** carry the original ember identity, and **Operational** /
+**Operational Light** sit in the same Dark and Light galleries as every other palette. Primary
 buttons fill from a role separate from the identity accent — `action` / `action_hover` /
 `action_pressed` with `action_fg` ink — because the ember palettes key their buttons to a light
 neutral with dark ink while Azure keys them to its accent; `accent` / `accent_hover` /
@@ -296,19 +296,23 @@ Orbit compatible with Git's own metadata format across versions.
 A missing worktree surfaces a notice rather than silently re-pointing a session at the
 main repository.
 
-### D15 — Design systems are an opt-in theme layer, not a fork
-**Choice:** `DesignSystem` (`Classic` / `Operational`) is persisted beside the existing
-Light/Dark/System preference and the remembered Classic palettes. `AppearancePrefs::resolve`
-selects a `ThemeId` from the chosen system; every component continues to read the same
-`Theme` semantic roles and token resolvers. Operational supplies its own palette and
-`surface_selected` row wash. Both families now share the same radius, typography and
-elevation grammar; the earlier family-specific geometry was superseded by the shared ramp.
+### D15 — One design system; palettes are colorways, not forks
+**Choice:** there is one design system. Classic (the Orbit family, Flexoki, Onyx) and
+Operational used to be separate `DesignSystem` values behind their own Settings switch; once
+both shared the same radius, typography and elevation grammar the split only hid palettes,
+so `DesignSystem` was removed. `AppearancePrefs` keeps one remembered palette per
+appearance — any palette of that appearance, Operational included — and
+`AppearancePrefs::resolve` honors Light/Dark/System. Operational still supplies its own
+palette and `surface_selected` row wash. Preferences written with
+`"design_system": "operational"` migrate to the Operational pair, so what was on screen
+stays on screen.
 **Rationale:** a second widget tree or parallel CSS-like layer would duplicate every surface
-and drift. Palette families change appearance without forking component geometry.
+and drift; a palette-family switch on top of a shared grammar only made two of thirteen
+palettes harder to find.
 **Consequence:** new visual rules use semantic `Theme` roles and shared `theme/tokens.rs`
-resolvers; do not branch geometry on `DesignSystem`. New palettes join
-`ThemeId::ALL` and the palette-invariant tests; the Appearance Theme dropdown filters the
-catalog with `themes_for_system`, and the Design-system control is the normal way to switch.
+resolvers; never branch geometry on a palette. New palettes join `ThemeId::ALL` and the
+palette-invariant tests, and appear in Settings → Appearance's Dark or Light gallery through
+`themes_for(mode)`, the one ordering the tiles and their keyboard handler resolve through.
 
 ### D16 — Git account diagnostics are local and read-only
 
@@ -394,6 +398,110 @@ rule is a guard, not a sandbox: command matching is a glob, not a shell parser,
 which is why an `allow` is refused for chained/redirected/substituted commands
 and why `deny` re-checks every segment.
 
+### D20 — Remote sessions: pi over ssh stdio, agent only
+
+**Choice:** a remote session is the same `PiClient` driving
+`ssh -T -o BatchMode=yes … HOST "sh -lc '<script>'"`, where the script installs
+the access guard under `~/.orbit-pi/remote-guard/`, pins the host's
+`~/.orbit-pi/access.json` to `supervised`, refuses to continue without the
+guard (exit 78) or without `pi` on the login PATH (exit 127), and `exec`s
+`pi --mode rpc --approve --extension <guard>`. Hosts live in
+`~/.orbit-pi/remote-hosts.json`, managed from Settings → Remote hosts (add/edit
+form with `~/.ssh/config` alias suggestions and a read-only Test connection
+probe) and written surgically — only the keys Orbit owns change. Only the agent is remote: every surface that
+reads the local disk (Files, Git, Review, Worktrees, Explorer, `@` mentions) is
+shown as unavailable while `OrbitApp::remote` is set.
+
+**Rationale:** pi's RPC is already JSONL over stdio, and ssh carries stdio
+unchanged, so nothing new crosses the wire and `orbit-rpc` keeps its
+serde/anyhow-only dependency set. The alternative t3code takes — run a full
+server on the host, forward a port, pair a bearer session — exists because its
+remote side is a web server; Orbit's is a CLI. Rendering the local disk beside a
+remote agent would describe the wrong machine, which D1's "trust pi's truth"
+forbids, so those surfaces say so instead.
+
+**Consequence:** one spawn seam (`OrbitApp::spawn_pi`) carries every restart
+(Start, reconnect, MCP apply, forced-stop respawn) so a remote session never
+comes back local; ⌘N, a folder pick and a listed session are local by
+construction. A remote session is not parked: its file lives on the host, so a
+parked process could never be resumed, and it is stopped with a toast instead.
+The workflow extension ships with the guard (`RemoteLaunch.extensions`): the
+mode starts as `ORBIT_WORKFLOW_MODE` and later changes are written into the
+host's own store over ssh, because the extension reads that file, not this
+Mac's. Projects reach a host by `git clone` there, never by uploading the
+working tree (t3code's model): only pushed history travels, the host needs its
+own git access, and the ignored files a clone cannot bring are copied one by
+one on stdin into the clone. Not yet: quota, auto-title and subagents on the host (they read state
+Orbit keeps locally), MCP secrets
+forwarding, password logins on Windows, and trusting a new host key in-app.
+Passwords follow t3code: keys first in `BatchMode`; on `Permission denied`
+with a password method listed, a masked dialog asks, and the probe reruns with
+`SSH_ASKPASS` pointed at a secret-free helper that reads the password from one
+ssh process's environment. Memory only, keyed by ssh account, dropped when
+refused.
+
+### D21 — Multiple accounts per provider: every account is its own provider
+
+**Choice (revised):** an extra account is an *alias provider*. Its metadata
+(name, provider, alias) lives in `~/.orbit-pi/accounts.json`; the bundled
+`contrib/orbit-accounts-extension/` registers, at pi startup, a copy of the
+built-in provider (`builtinProviders()` from pi-ai) under the alias id
+`<provider>~<slug>` and the name `<Provider> · <name>`. pi keys credentials by
+provider id, so each account signs in (browser, device code, pasted code or API
+key, through the ordinary `auth.*` flow), refreshes and is stored separately in
+pi's own `~/.pi/agent/auth.json`. The Default account is the built-in provider
+itself. Every account is live in every session at once: their models sit side by
+side in the model picker, and nothing is selected per session.
+
+**Rationale:** the first version routed one account per provider per session
+through a pi patch (`contrib/pi-auth-profiles/`), so two accounts of one provider
+could never be used in the same session and switching restarted pi. A complete
+`Provider` registered by an extension carries the base provider's OAuth login,
+refresh and streaming unchanged (verified against pi 1.5.2: `auth.list` lists the
+alias with `browser` and `device_code`, `--list-models` lists its models, and a
+request dispatches with the alias's own credential). No patch, no copied token,
+no restart on use.
+
+**Consequence:** adding, renaming or removing an account restarts pi (it
+registers providers at startup) — at once when idle, otherwise through the
+"Restart pi" banner. Removing an account signs it out (its `auth.json` entry is
+deleted). The alias slug is fixed at creation; a rename changes only the name.
+Built-in providers only: a `models.json` custom provider can be duplicated by
+hand. Remote sessions use the host's own providers. Version-1 stores
+(`provider-accounts.json` + per-profile `auth.json`) migrate on load: each
+credential is *moved* under its alias (never overwriting a live entry), the old
+folders are deleted, the per-session bindings are dropped, and the old file is
+left as an empty version-1 store so an older Orbit build still starts. The
+per-session routing plumbing remains in the spawn path but always carries an
+empty selection; removing it is a follow-up.
+
+### D22 — UI components: one owner per element, in `ui/`
+
+**Choice:** every UI element family has exactly one defining file under
+`crates/orbit-pi/src/ui/` — `Button`, `IconButton`, `ButtonGroup`,
+`LinkButton`, `ChipButton`, `Badge`, `Pill`, `Banner`, `TextField`, `FormRow`,
+`TreeRow`, `DiffRow`, `StatusBar`, `ModalHeader`, the table, tabs, menus,
+popovers and the rest (DESIGN.md §Components lists them). Surfaces import
+`crate::ui::prelude::*` and the named components; they own content, state and
+actions, never an element's look. Two style tiers stay: zero-cost traits in
+`ui/style/` (states, material, text) and components that own composition or
+behaviour. Entities (`ComposerInput`, `FileViewer`, terminals) are unchanged.
+
+**Rationale:** the design-system audit finished the vocabulary (roles,
+tokens, states, motion) but each surface still re-assembled the same shells —
+44 button functions, 24 popup renderers, 95 row renderers — so "primary" or
+"selected" drifted between screens. One owner makes a fix land everywhere at
+once and lets a guard prove it.
+
+**Consequence:** `app/helpers.rs` is deleted (formatting lives in
+`app/format.rs`). `scripts/check_ui_layers.py` keeps `ui/` from importing a
+surface; `scripts/check_ui_owners.py` fails a second definition of a
+component or owning function and any raw popover / dismissal / segment
+primitive outside `ui/`. A one-off control that cannot use its component (the
+composer's morphing send button, the updater pill) carries a `// Bespoke:`
+comment saying why. The migration's declared visual changes are recorded in
+`docs/plans/ui-component-layer.md` §6.2–§6.13.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -418,7 +526,99 @@ legacy app today:
 
 ### Implementation status (living)
 
+The main window restores its frame and display from `~/.orbit-pi/window.json`,
+with windowed, maximized, and native fullscreen as distinct states. Fullscreen
+keeps the ordinary restore frame, so leaving it recovers the previous size;
+older state files without a fullscreen flag remain compatible (#131).
+
+Settings' Back control and section list are keyboard stops. The list's focus
+ring moves separately from the open section: Up/Down and Home/End move the
+cursor, and Enter or Space opens the focused section. Back or Escape returns
+focus to the opener when it is still available.
+
+Settings → Appearance → Background offers a **Dithered Hero** preset for a
+chosen image: Hero only, Dither at 1× and 35% intensity, 40% image opacity, no
+image blur, and a bottom fade. The separate **Bottom fade** preference works in
+both Hero and Full window placements and blends into the live theme canvas at
+paint time, without modifying the source image or changing wallpaper defaults.
+
+The component layer (D22) is complete: every element family has one owner in
+`crates/orbit-pi/src/ui/`, surfaces import `crate::ui::prelude`, `app/helpers.rs`
+is gone, and `scripts/check_ui_owners.py` guards ownership. The Explorer,
+transcript and sidebar context menus work from the keyboard (Shift-F10 / the
+Menu key opens a sidebar row's menu) and form-modal footer buttons are Tab
+stops. Covered by focused unit and GPUI layout tests; a manual pass across
+palettes in the running app is still outstanding.
+
+Remote sessions (D20) ship agent-only SSH sessions: Settings → Remote hosts
+(host list with Test / Edit / Remove, an add/edit form with `~/.ssh/config` alias
+suggestions, an optional user and port, and a read-only **Test connection**),
+per-host cards with an on/off switch and a ⋯ menu, a Machine selector on Providers & models (a host's providers read from its own `pi --list-models`; sign-in with pi's `/login` on the host), **Install pi** over ssh (pi's
+installer, plus checksum-verified Node.js 22 when missing; no sudo), explained
+failures (cloud root guard with **Use opc**, signals, pi missing), lookup through
+the user's own login shell and pi's install folders,
+host rows in the new-task folder picker (the host config lives in Settings →
+Remote hosts, reachable from the "Work in" menu), the host named on the folder chip and the
+status bar, the unavailable state on Files / Worktrees, a read-only Git page that
+shows the host's own repository facts for the session's folder (root, branch,
+upstream and ahead/behind, changed files, last commit, `origin`; read over ssh
+with `git_status_script`, nothing written on the host) and the same read's
+branch in the same header/status-bar branch selector as local sessions
+(refreshed at start and after each turn; the picker lists the host's branches
+and switches or creates them there over ssh), Explorer and Review
+closed with a toast, `@` mentions off, file attachments refused with the reason,
+**Add a project to a server** (clone on the host with its own git, then the
+ticked ignored files over ssh stdin; a host entry saved for the clone and
+linked to the local project, so its sessions list inside that project's sidebar
+group — any entry can be linked from the form's optional **Local project
+folder**), the
+guard and the workflow extension installed and the mode pinned to
+Supervised on every launch (the access chip shows that and stays locked), the
+Plan / Build / Ask mode synced to the host's store, and the default model
+applied over RPC when the host's catalog has it, and each host's sessions listed in the sidebar (read from the host's own store over ssh, metadata only) and resumed there with `switch_session`. Covered by `orbit-rpc`'s fake-ssh transport
+test, `remote_hosts`' store tests (surgical writes, unique names, alias
+discovery) and the app's `remote_ui_tests`; not yet exercised against a real VPS
+or in the GUI by hand.
+
 Settings → Git Accounts provides the local-only, read-only Git diagnostics described in D16; it does not check remote access or manage credentials.
+
+The third round of #131 refines the workbench around projects and models. A
+session's **Delete session…** row is always listed — disabled with the reason
+while pi's process still owns the file, instead of vanishing — and the macOS-only
+**Reveal in Finder** row is gone. A project's ⋯ menu now separates **Delete
+project** (drop the sidebar row; pi's sessions untouched) from **Delete project &
+files** (a confirmation that names the folder, then `platform::trash_path`
+off-thread, with the row removed only on success); `project_delete_refusal`
+refuses a filesystem root, the home folder, a folder that contains another
+project, and a folder a live task still works in, and its cases are covered in
+`sidebar_remove_tests`. **New project…** (command palette, and a row in the
+new-task folder picker) adds a folder to the sidebar with no pi session
+(`OrbitApp::new_project` → `add_workspace`). Settings → Providers & models renders
+connected and unconnected providers as rows on two grouped boards (the shared
+`settings_group` surface, not a card grid). A row's head is one line — brand mark, name,
+status, one truncated facts line, and on the right only the model count, the first
+sign-in action while the provider is not connected, and a disclosure chevron. Clicking the
+head opens the row's panel: every other action on a full-width wrapping bar (provider
+buttons stop propagation so they never toggle the row), the sign-in progress card, and
+the provider's models as a two-column, height-bounded list of click-to-select chips. The
+panel opens by default for the session model's provider, whenever the search or Favorites
+filter narrows the list, while a sign-in runs and while a removal is confirmed; a hand
+toggle is kept per provider in `provider_models_open`. A selected chip means
+the composer's picker offers that model, a click writes the hide-list
+(`hidden_models`), the context window shows where pi reports one, and Hide all / Show all
+sits beside the count. The row's **Models**/**Configure** dialog edits the ids, endpoint
+and key (the text field is the bulk-paste path; **Fetch models** adds the endpoint's ids to
+it) and does not repeat the list.
+
+Provider **accounts** (D21) ship as an **Accounts** panel in each provider's row
+(add, rename, remove, and each account's sign-in state) and as one provider row per
+account right after its provider, where that account signs in and manages its
+models. All accounts are live in every session at once and appear in the model
+picker as `<Provider> · <name>`. Covered by the account-store tests (aliases,
+migration, sign-out on remove), the rendered Providers-page test, the bundled
+extension tests and `contrib/orbit-accounts-extension` `node --test`. Not yet:
+a manual GUI pass on the panel, accounts of `models.json` custom providers, and
+removing the retired per-session routing plumbing.
 
 Subagents (D18) ship the delegation tool, agent discovery, the three run modes, the caps, the
 mode/ceiling pre-flight, child cost reporting and the delegation card (per-child rows with the
@@ -452,11 +652,102 @@ Review and the Git page re-read a diff when a change or manual refresh arrives d
 
 Where space permits, the Review toolbar shows the changed-file total beside the ±stats and previous / next file arrows with the reader's place among them (`12/187`). On narrower panes the total is shown in the navigator instead, and the navigator also folds away when space is tight. The arrows and the `n` / `p` shortcuts use the same step, measured from the file at the top of the diff rather than a tree selection scrolled away from, and both go inert at the first and last file.
 
+Floating glass without a wallpaper: in dark palettes on macOS, every floating
+layer built on `elevation_2` / `elevation_3` (menus, pickers, popovers,
+tooltips, toasts, modals, the jump-to-latest button) frosts the workbench
+behind it through the vendored backdrop pass at `FLOATING_GLASS_BLUR` (24 pt)
+under a tint of `surface_elevated` at `Theme::floating_glass_alpha`: the lowest alpha
+from `FLOATING_GLASS_MIN_ALPHA` (0.55) up at which the palette's primary and
+secondary text keep their WCAG targets over both a black and a white backdrop
+(0.62 for Onyx, up to 0.82 for Flexoki), computed from the live colours. `Theme::floating_glass_sigma` is the one rule: over a wallpaper it
+defers to `glass_sigma` (so Glass panes still turns it off); light palettes,
+renderers without the pass, and macOS Reduce Transparency / Increase Contrast
+(read with Reduce Motion at launch and on window activation) keep the opaque
+card. Structural panes and the composer still frost only over a wallpaper.
+Every builder of such a layer scopes its theme with `Theme::for_floating()`, so
+the rows and controls inside take the ink washes (`hover_wash`, `pressed_wash`,
+`selected_wash`) on the frost instead of the palette's opaque state steps; over a
+wallpaper the same washes already apply everywhere. Faceless controls in `ui/`
+(rows, tree rows, quiet chips, icon buttons, tabs) and the surfaces' own
+highlighted / selected rows all read those washes; buttons and chips with an
+opaque face keep the palette steps on their face. Info / success / warning
+banners and the Usage skeleton use `page_fill`, so they are translucent on a glass
+page.
+
+Settings → Appearance → Theme is one compact row per choice: Light / Dark / System
+as a segmented control, and Dark theme, Light theme and Accent color as the
+standard Settings dropdown (search, keyboard, virtualized list). Palette options
+lead with a small swatch (canvas, sidebar, accent, with the current accent
+applied); accent options with a dot of the accent they would give the palette on
+screen. The former picture cards and thumbnail galleries are gone.
+
+Built-in backgrounds (`wallpaper_builtin.rs`): Settings → Appearance →
+Background offers four rows of one-click backgrounds: Gradients (seven
+generated gradients, rendered with GPUI's own `linear_gradient` math so the
+thumbnail is the image), Nature, Anime and Japanese art (eight bundled 2560 px
+JPEGs under `assets/wallpapers/`, ~5.5 MB, with 240 px thumbnails; Unsplash
+License images and public-domain Hokusai / Hiroshige prints, credited in
+`assets/wallpapers/CREDITS.md` and named in each tooltip). Picking one writes the
+file into the managed wallpaper folder off the UI thread and imports it through
+the ordinary wallpaper path, so placement, blur, effects, glass and
+accent-from-image apply unchanged; it replaces the current image as a picked file
+does. No network is involved.
+
+Your backgrounds (`wallpaper_library.rs`): below the built-in rows, Settings →
+Appearance → Background lists the pictures in `~/.orbit-pi/wallpapers/library/`
+as the same tiles, wrapping across the row, with **Open folder** (creating the
+folder first). Orbit only reads that folder: images there are never bundled,
+uploaded or changed, which is what lets a picture licensed for use on the user's
+own device (a Freepik download, say) be a background without Orbit distributing
+it. Listing runs off the UI thread in two passes: the folder with any cached
+thumbnails first, then the missing 240×150 thumbnails decoded into
+`~/.orbit-pi/wallpapers/library-thumbs/` (named by a hash of name, size and
+modification time; orphans pruned). It starts the first time Appearance is
+shown, and a debounced watch on the folder, polled on the heartbeat, lists it
+again when pictures come or go. Picking one imports it through the ordinary
+wallpaper path. Because `include_dir!` embeds all of `assets/`, a test
+(`the_bundled_folder_holds_only_catalogued_images`) fails if an image in
+`assets/wallpapers/` is not a catalogued, credited built-in.
+
+Glass pages over a full-window wallpaper: the feature pages (Git, Usage, Files,
+Worktrees, the expanded terminal) and the dock cards (Review, Explorer, session
+details) frame themselves with `SurfaceExt::page_card` — the panel radius, the
+contrast-floored `card_fill(surface_secondary)` tint, a frost at `GLASS_BLUR`
+and the hairline ring painted after the page. Each page root paints
+`Theme::page_canvas` (transparent over glass; previously an opaque `background`
+that hid the glass entirely), raised surfaces inside it — diff file headers, the
+commit box, history detail cards, usage boards, table headers — use
+`Theme::page_fill`, and the Review diff's sticky section / file headers frost
+the rows under them (`page_sticky_frost`, falling back to the page's composited
+appearance when Glass panes is off). `Theme::for_page` scopes all of it to
+full-window mode: hero wallpaper is never behind a page, so those pages, and
+every page without a wallpaper, resolve to their opaque palette fills exactly
+as before. The terminal grid keeps its own opaque background (ANSI owns its
+colours). Settings' nav column frosts like the session sidebar, and so do the
+Skills and Subagents list columns (their page roots stay clear like every other
+Settings section); wells nested inside Settings cards and the About banner take
+`card_fill` tints rather than opaque slabs. The sidebar's sticky project header
+frosts with the rail through `SurfaceExt::pane_sticky_frost` and keeps the opaque
+surface when Glass is off, so rows never print through it. The reader's bubble
+is `SurfaceExt::edgeless_card` (the panel corner, `Theme::glass_fill`, frost only
+under glass, no hairline); `glass_fill` is also the composer's and the tool
+card's code plane's fill. Every Settings modal dims with `scrim_modal`, the Git
+page's in-page confirmations with `scrim`, the sidebar drag preview is an
+`elevation_2` floating layer, and the composer's second send disc rests on
+`overlay` like the controls around it. Inline errors in dialogs and forms are
+`Banner::note` (the tone's own card tint, a Small glyph, error ink for an error and
+secondary ink otherwise), as is the Git branch menu's dirty-worktree warning; the transcript's failed-turn
+card and the Git page's operation-in-progress card are ordinary `Banner`s. The
+MCP server switch and Settings' sidebar toggle are the shared `ui::switch`, MCP
+tags are `Badge`s on a card-tinted face, the extension dialog's input is a
+`TextField`, the open Settings section reads `selected_wash`, and the top-bar
+chips' gradient stops are `Theme::header_chip_fill` / `header_chip_lift`.
+
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
 The default interface face and saved font preferences remain unchanged.
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace, plus **rewind** — pi's `fork` at an earlier user message, which branches the conversation into a new session file, keeps the old one in the sidebar, and hands the forked-from prompt back to the composer) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14) plus **Work in** on the status bar in a repository and on the new-task page, choosing `Local`, a linked worktree, a new worktree, an existing worktree folder re-registered with `git worktree repair` (`working_folder.rs` classifies it, and a folder whose `.git/worktrees/<id>` is gone is reported instead of opened), a remote branch checked out as a local branch that tracks it (`create_tracking_branch`, because `git worktree add <path> origin/feat` leaves a detached HEAD), a clone, or any folder; the new-task picker offers cloning outside a repository too (the Windows job-object cancellation path is covered on the Windows CI leg; manual GUI verification remains); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History (D17); notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot UI motion on `Motion` roles migrated onto them.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page (outside a repository it says so and offers **Initialize Git repository**, a plain `git init` that keeps the user's `init.defaultBranch`) + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace, plus **rewind** — pi's `fork` at an earlier user message, which branches the conversation into a new session file, keeps the old one in the sidebar, and hands the forked-from prompt back to the composer) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count — or, from the view menu, one list under local-calendar day sections (**By date**: Pinned, Today, Yesterday, This week, This month, Older; `build_date_sidebar_rows`), with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14) plus **Work in** on the status bar in a repository and on the new-task page, which lists exactly two kinds of place — this device's working folder and every enabled remote host (`remote_hosts.rs`; hosts are read once when the picker opens, and picking one runs the same guarded launch as the new-task picker) — while worktree creation (from a new or existing branch, including a remote ref checked out as a local tracking branch via `create_tracking_branch`, because `git worktree add <path> origin/feat` leaves a detached HEAD), opening a worktree folder with `git worktree repair`, and repository cloning all live on the Worktrees page (the Windows job-object clone-cancellation path is covered on the Windows CI leg; manual GUI verification remains); Explorer project panel (its own top-bar button; a two-line workspace header with New File / New Folder and a "…" menu for Refresh, Collapse All Folders and hidden files; an inset filter field; indent guides) + editable Files surface; a **session-details panel** in the right dock (the top bar's `ⓘ` chip toggles it: an inspector of Session / Environment / Model / Context / Changes / Details sections, every value read from live state — the branch watcher, `get_session_stats` context usage, the working-tree counts — and none shown before it is known; it takes the dock one at a time with Review and the Explorer, and no outside click dismisses it); integrated terminal (⌘J, with a full-width expand that opens it as a page with its own top-bar Back and title); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system with picture cards; thirteen palettes in one design system, chosen from Dark and Light thumbnail galleries; accent swatches; a Background board with an empty state, segmented placement and a separate Image adjustments board) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History (D17); notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot UI motion on `Motion` roles migrated onto them.
 
 Finder file URLs and Windows CF_HDROP lists take precedence over clipboard preview images: pasted image files enter the image queue, and other files enter the existing file-reference queue. On Linux, file URI lists exposed as clipboard text use the same queue; GPUI cannot currently read file-only clipboard offers. Plain path text stays text.
 
@@ -494,6 +785,35 @@ because it averages output tokens over the whole request (prefill plus decode).
 The navigation rail's user-turn index is likewise cached in `Transcript` and
 rebuilt only when the message list changes, and debug builds log one local
 `[orbit:perf]` line per settle (window, cache, prompt, output, duration, rate).
+
+Workspace groups can be reordered (issue #143). Dragging a project header
+carries a chip with the project's name, paints an insertion line on the header a
+release would use (targets come from the list's own measured row bounds, so a
+scrolled or virtualized list resolves correctly), and writes the new order on
+the drop; the header menu's **Move up** / **Move down** rows (listed disabled at
+an edge, with the reason) and ⌥↑/⌥↓ while the sidebar has keyboard focus run the
+same `move_project_group`. A move is always applied to the order the sidebar is
+showing — that displayed order is pinned into `workspaces.json` first, so a drag
+can never contradict what the user saw — and the first move pins
+`workspace_sort` to Manual (with a toast) rather than being silently re-sorted
+away. `sidebar_sort_tests` covers the reorder algebra, the displayed-order pin
+and the edge no-op; the pointer drag itself has not yet been checked in the GUI
+by hand.
+
+Sessions inside a project group can be rearranged the same way, as long as the
+sidebar is showing the grouped list. A session row carries its own drag (a chip
+with the session title, an insertion line on the landing row) and only accepts a
+drop from its own project — a session never leaves its folder. `⌥↑`/`⌥↓` and the
+row menu's **Move up** / **Move down** run the same `move_session`, which pins
+that group's current display order into `session_order` (one ordered path list
+per project label, `~/.orbit-pi/session-order.json`) and persists it. Ordering is
+then: pinned sessions, then sessions nobody has arranged (recency — a task
+created after the group was arranged still appears at the top), then the arranged
+block. Flat, Recent and search lists keep pure recency and show no session move
+affordance. `session_order`'s store tests, `sidebar_sort_tests` (the rank sort,
+the reorder algebra, a persisted move, a refused cross-project move) and
+`sidebar_drag_tests` (the insert line paints only on the landing row) cover it;
+the drag gesture is unverified in the GUI.
 
 The sidebar keeps the title, prompt preview, status/age, branch/divergence,
 provider/model marks, and pin/archive indicators. Flat mode and search name each
@@ -610,6 +930,19 @@ as the label, while truncated text and icon-only controls keep a tooltip.
 The top bar's dirty-tree `+N −N` chip opens the Git page on **Changes**, so the
 counts reveal the files they name instead of opening Review; the plain
 side-panel glyph still toggles the Review dock.
+
+Opening a commit on **History** or **Graph** shows one quiet card: the message, a
+column of labeled facts (Author and, when different, Committer, each with a relative
+time and the exact local time on hover; the short hash with copy / open-on-GitHub;
+parents), then a **GitHub** section and the changed files with their totals. The
+GitHub section is one `gh api graphql` round trip per opened commit (`gh::commit_github`),
+asked only for a GitHub `origin` with a signed-in `gh` and re-asked on every open so
+checks stay current (the previous answer keeps painting meanwhile). It lists each pull
+request GitHub associates with the commit — state, title (opens it on the Pull requests
+tab), who opened it and who merged it — and the CI checks as a tally with only failing
+and running checks listed by name. Git records no "pushed by"; the merger on GitHub is
+the closest true fact and is labeled as such. A commit GitHub has not seen shows "Not in
+a pull request" / "No checks"; a failed request says so with the error on hover.
 
 The Git page's **Issues** and **Pull requests** tabs gained a **Generate** action: the
 **New issue** and **New pull request** forms take optional free-form notes, then draft a

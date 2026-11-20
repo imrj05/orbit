@@ -91,21 +91,26 @@ mod pi_install;
 mod pi_update;
 mod pins;
 mod platform;
+mod session_order;
 // Frame-time sampling for the render baseline. Debug builds only: a release
 // binary must not carry a frame hook or a recorder.
 #[cfg(debug_assertions)]
 mod perf;
 mod permissions;
 mod plugins;
+mod provider_accounts;
 mod providers;
 mod quota;
 mod quota_hidden;
 mod recent_models;
+mod remote_hosts;
+mod remote_sessions;
 mod repository_clone;
 mod review;
 mod rewind;
 mod rewind_picker;
 mod rpc_patches;
+mod server_clone;
 mod session_defaults;
 mod session_retention;
 mod sessions;
@@ -122,9 +127,12 @@ mod transcript;
 mod transcript_view;
 mod tray;
 mod turn_review;
+mod ui;
 mod updater;
 mod usage;
 mod wallpaper;
+mod wallpaper_builtin;
+mod wallpaper_library;
 mod wallpaper_fx;
 mod watch;
 mod widgets;
@@ -300,9 +308,10 @@ actions!(
     [
         WorkInMenuNext,
         WorkInMenuPrev,
+        WorkInMenuFirst,
+        WorkInMenuLast,
         WorkInMenuConfirm,
-        WorkInMenuClose,
-        WorkInMenuDetails
+        WorkInMenuClose
     ]
 );
 
@@ -334,7 +343,14 @@ actions!(
 // card and `DialogInput` on its text field).
 actions!(
     dialog_keys,
-    [DialogCancel, DialogConfirm, DialogNext, DialogPrev]
+    [
+        DialogCancel,
+        DialogConfirm,
+        DialogNext,
+        DialogPrev,
+        DialogFirst,
+        DialogLast
+    ]
 );
 
 // Inline ask questionnaire actions (bound to the `AskPanel` context on the
@@ -366,7 +382,8 @@ actions!(queue_edit_keys, [QueueEditConfirm, QueueEditCancel]);
 // Sessions-sidebar keyboard navigation (bound to the `Sidebar` context, which
 // rides the sidebar's focus handle while it is keyboard-focused). Arrow keys
 // move the cursor, Enter activates the row, Escape hands focus back to the
-// composer.
+// composer, and Option+↑/↓ move the row under the cursor — a project header,
+// or a session inside its project (the keyboard twin of dragging a row).
 actions!(
     sidebar_keys,
     [
@@ -375,7 +392,10 @@ actions!(
         SidebarHome,
         SidebarEnd,
         SidebarConfirm,
-        SidebarClose
+        SidebarClose,
+        SidebarMoveRowUp,
+        SidebarMoveRowDown,
+        SidebarOpenRowMenu
     ]
 );
 
@@ -537,10 +557,11 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", AccessMenuNext, Some("AccessMenu")),
         // Work-in picker keys — same shape again.
         KeyBinding::new("escape", WorkInMenuClose, Some("WorkInMenu")),
-        KeyBinding::new("space", WorkInMenuDetails, Some("WorkInMenu")),
         KeyBinding::new("enter", WorkInMenuConfirm, Some("WorkInMenu")),
         KeyBinding::new("up", WorkInMenuPrev, Some("WorkInMenu")),
         KeyBinding::new("down", WorkInMenuNext, Some("WorkInMenu")),
+        KeyBinding::new("home", WorkInMenuFirst, Some("WorkInMenu")),
+        KeyBinding::new("end", WorkInMenuLast, Some("WorkInMenu")),
         KeyBinding::new("tab", CloneDialogNext, Some("CloneDialog")),
         KeyBinding::new("shift-tab", CloneDialogPrev, Some("CloneDialog")),
         KeyBinding::new("enter", CloneDialogActivate, Some("CloneDialog")),
@@ -568,6 +589,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", DialogConfirm, Some("DialogInput")),
         KeyBinding::new("up", DialogPrev, Some("DialogSelect")),
         KeyBinding::new("down", DialogNext, Some("DialogSelect")),
+        KeyBinding::new("home", DialogFirst, Some("DialogSelect")),
+        KeyBinding::new("end", DialogLast, Some("DialogSelect")),
         // Inline ask questionnaire keys. Registered after the Composer
         // bindings so Enter answers instead of submitting the composer, and
         // Escape declines instead of aborting the run.
@@ -639,6 +662,14 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", SidebarEnd, Some("Sidebar")),
         KeyBinding::new("enter", SidebarConfirm, Some("Sidebar")),
         KeyBinding::new("escape", SidebarClose, Some("Sidebar")),
+        // Option+↑/↓ reorder the row under the cursor — the keyboard path to
+        // what dragging a header or a session row does (issue #143).
+        KeyBinding::new("alt-up", SidebarMoveRowUp, Some("Sidebar")),
+        KeyBinding::new("alt-down", SidebarMoveRowDown, Some("Sidebar")),
+        // Shift-F10 / the Menu key open the cursor row's context menu — the
+        // keyboard route to what a right-click opens.
+        KeyBinding::new("shift-f10", SidebarOpenRowMenu, Some("Sidebar")),
+        KeyBinding::new("menu", SidebarOpenRowMenu, Some("Sidebar")),
         // `j`/`k` move the row cursor too, but only while no text field is
         // focused: the sidebar's search input sits inside this context, and a
         // plain letter binding would otherwise swallow what the user types.

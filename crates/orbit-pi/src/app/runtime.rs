@@ -1,4 +1,4 @@
-use super::helpers::*;
+use super::format::*;
 use super::*;
 use gpui::Timer;
 
@@ -91,6 +91,11 @@ impl OrbitApp {
                 }
             }
         }
+        if command == "clone" {
+            self.account_clone_pending = false;
+            // A failed clone stayed on its source file; reclaim that binding.
+            self.send(CommandBody::GetState, "get_state");
+        }
         // A rejected prompt never opened a turn. The run state was set
         // optimistically when the prompt went out, so unwind it here instead of
         // leaving the composer on Stop and the transcript waiting for an answer
@@ -125,6 +130,23 @@ impl OrbitApp {
     /// that must recognise that command's own reply (a `prompt` and its
     /// `disposition`) keeps the id; everyone else drops it.
     pub(super) fn send_tracked(&mut self, body: CommandBody, label: &str) -> Option<String> {
+        if self.account_switching {
+            self.toast_warning(tr!("accounts.switch_in_progress"));
+            return None;
+        }
+        if self.remote.is_none()
+            && matches!(
+                &body,
+                CommandBody::Prompt { .. }
+                    | CommandBody::FollowUp { .. }
+                    | CommandBody::Steer { .. }
+            )
+        {
+            if let Err(error) = self.provider_accounts.routes() {
+                self.set_error_from("account_profiles", error.to_string());
+                return None;
+            }
+        }
         let Some(client) = self.client.as_ref() else {
             self.toast_warning(tr!("runtime.pi_not_running"));
             return None;
@@ -172,6 +194,7 @@ impl OrbitApp {
     /// `get_state`) *before* [`probe_auth`](Self::probe_auth), so the slow
     /// provider-auth/quota probes never queue in front of the session load.
     pub(super) fn adopt_client(&mut self, client: PiClient) {
+        self.clear_error_from("account_profiles");
         self.runtime = RuntimeStatus {
             started_at: Some(Instant::now()),
             alive: true,
@@ -191,6 +214,7 @@ impl OrbitApp {
 
     /// Tear down the active pi process (dropping `PiClient` kills the child).
     pub(super) fn drop_client(&mut self) {
+        self.account_clone_pending = false;
         if self.execution.status().is_in_progress() {
             self.execution.stop();
         }
@@ -489,6 +513,7 @@ impl OrbitApp {
     /// Perform the side effects the [`AuthManager`] emitted. The manager does
     /// no I/O; opening the browser and sending cancels happen here.
     pub(super) fn handle_auth_effects(&mut self, effects: Vec<AuthEffect>, cx: &mut Context<Self>) {
+        self.sync_auth_prompt(cx);
         if effects.is_empty() {
             return;
         }
@@ -533,13 +558,28 @@ impl OrbitApp {
         method: String,
         cx: &mut Context<Self>,
     ) {
+        if let Err(error) = self.account_auth_path(&provider) {
+            self.set_error_from("account_profiles", error.to_string());
+            cx.notify();
+            return;
+        }
+        if self.selected_account_id(&provider).is_some()
+            && (self.auth.support() != AuthSupport::Supported || self.client.is_none())
+        {
+            // A Terminal login would silently modify Default, not this profile.
+            self.toast_warning(tr!("accounts.rpc_required"));
+            cx.notify();
+            return;
+        }
+        if self.auth.is_busy() {
+            self.auth_cancel_login(cx);
+        }
         if self.auth.support() == AuthSupport::Unsupported {
-            // pi has no auth RPC: hand the login to the Terminal the way
-            // the page has always done.
             self.provider_oauth_login(provider, name, cx);
             return;
         }
         let session_id = self.auth.start_login(&provider, &method);
+        self.sync_auth_prompt(cx);
         self.send(
             CommandBody::AuthLogin {
                 provider,
@@ -595,7 +635,7 @@ impl OrbitApp {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
+        match self.spawn_pi(&cwd, self.current_session_path.is_none()) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(Some(&cwd));
@@ -697,10 +737,7 @@ impl OrbitApp {
             return false;
         };
         let workspace = self.workspace_dir();
-        match self
-            .extensions
-            .spawn(&workspace, false, &self.mcp.secret_env())
-        {
+        match self.spawn_pi(&workspace, false) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(Some(&workspace));
@@ -837,6 +874,13 @@ impl OrbitApp {
     /// An explicit switch never re-keys — its path is already claimed.
     pub(super) fn adopt_session_file(&mut self, file: PathBuf) {
         if self.current_session_path.is_none() {
+            if self.remote.is_none() {
+                let selection = self.provider_accounts.selection();
+                if let Err(error) = self.provider_accounts.record_session(&file, &selection) {
+                    self.drop_client();
+                    self.set_error_from("account_profiles", error.to_string());
+                }
+            }
             self.current_session_path = Some(file);
         }
     }
@@ -844,6 +888,13 @@ impl OrbitApp {
     /// Park a background session, evicting the least-recently parked idle one
     /// if over the cap. Running sessions are never evicted.
     pub(super) fn park(&mut self, path: PathBuf, mut parked: ParkedSession) {
+        if let Err(error) = self
+            .provider_accounts
+            .record_session(&path, &parked.accounts)
+        {
+            self.set_error_from("account_profiles", error.to_string());
+            return;
+        }
         parked.parked_at = Instant::now();
         if self.lives.len() >= MAX_LIVE_SESSIONS {
             let victim = self

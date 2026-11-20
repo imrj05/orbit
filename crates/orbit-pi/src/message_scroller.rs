@@ -16,12 +16,13 @@ use gpui::{
     ListAlignment, ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
-use crate::app::{
+use crate::theme::tokens::{ButtonSize, Radius, StyledExt};
+use crate::theme::Theme;
+use crate::ui::prelude::{
     button_frame, icon_button_frame, ControlExt, PressedRamp, StatefulControlExt, TipExt,
     BUTTON_GROUP,
 };
-use crate::theme::tokens::{ButtonSize, Radius, StyledExt};
-use crate::theme::Theme;
+use crate::ui::style::surface::SurfaceExt;
 
 const LIST_OVERDRAW: f32 = 400.0;
 
@@ -358,6 +359,7 @@ fn render_bottom_fade(theme: Theme) -> gpui::Stateful<gpui::Div> {
 }
 
 fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoElement {
+    let theme = theme.for_floating();
     // Content arrived while the reader was scrolled up: the round jump
     // affordance grows a "New activity" label so the stream's continued
     // progress is visible from anywhere in the transcript.
@@ -367,8 +369,11 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
         .debug_selector(|| "message-scroller-jump".to_string())
         .group(BUTTON_GROUP);
     let button = if unread {
+        // Bespoke: the labelled form of the same floating, frosted jump control as its icon twin.
         button_frame(button, &theme, ButtonSize::Large)
     } else {
+        // Bespoke: a floating, frosted, fully round control over the
+        // transcript, with its own elevation; not a toolbar icon button.
         icon_button_frame(button, &theme, ButtonSize::Large)
     };
     div()
@@ -386,7 +391,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
             button
                 .relative()
                 .elevation_2_borderless(&theme)
-                .frosted_card(&theme, theme.border_strong, Radius::Full.px(&theme))
+                .frosted_floating_card(&theme, theme.border_strong, Radius::Full.px(&theme))
                 .rounded_full()
                 .tip(tr!("message_scroller.jump_to_latest"))
                 .cursor_pointer()
@@ -571,7 +576,7 @@ mod tests {
             _: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
             let heights = self.heights.clone();
-            gpui::list(self.state.list_state(), move |ix, _, _| {
+            crate::ui::list::virtual_list(self.state.list_state(), move |ix, _, _| {
                 let height = heights.borrow().get(&ix).copied().unwrap_or(40.);
                 gpui::div()
                     .id(gpui::ElementId::NamedInteger("probe-row".into(), ix as u64))
@@ -581,7 +586,7 @@ mod tests {
                     .child(format!("row {ix}"))
                     .into_any_element()
             })
-            .size_full()
+            .w_full()
         }
     }
 

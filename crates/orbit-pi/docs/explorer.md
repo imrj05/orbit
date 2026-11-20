@@ -211,10 +211,16 @@ promises a restore the platform cannot deliver.
 
 ### ProjectPanel
 
-- Header: workspace name, hidden-files toggle, collapse-all, refresh.
-- Filter field: a `ComposerInput` (the app's input entity) that filters rows.
+- Opened from its own top-bar button (folder glyph, after Terminal) or ⌘⇧E.
+- Header: workspace name over its `~/` path (full path on hover), a spinner
+  while a snapshot loads, then New File, New Folder, a "…" menu (Refresh,
+  Collapse All Folders, Show/Hide hidden files) and Close.
+- Filter field: a `ComposerInput` (the app's input entity) that filters rows,
+  in an inset rounded field on `surface_secondary`; its border takes
+  `focus_ring` while the field has the caret.
 - Body: `list()` virtualization, fixed 28 px rows, reusing `file_glyph` for
-  icons. Row hover/selection colors match `sidepane.rs` (`overlay` /
+  icons. Each row paints one `border_subtle` indent guide per ancestor,
+  through the centre of that ancestor's chevron (absolute, no layout cost). Row hover/selection colors match `sidepane.rs` (`overlay` /
   `overlay_strong`).
 - Keyboard: `↑`/`↓` move, `→` expand, `←` collapse, `home`/`end` jump,
   `enter` opens (or toggles a dir), `cmd-→`/`cmd-←` expand/collapse all.

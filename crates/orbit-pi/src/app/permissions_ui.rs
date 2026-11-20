@@ -21,10 +21,13 @@
 //! there, so showing editable rules would imply an effect they do not have.
 //! Their stored rules survive untouched for when the mode is confined again.
 
-use super::helpers::*;
 use super::*;
+use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::permissions::{Action, Rule, Rules, Scope, Target};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, Radius, TextSize};
+use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::field::TextField;
 
 /// The inline "add a pattern" form for one family. Only one is open at a time.
 pub(super) struct PatternEditor {
@@ -322,33 +325,14 @@ impl OrbitApp {
                 let label = Self::scope_label(&scope);
                 let click_scope = scope.clone();
                 let this = this.clone();
-                button_frame(
-                    div()
-                        .id(ElementId::Name(format!("permissions-scope-{ix}").into()))
-                        .debug_selector(move || format!("permissions-scope-{ix}")),
-                    &theme,
-                    ButtonSize::Medium,
-                )
-                .rounded(Radius::Medium.px(&theme))
-                .border_1()
-                .border_color(if selected {
-                    theme.border_strong
-                } else {
-                    theme.border
-                })
-                .when(selected, |chip| chip.bg(theme.surface_active))
-                .text_color(if selected {
-                    theme.text_primary
-                } else {
-                    theme.text_secondary
-                })
-                .cursor_pointer()
-                .when(!selected, |chip| chip.hover_state(&theme))
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                ChipButton::new(format!("permissions-scope-{ix}"), ChipStyle::Outlined { inset: false })
+                    .selector(format!("permissions-scope-{ix}"))
+                    .label(label)
+                    .selected(selected)
+                    .on_mouse_up(&theme, move |_, _, cx| {
                     let scope = click_scope.clone();
                     this.update(cx, |app, cx| app.set_permission_scope(scope, cx));
                 })
-                .child(label)
             });
         row_frame(theme)
             .child(row_label(&tr!("permissions.applies_to"), theme))
@@ -602,12 +586,7 @@ impl OrbitApp {
                         }
                     }),
             )
-            .child(
-                input_field_frame(div(), &theme)
-                    .w_full()
-                    .bg(theme.background)
-                    .child(editor.pattern.clone()),
-            )
+            .child(TextField::new(editor.pattern.clone(), theme.background).render(&theme))
             .child(
                 div()
                     .w_full()
@@ -704,65 +683,37 @@ where
             }),
         )
     }));
-    let count = choices.len();
-    let segments = choices
-        .into_iter()
-        .enumerate()
-        .map(|(ix, (choice, label))| {
-            let is_selected = choice == selected;
-            let pick = on_pick.clone();
-            let id = format!("{id}-{ix}");
-            segmented_segment(
-                div()
-                    .id(ElementId::Name(id.clone().into()))
-                    .debug_selector(move || format!("{id}-segment")),
-                &theme,
-                ButtonSize::Medium,
-                SegmentPosition::at(ix, count),
+    let mut group = ButtonGroup::new(SegmentFill::Active);
+    for (ix, (choice, label)) in choices.into_iter().enumerate() {
+        let pick = on_pick.clone();
+        let id = format!("{id}-{ix}");
+        group = group
+            .segment(
+                ElementId::Name(id.clone().into()),
+                label,
+                choice == selected,
+                move |_, _, cx| pick(choice, cx),
             )
-            .border_color(theme.border)
-            .when(is_selected, |segment| segment.bg(theme.surface_active))
-            .text_color(if is_selected {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            })
-            .cursor_pointer()
-            .when(!is_selected, |segment| segment.hover_state(&theme))
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| pick(choice, cx))
-            .child(label)
-        });
-    div()
-        .flex_none()
-        .flex()
-        .items_center()
-        .children(segments)
-        .into_any_element()
+            .selector(format!("{id}-segment"));
+    }
+    group.render(&theme).into_any_element()
 }
 
-/// A quiet text button: no fill, no border, focusable frame.
+/// A quiet text button: the shared ghost variant at Compact size.
 fn ghost_button(id: String, label: &str, theme: Theme) -> gpui::Stateful<gpui::Div> {
-    button_frame(
-        div().id(ElementId::Name(id.into())),
-        &theme,
-        ButtonSize::Compact,
-    )
-    .rounded(Radius::Small.px(&theme))
-    .text_color(theme.text_secondary)
-    .cursor_pointer()
-    .hover_state(&theme)
-    .pressed_state(&theme, PressedRamp::Wash)
-    .child(label.to_string())
+    Button::new(id, ButtonVariant::Ghost)
+        .size(ButtonSize::Compact)
+        .label(label.to_string())
+        .render(&theme)
+        .rounded(Radius::Small.px(&theme))
 }
 
 /// The one filled action on the page.
 fn primary_button(id: &'static str, label: &str, theme: Theme) -> gpui::Stateful<gpui::Div> {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
+    Button::new(id, ButtonVariant::Primary)
+        .label(label.to_string())
+        .render(&theme)
         .rounded(Radius::Medium.px(&theme))
-        .raised(theme.action, &theme)
-        .text_color(theme.action_fg)
-        .cursor_pointer()
-        .child(label.to_string())
 }
 
 /// A one-line consequence a row cannot show by itself.

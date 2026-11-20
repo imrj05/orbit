@@ -1,14 +1,20 @@
 use super::composer_ops::CompletionIntent;
-use super::helpers::*;
 use super::mcp_ui::QuotaPopupTab;
 use super::*;
-use crate::app::helpers::{segmented_segment, SegmentPosition};
+use crate::ui::button::{Button, ButtonVariant};
 use crate::context_meter::context_ring;
 use crate::quota::{canonical_provider, is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::theme::tokens::{
-    input, panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
+    panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
-use crate::usage::tooltip::Tooltip;
+use crate::ui::button::IconButton;
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
+use crate::ui::popover::PopoverExt;
+use crate::ui::popover::{dropdown_below, DropdownAlign};
+use crate::ui::prelude::*;
+use crate::ui::style::surface::SurfaceExt;
+use gpui::{Div, Stateful};
 
 /// A workspace-relative `/`-separated path for the Files toolbar. Falls back
 /// to the absolute path when the file lies outside the workspace.
@@ -66,6 +72,14 @@ const QUOTA_POPOVER_MAX_H: f32 = 460.;
 /// How much a hidden provider card is dimmed inside the popover's "Hidden"
 /// group: present and readable, but visibly out of the active list.
 const HIDDEN_CARD_DIM: f32 = 0.6;
+/// The session-details dock's card width, and the gutter between it and the
+/// chat column (the Explorer's dock uses the same 12px gutter).
+pub(super) const SESSION_DETAILS_W: f32 = 320.;
+pub(super) const SESSION_DETAILS_GUTTER: f32 = 12.;
+/// The details card's header row, matching the Explorer's header height.
+const SESSION_DETAILS_HEADER_H: f32 = 40.;
+/// One inspector row in the details panel.
+const SESSION_DETAILS_ROW_H: f32 = 28.;
 
 impl OrbitApp {
     /// True while a run is in flight: the busy flag, a streaming transcript, or
@@ -90,7 +104,11 @@ impl OrbitApp {
     /// it; a dead process must be replaced by a fresh spawn instead of
     /// sending the command into a stdin nobody reads (issue #30).
     pub(super) fn can_reuse_session(&self) -> bool {
-        !self.is_running() && self.runtime_is_live()
+        !self.is_running()
+            && !self.account_clone_pending
+            && self.runtime_is_live()
+            && self.remote.is_none()
+            && self.provider_accounts.uses_defaults()
     }
 
     pub(super) fn submit(&mut self, text: String, cx: &mut Context<Self>) {
@@ -227,6 +245,12 @@ impl OrbitApp {
         let text = Self::fold_pasted_texts(text.trim(), &self.pasted_texts);
         // Files are folded as `@path` mentions, so a message may be nothing
         // but attachments.
+        // A tray filled before the session went remote (a parked draft) is
+        // held back the same way `push_file` refuses new files.
+        if self.refuse_files_for_remote(self.files.len()) {
+            cx.notify();
+            return;
+        }
         let files = std::mem::take(&mut self.files);
         let text = Self::fold_attached_files(&text, &files, self.current_workspace.as_deref());
         if text.trim().is_empty() {
@@ -734,6 +758,17 @@ impl OrbitApp {
     /// leaving it active would let the incoming `adopt_client` overwrite — and
     /// kill — a live run on the next switch (issue #46).
     pub(super) fn park_active_session(&mut self) {
+        self.account_clone_pending = false;
+        // A remote session is not in the sidebar (pi keeps its file on the
+        // host), so a parked remote process could never be resumed: stop it
+        // and say so rather than leave it running out of reach.
+        if let Some(host) = self.remote.take() {
+            if self.client.is_some() {
+                self.drop_client();
+                self.toast_info(tr!("remote.session_stopped", host = host.name));
+            }
+            return;
+        }
         let Some(client) = self.client.take() else {
             return;
         };
@@ -767,6 +802,7 @@ impl OrbitApp {
         let widgets = std::mem::take(&mut self.extension_widgets);
         let parked = ParkedSession {
             client,
+            accounts: self.provider_accounts.selection(),
             transcript,
             busy,
             execution,
@@ -858,9 +894,20 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.settings_open {
+            let search = self.settings_search.read(cx);
+            if search.focus_handle(cx).is_focused(window) {
+                if !search.is_composing() {
+                    window.focus(&self.settings_nav_focus);
+                }
+                return;
+            }
+        }
         // Only the main composer owns the completion menu — picker filter
-        // inputs share the `Composer` key context but must never reach it.
+        // inputs share the `Composer` key context but must never reach it. A
+        // field in a form modal takes Tab as the modal's focus ring instead.
         if !self.input.read(cx).focus_handle(cx).is_focused(window) {
+            self.modal_focus_step(false, window, cx);
             return;
         }
         // Tab can page IME candidates; moving focus here would drop the
@@ -1009,7 +1056,7 @@ impl OrbitApp {
                 cx.notify();
                 return;
             }
-            self.close_settings(cx);
+            self.close_settings_with_focus(window, cx);
             return;
         }
         if self.model_selector.is_some() {
@@ -1026,12 +1073,17 @@ impl OrbitApp {
             cx.notify();
             return;
         }
-        // The session-details popover can hold keyboard focus (its rename
-        // field), so Escape closes it before falling through to aborting a run.
-        if self.session_details_open {
-            self.session_details_open = false;
-            self.input.read(cx).focus(window);
-            cx.notify();
+        // The session-details panel stays docked, but its rename field can hold
+        // keyboard focus: Escape cancels the edit and hands focus back to the
+        // composer before it falls through to aborting a run.
+        if self.session_details_open
+            && self
+                .session_name_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        {
+            self.cancel_session_name_edit(window, cx);
             return;
         }
         // The Review pane's source menu is closed by Escape before the key
@@ -1300,7 +1352,15 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
-        self.send(CommandBody::CloneSession, "clone");
+        if self.account_clone_pending {
+            return;
+        }
+        if self.send(CommandBody::CloneSession, "clone") {
+            self.account_clone_pending = true;
+            // The process is moving to a new file. If navigation wins the
+            // reply race, park it as pending rather than under its source.
+            self.current_session_path = None;
+        }
         cx.notify();
     }
 
@@ -1348,6 +1408,11 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
+        if self.account_switching {
+            self.toast_warning(tr!("accounts.switch_in_progress"));
+            cx.notify();
+            return;
+        }
         // Custom terminal surfaces cannot run offscreen; native blocking
         // requests are parked with their session and restored on return.
         self.cancel_custom_surfaces(cx);
@@ -1387,7 +1452,11 @@ impl OrbitApp {
         // The New Task page has no file — its draft lives in its own slot.
         self.restore_composer_draft(None, cx);
 
-        match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
+        // A new task from ⌘N is local: remote tasks start from a host row in
+        // the folder picker.
+        self.remote = None;
+        let spawned = self.spawn_pi(&cwd, true);
+        match spawned {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(Some(&cwd));
@@ -1401,7 +1470,7 @@ impl OrbitApp {
                 let message = tr!("runtime.pi_spawn_failed", error = err);
                 self.client = None;
                 self.runtime.error = Some(message.clone());
-                self.set_status(message);
+                self.set_error_from("account_profiles", message);
             }
         }
         self.input.read(cx).focus(window);
@@ -1456,6 +1525,55 @@ impl OrbitApp {
         .detach();
     }
 
+    /// Add a folder to the sidebar as a project, without starting a task.
+    ///
+    /// A project is Orbit's own grouping of sessions by working folder, so this
+    /// writes nothing to pi: it records the folder in `workspaces.json` and the
+    /// group appears with its own `+` for starting a task there. Used by the
+    /// palette's **New project…** and the new-task folder picker's row (#131).
+    pub(super) fn new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let receiver = cx.update(|_window, app| {
+                app.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: Some(tr!("session.new_project_prompt").into()),
+                })
+            });
+            let Ok(receiver) = receiver else {
+                return;
+            };
+            let folder = match receiver.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
+            };
+            let Some(folder) = folder else {
+                return;
+            };
+            let _ = this.update(cx, |app, cx| app.add_project(folder, cx));
+        })
+        .detach();
+    }
+
+    /// Record `folder` as a project and say so. Adding one that is already
+    /// listed is a no-op with a different sentence, rather than silence.
+    fn add_project(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        let name = sessions::workspace_label(&folder);
+        let target = sessions::canonical_workspace_path(&folder);
+        let listed = self
+            .workspaces
+            .iter()
+            .any(|workspace| sessions::canonical_workspace_path(workspace) == target);
+        if listed {
+            self.toast_info(tr!("sidebar.project_already_listed", name = name));
+        } else {
+            self.add_workspace(folder, cx);
+            self.toast_success(tr!("sidebar.project_added", name = name));
+        }
+        cx.notify();
+    }
+
     /// Switch the live session. With `push`, the visit is recorded in the
     /// top-bar history (forward entries are dropped, like browser history).
     ///
@@ -1473,6 +1591,11 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
+        if self.account_switching {
+            self.toast_warning(tr!("accounts.switch_in_progress"));
+            cx.notify();
+            return;
+        }
         self.pending_session_rename = None;
         self.session_rename_ready = false;
         // Opening a session means viewing the chat: leave whichever full-page
@@ -1488,6 +1611,28 @@ impl OrbitApp {
         if self.current_session_path.as_ref() == Some(&session.path) {
             return;
         }
+        // Resolve and freeze the target binding before touching the outgoing
+        // process. A missing/corrupt account cannot silently open on Default.
+        let accounts = match self.provider_accounts.selection_for_session(&session.path) {
+            Ok(accounts) => accounts,
+            Err(error) => {
+                self.set_error_from("account_profiles", error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if self
+            .lives
+            .get(&session.path)
+            .is_some_and(|parked| parked.accounts != accounts)
+        {
+            self.set_error_from(
+                "account_profiles",
+                "Session account selection disagrees with its parked process",
+            );
+            cx.notify();
+            return;
+        }
         self.cancel_new_task_settle();
         // Native dialogs and approvals stay pending with their own session.
         self.cancel_custom_surfaces(cx);
@@ -1495,6 +1640,14 @@ impl OrbitApp {
         // Its unsent composer text/attachments go with it, keyed to the file.
         self.save_composer_draft(cx);
         self.park_active_session();
+        if let Err(error) = self.provider_accounts.activate_session(&session.path) {
+            self.set_error_from("account_profiles", error.to_string());
+            cx.notify();
+            return;
+        }
+        self.auth = AuthManager::new();
+        self.quota = QuotaManager::new();
+        self.provider_auth.clear();
         self.busy = false;
         self.added = 0;
         self.removed = 0;
@@ -1627,18 +1780,10 @@ impl OrbitApp {
             );
             self.preview_session_transcript(session.path.clone(), cx);
             // Spawn a dedicated pi process rooted at the session's
-            // workspace and point it at the session file.
-            let secret_env = self.mcp.secret_env();
-            let spawned = self
-                .extensions
-                .spawn(&session.cwd, false, &secret_env)
-                .or_else(|_| {
-                    self.extensions.spawn(
-                        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                        false,
-                        &secret_env,
-                    )
-                });
+            // workspace and point it at the session file. Every listed
+            // session is a local file, so it runs locally.
+            self.remote = None;
+            let spawned = self.spawn_pi(&session.cwd, false);
             match spawned {
                 Ok(client) => {
                     self.adopt_client(client);
@@ -1660,7 +1805,7 @@ impl OrbitApp {
                     let message = tr!("runtime.pi_spawn_failed", error = err);
                     self.client = None;
                     self.runtime.error = Some(message.clone());
-                    self.set_status(message);
+                    self.set_error_from("account_profiles", message);
                 }
             }
         }
@@ -1759,14 +1904,19 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Open the top-bar session-details popover. The chip that used to own
-    /// this toggle is now a row in the overflow menu, so the open is a plain
-    /// action; the popover still dismisses on an outside click.
+    /// Open the session-details panel in the right dock. The top-bar chip
+    /// closes it again through [`Self::on_session_details_click`], and so does
+    /// the panel's own close button. It shares the dock with Review and the
+    /// Explorer, so opening it closes both.
     pub(super) fn open_session_details(&mut self, cx: &mut Context<Self>) {
         self.session_details_open = true;
-        // Only one top-bar popover is meaningful at a time.
-        self.header_more_open = false;
+        // The quota popover floats over the dock; do not leave it hanging.
         self.quota_popup_open = false;
+        // One right dock at a time.
+        self.sidepane.update(cx, |pane, cx| pane.close(cx));
+        if self.project_panel.read(cx).is_open() {
+            self.project_panel.update(cx, |panel, cx| panel.close(cx));
+        }
         // Seed the rename field from the live title so the input isn't empty
         // when pi auto-titled via `session_info_changed` and hasn't echoed
         // `sessionName` yet.
@@ -1774,35 +1924,34 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Flip the top bar's overflow menu. Mirrors the old info chip's guard so
-    /// the click that closes the menu cannot reopen it on mouse-up.
-    pub(super) fn on_header_more_click(
+    /// The top bar's info chip: toggle the session-details panel. The panel is
+    /// a dock, not a popover, so no outside click dismisses it and the chip
+    /// needs no click-through guard: a click that also closed a top-bar
+    /// popover still opens (or closes) the panel.
+    pub(super) fn on_session_details_click(
         &mut self,
         _: &MouseUpEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
-        }
-        self.header_more_open = !self.header_more_open;
-        if self.header_more_open {
-            // Only one top-bar popover is meaningful at a time.
-            self.quota_popup_open = false;
-            self.session_details_open = false;
-            self.open_in_menu_open = false;
-        }
-        cx.notify();
+        self.menu_dismissed_at.clear();
+        self.toggle_session_details(cx);
     }
 
-    /// Dismiss the top bar's overflow menu from a click outside it.
-    pub(super) fn dismiss_header_more(&mut self, cx: &mut Context<Self>) {
-        if self.header_more_open {
-            self.menu_dismissed_at = Some(Instant::now());
-            self.header_more_open = false;
+    /// Open the session-details panel, or close it when it is showing.
+    pub(super) fn toggle_session_details(&mut self, cx: &mut Context<Self>) {
+        if self.session_details_open {
+            self.close_session_details(cx);
+        } else {
+            self.open_session_details(cx);
+        }
+    }
+
+    /// Close the session-details panel.
+    pub(super) fn close_session_details(&mut self, cx: &mut Context<Self>) {
+        self.session_name_editing = false;
+        if self.session_details_open {
+            self.session_details_open = false;
             cx.notify();
         }
     }
@@ -1819,47 +1968,39 @@ impl OrbitApp {
             return None;
         }
         let generating = self.title_generating;
-        let mut button =
-            icon_button_frame(div().id("sess-generate-title"), &theme, ButtonSize::Large)
-                .group(BUTTON_GROUP)
-                .border_1()
-                .border_color(theme.border)
-                .when(generating, |button| button.bg(theme.overlay))
-                .when(!generating, |button| {
-                    button.raised(theme.surface_elevated, &theme)
-                });
-        if !generating {
-            button = button
-                .cursor_pointer()
-                .hover_bordered(&theme)
-                .pressed_state(&theme, PressedRamp::Wash)
-                .tooltip({
-                    let label = tr!("session.generate_title");
-                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                })
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| app.generate_session_title(cx));
-                });
-        }
-        Some(
+        let size = ButtonSize::Default;
+        let glyph = if generating {
+            crate::ui::prelude::spinner(
+                "sess-generate-title-spinner",
+                size.icon_size().px(&theme),
+                theme.accent_text,
+                theme,
+            )
+        } else {
+            icon(
+                "icons/magic-wand.svg",
+                size.icon_size().px(&theme),
+                theme.text_muted,
+            )
+            .into_any_element()
+        };
+        let button = IconButton::glyph("sess-generate-title", glyph).size(size);
+        Some(if generating {
+            // In flight: a held face behind the spinner, nothing to press.
             button
-                .child(if generating {
-                    crate::app::spinner(
-                        "sess-generate-title-spinner",
-                        ButtonSize::Large.icon_size().px(&theme),
-                        theme.accent_text,
-                        theme,
-                    )
-                } else {
-                    icon(
-                        "icons/magic-wand.svg",
-                        ButtonSize::Large.icon_size().px(&theme),
-                        theme.text_secondary,
-                    )
-                    .into_any_element()
+                .render(&theme)
+                .cursor_default()
+                .bg(theme.overlay)
+                .into_any_element()
+        } else {
+            button
+                .tip(tr!("session.generate_title"))
+                .faded(&theme, |el| {
+                    el.on_click(move |_, _, cx| {
+                        this.update(cx, |app, cx| app.generate_session_title(cx));
+                    })
                 })
-                .into_any_element(),
-        )
+        })
     }
 
     /// Whether the bundled title extension registered its command with pi.
@@ -1910,6 +2051,9 @@ impl OrbitApp {
         // (see `close_git_for_review`).
         self.sidepane.update(cx, |pane, cx| pane.close(cx));
         self.git_panel.update(cx, |panel, cx| panel.show(cx));
+        if self.remote.is_some() {
+            self.refresh_remote_git(cx);
+        }
         self.sync_terminal_active(cx);
         cx.notify();
     }
@@ -1922,7 +2066,7 @@ impl OrbitApp {
     }
 
     /// ⌘⇧G: open the Git page, or leave it when it is already open. The
-    /// top-bar affordance lives in the overflow menu; this keeps the GitHub
+    /// sidebar footer button is the top affordance now; this keeps the GitHub
     /// surface one chord away.
     pub(super) fn on_open_git(
         &mut self,
@@ -1959,7 +2103,13 @@ impl OrbitApp {
 
     /// Open Review (⌘⇧R and the palette), replacing the Git page.
     pub(super) fn open_review(&mut self, cx: &mut Context<Self>) {
+        if self.block_local_surface_for_remote() {
+            cx.notify();
+            return;
+        }
         self.close_git_for_review(cx);
+        // One right dock at a time.
+        self.session_details_open = false;
         self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
     }
 
@@ -1982,6 +2132,21 @@ impl OrbitApp {
         self.usage.update(cx, |page, cx| page.close(cx));
         self.sync_terminal_active(cx);
         cx.notify();
+    }
+
+    /// Sidebar nav row: Git is a destination, toggled like Usage. The same
+    /// handler the "…" overflow menu row and ⌘⇧G share.
+    pub(super) fn on_git_nav_click(
+        &mut self,
+        _: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.git_open {
+            self.close_git(cx);
+        } else {
+            self.open_git(cx);
+        }
     }
 
     /// Sidebar nav row: Usage is a destination, toggled like Settings.
@@ -2067,17 +2232,32 @@ impl OrbitApp {
         }
     }
 
-    /// The command palette's Rename Session: open the details popover (the
-    /// header's info control owns the rename field) and put the caret in it.
+    /// The command palette's Rename Session: open the details panel (it owns
+    /// the rename field) and put the caret in it.
     pub(super) fn begin_session_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending_session_rename.is_some() {
             return;
         }
-        self.quota_popup_open = false;
-        self.session_details_open = true;
+        self.open_session_details(cx);
+        self.begin_session_name_edit(window, cx);
+    }
+
+    /// Switch the panel's name row to the rename field, seeded with the live
+    /// title and focused, so typing replaces nothing until the user edits.
+    pub(super) fn begin_session_name_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_name_editing = true;
         self.seed_session_name_input(cx);
         let handle = self.session_name_input.read(cx).focus_handle(cx);
         window.focus(&handle);
+        cx.notify();
+    }
+
+    /// Leave the rename field without committing: the field is reseeded from
+    /// the live title and focus returns to the composer.
+    pub(super) fn cancel_session_name_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_name_editing = false;
+        self.seed_session_name_input(cx);
+        self.input.read(cx).focus(window);
         cx.notify();
     }
 
@@ -2104,11 +2284,11 @@ impl OrbitApp {
         .into_any_element()
     }
 
-    /// The top-bar info popover: active session's environment + identifiers.
-    pub(super) fn render_session_details_popup(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        if !self.session_details_open {
-            return None;
-        }
+    /// The session-details panel: the active session's name, environment and
+    /// identifiers, docked on the right edge beside the chat (the same slot
+    /// Review and the Explorer take, one at a time). The caller decides
+    /// whether it shows; see `OrbitApp::session_details_visible`.
+    pub(super) fn render_session_details_panel(&self, cx: &Context<Self>) -> AnyElement {
         let theme = *theme::get(cx);
         let this = cx.entity();
         let session_id = self.session_id.clone().unwrap_or_default();
@@ -2117,248 +2297,415 @@ impl OrbitApp {
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let workspace = self
+        let workspace_path = self
             .current_workspace
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| {
-                std::env::current_dir()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            });
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
         let model = self.model_label.clone();
         let thinking = self.thinking_label.clone();
         // Set on a successful commit and cleared by its timer; drives the
         // button's brief success check.
         let rename_saved = self.rename_saved_at.is_some();
 
-        // Header names the surface. The session's own title already lives in
-        // the rename field below, so repeating it here only crowded the card;
-        // the only line worth keeping is the no-session hint.
+        // Header names the surface and carries the dock's close control, like
+        // the Explorer's. The session's own title already lives in the rename
+        // field below, so it is not repeated here.
         let header = div()
-            .px(DynamicSpacing::Base12.px(&theme))
-            .py(DynamicSpacing::Base08.px(&theme))
-            .border_b_1()
-            .border_color(theme.border)
+            .h(px(SESSION_DETAILS_HEADER_H))
+            .flex_none()
             .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base02.px(&theme))
+            .items_center()
+            .gap(DynamicSpacing::Base04.px(&theme))
+            .pl(DynamicSpacing::Base12.px(&theme))
+            .pr(DynamicSpacing::Base06.px(&theme))
+            .border_b_1()
+            .border_color(theme.hairline())
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_primary)
                     .child(tr!("session.session_details")),
             )
-            .children(session_id.is_empty().then(|| {
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(tr!("session.no_active"))
-            }));
-
-        // pi owns the name; Enter or Update commits it (`set_session_name`).
-        let name_block = (!session_id.is_empty()).then(|| {
-            div()
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base08.px(&theme))
-                .border_b_1()
-                .border_color(theme.border)
-                .flex()
-                .flex_col()
-                .gap(input::gap(&theme))
-                .child(input_label(tr!("session.name"), &theme).text_color(theme.text_muted))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .child(
-                            input_field_frame(div(), &theme)
-                                .flex_1()
-                                .min_w_0()
-                                .bg(theme.background)
-                                .overflow_hidden()
-                                .child(self.session_name_input.clone()),
-                        )
-                        .children(self.generate_title_button(theme, this.clone()))
-                        .child({
-                            let mut button =
-                                button_frame(div().id("sess-rename"), &theme, ButtonSize::Large)
-                                    .border_1()
-                                    .cursor_pointer()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .on_mouse_up(MouseButton::Left, {
-                                        let this = this.clone();
-                                        move |_, _, cx| {
-                                            this.update(cx, |app, cx| app.rename_session(cx));
-                                        }
-                                    });
-                            if rename_saved {
-                                // Commit succeeded: the label becomes a check
-                                // that pops in, so the button confirms the
-                                // rename instead of silently doing nothing.
-                                button = button
-                                    .raised(theme.success, &theme)
-                                    .border_color(theme.success)
-                                    .child(Self::rename_check(theme, cx));
-                            } else {
-                                button = button
-                                    .raised(theme.surface_elevated, &theme)
-                                    .border_color(theme.border)
-                                    .text_color(theme.text_primary)
-                                    .hover_state(&theme)
-                                    .child(tr!("session.update"));
+            .child(
+                IconButton::new("session-details-close", "icons/x.svg")
+                    .tip(tr!("common.close"))
+                    .faded(&theme, |button| {
+                        button.on_click({
+                            let this = this.clone();
+                            move |_, _, cx| {
+                                this.update(cx, |app, cx| app.close_session_details(cx));
                             }
-                            button
-                        }),
-                )
-        });
-
-        let section_label = |label: &str| {
+                        })
+                    }),
+            );
+        // With no live session there is nothing to name; say so instead of
+        // showing an empty rename field.
+        let no_session = session_id.is_empty().then(|| {
             div()
                 .px(DynamicSpacing::Base12.px(&theme))
-                .pt(DynamicSpacing::Base08.px(&theme))
                 .pb(DynamicSpacing::Base04.px(&theme))
                 .text_size(TextSize::Small.px(&theme))
-                .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_muted)
-                .child(label.to_string())
-        };
+                .child(tr!("session.no_active"))
+        });
 
-        let popup = div()
-            .id("session-details-popup")
-            .w(px(320.))
-            .font_family(theme::ui_font_family())
-            .elevation_2(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            // Clicks inside the card (the rename field, Update, copy) must
-            // not bubble to the info button that toggles this popover.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out({
-                let this = this.clone();
-                move |_: &MouseDownEvent, _, cx: &mut App| {
-                    this.update(cx, |app, cx| {
-                        if app.session_details_open {
-                            // Arm the click-through guard so this same click's
-                            // mouse-up on the info button cannot reopen the
-                            // popover it just dismissed.
-                            app.menu_dismissed_at = Some(Instant::now());
-                            app.session_details_open = false;
-                            cx.notify();
-                        }
-                    });
-                }
-            })
-            .child(header)
-            .children(name_block)
-            .child(section_label(&tr!("session.environment")))
-            .child(
-                div()
-                    .id(ElementId::Name("sess-commit-push".into()))
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click({
+        // pi owns the name. At rest the row shows the title as text with an
+        // edit button (and Generate title); editing swaps in the rename field
+        // with Update / Cancel. Enter or Update commits (`set_session_name`),
+        // Escape or Cancel leaves it unchanged.
+        let name_block = (!session_id.is_empty()).then(|| {
+            let row = div()
+                .px(DynamicSpacing::Base12.px(&theme))
+                .pb(DynamicSpacing::Base04.px(&theme))
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .text_size(TextSize::Small.px(&theme));
+            if self.session_name_editing {
+                row.child(
+                    input_field_frame(div(), &theme)
+                        .flex_1()
+                        .min_w_0()
+                        // The panel's controls are one size: the field takes
+                        // the Default button height and the row's small type,
+                        // so all three scale together with the UI font size.
+                        .min_h(ButtonSize::Default.height(&theme))
+                        .h(ButtonSize::Default.height(&theme))
+                        .py(px(0.))
+                        .px(DynamicSpacing::Base06.px(&theme))
+                        .text_size(TextSize::Small.px(&theme))
+                        .bg(theme.background)
+                        .overflow_hidden()
+                        .child(self.session_name_input.clone()),
+                )
+                .child(Self::name_action_button(
+                    "sess-rename",
+                    tr!("session.update"),
+                    true,
+                    theme,
+                    {
                         let this = this.clone();
-                        move |_, _window, cx| {
-                            this.update(cx, |app, cx| {
-                                app.open_git(cx);
-                            });
+                        move |_, cx| this.update(cx, |app, cx| app.rename_session(cx))
+                    },
+                ))
+                .child(Self::name_action_button(
+                    "sess-rename-cancel",
+                    tr!("settings.cancel"),
+                    false,
+                    theme,
+                    {
+                        let this = this.clone();
+                        move |window, cx| {
+                            this.update(cx, |app, cx| app.cancel_session_name_edit(window, cx))
                         }
+                    },
+                ))
+            } else {
+                let title = self
+                    .session_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| {
+                        self.current_title
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|title| !title.is_empty())
                     })
-                    .child(icon(
-                        "icons/branch.svg",
-                        IconSize::Small.px(&theme),
-                        theme.text_secondary,
+                    .map(str::to_owned);
+                let untitled = title.is_none();
+                row.child(
+                    div()
+                        .id("sess-title")
+                        .debug_selector(|| "sess-title".into())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if untitled {
+                            theme.text_muted
+                        } else {
+                            theme.text_primary
+                        })
+                        .when_some(title.clone(), |el, title| el.tip(title))
+                        .child(title.unwrap_or_else(|| tr!("app.session_name"))),
+                )
+                // A committed rename confirms itself with a check that pops in
+                // beside the new title.
+                .children(rename_saved.then(|| Self::rename_check(theme, cx)))
+                .children(self.generate_title_button(theme, this.clone()))
+                .child(
+                    IconButton::new("sess-edit-title", "icons/pencil.svg")
+                        .tip(tr!("explorer.rename"))
+                        .faded(&theme, |el| {
+                            let this = this.clone();
+                            el.debug_selector(|| "sess-edit-title".into()).on_click(
+                                move |_, window, cx| {
+                                    this.update(cx, |app, cx| {
+                                        app.begin_session_name_edit(window, cx)
+                                    });
+                                },
+                            )
+                        }),
+                )
+            }
+        });
+
+        // ── Environment ── where this session runs: the machine, the folder
+        // and the checked-out branch. A remote session names its host and
+        // leaves out the local branch, which would be the wrong machine's.
+        let mut environment = Self::details_section(tr!("session.environment"), false, theme);
+        match &self.remote {
+            Some(host) => {
+                environment = environment.child(Self::details_row(
+                    "sess-machine",
+                    "icons/server-stack.svg",
+                    host.name.clone(),
+                    Some(host.location()),
+                    theme,
+                ));
+            }
+            None => {
+                environment = environment
+                    .child(Self::details_row(
+                        "sess-machine",
+                        "icons/monitor.svg",
+                        tr!("session.this_computer"),
+                        None,
+                        theme,
                     ))
                     .child(
-                        div()
-                            .flex_1()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_primary)
-                            .child(tr!("session.commit_or_push")),
+                        Self::details_row(
+                            "sess-folder",
+                            "icons/folder.svg",
+                            sessions::workspace_label(&workspace_path),
+                            Some(crate::skills::display_path(&workspace_path)),
+                            theme,
+                        )
+                        .tip(workspace_path.to_string_lossy().into_owned()),
                     )
-                    .child(icon(
-                        "icons/chevron-right.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.text_muted,
-                    )),
-            )
-            .child(
+                    .children(self.branch.as_ref().map(|branch| {
+                        let divergence = branch.ahead_behind.and_then(|(ahead, behind)| {
+                            let mut parts = Vec::new();
+                            if ahead > 0 {
+                                parts.push(format!("↑{ahead}"));
+                            }
+                            if behind > 0 {
+                                parts.push(format!("↓{behind}"));
+                            }
+                            (!parts.is_empty()).then(|| parts.join(" "))
+                        });
+                        Self::details_row(
+                            "sess-branch",
+                            "icons/branch.svg",
+                            branch.name.clone(),
+                            divergence,
+                            theme,
+                        )
+                    }));
+            }
+        }
+
+        // ── Model ── the provider's mark, the model, and the thinking level
+        // on one line, as the composer's chips name them.
+        let model_section = Self::details_section(tr!("session.detail_model"), true, theme).child(
+            div()
+                .id("sess-model")
+                .h(px(SESSION_DETAILS_ROW_H))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(icon_dyn(
+                    crate::model_selector::provider_icon(&self.model_provider),
+                    IconSize::Small.px(&theme),
+                    provider_mark_color(&self.model_provider, &theme, theme.text_muted),
+                ))
+                .child(Self::details_label(
+                    if model.is_empty() {
+                        "—".to_string()
+                    } else {
+                        model
+                    },
+                    theme,
+                ))
+                .children((!thinking.is_empty()).then(|| Self::details_meta(thinking, theme))),
+        );
+
+        // ── Context ── the window's fill as a short bar plus the numbers.
+        // Before pi reports a measurement the row says so instead of
+        // painting a fake 0%.
+        let context_section = {
+            let usage = self
+                .context
+                .as_ref()
+                .filter(|usage| crate::context_meter::has_usage(Some(usage)));
+            let fraction = usage
+                .and_then(|usage| usage.percent)
+                .map(|percent| (percent / 100.0).clamp(0.0, 1.0) as f32);
+            let row = div()
+                .id("sess-context")
+                .h(px(SESSION_DETAILS_ROW_H))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme));
+            let row = match usage {
+                Some(usage) => {
+                    let tokens =
+                        usage
+                            .tokens
+                            .map(crate::context_meter::format_tokens)
+                            .map(|used| {
+                                format!(
+                                    "{used} / {}",
+                                    crate::context_meter::format_tokens(usage.context_window)
+                                )
+                            });
+                    row.child(Self::context_bar(fraction, theme))
+                        .child(Self::details_label(
+                            crate::context_meter::format_percent(usage).unwrap_or_default(),
+                            theme,
+                        ))
+                        .children(tokens.map(|tokens| Self::details_meta(tokens, theme)))
+                }
+                None => row.child(Self::details_meta_left(tr!("session.no_usage"), theme)),
+            };
+            Self::details_section(tr!("session.context"), true, theme).child(row)
+        };
+
+        // ── Changes ── the working tree's counts with the two places they
+        // lead: Review beside the chat, and the Git page to commit. A remote
+        // session has no local tree, so the section is left out.
+        let changes_section = self.remote.is_none().then(|| {
+            let dirty = self.added > 0 || self.removed > 0;
+            let action = |id: &'static str, label: String, open_git: bool| {
+                let this = this.clone();
+                Button::keyed(gpui::ElementId::Name(id.into()), ButtonVariant::Outline)
+                    .label(label)
+                    .on_click(&theme, move |_, _, cx| {
+                        this.update(cx, |app, cx| {
+                            if open_git {
+                                app.open_git(cx);
+                            } else {
+                                app.open_review(cx);
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .debug_selector(move || id.to_string())
+                    .into_any_element()
+            };
+            let counts = if dirty {
                 div()
-                    .id(ElementId::Name("sess-compare-branch".into()))
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_family(theme::code_font_family())
+                    .child(
+                        div()
+                            .text_color(theme.success)
+                            .child(format!("+{}", self.added)),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.error)
+                            .child(format!("−{}", self.removed)),
+                    )
+                    .into_any_element()
+            } else {
+                Self::details_meta_left(tr!("sidepane.no_changes"), theme).into_any_element()
+            };
+            Self::details_section(tr!("git_panel.section_changes"), true, theme).child(
+                div()
+                    .h(px(SESSION_DETAILS_ROW_H + 4.))
                     .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click({
-                        let this = this.clone();
-                        move |_, window, cx| {
-                            this.update(cx, |app, cx| {
-                                app.toggle_branch_picker(window, cx);
-                            });
-                        }
-                    })
                     .child(icon(
                         "icons/file-diff.svg",
                         IconSize::Small.px(&theme),
-                        theme.text_secondary,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_primary)
-                            .child(tr!("session.compare_branch")),
-                    )
-                    .child(icon(
-                        "icons/chevron-right.svg",
-                        IconSize::XSmall.px(&theme),
                         theme.text_muted,
-                    )),
+                    ))
+                    .child(counts)
+                    .child(action("sess-review", tr!("sidepane.review"), false))
+                    .children(dirty.then(|| action("sess-commit", tr!("git_panel.commit"), true))),
             )
+        });
+
+        // ── Identifiers ── what a bug report or a script needs, each with
+        // its own copy button.
+        let identifiers = (!session_id.is_empty()).then(|| {
+            Self::details_section(tr!("session.details"), true, theme)
+                .child(self.session_detail_row(0, &tr!("session.detail_id"), &session_id, theme))
+                .child(self.session_detail_row(
+                    1,
+                    &tr!("session.detail_file"),
+                    &session_file,
+                    theme,
+                ))
+        });
+
+        let body = div()
+            .id("session-details-body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .child(
+                Self::details_section(tr!("session.section_session"), false, theme)
+                    .children(no_session)
+                    .children(name_block),
+            )
+            .child(environment.border_t_1().border_color(theme.hairline_subtle()))
+            .child(model_section)
+            .child(context_section)
+            .children(changes_section)
+            .children(identifiers)
+            .child(div().flex_none().h(DynamicSpacing::Base08.px(&theme)));
+
+        // The dock reads as a rounded card beside the chat, like the Explorer:
+        // a 12px gutter on the left, then a flat surface with a hairline —
+        // glass over a full-window wallpaper, like the pages.
+        div()
+            .id("session-details-panel")
+            .debug_selector(|| "session-details-panel".into())
+            .flex_none()
+            .w(px(SESSION_DETAILS_GUTTER + SESSION_DETAILS_W))
+            .h_full()
+            .pl(px(SESSION_DETAILS_GUTTER))
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .font_family(theme::ui_font_family())
             .child(
                 div()
-                    .mt(DynamicSpacing::Base04.px(&theme))
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(section_label(&tr!("session.details"))),
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .bg(theme.surface)
+                    .overflow_hidden()
+                    .page_card(
+                        &theme,
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(header)
+                            .child(body),
+                    ),
             )
-            .child(self.session_detail_row(0, &tr!("session.detail_id"), &session_id, theme))
-            .child(self.session_detail_row(1, &tr!("session.detail_file"), &session_file, theme))
-            .child(self.session_detail_row(2, &tr!("session.detail_workspace"), &workspace, theme))
-            .child(self.session_detail_row(3, &tr!("session.detail_model"), &model, theme))
-            .child(self.session_detail_row(4, &tr!("session.detail_thinking"), &thinking, theme))
-            .child(div().h(px(6.)));
-
-        Some(
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), popover::MENU_OFFSET),
-                    popup,
-                    "anchored_popover-in-2",
-                    &theme,
-                ))
-                .into_any_element(),
-        )
+            .into_any_element()
     }
 
     /// The top-bar quota chip: the rolling 5-hour limit of the provider the
@@ -2384,15 +2731,14 @@ impl OrbitApp {
         }
         let theme = *theme::get(cx);
 
-        // A persistent glass chip rather than an invisible hit target: the
-        // hairline border and ink wash read as a dedicated meter surface at
-        // rest, and the hover/open state lifts it (deeper fill, stronger
-        // border) instead of the chip appearing from nothing. It shares the
-        // top bar's chip glass, so the meter sits in the same row as the
-        // buttons without looking like one.
+        // A top-bar chip like its neighbours: the meter's ink rests on the
+        // titlebar, and the hover/open state lifts it onto the shared chip
+        // glass (fill, stronger border), so the whole row reads as one quiet
+        // instrument line until the pointer reaches it.
         let mut chip = press(header_chip(
             div()
                 .id("top-quota")
+                .debug_selector(|| "top-quota".to_string())
                 .group(BUTTON_GROUP)
                 .relative()
                 .h(px(HEADER_CTRL_H))
@@ -2415,29 +2761,24 @@ impl OrbitApp {
         // Hairline between the account identity and the meter block: the
         // two halves of the chip answer different questions (whose usage /
         // how much is left) and deserve a visible seam.
-        let divider = || div().flex_none().w(px(1.)).h(px(13.)).bg(theme.border);
+        let divider = || div().flex_none().w(px(1.)).h(px(13.)).bg(theme.hairline());
 
-        // The provider mark and name anchor every headline: the meter is
-        // only truthful if the account it belongs to is named beside it.
+        // The provider mark anchors every headline: the meter is only
+        // truthful if the account it belongs to is identified beside it. The
+        // mark alone keeps the status row short; its tooltip names the
+        // provider, and the popover's cards spell every name out.
         let provider_head = |report: &QuotaReport| {
             div()
+                .id("status-quota-provider")
+                .debug_selector(|| "status-quota-provider".to_string())
                 .flex()
                 .items_center()
-                .gap(DynamicSpacing::Base06.px(&theme))
+                .tip(providers::provider_display_name(&report.provider))
                 .child(icon_dyn(
                     provider_icon(&report.provider),
                     IconSize::XSmall.px(&theme),
                     provider_mark_color(&report.provider, &theme, theme.text_muted),
                 ))
-                .child(
-                    div()
-                        .max_w(px(96.))
-                        .truncate()
-                        .text_size(TextSize::Small.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_secondary)
-                        .child(providers::provider_display_name(&report.provider)),
-                )
         };
 
         match self.quota.headline(&self.model_provider) {
@@ -2461,11 +2802,16 @@ impl OrbitApp {
                 }
                 if let Some(fraction) = window.fraction() {
                     // Tabular figures keep the number from jittering as
-                    // usage ticks during a run, and the state tint (green →
-                    // amber → red) makes the ring's verdict readable even
-                    // without the gauge — the same pairing the composer's
-                    // context meter uses.
-                    let tint = quota_tint(fraction, theme);
+                    // usage ticks during a run. Like the context meter beside
+                    // it, the chip stays neutral with room to spare and takes
+                    // amber, then red, as the window runs out — colour
+                    // appearing is the signal. The popover keeps the full
+                    // green → amber → red scale for its per-window meters.
+                    let tint = if fraction >= QUOTA_WARN_FRACTION {
+                        quota_tint(fraction, theme)
+                    } else {
+                        theme.text_secondary
+                    };
                     chip = chip
                         .child(
                             div()
@@ -2475,7 +2821,11 @@ impl OrbitApp {
                                 .text_color(tint)
                                 .child(format!("{}%", (fraction * 100.0).round() as i32)),
                         )
-                        .child(context_ring(fraction, tint, theme.surface_elevated));
+                        .child(context_ring(
+                            fraction,
+                            tint,
+                            crate::context_meter::ring_track(Some(fraction), &theme),
+                        ));
                 }
             }
             // A balance-only account (DeepSeek, OpenRouter) has no window to
@@ -2497,8 +2847,8 @@ impl OrbitApp {
             }
             // Nothing metered anywhere (notes, errors): the chip keeps the
             // popover reachable. With MCP servers configured it becomes the
-            // MCP status chip — the pane behind it is now the only place
-            // their state is visible from the top bar.
+            // MCP status chip — the pane behind it is the only place their
+            // state is visible from the top bar.
             QuotaHeadline::Quiet => match mcp_chip {
                 Some((dot, label)) => {
                     chip = chip
@@ -2542,7 +2892,7 @@ impl OrbitApp {
         if !self.quota_popup_open {
             return None;
         }
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.entity();
 
         let reports = self.quota.usage_reports(&self.model_provider);
@@ -2567,72 +2917,38 @@ impl OrbitApp {
             theme.text_secondary,
             theme,
         );
-        let refresh_button =
-            icon_button_frame(div().id("quota-refresh"), &theme, ButtonSize::Medium)
-                .group(BUTTON_GROUP)
-                .cursor_pointer()
-                .hover_state(&theme)
-                .pressed_state(&theme, PressedRamp::Wash)
-                .tooltip({
-                    let label = tr!("common.refresh");
-                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                })
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
-                .child(refresh_icon);
+        let refresh_button = IconButton::glyph("quota-refresh", refresh_icon)
+            .size(ButtonSize::Medium)
+            .tip(tr!("common.refresh"))
+            .on_mouse_up(&theme, cx.listener(Self::on_quota_refresh));
 
         // Two panes in one popover: the original provider quotas and the MCP
         // server list. A segmented control keeps the switch in the header
         // without adding a row (the body cap math below depends on this
         // header's height).
         let tab = self.quota_popup_tab;
-        let mut tabs = div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base02.px(&theme));
-        for (index, candidate) in QuotaPopupTab::ALL.into_iter().enumerate() {
-            let selected = tab == candidate;
-            tabs = tabs.child(
-                segmented_segment(
-                    div()
-                        .id(ElementId::Name(
-                            format!("quota-tab-{}", candidate.as_str()).into(),
-                        ))
-                        .debug_selector({
-                            let tab = candidate.as_str().to_string();
-                            move || format!("quota-tab-chip-{tab}")
-                        }),
-                    &theme,
-                    ButtonSize::Default,
-                    SegmentPosition::at(index, QuotaPopupTab::ALL.len()),
-                )
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .border_color(theme.border)
-                .when(selected, |chip| {
-                    chip.raised_flat(theme.surface_active)
-                        .text_color(theme.text_primary)
-                })
-                .when(!selected, |chip| {
-                    chip.raised_flat(theme.surface_elevated)
-                        .text_color(theme.text_secondary)
-                        .hover_state(&theme)
-                })
-                .on_mouse_up(MouseButton::Left, {
-                    let this = this.clone();
+        let mut tabs = ButtonGroup::new(SegmentFill::Active).size(ButtonSize::Default);
+        for candidate in QuotaPopupTab::ALL {
+            let this = this.clone();
+            tabs = tabs
+                .segment(
+                    ElementId::Name(format!("quota-tab-{}", candidate.as_str()).into()),
+                    tr!(candidate.label_key()),
+                    tab == candidate,
                     move |_, _, cx| {
                         this.update(cx, |app, cx| app.mcp_popup_tab(candidate, cx));
-                    }
-                })
-                .child(tr!(candidate.label_key())),
-            );
+                    },
+                )
+                .selector(format!("quota-tab-chip-{}", candidate.as_str()));
         }
+        let tabs = tabs.render(&theme);
 
         let header = div()
             .flex_none()
             .px(DynamicSpacing::Base12.px(&theme))
             .py(px(10.))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
@@ -2709,12 +3025,11 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .occlude()
             // Clicks inside the card (the refresh button) must not bubble to
             // the chip that toggles this popover.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out({
+            .dismiss_on_outside({
                 let this = this.clone();
                 move |_: &MouseDownEvent, _, cx: &mut App| {
                     this.update(cx, |app, cx| {
@@ -2722,7 +3037,7 @@ impl OrbitApp {
                             // Arm the click-through guard so this same
                             // click's mouse-up on the chip cannot
                             // immediately re-open the popover.
-                            app.menu_dismissed_at = Some(Instant::now());
+                            app.menu_dismissed_at.arm();
                             app.quota_popup_open = false;
                             cx.notify();
                         }
@@ -2732,24 +3047,21 @@ impl OrbitApp {
             .child(header)
             .child(body);
 
+        // The chip sits in the top bar, so the popover hangs below it,
+        // end-aligned with the chip's right edge.
         Some(
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), popover::MENU_OFFSET),
-                    popup,
-                    "anchored_popover-in-3",
-                    &theme,
-                ))
-                .into_any_element(),
+            dropdown_below(
+                DropdownAlign::End,
+                popover::MENU_OFFSET,
+                popup,
+                "anchored_popover-in-3",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 
-    /// The eye toggle on a provider card in the top-bar quota popover: hides
+    /// The eye toggle on a provider card in the quota popover: hides
     /// the provider from the list, or restores one from the "Hidden" group.
     /// A Compact glyph so it sits inside a card header without inflating the
     /// row. The element id varies with the state so the visible and hidden
@@ -2774,34 +3086,24 @@ impl OrbitApp {
         // both Ollama ids share one card, so both store the same entry.
         let selector = id.to_string();
         let provider = provider.to_string();
-        icon_button_frame(
-            div().id(id).debug_selector(move || selector.clone()),
-            &theme,
-            ButtonSize::Compact,
-        )
-        .cursor_pointer()
-        .hover_state(&theme)
-        .pressed_state(&theme, PressedRamp::Wash)
-        .tooltip({
-            let label = label.clone();
-            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-        })
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(
-                move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
-                    this.hidden_quota_providers.toggle(&provider);
-                    this.hidden_quota_providers.persist();
-                    cx.notify();
-                },
-            ),
-        )
-        .child(icon(
-            path,
-            ButtonSize::Compact.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .into_any_element()
+        IconButton::new(id, path)
+            .size(ButtonSize::Compact)
+            .tip(label.clone())
+            .on_mouse_up(
+                &theme,
+                cx.listener(
+                    move |this: &mut Self,
+                          _: &MouseUpEvent,
+                          _: &mut Window,
+                          cx: &mut Context<Self>| {
+                        this.hidden_quota_providers.toggle(&provider);
+                        this.hidden_quota_providers.persist();
+                        cx.notify();
+                    },
+                ),
+            )
+            .debug_selector(move || selector.clone())
+            .into_any_element()
     }
 
     /// The Providers pane with nothing to show (no quota reports yet, or a
@@ -2828,14 +3130,10 @@ impl OrbitApp {
                     .child(tr!("session.no_provider_usage")),
             )
             .child(
-                button_frame(div().id("quota-empty-mcp"), &theme, ButtonSize::Compact)
+                Button::keyed("quota-empty-mcp", ButtonVariant::Primary)
+.size(ButtonSize::Compact)
+.render(&theme)
                     .debug_selector(|| "quota-empty-mcp".to_string())
-                    .cursor_pointer()
-                    .font_weight(FontWeight::MEDIUM)
-                    .raised(theme.action, &theme)
-                    .text_color(theme.action_fg)
-                    .hover_action(&theme)
-                    .pressed_state(&theme, PressedRamp::Action)
                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                         this.update(cx, |app, cx| {
                             app.mcp_popup_tab(QuotaPopupTab::Mcp, cx);
@@ -2997,11 +3295,8 @@ impl OrbitApp {
     ) {
         // A dismissal from this same click's mouse-down must not
         // immediately re-open (see `toggle_workspace_menu`).
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_quota_popup(cx);
     }
@@ -3012,10 +3307,7 @@ impl OrbitApp {
     /// instead of an empty provider list.
     pub(super) fn toggle_quota_popup(&mut self, cx: &mut Context<Self>) {
         self.quota_popup_open = !self.quota_popup_open;
-        // The quota popover and the session-details popover share the top
-        // bar; only one is meaningful at a time.
         if self.quota_popup_open {
-            self.session_details_open = false;
             let theme = *theme::get(cx);
             let quiet = matches!(
                 self.quota.headline(&self.model_provider),
@@ -3083,18 +3375,138 @@ impl OrbitApp {
                     ),
             )
             .child(
-                icon_button_frame(div().id(("sess-copy", ix)), &theme, ButtonSize::Compact)
+                IconButton::new(("sess-copy", ix), "icons/copy.svg")
+                    .size(ButtonSize::Compact)
+                    .ink(theme.text_muted)
                     .tip(tr!("common.copy"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click(move |_, _window, cx| {
+                    .on_click(&theme, move |_, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(v.clone()));
-                    })
-                    .child(icon(
-                        "icons/copy.svg",
-                        ButtonSize::Compact.icon_size().px(&theme),
-                        theme.text_muted,
-                    )),
+                    }),
+            )
+    }
+
+    /// The rename row's text buttons at the panel's one control size:
+    /// `primary` takes the action fill (Update), the other is the quiet
+    /// bordered secondary (Cancel).
+    fn name_action_button(
+        id: &'static str,
+        label: String,
+        primary: bool,
+        theme: Theme,
+        on_click: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> AnyElement {
+        let variant = if primary {
+            ButtonVariant::Primary
+        } else {
+            ButtonVariant::Outline
+        };
+        Button::new(id, variant)
+            .size(ButtonSize::Default)
+            .label(label)
+            .faded(&theme, move |button| {
+                button
+                    .debug_selector(move || id.to_string())
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .on_click(move |_, window, cx| on_click(window, cx))
+            })
+    }
+
+    /// One titled group of the session-details panel. `rule` draws the
+    /// quiet hairline that separates it from the group above.
+    fn details_section(title: String, rule: bool, theme: Theme) -> Div {
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .pt(DynamicSpacing::Base12.px(&theme))
+            .pb(DynamicSpacing::Base06.px(&theme))
+            .when(rule, |section| {
+                section.border_t_1().border_color(theme.hairline_subtle())
+            })
+            .child(
+                div()
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .pb(DynamicSpacing::Base06.px(&theme))
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_secondary)
+                    .child(title),
+            )
+    }
+
+    /// An inspector row: glyph, primary label, and a muted trailing value
+    /// that truncates first so the label stays readable.
+    pub(super) fn details_row(
+        id: &'static str,
+        glyph: &'static str,
+        label: String,
+        meta: Option<String>,
+        theme: Theme,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .h(px(SESSION_DETAILS_ROW_H))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(icon(glyph, IconSize::Small.px(&theme), theme.text_muted))
+            .child(Self::details_label(label, theme))
+            .children(meta.map(|meta| Self::details_meta(meta, theme)))
+    }
+
+    fn details_label(text: String, theme: Theme) -> Div {
+        div()
+            .flex_shrink_0()
+            .max_w(px(SESSION_DETAILS_W * 0.6))
+            .truncate()
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_primary)
+            .child(text)
+    }
+
+    /// The trailing value: right-aligned, muted, and the first to give way.
+    fn details_meta(text: String, theme: Theme) -> Div {
+        div().flex_1().min_w_0().flex().justify_end().child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
+                .child(text),
+        )
+    }
+
+    /// A muted note that fills a row on its own ("No changes").
+    fn details_meta_left(text: String, theme: Theme) -> Div {
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_muted)
+            .child(text)
+    }
+
+    /// The context row's meter: a short track filled to the used fraction in
+    /// the composer ring's colours, escalating to warning and error.
+    fn context_bar(fraction: Option<f32>, theme: Theme) -> Div {
+        let width = 44.;
+        let fill = crate::context_meter::fill_color(fraction, &theme);
+        div()
+            .flex_none()
+            .w(px(width))
+            .h(px(4.))
+            .rounded_full()
+            .bg(crate::context_meter::ring_track(fraction, &theme))
+            .overflow_hidden()
+            .child(
+                div()
+                    .h_full()
+                    .rounded_full()
+                    .w(px(width * fraction.unwrap_or(0.)))
+                    .bg(fill),
             )
     }
 
@@ -3153,10 +3565,16 @@ impl OrbitApp {
     /// Split from the click handler so it can be called without synthesizing
     /// an event.
     pub(super) fn toggle_side_pane(&mut self, cx: &mut Context<Self>) {
+        if self.block_local_surface_for_remote() {
+            cx.notify();
+            return;
+        }
         let pane_open = self.sidepane.read(cx).is_open();
         if !pane_open {
             // Opening Review replaces the Git page, which shares the window.
             self.close_git_for_review(cx);
+            // One right dock at a time.
+            self.session_details_open = false;
         }
         self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
         cx.notify();
@@ -3249,12 +3667,17 @@ impl OrbitApp {
     }
 
     pub(super) fn toggle_project_panel(&mut self, cx: &mut Context<Self>) {
+        if self.block_local_surface_for_remote() {
+            cx.notify();
+            return;
+        }
         let opening = !self.project_panel.read(cx).is_open();
         self.project_panel.update(cx, |panel, cx| panel.toggle(cx));
         if opening {
             // The Explorer and the Review pane are mutually exclusive right
-            // docks: opening the tree closes Review.
+            // docks: opening the tree closes Review — and the session details.
             self.sidepane.update(cx, |pane, cx| pane.close(cx));
+            self.session_details_open = false;
         }
         cx.notify();
     }
@@ -3550,6 +3973,7 @@ impl OrbitApp {
         // since the list was last read.
         self.sessions = sessions::load_sessions();
         self.sync_session_menu(cx);
+        self.refresh_remote_sessions(false, cx);
         // The status bar's branch chip and every sidebar row's branch line.
         self.refresh_branch_status(cx);
         self.refresh_sidebar_branches(cx);
@@ -3593,6 +4017,7 @@ impl OrbitApp {
         if self.settings_open {
             match self.settings_section {
                 SettingsSection::Mcp => self.mcp_refresh(cx),
+                SettingsSection::RemoteHosts => self.remote_hosts_section_opened(cx),
                 SettingsSection::GitAccounts if !self.git_accounts_loading => {
                     self.refresh_git_accounts_for_workspace(cx)
                 }
@@ -3662,10 +4087,13 @@ impl OrbitApp {
 
 /// Meter/accent color for a consumed fraction. Green → amber → red at the
 /// same thresholds the Settings quota meters use, so the two surfaces agree.
+/// The used fraction at which a quota meter turns `warning`.
+const QUOTA_WARN_FRACTION: f32 = 0.75;
+
 fn quota_tint(fraction: f32, theme: Theme) -> Hsla {
     if fraction >= 0.9 {
         theme.error
-    } else if fraction >= 0.75 {
+    } else if fraction >= QUOTA_WARN_FRACTION {
         theme.warning
     } else {
         theme.success
@@ -3780,7 +4208,7 @@ fn quota_provider_card(
         .w_full()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.overlay)
         .px(DynamicSpacing::Base12.px(&theme))
         .py(px(10.))
@@ -3832,21 +4260,14 @@ fn quota_provider_card(
         );
 
         if let Some(fraction) = window.fraction() {
-            row = row.child(
-                div()
-                    .w_full()
-                    .h(px(5.))
-                    .rounded_full()
-                    .overflow_hidden()
-                    .bg(theme.surface_secondary)
-                    .child(
-                        div()
-                            .h_full()
-                            .rounded_full()
-                            .bg(quota_tint(fraction, theme))
-                            .w(relative(fraction)),
-                    ),
-            );
+            row = row.child(progress_bar(
+                &theme,
+                fraction,
+                quota_tint(fraction, theme),
+                ProgressSize::Medium,
+                ProgressTrack::Solid,
+                None,
+            ));
         }
         if let Some(resets_at) = window.resets_at {
             row = row.child(

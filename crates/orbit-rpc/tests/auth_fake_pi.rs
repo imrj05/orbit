@@ -31,7 +31,25 @@ while IFS= read -r line; do
       emit '{"type":"response","command":"auth.login","success":true,"data":{"sessionId":"sess-1","status":"pending"}}'
       printf '%s\n' '{"type":"auth_login_started","sessionId":"sess-1","provider":"anthropic","method":"browser"}'
       printf '%s\n' '{"type":"auth_login_url","sessionId":"sess-1","provider":"anthropic","url":"https://claude.ai/oauth?code=abc"}'
-      printf '%s\n' '{"type":"auth_login_succeeded","sessionId":"sess-1","provider":"anthropic","method":"browser","credential":"oauth"}'
+      printf '%s\n' '{"type":"auth_login_prompt","sessionId":"sess-1","provider":"anthropic","requestId":"code-1","kind":"manual_code","message":"Paste code"}'
+      ;;
+    *'"type":"auth.respond"'*)
+      case "$line" in
+        *'"sessionId":"sess-1"'*)
+          case "$line" in
+            *'"requestId":"code-1"'*)
+              emit '{"type":"response","command":"auth.respond","success":true}'
+              printf '%s\n' '{"type":"auth_login_prompt_closed","sessionId":"sess-1","provider":"anthropic","requestId":"code-1","reason":"answered"}'
+              printf '%s\n' '{"type":"auth_login_succeeded","sessionId":"sess-1","provider":"anthropic","method":"browser","credential":"oauth"}'
+              ;;
+            *) emit '{"type":"response","command":"auth.respond","success":false,"error":"invalid_request"}' ;;
+          esac
+          ;;
+        *) emit '{"type":"response","command":"auth.respond","success":false,"error":"invalid_request"}' ;;
+      esac
+      ;;
+    *'"type":"auth.set_api_key"'*)
+      emit '{"type":"response","command":"auth.set_api_key","success":true,"data":{"provider":"anthropic"}}'
       ;;
     *'"type":"auth.logout"'*)
       emit '{"type":"response","command":"auth.logout","success":true,"data":{"provider":"anthropic","status":"signed_out"}}'
@@ -179,7 +197,7 @@ fn routes_auth_commands_and_async_events() {
         other => panic!("expected auth.login response, got {other:?}"),
     }
     let events = collect_auth_events(&client, Duration::from_secs(3), |event| {
-        matches!(event, AuthEvent::LoginSucceeded { .. })
+        matches!(event, AuthEvent::LoginPrompt { .. })
     });
     assert!(
         matches!(events.first(), Some(AuthEvent::LoginStarted { .. })),
@@ -191,12 +209,47 @@ fn routes_auth_commands_and_async_events() {
         ),
         "browser URL should stream through, got {events:?}"
     );
+    assert!(events.iter().any(|event| matches!(event, AuthEvent::LoginPrompt { request_id, kind, .. } if request_id == "code-1" && kind == "manual_code")));
+    let wrong = response(
+        &client,
+        CommandBody::AuthRespond {
+            session_id: "sess-1".into(),
+            request_id: "wrong".into(),
+            value: "synthetic-private-answer".into(),
+        },
+    );
+    assert!(matches!(wrong, Event::Response { success: false, .. }));
+    let answered = response(
+        &client,
+        CommandBody::AuthRespond {
+            session_id: "sess-1".into(),
+            request_id: "code-1".into(),
+            value: "synthetic-private-answer".into(),
+        },
+    );
+    assert!(matches!(answered, Event::Response { success: true, .. }));
+    assert!(!format!("{answered:?}").contains("synthetic-private-answer"));
+    let events = collect_auth_events(&client, Duration::from_secs(3), |event| {
+        matches!(event, AuthEvent::LoginSucceeded { .. })
+    });
+    assert!(events.iter().any(|event| matches!(event, AuthEvent::LoginPromptClosed { request_id, .. } if request_id == "code-1")));
+    assert!(!format!("{events:?}").contains("synthetic-private-answer"));
     assert!(
         events
             .iter()
             .any(|event| matches!(event, AuthEvent::LoginSucceeded { credential, .. } if credential.as_deref() == Some("oauth"))),
         "login success should carry only the credential kind, got {events:?}"
     );
+
+    let saved = response(
+        &client,
+        CommandBody::AuthSetApiKey {
+            provider: "anthropic".into(),
+            key: "synthetic-private-key".into(),
+        },
+    );
+    assert!(matches!(saved, Event::Response { success: true, .. }));
+    assert!(!format!("{saved:?}").contains("synthetic-private-key"));
 
     // auth.status
     match response(

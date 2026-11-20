@@ -23,6 +23,7 @@ fn open_app(cx: &mut gpui::TestAppContext) -> (Entity<OrbitApp>, &mut gpui::Visu
 
     cx.update(|cx| {
         cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.set_global(crate::theme::AppearancePrefs::default());
         crate::bind_keys(cx);
     });
     let (app, cx) = cx.add_window_view(|window, cx| {
@@ -46,6 +47,66 @@ fn open_app(cx: &mut gpui::TestAppContext) -> (Entity<OrbitApp>, &mut gpui::Visu
     });
     cx.run_until_parked();
     (app, cx)
+}
+
+#[gpui::test]
+fn settings_keyboard_navigation_moves_focus_before_opening_a_section(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (app, cx) = open_app(cx);
+    cx.simulate_resize(gpui::size(px(960.), px(640.)));
+    cx.simulate_keystrokes(crate::platform::shortcuts::FOCUS_SESSIONS);
+    cx.simulate_keystrokes(crate::platform::shortcuts::SETTINGS);
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(app.settings_back_focus.is_focused(window));
+        assert!(app.settings_section == SettingsSection::General);
+    });
+
+    cx.simulate_keystrokes("tab");
+    cx.update(|window, cx| assert!(app.read(cx).settings_nav_focus.is_focused(window)));
+    cx.simulate_keystrokes("down");
+    cx.update(|_, cx| {
+        let app = app.read(cx);
+        assert_eq!(app.settings_nav_cursor, 1);
+        assert!(app.settings_section == SettingsSection::General);
+    });
+    cx.simulate_keystrokes("enter");
+    cx.update(|_, cx| assert!(app.read(cx).settings_section == SettingsSection::Appearance));
+
+    cx.simulate_keystrokes("end");
+    cx.update(|_, cx| {
+        let app = app.read(cx);
+        let viewport = app.settings_nav_scroll.bounds();
+        let row = app
+            .settings_nav_scroll
+            .bounds_for_item(app.settings_nav_cursor)
+            .expect("the focused row is laid out");
+        let offset = app.settings_nav_scroll.offset().y;
+        assert!(row.bottom() + offset <= viewport.bottom());
+        assert!(app.settings_section == SettingsSection::Appearance);
+    });
+    cx.simulate_keystrokes("home space");
+    cx.update(|_, cx| assert!(app.read(cx).settings_section == SettingsSection::General));
+
+    cx.simulate_keystrokes("shift-tab");
+    cx.update(|window, cx| assert!(app.read(cx).settings_back_focus.is_focused(window)));
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").expect("a valid key"),
+    });
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(!app.settings_open);
+        assert!(app.sidebar_focus.is_focused(window));
+    });
+
+    cx.simulate_keystrokes(crate::platform::shortcuts::SETTINGS);
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(!app.settings_open);
+        assert!(app.sidebar_focus.is_focused(window));
+    });
 }
 
 /// Opens the update modal over the focused session list and lets it take
@@ -145,6 +206,129 @@ fn the_rename_field_takes_focus_and_returns_it_when_the_dialog_closes(
         assert!(
             app.read(cx).sidebar_focus.is_focused(window),
             "closing hands focus back to the session list"
+        );
+    });
+}
+
+/// Opens Settings with its search field holding the keyboard, then the
+/// remote-host editor over it, the way Settings → Remote hosts → Add does.
+fn open_remote_host_editor_from_settings(app: &Entity<OrbitApp>, cx: &mut gpui::VisualTestContext) {
+    app.update_in(cx, |app, window, cx| {
+        app.settings_open = true;
+        app.settings_search.read(cx).focus(window);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    app.update_in(cx, |app, window, cx| app.remote_host_add(window, cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        let editor = app.remote_host_editor.as_ref().expect("the editor is open");
+        assert!(
+            editor.ssh.read(cx).focus_handle(cx).is_focused(window),
+            "the editor's first field takes the keyboard"
+        );
+    });
+}
+
+/// A modal that focuses its own field as it opens remembers the opener first,
+/// and hands the keyboard back on the first frame after it closes — the shared
+/// `ModalFocus` contract.
+#[gpui::test]
+fn the_remote_host_editor_returns_focus_to_its_opener(cx: &mut gpui::TestAppContext) {
+    let (app, cx) = open_app(cx);
+    open_remote_host_editor_from_settings(&app, cx);
+
+    app.update(cx, |app, cx| app.remote_host_editor_close(cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(
+            app.settings_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            "closing hands focus back to the field that opened it"
+        );
+    });
+}
+
+/// Tab and Shift-Tab walk the modal's own fields, then its footer (Cancel,
+/// then Save), and wrap, instead of leaving for the workbench behind the
+/// scrim.
+#[gpui::test]
+fn tab_cycles_inside_an_open_form_modal(cx: &mut gpui::TestAppContext) {
+    let (app, cx) = open_app(cx);
+    open_remote_host_editor_from_settings(&app, cx);
+    let focused_field = |app: &Entity<OrbitApp>, cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| {
+            let editor = app.read(cx).remote_host_editor.as_ref().expect("open");
+            [
+                ("ssh", &editor.ssh),
+                ("user", &editor.user),
+                ("port", &editor.port),
+                ("dir", &editor.dir),
+                ("name", &editor.name),
+            ]
+            .into_iter()
+            .find(|(_, field)| field.read(cx).focus_handle(cx).is_focused(window))
+            .map(|(name, _)| name)
+            .or_else(|| {
+                let app = app.read(cx);
+                if app.modal_cancel_focus.is_focused(window) {
+                    Some("cancel")
+                } else if app.modal_confirm_focus.is_focused(window) {
+                    Some("save")
+                } else {
+                    None
+                }
+            })
+        })
+    };
+
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    assert_eq!(focused_field(&app, cx), Some("user"));
+
+    cx.simulate_keystrokes("shift-tab shift-tab");
+    cx.run_until_parked();
+    assert_eq!(
+        focused_field(&app, cx),
+        Some("save"),
+        "Shift-Tab wraps to the footer's primary action"
+    );
+
+    cx.simulate_keystrokes("shift-tab shift-tab");
+    cx.run_until_parked();
+    assert_eq!(
+        focused_field(&app, cx),
+        Some("name"),
+        "then up through Cancel"
+    );
+
+    cx.simulate_keystrokes("tab tab tab");
+    cx.run_until_parked();
+    assert_eq!(
+        focused_field(&app, cx),
+        Some("ssh"),
+        "Tab passes Cancel and Save, then wraps to the first field"
+    );
+}
+
+/// The main composer keeps Tab as focus traversal when no modal is open.
+#[gpui::test]
+fn without_a_modal_tab_still_leaves_the_composer(cx: &mut gpui::TestAppContext) {
+    let (app, cx) = open_app(cx);
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(
+            !app.read(cx)
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            "Tab moves on from the composer"
         );
     });
 }

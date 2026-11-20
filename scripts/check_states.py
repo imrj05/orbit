@@ -3,15 +3,15 @@
 
 Phase 2 of the UI/UX Modernization epic ends with one rule: a component does not
 decide what hover, press, focus or disabled look like — it inherits the state
-from `app/helpers.rs` (`ControlExt` / `StatefulControlExt`), which resolves every
-colour from `InteractionState` in `theme/tokens.rs`.
+from `ui/style/control.rs` (`ControlExt` / `StatefulControlExt`), which resolves
+every colour from `InteractionState` in `theme/tokens.rs`.
 
 This check enforces that rule mechanically, so a component added later inherits
 correct states by default instead of quietly re-deciding them.
 
 A `.hover(…)` or `.active(…)` closure anywhere in the crate must not name one of
-the interaction tokens. The contract itself (`app/helpers.rs`) is the one file
-allowed to, because that is where the tokens are resolved.
+the interaction tokens. The contract itself (`ui/style/control.rs`) is the one
+file allowed to, because that is where the tokens are resolved.
 
 Run from the repo root:
 
@@ -25,7 +25,7 @@ import sys
 
 ROOT = "crates/orbit-pi/src"
 # The contract resolves the tokens; every other file must consume treatments.
-ALLOWED = {"app/helpers.rs"}
+ALLOWED = {"ui/style/control.rs"}
 
 STATE_TOKENS = [
     "surface_hover",

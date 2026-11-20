@@ -1,122 +1,68 @@
 use super::*;
 use crate::commands::CommandId;
 use crate::theme::tokens::{popover, DynamicSpacing};
+use crate::ui::popover::{dropdown_above, dropdown_below, DropdownAlign};
 
 impl OrbitApp {
-    /// Rows for the new-task page's folder selector, in priority order:
-    /// this repository's locations (the main checkout, then each linked
-    /// worktree), then distinct session folders newest-first (`load_sessions`
-    /// pre-sorts), with the current workspace pinned to the top when it is not
-    /// already one of them. Every row is a place a task can start in, so the
-    /// same list serves the Worktrees page's vocabulary.
-    pub(super) fn recent_workspaces(&self) -> Vec<WorkspaceEntry> {
+    /// Rows for the new-task page's folder selector: the machine this task
+    /// runs on, once — the current workspace. Remote hosts are the picker's
+    /// action rows (see [`Self::remote_actions`]) and the native dialog covers
+    /// anywhere else, so linked worktrees and recent session folders no longer
+    /// crowd the list. Host setup lives in Settings → Remote hosts, reached
+    /// from the "Work in" menu.
+    pub(super) fn workspace_entries(&self) -> Vec<WorkspaceEntry> {
         let current = self
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
-        let mut entries: Vec<WorkspaceEntry> = Vec::new();
-        let push = |entry: WorkspaceEntry, entries: &mut Vec<WorkspaceEntry>| {
-            if entries.iter().any(|e| e.path == entry.path) {
-                return;
-            }
-            entries.push(entry);
+        let Some(cwd) = current else {
+            return Vec::new();
         };
-
-        // The repository first: "Local" and each worktree, exactly as the
-        // status bar's picker orders them.
-        if let Some(root) = self.work_in_root() {
-            for row in
-                crate::working_folder::location_rows(&self.worktrees, &root, current.as_deref())
-            {
-                let mark = match &row.folder.location {
-                    crate::working_folder::Location::Local => EntryMark::Local,
-                    crate::working_folder::Location::Worktree { .. } => EntryMark::Worktree,
-                    _ => EntryMark::Folder,
-                };
-                push(
-                    WorkspaceEntry {
-                        name: row.label,
-                        path: row.folder.path,
-                        note: row.detail,
-                        mark,
-                    },
-                    &mut entries,
-                );
-            }
-        }
-
-        if let Some(cwd) = &current {
-            push(
-                WorkspaceEntry {
-                    name: sessions::workspace_label(cwd),
-                    path: cwd.clone(),
-                    note: None,
-                    mark: EntryMark::Folder,
-                },
-                &mut entries,
-            );
-        }
-        for session in &self.sessions {
-            if entries.len() >= crate::workspace_picker::MAX_RECENTS {
-                break;
-            }
-            push(
-                WorkspaceEntry {
-                    name: sessions::workspace_label(&session.cwd),
-                    path: session.cwd.clone(),
-                    note: Some(sessions::relative_time(session.modified)),
-                    mark: EntryMark::Folder,
-                },
-                &mut entries,
-            );
-        }
-        entries
+        let in_repo = self.work_in_root().is_some();
+        vec![WorkspaceEntry {
+            // In a repository the row answers "this device", the way the
+            // status bar's Local row does; outside one it names the folder.
+            name: if in_repo {
+                tr!("working_folder.local")
+            } else {
+                sessions::workspace_label(&cwd)
+            },
+            path: cwd,
+            note: self.branch.as_ref().map(|branch| branch.name.clone()),
+            mark: if in_repo {
+                EntryMark::Local
+            } else {
+                EntryMark::Folder
+            },
+        }]
     }
 
-    /// Worktree actions require a repository; cloning does not.
-    pub(super) fn folder_actions(&self) -> Vec<PickerAction> {
-        let mut actions = if self.work_in_root().is_some() {
-            vec![
-                PickerAction {
-                    id: "new-worktree",
-                    icon: "icons/plus.svg",
-                    label: tr!("working_folder.new"),
-                    hint: Some(tr!("working_folder.new_hint")),
-                },
-                PickerAction {
-                    id: "existing-worktree",
-                    icon: "icons/branch.svg",
-                    label: tr!("working_folder.existing"),
-                    hint: Some(tr!("working_folder.existing_hint")),
-                },
-                PickerAction {
-                    id: "remote-branch",
-                    icon: "icons/cloud.svg",
-                    label: tr!("working_folder.remote"),
-                    hint: Some(tr!("working_folder.remote_hint")),
-                },
-            ]
-        } else {
-            Vec::new()
-        };
-        actions.push(PickerAction {
-            id: "clone-repository",
-            icon: "icons/cloud.svg",
-            label: tr!("working_folder.clone_title"),
-            hint: Some(tr!("working_folder.clone_hint")),
-        });
-        actions
+    /// One row per configured remote host. Host rows carry the id
+    /// `remote-host`; the picker dispatches them by their order among the
+    /// host rows (see `remote_host_for_action`). The host config lives in
+    /// Settings → Remote hosts — reachable from the "Work in" menu — so the
+    /// picker lists no setup row of its own.
+    pub(super) fn remote_actions(hosts: &[crate::remote_hosts::RemoteHost]) -> Vec<PickerAction> {
+        hosts
+            .iter()
+            .enumerate()
+            .map(|(ix, host)| PickerAction {
+                id: "remote-host",
+                icon: "icons/server-stack.svg",
+                label: tr!("remote.host_row", host = host.name.clone()),
+                hint: Some(host.location()),
+                group_start: ix == 0,
+                mono: true,
+            })
+            .collect()
     }
 
     /// Toggle the workspace picker under the new-task page's folder field.
     /// Mutually exclusive with the other popovers; Escape/outside-down
     /// dismiss returns focus to the composer.
     pub(super) fn toggle_workspace_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         if self.workspace_picker.take().is_some() {
             window.focus(&self.new_task_folder_focus);
@@ -130,8 +76,44 @@ impl OrbitApp {
         self.session_menu = None;
         self.dismiss_work_in_menu();
 
-        let entries = self.recent_workspaces();
-        let actions = self.folder_actions();
+        let entries = self.workspace_entries();
+        let (remote_hosts, skipped) = crate::remote_hosts::load();
+        // A host switched off in Settings → Remote hosts stays out of the
+        // picker.
+        let remote_hosts: Vec<_> = remote_hosts
+            .into_iter()
+            .filter(|host| host.enabled)
+            .collect();
+        if let Some(reason) = skipped.first() {
+            self.toast_error(tr!(
+                "remote.config_skipped",
+                count = skipped.len(),
+                reason = reason.clone()
+            ));
+        }
+        // The verbs are the machine list: one row per remote host, then the
+        // row that adds a folder as a project.
+        let mut actions = Self::remote_actions(&remote_hosts);
+        // With a server to go to and a project here, offer to put the project
+        // there (git clone on the host, plus its .env files).
+        if !remote_hosts.is_empty() && self.current_workspace.is_some() {
+            actions.push(PickerAction {
+                id: "add-to-server",
+                icon: "icons/cloud-upload.svg",
+                label: tr!("server_clone.picker_row"),
+                hint: Some(tr!("server_clone.picker_hint")),
+                group_start: false,
+                mono: false,
+            });
+        }
+        actions.push(PickerAction {
+            id: "new-project",
+            icon: "icons/folder-plus.svg",
+            label: tr!("workspace_picker.new_project"),
+            hint: Some(tr!("workspace_picker.new_project_hint")),
+            group_start: false,
+            mono: false,
+        });
         let current = self
             .current_workspace
             .clone()
@@ -163,9 +145,9 @@ impl OrbitApp {
             })
             .ok();
         }) as Box<dyn Fn(&mut Window, &mut App)>;
-        // Verbs the picker offers under the folders. Each one closes the
-        // picker first: they open a dialog or a second surface, and a popover
-        // left behind a modal is the wrong layer.
+        // The machine rows under the device: remote hosts. Each closes the
+        // picker first — a host starts a connection check, and a popover left
+        // behind a modal is the wrong layer.
         let this = cx.weak_entity();
         let action_ids: Vec<&'static str> = actions.iter().map(|action| action.id).collect();
         let on_action = Box::new(move |ix: usize, window: &mut Window, cx: &mut App| {
@@ -175,13 +157,18 @@ impl OrbitApp {
             this.update(cx, |app, cx| {
                 app.workspace_picker = None;
                 match id {
-                    "new-worktree" => app.open_new_worktree_from_work_in(window, cx),
-                    "existing-worktree" => app.browse_for_existing_worktree(window, cx),
-                    "clone-repository" => app.open_clone_dialog(window, cx),
-                    // The create dialog's existing-branch list carries the
-                    // remote refs, and the manager turns one into a local
-                    // tracking branch instead of a detached worktree.
-                    _ => app.open_new_worktree_from_remote_branch(window, cx),
+                    "remote-host" => {
+                        // Check the host (asking for a password if it wants
+                        // one) before a session starts there.
+                        if let Some(host) = remote_host_for_action(&action_ids, ix, &remote_hosts) {
+                            app.connect_remote_task(host, cx);
+                        }
+                        cx.notify();
+                    }
+                    "add-to-server" => app.open_server_clone(None, window, cx),
+                    // A folder added as a project, without a pi process: the
+                    // project's own "+" is where a task starts (#131).
+                    _ => app.new_project(window, cx),
                 }
             })
             .ok();
@@ -190,7 +177,7 @@ impl OrbitApp {
         let on_dismiss = Box::new(move |by_mouse: bool, window: &mut Window, cx: &mut App| {
             this.update(cx, |app, cx| {
                 if by_mouse {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                 }
                 app.workspace_picker = None;
                 if by_mouse {
@@ -210,8 +197,21 @@ impl OrbitApp {
 
         let picker = cx.new(|cx| {
             WorkspacePicker::new(
-                entries, actions, current, width, list_max_h, on_pick, on_browse, on_action,
-                on_dismiss, cx,
+                entries,
+                actions,
+                current,
+                // The device row leads with the workspace's own mark — the
+                // same logo the header's folder chip shows — and carries the
+                // active branch as its trailing note.
+                self.workspace_logo.clone(),
+                self.branch.as_ref().map(|branch| branch.name.clone()),
+                width,
+                list_max_h,
+                on_pick,
+                on_browse,
+                on_action,
+                on_dismiss,
+                cx,
             )
         });
         window.focus(&picker.read(cx).focus_handle(cx));
@@ -243,6 +243,14 @@ impl OrbitApp {
     /// move, the spawn, and the reset, but no focus change. The caller
     /// notifies.
     pub(super) fn start_task_in_folder_quiet(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        self.start_task_at(TaskPlace::Folder(folder), cx);
+    }
+
+    /// Start a new task in `place`: park or drop the session being left,
+    /// reset the view, and spawn a fresh pi there. A local folder becomes the
+    /// current workspace; a remote host leaves the local workspace alone and
+    /// marks the session remote (see [`Self::spawn_pi`]).
+    pub(super) fn start_task_at(&mut self, place: TaskPlace, cx: &mut Context<Self>) {
         if self.rewind_transition_pending(cx) {
             return;
         }
@@ -265,9 +273,20 @@ impl OrbitApp {
         // The parked run's busy state lives with the parked session; this
         // view starts idle.
         self.busy = false;
-        // Picking a folder to work in adds it to Orbit's own sidebar list.
-        self.add_workspace(folder.clone(), cx);
-        self.set_current_workspace(folder.clone(), cx);
+        let (workspace, started) = match place {
+            TaskPlace::Folder(folder) => {
+                self.remote = None;
+                // Picking a folder to work in adds it to Orbit's own sidebar list.
+                self.add_workspace(folder.clone(), cx);
+                self.set_current_workspace(folder.clone(), cx);
+                (folder, tr!("pickers.new_task_started"))
+            }
+            TaskPlace::Remote(host) => {
+                let started = tr!("remote.task_started", host = host.name.clone());
+                self.remote = Some(host);
+                (self.workspace_dir(), started)
+            }
+        };
         self.current_session_path = None;
         self.added = 0;
         self.removed = 0;
@@ -275,15 +294,24 @@ impl OrbitApp {
         self.session_usage = None;
         self.reset_turns(cx);
         self.reset_queue();
-        match self.extensions.spawn(&folder, true, &self.mcp.secret_env()) {
+        match self.spawn_pi(&workspace, true) {
             Ok(client) => {
                 self.adopt_client(client);
+                // A local spawn starts on the default model through its argv;
+                // a host may not have that provider, so a remote session gets
+                // it over RPC once the host's own catalog confirms it (see
+                // `apply_default_model`, which skips a model the host lacks).
+                if self.remote.is_some() {
+                    self.default_model_armed = true;
+                    // The header's branch chip shows the host's own branch.
+                    self.refresh_remote_git(cx);
+                }
                 self.mcp_stamp = self.mcp.fingerprint_for(self.current_workspace.as_deref());
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.
                 self.probe_auth();
-                self.set_status(tr!("pickers.new_task_started"));
+                self.set_status(started);
             }
             Err(err) => {
                 let message = tr!("runtime.pi_spawn_failed", error = err);
@@ -364,7 +392,7 @@ impl OrbitApp {
             this.update(cx, |app, cx| {
                 // Only mouse dismissals arm the chip's click-through guard.
                 if by_mouse {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                 }
                 app.close_model_selector(window, cx);
             })
@@ -473,13 +501,8 @@ impl OrbitApp {
         // A dismissal from the same click's mouse-down must not immediately
         // re-open — the sidebar Search row opens on mouse-up, and the scrim
         // dismisses on mouse-down.
-        const GESTURE: Duration = Duration::from_millis(200);
-        if by_gesture {
-            if let Some(dismissed) = self.menu_dismissed_at.take() {
-                if dismissed.elapsed() < GESTURE {
-                    return;
-                }
-            }
+        if by_gesture && self.menu_dismissed_at.swallows() {
+            return;
         }
         if self.command_palette.take().is_some() {
             self.restore_palette_focus(window, cx);
@@ -550,7 +573,7 @@ impl OrbitApp {
         let on_dismiss = Box::new(move |by_mouse: bool, window: &mut Window, cx: &mut App| {
             this.update(cx, |app, cx| {
                 if by_mouse {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                 }
                 app.command_palette = None;
                 app.restore_palette_focus(window, cx);
@@ -617,6 +640,7 @@ impl OrbitApp {
     ) {
         match id {
             CommandId::NewSession => self.on_new_session(&crate::NewSession, window, cx),
+            CommandId::NewProject => self.new_project(window, cx),
             CommandId::RefreshSessions => self.on_refresh(&crate::RefreshSessions, window, cx),
             CommandId::FocusComposer => {
                 self.input.read(cx).focus(window);
@@ -787,11 +811,8 @@ impl OrbitApp {
         if self.branch_operation_pending {
             return;
         }
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         if self.branch_picker.take().is_some() {
             self.input.read(cx).focus(window);
@@ -804,6 +825,12 @@ impl OrbitApp {
         self.workspace_picker = None;
         self.session_menu = None;
         self.dismiss_work_in_menu();
+        // A remote session's branches are the host's: the same picker, read
+        // and switched over ssh (`remote_git_ui.rs`).
+        if self.remote.is_some() {
+            self.open_remote_branch_picker(window, cx);
+            return;
+        }
 
         let cwd = match self
             .current_workspace
@@ -846,7 +873,7 @@ impl OrbitApp {
         let on_dismiss = Box::new(move |by_mouse: bool, _window: &mut Window, cx: &mut App| {
             this.update(cx, |app, cx| {
                 if by_mouse {
-                    app.menu_dismissed_at = Some(Instant::now());
+                    app.menu_dismissed_at.arm();
                 }
                 app.branch_picker = None;
                 cx.notify();
@@ -944,22 +971,14 @@ impl OrbitApp {
     /// have to be shrunk to fit at the window's minimum height.
     pub(super) fn workspace_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.workspace_picker.clone().map(|picker| {
-            div()
-                .absolute()
-                .bottom_0()
-                .left_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopLeft,
-                    point(
-                        px(0.),
-                        popover::MENU_OFFSET + DynamicSpacing::Base08.px(theme),
-                    ),
-                    picker,
-                    "anchored_popover-in-7",
-                    theme,
-                ))
-                .into_any_element()
+            dropdown_below(
+                DropdownAlign::Start,
+                popover::MENU_OFFSET + DynamicSpacing::Base08.px(theme),
+                picker,
+                "anchored_popover-in-7",
+                theme,
+            )
+            .into_any_element()
         })
     }
 
@@ -968,19 +987,14 @@ impl OrbitApp {
     /// covering it. (The anchor point is the chip's top edge, not its bottom.)
     pub(super) fn branch_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.branch_picker.clone().map(|picker| {
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::BottomLeft,
-                    point(px(0.), -popover::MENU_OFFSET),
-                    picker,
-                    "anchored_popover-in-8",
-                    theme,
-                ))
-                .into_any_element()
+            dropdown_above(
+                DropdownAlign::Start,
+                popover::MENU_OFFSET,
+                picker,
+                "anchored_popover-in-8",
+                theme,
+            )
+            .into_any_element()
         })
     }
 
@@ -991,19 +1005,14 @@ impl OrbitApp {
         theme: &crate::theme::Theme,
     ) -> Option<AnyElement> {
         self.branch_picker.clone().map(|picker| {
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), popover::MENU_OFFSET),
-                    picker,
-                    "anchored_popover-in-8",
-                    theme,
-                ))
-                .into_any_element()
+            dropdown_below(
+                DropdownAlign::End,
+                popover::MENU_OFFSET,
+                picker,
+                "anchored_popover-in-8",
+                theme,
+            )
+            .into_any_element()
         })
     }
 

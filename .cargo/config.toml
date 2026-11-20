@@ -1,0 +1,6 @@
+[env]
+# The app crate builds unoptimized in dev (`[profile.dev.package.orbit-pi]`),
+# and unoptimized render code needs far bigger stack frames. libtest runs each
+# test on a 2 MiB thread, which a full `OrbitApp` render overflows; give test
+# threads (and any other spawned thread) the main thread's 8 MiB.
+RUST_MIN_STACK = "8388608"

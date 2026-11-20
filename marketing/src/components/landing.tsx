@@ -1,22 +1,15 @@
 import Script from "next/script";
 
-import { Agent } from "@/components/sections/agent";
-import { Appearance } from "@/components/sections/appearance";
+import { Architecture } from "@/components/sections/architecture";
+import { Capabilities } from "@/components/sections/capabilities";
 import { Closer } from "@/components/sections/closer";
 import { Contributors } from "@/components/sections/contributors";
 import { Faq } from "@/components/sections/faq";
-import { Git } from "@/components/sections/git";
 import { Hero } from "@/components/sections/hero";
-import { Mcp } from "@/components/sections/mcp";
-import { Models } from "@/components/sections/models";
-import { Native } from "@/components/sections/native";
-import { NewTask } from "@/components/sections/new-task";
-import { Plugins } from "@/components/sections/plugins";
+import { Highlights } from "@/components/sections/highlights";
 import { Reviews } from "@/components/sections/reviews";
-import { Sessions } from "@/components/sections/sessions";
-import { Skills } from "@/components/sections/skills";
+import { Tour } from "@/components/sections/tour";
 import { Trust } from "@/components/sections/trust";
-import { Usage } from "@/components/sections/usage";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteNav } from "@/components/site-nav";
 import type { Locale } from "@/i18n/config";
@@ -36,17 +29,10 @@ export async function Landing({ locale }: { locale: Locale }) {
       <main className="flex-1">
         <Hero locale={locale} />
         <Trust locale={locale} />
-        <Agent locale={locale} />
-        <Sessions locale={locale} />
-        <NewTask locale={locale} />
-        <Models locale={locale} />
-        <Skills locale={locale} />
-        <Git locale={locale} />
-        <Usage locale={locale} />
-        <Mcp locale={locale} />
-        <Plugins locale={locale} />
-        <Appearance locale={locale} />
-        <Native locale={locale} />
+        <Highlights locale={locale} />
+        <Tour locale={locale} />
+        <Capabilities locale={locale} />
+        <Architecture locale={locale} />
         <Contributors locale={locale} />
         <Reviews locale={locale} />
         <Faq locale={locale} />

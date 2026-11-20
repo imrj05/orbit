@@ -6,6 +6,7 @@
 //! the app. That is exactly what happened when the layout section started reading
 //! `self.naming_layout`; this test draws the menu open so it cannot happen again.
 
+use super::sidebar::{session_menu_items, RowMenuItem};
 use super::*;
 use crate::theme::ThemeId;
 use gpui::size;
@@ -196,4 +197,118 @@ fn the_sidebar_view_menu_renders_while_open(cx: &mut gpui::TestAppContext) {
     let _ = cx.draw(point(px(0.), px(0.)), size(px(1240.), px(760.)), |_, _| {
         app.clone().into_any_element()
     });
+}
+
+/// The row menu's keyboard route: Shift-F10 opens the cursor row's menu with
+/// the first entry that can act highlighted, the sidebar's arrows walk the
+/// menu instead of the rows, and Enter runs the same action a click does.
+/// The delete confirmation never runs on Enter.
+#[gpui::test]
+fn the_session_row_menu_opens_and_runs_from_the_keyboard(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    let path = PathBuf::from("/menu-keys/s1.jsonl");
+    app.update(cx, |app, _| {
+        app.workspaces = vec![PathBuf::from("/menu-keys/alpha")];
+        // The working workspace's group is expanded, so its session has a row.
+        app.current_workspace = Some(PathBuf::from("/menu-keys/alpha"));
+        app.sessions = vec![SessionInfo {
+            path: path.clone(),
+            id: "s1".into(),
+            cwd: PathBuf::from("/menu-keys/alpha"),
+            title: "s1".into(),
+            first_message: String::new(),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+        }];
+    });
+    let lit = |app: &OrbitApp| {
+        let menu = app.session_menu.as_ref()?;
+        let items = session_menu_items(menu);
+        menu.cursor.highlighted(items.len()).map(|ix| items[ix].0)
+    };
+    app.update_in(cx, |app, window, cx| {
+        let sessions = app.sidebar_sessions_filtered();
+        let rows = app.sidebar_rows(&sessions, &crate::pins::all().paths());
+        app.sidebar_cursor = rows
+            .iter()
+            .position(|row| matches!(row, SideRow::Session(_)));
+        assert!(app.sidebar_cursor.is_some(), "the session has a row");
+        app.on_sidebar_open_row_menu(&crate::SidebarOpenRowMenu, window, cx);
+        let menu = app.session_menu.as_ref().expect("Shift-F10 opens the menu");
+        let first_enabled = session_menu_items(menu)
+            .into_iter()
+            .find(|(_, enabled)| *enabled)
+            .map(|(item, _)| item);
+        assert_eq!(lit(app), first_enabled);
+
+        let cursor_before = app.sidebar_cursor;
+        app.on_sidebar_end(&crate::SidebarEnd, window, cx);
+        assert_eq!(lit(app), Some(RowMenuItem::Delete));
+        assert_eq!(
+            app.sidebar_cursor, cursor_before,
+            "arrows drive the menu, not the rows"
+        );
+        app.on_sidebar_home(&crate::SidebarHome, window, cx);
+        assert_eq!(lit(app), first_enabled);
+        for _ in 0..8 {
+            if lit(app) == Some(RowMenuItem::CopyPath) {
+                break;
+            }
+            app.on_sidebar_next(&crate::SidebarNext, window, cx);
+        }
+        assert_eq!(lit(app), Some(RowMenuItem::CopyPath));
+        app.on_sidebar_confirm(&crate::SidebarConfirm, window, cx);
+        assert!(
+            app.session_menu.is_none(),
+            "running an entry closes the menu"
+        );
+    });
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("/menu-keys/s1.jsonl"));
+
+    app.update_in(cx, |app, window, cx| {
+        app.on_sidebar_open_row_menu(&crate::SidebarOpenRowMenu, window, cx);
+        app.on_sidebar_end(&crate::SidebarEnd, window, cx);
+        app.on_sidebar_confirm(&crate::SidebarConfirm, window, cx);
+        let menu = app.session_menu.as_ref().expect("Delete asks first");
+        assert!(
+            menu.confirm_delete,
+            "Enter on Delete opens the confirmation"
+        );
+        app.on_sidebar_confirm(&crate::SidebarConfirm, window, cx);
+        assert!(
+            app.session_menu
+                .as_ref()
+                .is_some_and(|menu| menu.confirm_delete),
+            "Enter never confirms the delete"
+        );
+    });
+}
+
+#[test]
+fn row_menus_list_each_entry_once_and_disable_moves_at_the_edges() {
+    let menu = SessionMenu {
+        path: PathBuf::from("/m/s.jsonl"),
+        title: "s".into(),
+        deletable: false,
+        confirm_delete: false,
+        at: None,
+        reorderable: true,
+        can_move_up: false,
+        can_move_down: true,
+        cursor: Default::default(),
+    };
+    let items = session_menu_items(&menu);
+    assert_eq!(items[0], (RowMenuItem::SessionMoveUp, false));
+    assert_eq!(items.last(), Some(&(RowMenuItem::Delete, false)));
+    let flat = SessionMenu {
+        reorderable: false,
+        ..menu
+    };
+    assert!(!session_menu_items(&flat)
+        .iter()
+        .any(|(item, _)| *item == RowMenuItem::SessionMoveUp));
+    let mut ids: Vec<_> = items.iter().map(|(item, _)| item.id()).collect();
+    ids.dedup();
+    assert_eq!(ids.len(), items.len());
 }

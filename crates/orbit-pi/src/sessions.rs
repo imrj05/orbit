@@ -672,7 +672,7 @@ fn message_time_in_line(line: &[u8]) -> Option<SystemTime> {
 
 /// Tolerant timestamp parser: RFC 3339 string, seconds, or milliseconds —
 /// matching the shapes pi writes on session entries.
-fn timestamp_millis(value: Option<&Value>) -> Option<i64> {
+pub(crate) fn timestamp_millis(value: Option<&Value>) -> Option<i64> {
     let value = value?;
     if let Some(text) = value.as_str() {
         return chrono::DateTime::parse_from_rfc3339(text)
@@ -737,7 +737,18 @@ fn first_user_text(message: &Value) -> String {
             .to_string(),
         _ => String::new(),
     };
-    text.replace('\n', " ")
+    readable_prompt(&text).replace('\n', " ")
+}
+
+/// The human part of a prompt, for list previews and fallback titles.
+///
+/// pi expands a `/skill:name` invocation into the whole skill file wrapped in
+/// `<skill name="…" location="…">…</skill>`, followed by what the user typed.
+/// A 110-character preview of that is only the opening tag and a path, so it
+/// is reduced to the same `/skill:name …` form the transcript shows. Any other
+/// text is returned unchanged.
+pub(crate) fn readable_prompt(text: &str) -> String {
+    crate::transcript::readable_skill_prompt(text).unwrap_or_else(|| text.to_string())
 }
 
 /// Basename of a workspace path, used as a group label in the sidebar.
@@ -891,6 +902,55 @@ mod tests {
         assert_eq!(latest.provider, "openai");
         assert_eq!(latest.model.as_deref(), Some("gpt-4"));
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn readable_prompt_reduces_an_expanded_skill_to_its_command() {
+        let skill = "<skill name=\"apple-hig\" location=\"/Users/me/.agents/skills/apple-hig/SKILL.md\">\nReferences\n# Apple HIG\n</skill>\n\ncheck the attach button";
+        assert_eq!(
+            readable_prompt(skill),
+            "/skill:apple-hig check the attach button"
+        );
+        // Nothing typed after the skill: show the command that was run.
+        assert_eq!(
+            readable_prompt("<skill name=\"review\">body</skill>\n"),
+            "/skill:review"
+        );
+    }
+
+    #[test]
+    fn readable_prompt_leaves_ordinary_text_alone() {
+        assert_eq!(readable_prompt("hii"), "hii");
+        assert_eq!(
+            readable_prompt("why does <skill> render raw?"),
+            "why does <skill> render raw?"
+        );
+        assert_eq!(readable_prompt("<skills> list them"), "<skills> list them");
+        assert_eq!(
+            readable_prompt("<div>markup</div> fix"),
+            "<div>markup</div> fix"
+        );
+    }
+
+    #[test]
+    fn read_session_previews_the_typed_text_after_a_skill() {
+        let dir = std::env::temp_dir().join(format!("orbit-skill-preview-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let header = serde_json::json!({"type": "session", "id": "s1", "cwd": "/tmp"});
+        let text = "<skill name=\"apple-hig\" location=\"/x/SKILL.md\">\nlong body\n</skill>\n\nreview the light mode UI";
+        let message = serde_json::json!({
+            "type": "message",
+            "message": {"role": "user", "content": [{"type": "text", "text": text}]}
+        });
+        fs::write(&path, format!("{header}\n{message}\n")).unwrap();
+        let info = read_session(&path).unwrap();
+        assert_eq!(
+            info.first_message,
+            "/skill:apple-hig review the light mode UI"
+        );
+        assert_eq!(info.title, "/skill:apple-hig review the light mode UI");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

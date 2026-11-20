@@ -53,13 +53,14 @@ use gpui::{
     Window,
 };
 
-use crate::app::{
-    button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, ControlExt,
-    PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
-};
-use crate::theme::tokens::{button, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
-use crate::theme::tokens::{RaisedExt, StyledExt};
+use crate::ui::button::{Button, ButtonVariant};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{StyledExt};
 use crate::theme::{self, Theme};
+use crate::ui::button::IconButton;
+use crate::ui::prelude::{icon, nerd_font_family, refresh_glyph, TipExt};
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::tab::{tab_strip, Tab};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
 /// a zero-sized window.
@@ -960,6 +961,17 @@ pub struct TerminalView {
 
 impl TerminalView {
     pub fn new(working_directory: PathBuf, cx: &mut Context<Self>) -> Self {
+        Self::with_command(working_directory, None, cx)
+    }
+
+    /// A tab whose shell runs `command` (`$SHELL -l -c <command>`) instead of
+    /// an interactive prompt — e.g. pi's sign-in on a remote host over
+    /// `ssh -t`. The tab shows the command's exit like any shell's.
+    pub fn with_command(
+        working_directory: PathBuf,
+        command: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let directory = working_directory.clone();
         // Captured on the UI thread: the emulator's first OSC color reply and
@@ -967,7 +979,19 @@ impl TerminalView {
         let initial_palette = Palette::from_theme(theme::get(cx));
         // Resolved once, here: the tab's mark and the shell the PTY actually
         // runs come from the same answer, so they cannot disagree.
-        let (shell, args) = default_shell();
+        let (shell, mut args) = default_shell();
+        if let Some(command) = command {
+            #[cfg(not(windows))]
+            {
+                args.push("-c".to_owned());
+                args.push(command);
+            }
+            #[cfg(windows)]
+            {
+                args.push("/K".to_owned());
+                args.push(command);
+            }
+        }
         let profile = ShellProfile::of(&shell);
 
         // Build the session off the UI thread, then poll it: alacritty's event
@@ -1652,6 +1676,10 @@ pub struct TerminalPanel {
     /// Restart feedback: the header button spins until this instant, so the
     /// click is acknowledged while the fresh shell starts.
     restart_spin_until: Option<Instant>,
+    /// Whether the panel has left the chat column to own the page — the Review
+    /// pane's "full width", for the shell. The app reads it to mount the panel
+    /// as the column instead of a strip in it; closing the panel docks it again.
+    full_width: bool,
 }
 
 impl TerminalPanel {
@@ -1666,6 +1694,7 @@ impl TerminalPanel {
             active: 0,
             tab_scroll: ScrollHandle::new(),
             restart_spin_until: None,
+            full_width: false,
         }
     }
 
@@ -1676,6 +1705,7 @@ impl TerminalPanel {
         self.tabs.clear();
         self.active = 0;
         self.restart_spin_until = None;
+        self.full_width = false;
         cx.notify();
     }
 
@@ -1687,6 +1717,62 @@ impl TerminalPanel {
     /// commands on it.
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
+    }
+
+    /// Whether the panel is a page of its own instead of a strip in the chat.
+    /// The app mounts it as the column when it is.
+    pub fn is_full_width(&self) -> bool {
+        self.full_width
+    }
+
+    /// Take the whole column as a page, or return to the strip at the bottom of
+    /// the chat. Nothing moves on a closed panel — there is no column to leave.
+    pub fn toggle_full_width(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        self.full_width = !self.full_width;
+        cx.notify();
+    }
+
+    /// The top-bar identity of the terminal page, drawn while the shell owns
+    /// the column: Back returns it to the docked strip, and the glyph with the
+    /// title names the page — the same leading Git and Usage put in the shared
+    /// bar. Back flips the panel's own flag; the app's observer moves the
+    /// mount (this is not a feature page, so there is no `on_close` to call).
+    pub fn top_bar_leading(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let back = Button::new("terminal-back", ButtonVariant::Ghost)
+            .icon("icons/arrow-left.svg")
+            .label(tr!("common.back"))
+            .faded(&theme, |el| {
+                el.on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                    this.toggle_full_width(cx)
+                }))
+            });
+        div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(back)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .child(icon(
+                        "icons/terminal.svg",
+                        IconSize::Medium.px(&theme),
+                        theme.text_secondary,
+                    ))
+                    .child(
+                        div()
+                            .text_size(TextSize::Large.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(tr!("terminal.title")),
+                    ),
+            )
+            .into_any_element()
     }
 
     pub fn set_height(&mut self, height: Pixels, cx: &mut Context<Self>) {
@@ -1738,6 +1824,10 @@ impl TerminalPanel {
                 None => self.new_tab(window, cx),
             }
         } else {
+            // A closed panel comes back docked, like the Review pane: the
+            // expanded width is a property of the shell the user is looking
+            // at, not a preference.
+            self.full_width = false;
             self.sync_active(false, cx);
         }
         cx.notify();
@@ -1759,6 +1849,25 @@ impl TerminalPanel {
         cx.notify();
     }
 
+    /// Open a tab running `command` (see [`TerminalView::with_command`]) and
+    /// make it the active one; the panel opens if it was closed.
+    pub fn new_command_tab(
+        &mut self,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let directory = self.spawn_directory();
+        let terminal = cx.new(|cx| TerminalView::with_command(directory, Some(command), cx));
+        self.tabs.push(terminal.clone());
+        self.active = self.tabs.len() - 1;
+        self.open = true;
+        self.sync_active(true, cx);
+        window.focus(&terminal.read(cx).handle());
+        self.tab_scroll.scroll_to_item(self.active);
+        cx.notify();
+    }
+
     /// Close one tab. Its shell gets SIGHUP as the entity drops. Closing the
     /// panel's last tab closes the panel — an empty terminal panel is a blank
     /// strip that only wastes the transcript's height.
@@ -1770,6 +1879,7 @@ impl TerminalPanel {
         if self.tabs.is_empty() {
             self.active = 0;
             self.open = false;
+            self.full_width = false;
             cx.notify();
             return;
         }
@@ -1826,6 +1936,7 @@ impl TerminalPanel {
             return;
         }
         self.open = false;
+        self.full_width = false;
         self.sync_active(false, cx);
         cx.notify();
     }
@@ -1889,17 +2000,19 @@ impl TerminalPanel {
     /// above the header so the tab strip below it never fights a drag for the
     /// same pixels.
     fn splitter(&self, theme: Theme) -> AnyElement {
-        div()
-            .id("terminal-panel-splitter")
-            .flex_none()
-            .w_full()
-            .h(px(SPLITTER_H))
-            .cursor(CursorStyle::ResizeUpDown)
-            .on_drag(TerminalResize, |_, _, _, cx| cx.new(|_| DragGhost))
-            // Hover is the only affordance a borderless splitter can carry on
-            // a code surface; it reads as the edge thickening, not a new rule.
-            .hover_divider(&theme)
-            .into_any_element()
+        // Hover is the only affordance a borderless splitter can carry on a
+        // code surface; it reads as the edge thickening, not a new rule.
+        resize_handle(
+            "terminal-panel-splitter",
+            &theme,
+            ResizeAxis::Vertical,
+            ResizeLook::Divider,
+        )
+        .flex_none()
+        .w_full()
+        .h(px(SPLITTER_H))
+        .on_drag(TerminalResize, |_, _, _, cx| cx.new(|_| DragGhost))
+        .into_any_element()
     }
 
     /// One chip in the tab strip: label, and a close button that appears with
@@ -1911,33 +2024,10 @@ impl TerminalPanel {
             let view = terminal.read(cx);
             (view.label(), view.profile_icon(), view.tooltip())
         };
-        press(
-            div()
-                .id(gpui::ElementId::Name(
-                    format!("terminal-tab-{index}").into(),
-                ))
-                .h(ButtonSize::Default.height(&theme))
-                .max_w(px(TAB_MAX_W))
-                .flex_none()
-                .px(DynamicSpacing::Base06.px(&theme))
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base04.px(&theme))
-                .rounded(button::RADIUS.px(&theme))
-                .cursor_pointer()
-                .text_size(TextSize::Small.px(&theme))
-                .when(active, |el| el.bg(theme.surface_active))
-                .when(!active, |el| {
-                    el.text_color(theme.text_muted).hover_quiet(&theme)
-                }),
-        )
-        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
-            this.select_tab(index, window, cx);
-        }))
         // The profile mark: which shell this tab runs, ahead of what it is
         // doing. Dimmed with the label so an inactive tab stays one quiet
         // shape rather than two tones.
-        .child(icon(
+        let glyph = icon(
             icon_path,
             IconSize::XSmall.px(&theme),
             if active {
@@ -1945,51 +2035,25 @@ impl TerminalPanel {
             } else {
                 theme.text_muted
             },
-        ))
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .font_weight(if active {
-                    FontWeight::MEDIUM
-                } else {
-                    FontWeight::NORMAL
-                })
-                .text_color(if active {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                })
-                .child(label),
+        );
+        Tab::new(
+            gpui::ElementId::Name(format!("terminal-tab-{index}").into()),
+            label,
         )
-        .child(
-            icon_button_frame(
-                div().id(gpui::ElementId::Name(
-                    format!("terminal-tab-close-{index}").into(),
-                )),
-                &theme,
-                ButtonSize::None,
-            )
-            .group(BUTTON_GROUP)
-            .tip(tr!("terminal.close_tab"))
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+        .max_w(px(TAB_MAX_W))
+        .glyph(glyph)
+        .active(active)
+        .close(
+            gpui::ElementId::Name(format!("terminal-tab-close-{index}").into()),
+            tr!("terminal.close_tab"),
+            cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
                 this.close_tab(index, window, cx);
-                // Click handlers bubble: without this the chip's own handler
-                // would select the stale index inside the shrunken strip.
-                cx.stop_propagation();
-            }))
-            .child(icon(
-                "icons/x.svg",
-                ButtonSize::None.icon_size().px(&theme),
-                if active {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                },
-            )),
+            }),
         )
+        .render(&theme)
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+            this.select_tab(index, window, cx);
+        }))
         .tip(tooltip)
         .into_any_element()
     }
@@ -1999,15 +2063,13 @@ impl TerminalPanel {
             .active_terminal()
             .is_some_and(|terminal| terminal.read(cx).is_exited());
 
-        let mut strip = div()
-            .id("terminal-tabs")
-            .h_full()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base04.px(&theme))
-            .overflow_x_scroll()
-            .track_scroll(&self.tab_scroll);
+        let mut strip = tab_strip(
+            "terminal-tabs",
+            &self.tab_scroll,
+            ButtonSize::Default,
+            &theme,
+        )
+        .min_w_0();
         for index in 0..self.tabs.len() {
             strip = strip.child(self.tab_chip(index, theme, cx));
         }
@@ -2022,27 +2084,23 @@ impl TerminalPanel {
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             // No leading panel glyph: every tab already carries its profile
             // mark, and a second terminal icon would only eat tab width.
             .child(strip.flex_1())
             // New tab sits with the tabs, where a browser and every editor put
             // it, and never scrolls away with them.
             .child(
-                icon_button_frame(div().id("terminal-new-tab"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
+                IconButton::new("terminal-new-tab", "icons/plus.svg")
+                    .size(ButtonSize::Default)
+                    .ink(theme.text_secondary)
                     .tip(tr!("terminal.new_tab"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
-                        this.new_tab(window, cx);
-                    }))
-                    .child(icon(
-                        "icons/plus.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_secondary,
-                    )),
+                    .on_click(
+                        &theme,
+                        cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                            this.new_tab(window, cx);
+                        }),
+                    ),
             );
         if exited {
             header = header.child(
@@ -2057,18 +2115,42 @@ impl TerminalPanel {
                     .child(tr!("terminal.exited")),
             );
         }
+        // Full width — the shell leaves its strip and owns the page, the way
+        // the Review pane does (the app mounts it as the column). The glyph
+        // shows what the next click does, as Review's toggle does.
+        let full_width = self.full_width;
+        header = header.child(
+            IconButton::new(
+                "terminal-full-width",
+                if full_width {
+                    "icons/arrow-shrink.svg"
+                } else {
+                    "icons/arrow-expand.svg"
+                },
+            )
+            .ink(if full_width {
+                theme.text_primary
+            } else {
+                theme.text_secondary
+            })
+            .tip(if full_width {
+                tr!("terminal.restore_width")
+            } else {
+                tr!("terminal.full_width")
+            })
+            .faded(&theme, |el| {
+                el.on_click(
+                    cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.toggle_full_width(cx)),
+                )
+            }),
+        );
         header
             // Restart reads as the primary action once the shell has exited,
             // and only ever touches the active tab.
             .child(
-                icon_button_frame(div().id("terminal-restart"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("terminal.restart"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.restart(cx)))
-                    .child(refresh_glyph(
+                IconButton::glyph(
+                    "terminal-restart",
+                    refresh_glyph(
                         "terminal-restart-spin",
                         ButtonSize::Default.icon_size().px(&theme),
                         self.restart_spin_until.is_some(),
@@ -2078,24 +2160,26 @@ impl TerminalPanel {
                             theme.text_secondary
                         },
                         theme,
-                    )),
+                    ),
+                )
+                .size(ButtonSize::Default)
+                .tip(tr!("terminal.restart"))
+                .on_click(
+                    &theme,
+                    cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.restart(cx)),
+                ),
             )
             .child(
-                icon_button_frame(div().id("terminal-close"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
+                IconButton::new("terminal-close", "icons/x.svg")
+                    .size(ButtonSize::Default)
+                    .ink(theme.text_secondary)
                     .tip(tr!("common.close"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
                     .on_click(
+                        &theme,
                         cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
                             this.toggle(window, cx)
                         }),
-                    )
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_secondary,
-                    )),
+                    ),
             )
             .into_any_element()
     }
@@ -2103,6 +2187,7 @@ impl TerminalPanel {
     /// A quiet card over the frozen grid once the shell is gone, so "why is
     /// nothing happening" has an answer and a one-click fix.
     fn exited_overlay(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let terminal = self.active_terminal()?;
         if !terminal.read(cx).is_exited() {
             return None;
@@ -2132,26 +2217,10 @@ impl TerminalPanel {
                                 .child(tr!("terminal.shell_exited")),
                         )
                         .child(
-                            button_frame(
-                                div().id("terminal-exited-restart"),
-                                &theme,
-                                ButtonSize::Medium,
-                            )
-                            .raised(theme.action, &theme)
-                            .cursor_pointer()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.action_fg)
-                            .hover_dimmed()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| this.restart(cx)),
-                            )
-                            .child(icon(
-                                "icons/refresh.svg",
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                theme.text_primary,
-                            ))
-                            .child(tr!("terminal.restart")),
+                            Button::new("terminal-exited-restart", ButtonVariant::Primary)
+                                .icon("icons/refresh.svg")
+                                .label(tr!("terminal.restart"))
+                                .on_mouse_up(&theme, cx.listener(|this, _, _, cx| this.restart(cx))),
                         ),
                 )
                 .into_any_element(),
@@ -2166,20 +2235,31 @@ impl Render for TerminalPanel {
         }
         let theme = *theme::get(cx);
         let active = self.active_terminal().cloned();
-        div()
+        // Expanded, the shell is a page — it owns the whole column, so it takes
+        // the height it is given instead of its docked strip and drops the
+        // splitter (there is nothing below it to resize against).
+        let page = self.full_width;
+        let mut panel = div()
             .id("terminal-panel")
+            .debug_selector(|| "terminal-panel".into())
             .relative()
-            .flex_none()
             .w_full()
-            .h(self.height)
             .bg(theme.code_bg)
-            .border_t_1()
-            .border_color(theme.border)
             .flex()
             .flex_col()
             .min_h_0()
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_panel_mouse_down))
-            .child(self.splitter(theme))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_panel_mouse_down));
+        panel = if page {
+            panel.flex_1().h_full()
+        } else {
+            panel
+                .flex_none()
+                .h(self.height)
+                .border_t_1()
+                .border_color(theme.hairline())
+        };
+        panel
+            .children((!page).then(|| self.splitter(theme)))
             .child(self.header(theme, cx))
             .child(
                 div()
@@ -2683,6 +2763,28 @@ mod tests {
 
     /// The production path: `TerminalPanel::toggle` (what ⌘J calls) creates the
     /// view, focuses it, and the grid receives keystrokes through the panel's
+    /// A command tab (server sign-in) opens the panel, becomes the active tab
+    /// and runs its command, not a bare prompt.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_command_tab_opens_the_panel_and_runs_its_command(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+        let panel = cx.new(TerminalPanel::new);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_workspace(Some(std::env::temp_dir()), cx);
+                panel.new_command_tab("exit 0".into(), window, cx);
+            })
+        });
+        let (open, tabs) = cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            (panel.is_open(), panel.tab_count())
+        });
+        assert!(open, "the panel opens for the command");
+        assert_eq!(tabs, 1);
+    }
+
     /// nesting rather than as a bare root element.
     #[cfg(unix)]
     #[gpui::test]
@@ -2841,6 +2943,34 @@ mod tests {
             assert!(!panel.tabs[0].read(cx).active);
             assert!(panel.tabs[1].read(cx).active);
         });
+    }
+
+    /// The full-width toggle is the shell's own dock/expand switch: it flips
+    /// and is undone by closing the panel, so ⌘J always brings the terminal
+    /// back in the chat column rather than under the docks.
+    #[gpui::test]
+    fn full_width_is_a_toggle_that_closing_resets(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+
+        let panel = panel_with_tabs(cx, 1, std::env::temp_dir());
+        assert!(
+            !cx.update(|_, cx| panel.read(cx).is_full_width()),
+            "docked by default"
+        );
+        cx.update(|_, cx| panel.update(cx, |panel, cx| panel.toggle_full_width(cx)));
+        assert!(cx.update(|_, cx| panel.read(cx).is_full_width()));
+        cx.update(|_, cx| panel.update(cx, |panel, cx| panel.toggle_full_width(cx)));
+        assert!(!cx.update(|_, cx| panel.read(cx).is_full_width()));
+
+        cx.update(|_, cx| panel.update(cx, |panel, cx| panel.toggle_full_width(cx)));
+        assert!(cx.update(|_, cx| panel.read(cx).is_full_width()));
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle(window, cx)));
+        assert!(!cx.update(|_, cx| panel.read(cx).is_open()));
+        assert!(
+            !cx.update(|_, cx| panel.read(cx).is_full_width()),
+            "a reopened panel is docked again"
+        );
     }
 
     /// Hiding the whole panel deactivates every tab, not just the selected one:

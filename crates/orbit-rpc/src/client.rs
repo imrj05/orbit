@@ -307,9 +307,42 @@ impl PiClient {
             command.env(key, value);
         }
         command.env("ORBIT_SUBAGENT_STATUS_TOKEN", &token);
+        Self::start(command, token, bin)
+    }
+
+    /// Spawn a remote pi over SSH (see [`crate::remote`]). `ssh_bin` is the ssh
+    /// executable; `target` and `launch` are checked and rendered into the
+    /// launch script, which installs the guard (and any other extensions)
+    /// before it execs pi. With a
+    /// `password`, ssh may answer one password prompt through the askpass
+    /// helper; without one it never asks (keys and the agent only).
+    pub fn spawn_remote_with_bin(
+        ssh_bin: &str,
+        target: &crate::remote::RemoteTarget,
+        launch: &crate::remote::RemoteLaunch<'_>,
+        password: Option<crate::remote::SshPassword<'_>>,
+    ) -> Result<Self> {
+        let script = crate::remote::launch_script(target, launch)?;
+        let args = crate::remote::ssh_args(target, &script, password.is_some());
+        let mut command = std::process::Command::new(ssh_bin);
+        command
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(password) = password {
+            crate::remote::apply_password(&mut command, password);
+        }
+        hide_console(&mut command);
+        Self::start(command, String::new(), ssh_bin)
+    }
+
+    /// Spawn `command` and wire its stdio into the writer, reader and stderr
+    /// threads. `label` names the executable in spawn errors.
+    fn start(mut command: std::process::Command, token: String, label: &str) -> Result<Self> {
         let mut child = command
             .spawn()
-            .with_context(|| format!("failed to spawn `{bin} --mode rpc`"))?;
+            .with_context(|| format!("failed to spawn `{label} --mode rpc`"))?;
 
         let stdin = child.stdin.take().context("pi stdin unavailable")?;
         let stdout = child.stdout.take().context("pi stdout unavailable")?;

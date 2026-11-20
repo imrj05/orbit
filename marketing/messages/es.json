@@ -31,7 +31,8 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "Una sesión de Orbit completada: el resumen del agente sobre el cambio en las opciones de abrir con y una tarjeta «3 archivos modificados» con el número de líneas por archivo, sobre el compositor."
+    "replay": "Repetir",
+    "shotAlt": "Una sesión de Orbit: se envía una tarea, pi lee, edita y prueba el cliente RPC, transmite su respuesta y una tarjeta «2 archivos cambiados» enumera los cambios con su número de líneas."
   },
   "trust": {
     "items": [
@@ -614,5 +615,143 @@
       "home": "Volver al inicio",
       "reference": "Referencia {digest}"
     }
+  },
+  "tour": {
+    "eyebrow": "Dentro de Orbit",
+    "title": "Cada superficie de pi, en una ventana nativa.",
+    "copy": "Elige una superficie para verla tal como se publica. Son capturas reales de Orbit funcionando con la CLI de pi, en el tema con el que lees esta página.",
+    "tablist": "Funciones de Orbit"
+  },
+  "highlights": {
+    "eyebrow": "Por qué Orbit",
+    "title": "El agente hace el trabajo. Tú mantienes el control.",
+    "copy": "Orbit muestra las llamadas a herramientas, los diffs y los modelos reales de pi mientras ocurren, para que cada ejecución sea algo que puedas leer, dirigir y aprobar.",
+    "approve": {
+      "lead": "Nada se ejecuta sin preguntar.",
+      "rest": "En modo Supervisado, el guardián de acceso detiene cada llamada que modifica algo: permítela una vez, permite siempre la herramienta o recházala, justo encima del editor."
+    },
+    "modes": {
+      "lead": "Planifica antes de construir.",
+      "rest": "Plan y Preguntar quitan las herramientas de escritura y limitan bash a comandos de solo lectura."
+    },
+    "review": {
+      "lead": "Revisa el turno, no todo el árbol.",
+      "rest": "Último turno muestra exactamente lo que cambió un turno del agente, a partir de checkpoints por turno."
+    },
+    "stat": {
+      "value": "0",
+      "label": "telemetría",
+      "rest": "Sin cliente de analítica, sin identificador de instalación, sin pings de uso. La red solo lleva lo que tú pides."
+    },
+    "models": {
+      "lead": "Cualquier proveedor, cualquier modelo.",
+      "rest": "Alojado o local con Ollama, con el esfuerzo de razonamiento fijado por tarea."
+    }
+  },
+  "capabilities": {
+    "eyebrow": "Todo lo demás",
+    "title": "Los detalles que lo convierten en un banco de trabajo.",
+    "copy": "El recorrido muestra las superficies grandes. Esto es el resto de lo que se publica hoy, todo funcionando con tu propia instalación de pi.",
+    "groups": [
+      {
+        "title": "Chat y transcripción",
+        "items": [
+          "Dirige una ejecución en marcha o encola un seguimiento; edita un mensaje en cola o envíalo ya.",
+          "Una transcripción renderizada en la GPU y virtualizada, con resaltado de sintaxis solo de pintura para que el streaming nunca reacomode el texto.",
+          "Diagramas de flujo Mermaid dibujados de forma nativa, con la fuente copiable a un clic.",
+          "Adjuntos de imágenes, archivos y pegados largos; las imágenes se comprimen al entrar.",
+          "Búsqueda con ⌘F en la transcripción y exportación a Markdown de cualquier respuesta."
+        ]
+      },
+      {
+        "title": "Sesiones",
+        "items": [
+          "Agrupadas por proyecto, compartidas con la CLI de pi y actualizadas en vivo cuando escribe el terminal.",
+          "Estado en vivo a partir de eventos reales de pi: En ejecución, Esperando aprobación, Reintentando, Compactando, Fallida.",
+          "Una ejecución que termina en segundo plano deja la marca «Por revisar» y una notificación de escritorio.",
+          "Renombra, fija, clona o rebobina; ⌘1 a ⌘9 saltan directamente a una sesión."
+        ]
+      },
+      {
+        "title": "Salvaguardas",
+        "items": [
+          "Supervisado, Aceptar ediciones o Acceso completo, elegido por tarea desde el editor.",
+          "Reglas de permisos por familia de herramientas con patrones: bash puede ejecutarse mientras rm sigue preguntando.",
+          "Subagentes con su propia ventana de contexto, sujetos a los mismos modos de acceso y de flujo.",
+          "Un guardián de confirmación, no un sandbox, y Orbit lo dice claramente."
+        ]
+      },
+      {
+        "title": "Revisión y Git",
+        "items": [
+          "Fuentes de diff para Último turno, Sin confirmar, Preparado, Confirmado y Rama.",
+          "Prepara, confirma, guarda en stash, haz push, pull, merge y rebase desde la página de Git.",
+          "Mensajes de commit y borradores de pull request generados con el modelo que elijas.",
+          "Issues y pull requests mediante gh, y worktrees de Git como espacios de trabajo de primera clase."
+        ]
+      },
+      {
+        "title": "Archivos y terminal",
+        "items": [
+          "Un árbol del proyecto que respeta .gitignore, con marcas de git y operaciones de archivos.",
+          "Archivos editables con resaltado de sintaxis, guardado automático y vista previa de Markdown.",
+          "Un terminal integrado (⌘J) cuyas pestañas en segundo plano siguen ejecutándose.",
+          "Abre el espacio de trabajo en tu editor o terminal desde la cabecera."
+        ]
+      },
+      {
+        "title": "Banco de trabajo",
+        "items": [
+          "Proveedores con inicio de sesión por clave de API u OAuth, además de modelos locales con Ollama.",
+          "Servidores MCP, skills y paquetes de pi gestionados sin editar JSON.",
+          "Uso según el propio contador de pi: tokens, coste y caché, guardados en tu equipo.",
+          "Títulos de sesión automáticos, una paleta de comandos (⌘P) y diez idiomas de interfaz."
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "eyebrow": "Por dentro",
+    "copy": "Sin webviews, sin daemon de Node, sin cuenta. Orbit es una app en Rust dibujada con GPUI que habla con el pi que ya tienes instalado, mediante el mismo protocolo RPC que pi documenta.",
+    "nodes": [
+      {
+        "title": "Orbit",
+        "mono": "Rust · GPUI",
+        "detail": "La ventana nativa. Transcripción, barra lateral y diffs dibujados en la GPU y virtualizados."
+      },
+      {
+        "title": "JSONL por stdio",
+        "mono": "JSON delimitado por líneas",
+        "detail": "Comandos que entran, eventos que salen. Los eventos desconocidos pasan tal cual, así un pi más nuevo nunca bloquea la app."
+      },
+      {
+        "title": "CLI de pi",
+        "mono": "pi --mode rpc",
+        "detail": "Un proceso hijo por sesión abierta: las mismas sesiones que el terminal ve en disco."
+      },
+      {
+        "title": "Tus modelos",
+        "mono": "alojados o locales",
+        "detail": "Lo que pi tenga configurado: proveedores alojados o un Ollama local en tu equipo."
+      }
+    ],
+    "stats": [
+      {
+        "value": "~90 ms",
+        "label": "de latido de eventos; un fotograma nunca espera a la E/S"
+      },
+      {
+        "value": "1 proceso",
+        "label": "de pi por sesión abierta, vivo en segundo plano"
+      },
+      {
+        "value": "0",
+        "label": "webviews, daemons de Node o cuentas"
+      },
+      {
+        "value": "10",
+        "label": "idiomas de interfaz, más el de tu sistema"
+      }
+    ]
   }
 }

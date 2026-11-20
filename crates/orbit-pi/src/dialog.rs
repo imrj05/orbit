@@ -13,14 +13,16 @@
 
 use gpui::{
     deferred, div, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity, FocusHandle,
-    Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, Render, ScrollHandle,
-    SharedString, Window,
+    Focusable, IntoElement, MouseButton, MouseDownEvent, Render, ScrollHandle, SharedString,
+    Window,
 };
 
-use crate::app::{modal_card, modal_scrim, PressedRamp, StatefulControlExt};
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{button, input, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
+use crate::theme::tokens::{list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
+use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::dialog::{focus_ring, ModalHeader};
+use crate::ui::prelude::{modal_card, modal_scrim, ModalWidthExt, PressedRamp, StatefulControlExt};
 
 /// Card width — a question plus its options without owning the window.
 const CARD_W: f32 = 560.;
@@ -170,11 +172,10 @@ impl ApprovalRequest {
 pub struct Dialog {
     request: DialogRequest,
     focus: FocusHandle,
-    /// Highlighted option (select) or the focused button (confirm: 0 = no,
-    /// 1 = yes; the affirmative is the default).
-    highlighted: usize,
-    /// Confirm state: the affirmative is preselected.
-    confirmed: bool,
+    /// Highlighted option for a select dialog.
+    highlighted: crate::ui::menu::MenuState,
+    /// No, then Yes. The No button takes focus when a confirmation opens.
+    confirm_buttons: Option<[FocusHandle; 2]>,
     /// Text field for `input` / `editor`.
     input: Option<Entity<ComposerInput>>,
     scroll: ScrollHandle,
@@ -203,11 +204,13 @@ impl Dialog {
             })),
             _ => None,
         };
+        let confirm_buttons = matches!(request.kind, DialogKind::Confirm)
+            .then(|| [cx.focus_handle(), cx.focus_handle()]);
         Self {
             request,
             focus: cx.focus_handle(),
-            highlighted: 0,
-            confirmed: true,
+            highlighted: crate::ui::menu::MenuState::default(),
+            confirm_buttons,
             input,
             scroll: ScrollHandle::new(),
             responded: false,
@@ -258,12 +261,16 @@ impl Dialog {
             return;
         }
         let response = match &self.request.kind {
-            DialogKind::Select { options } => match options.get(self.highlighted) {
+            DialogKind::Select { options } => match options.get(self.highlighted.highlighted()) {
                 Some(option) => DialogResponse::Value(option.clone()),
                 // Nothing to pick (an empty list) — treat as a dismissal.
                 None => DialogResponse::Cancelled,
             },
-            DialogKind::Confirm => DialogResponse::Confirmed(self.confirmed),
+            DialogKind::Confirm => DialogResponse::Confirmed(
+                self.confirm_buttons
+                    .as_ref()
+                    .is_some_and(|[_, yes]| yes.is_focused(window)),
+            ),
             DialogKind::Input { .. } | DialogKind::Editor { .. } => {
                 let text = self
                     .input
@@ -279,7 +286,7 @@ impl Dialog {
     fn on_next(&mut self, _: &crate::DialogNext, _: &mut Window, cx: &mut Context<Self>) {
         if let DialogKind::Select { options } = &self.request.kind {
             if !options.is_empty() {
-                self.highlighted = (self.highlighted + 1) % options.len();
+                self.highlighted.next(options.len());
                 self.reveal_highlighted();
                 cx.notify();
             }
@@ -289,10 +296,26 @@ impl Dialog {
     fn on_prev(&mut self, _: &crate::DialogPrev, _: &mut Window, cx: &mut Context<Self>) {
         if let DialogKind::Select { options } = &self.request.kind {
             if !options.is_empty() {
-                self.highlighted = (self.highlighted + options.len() - 1) % options.len();
+                self.highlighted.prev(options.len());
                 self.reveal_highlighted();
                 cx.notify();
             }
+        }
+    }
+
+    fn on_first(&mut self, _: &crate::DialogFirst, _: &mut Window, cx: &mut Context<Self>) {
+        if let DialogKind::Select { options } = &self.request.kind {
+            self.highlighted.first(options.len(), |_| true);
+            self.reveal_highlighted();
+            cx.notify();
+        }
+    }
+
+    fn on_last(&mut self, _: &crate::DialogLast, _: &mut Window, cx: &mut Context<Self>) {
+        if let DialogKind::Select { options } = &self.request.kind {
+            self.highlighted.last(options.len(), |_| true);
+            self.reveal_highlighted();
+            cx.notify();
         }
     }
 
@@ -303,7 +326,7 @@ impl Dialog {
     /// Scroll so the keyboard highlight stays visible (options are few, but a
     /// select may carry more than fit).
     fn reveal_highlighted(&self) {
-        let top = self.highlighted as f32 * OPTION_H;
+        let top = self.highlighted.highlighted() as f32 * OPTION_H;
         let bottom = top + OPTION_H;
         let scroll_top = f32::from(self.scroll.offset().y);
         let max_h = LIST_MAX_H;
@@ -320,66 +343,38 @@ impl Focusable for Dialog {
         self.input
             .as_ref()
             .map(|input| input.read(cx).focus_handle(cx))
+            .or_else(|| self.confirm_buttons.as_ref().map(|[no, _]| no.clone()))
             .unwrap_or_else(|| self.focus.clone())
     }
 }
 
 impl Render for Dialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.entity();
 
         let mut card = modal_card(&theme)
             .id("dialog-card")
             .debug_selector(|| "dialog-card".to_string())
-            .w_full()
-            .max_w(px(CARD_W))
+            .modal_width(px(CARD_W))
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
-            .on_action(cx.listener(Self::on_prev));
+            .on_action(cx.listener(Self::on_prev))
+            .on_action(cx.listener(Self::on_first))
+            .on_action(cx.listener(Self::on_last));
 
         // ── header: origin, title, and (confirm) the message body ──
-        // Zed's `ModalHeader` insets, with its Small headline for the title.
-        let mut header = div()
-            .px(modal::header_padding_x(&theme))
-            .pt(modal::header_padding_top(&theme))
-            .pb(modal::header_padding_bottom(&theme))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base04.px(&theme))
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from("Question")),
-            )
-            .child(
-                div()
-                    .whitespace_normal()
-                    .text_size(modal::HEADLINE.px(&theme))
-                    .line_height(modal::HEADLINE.line_height(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(SharedString::from(self.request.title.clone())),
-            );
+        // The body continues the question, so no hairline between them.
+        let mut header = ModalHeader::new(SharedString::from(self.request.title.clone()))
+            .eyebrow(tr!("dialog.question"))
+            .divider(false);
         if let Some(body) = self.request.body.clone() {
-            if !body.trim().is_empty() {
-                header = header.child(
-                    // Zed's header description closes with `mb_2`.
-                    div()
-                        .mb(theme.rems(0.5))
-                        .whitespace_normal()
-                        .text_size(TextSize::Default.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .child(SharedString::from(body)),
-                );
-            }
+            header = header.description(body);
         }
+        let header = header.render(&theme);
         card = card.child(header);
 
         // ── body: options, buttons, or a text field ──
@@ -388,7 +383,18 @@ impl Render for Dialog {
                 card = card.child(self.render_options(options, &this, theme));
             }
             DialogKind::Confirm => {
-                card = card.child(self.render_confirm(theme, cx));
+                if let Some(stops) = &self.confirm_buttons {
+                    let forward = stops.clone();
+                    let backward = stops.clone();
+                    card = card
+                        .on_action(move |_: &crate::FocusNext, window, _| {
+                            focus_ring(&forward, false, window);
+                        })
+                        .on_action(move |_: &crate::FocusPrev, window, _| {
+                            focus_ring(&backward, true, window);
+                        })
+                        .child(self.render_confirm(stops, theme, cx));
+                }
             }
             DialogKind::Input { .. } | DialogKind::Editor { .. } => {
                 if let Some(input) = &self.input {
@@ -398,16 +404,11 @@ impl Render for Dialog {
                             .px(modal::section_padding_x(&theme, false))
                             .pb(modal::section_padding_bottom(&theme))
                             .flex_none()
+                            // The shared field, on `background` like every
+                            // other field inside a dialog card.
                             .child(
-                                div()
-                                    .min_h(input::min_height(&theme))
-                                    .px(input::padding_x(&theme))
-                                    .py(input::padding_y(&theme))
-                                    .rounded(input::RADIUS.px(&theme))
-                                    .border_1()
-                                    .border_color(theme.border_strong)
-                                    .bg(theme.surface_elevated)
-                                    .child(input.clone()),
+                                crate::ui::field::TextField::new(input.clone(), theme.background)
+                                    .render(&theme),
                             ),
                     );
                 }
@@ -432,7 +433,7 @@ impl Render for Dialog {
                 .items_center()
                 .gap(modal::footer_gap(&theme))
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_muted)
                 .child(hint),
@@ -488,7 +489,7 @@ impl Dialog {
             .flex()
             .flex_col();
         for (ix, option) in options.iter().enumerate() {
-            let highlighted = ix == self.highlighted;
+            let highlighted = ix == self.highlighted.highlighted();
             let this = this.clone();
             list = list.child(
                 div()
@@ -512,8 +513,8 @@ impl Dialog {
                         let this = this.clone();
                         move |_, _, cx| {
                             this.update(cx, |dialog, cx| {
-                                if dialog.highlighted != ix {
-                                    dialog.highlighted = ix;
+                                if dialog.highlighted.highlighted() != ix {
+                                    dialog.highlighted.highlight(ix);
                                     cx.notify();
                                 }
                             });
@@ -523,12 +524,12 @@ impl Dialog {
                         let this = this.clone();
                         move |_, window, cx| {
                             this.update(cx, |dialog, cx| {
-                                dialog.highlighted = ix;
+                                dialog.highlighted.highlight(ix);
                                 dialog.on_confirm(&crate::DialogConfirm, window, cx);
                             });
                         }
                     })
-                    .when(highlighted, |row| row.bg(theme.surface_selected))
+                    .when(highlighted, |row| row.bg(theme.selected_wash()))
                     .child(
                         div()
                             .whitespace_normal()
@@ -545,68 +546,35 @@ impl Dialog {
         list.into_any_element()
     }
 
-    /// The confirm dialog's Yes/No buttons; the keyboard highlight and hover
-    /// move together, Enter commits the focused one.
-    fn render_confirm(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let this = cx.entity();
+    fn render_confirm(
+        &self,
+        stops: &[FocusHandle; 2],
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .px(modal::section_padding_x(&theme, false))
             .pb(modal::section_padding_bottom(&theme))
             .flex_none()
             .flex()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .children([false, true].into_iter().enumerate().map(|(ix, value)| {
-                let highlighted = self.confirmed == value;
-                let this = this.clone();
-                div()
-                    .id(ElementId::NamedInteger("dialog-button".into(), ix as u64))
-                    .h(ButtonSize::Large.height(&theme))
-                    .px(ButtonSize::Large.padding_x(&theme))
-                    .flex_1()
-                    .rounded(button::RADIUS.px(&theme))
-                    .border_1()
-                    .border_color(if highlighted {
-                        theme.border_strong
-                    } else {
-                        theme.border
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .text_size(TextSize::Default.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .on_hover({
-                        let this = this.clone();
-                        move |hovering, _, cx| {
-                            if *hovering {
-                                this.update(cx, |dialog, cx| {
-                                    if dialog.confirmed != value {
-                                        dialog.confirmed = value;
-                                        cx.notify();
-                                    }
-                                });
+            .children([false, true].into_iter().zip(stops).map(|(value, focus)| {
+                let id = if value { "dialog-yes" } else { "dialog-no" };
+                Button::new(id, ButtonVariant::Secondary)
+                    .size(ButtonSize::Large)
+                    .focus(focus)
+                    .on_click(
+                        &theme,
+                        cx.listener(move |dialog, event: &gpui::ClickEvent, window, cx| {
+                            // DialogConfirm owns Enter. GPUI's synthetic click on
+                            // key release need not have started in this dialog.
+                            if matches!(event, gpui::ClickEvent::Mouse(_)) {
+                                dialog.respond(DialogResponse::Confirmed(value), window, cx);
                             }
-                        }
-                    })
-                    .on_click({
-                        let this = this.clone();
-                        move |_, window, cx| {
-                            this.update(cx, |dialog, cx| {
-                                dialog.confirmed = value;
-                                dialog.on_confirm(&crate::DialogConfirm, window, cx);
-                            });
-                        }
-                    })
-                    .when(highlighted, |button| {
-                        button
-                            .bg(theme.overlay_strong)
-                            .text_color(theme.text_primary)
-                    })
-                    .when(!highlighted, |button| {
-                        button.text_color(theme.text_secondary)
-                    })
+                        }),
+                    )
+                    .debug_selector(move || id.to_string())
+                    .flex_1()
                     .child(if value { "Yes" } else { "No" })
             }))
             .into_any_element()
@@ -660,6 +628,77 @@ mod tests {
         .unwrap();
         assert_eq!(request.body.as_deref(), Some("All messages will be lost."));
         assert_eq!(request.kind, DialogKind::Confirm);
+    }
+
+    #[gpui::test]
+    fn confirm_defaults_to_no_even_when_yes_is_hovered(cx: &mut gpui::TestAppContext) {
+        for hover_yes in [false, true] {
+            let (cx, answer) = open_confirmation(cx);
+            if hover_yes {
+                let yes = cx.debug_bounds("dialog-yes").expect("Yes button").center();
+                cx.simulate_mouse_move(yes, None, gpui::Modifiers::none());
+            }
+            cx.simulate_keystrokes("enter");
+            assert_eq!(
+                answer.take(),
+                Some(DialogResponse::Confirmed(false)),
+                "hover_yes={hover_yes}",
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn confirmation_can_be_chosen_by_keyboard_or_click(cx: &mut gpui::TestAppContext) {
+        for (keys, expected) in [
+            ("tab enter", DialogResponse::Confirmed(true)),
+            ("tab shift-tab enter", DialogResponse::Confirmed(false)),
+            ("escape", DialogResponse::Cancelled),
+        ] {
+            let (cx, answer) = open_confirmation(cx);
+            cx.simulate_keystrokes(keys);
+            assert_eq!(answer.take(), Some(expected), "{keys}");
+        }
+
+        let (cx, answer) = open_confirmation(cx);
+        cx.simulate_keystrokes("tab");
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").expect("a valid key"),
+        });
+        assert_eq!(answer.take(), None, "a stray key release does not answer");
+
+        let (cx, answer) = open_confirmation(cx);
+        let yes = cx.debug_bounds("dialog-yes").expect("Yes button").center();
+        cx.simulate_click(yes, gpui::Modifiers::none());
+        assert_eq!(answer.take(), Some(DialogResponse::Confirmed(true)));
+    }
+
+    fn open_confirmation(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        &mut gpui::VisualTestContext,
+        std::rc::Rc<std::cell::Cell<Option<DialogResponse>>>,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::for_id(theme::ThemeId::Orbit));
+            crate::bind_keys(cx);
+        });
+        let answer = std::rc::Rc::new(std::cell::Cell::new(None));
+        let response = answer.clone();
+        let (dialog, cx) = cx.add_window_view(|_, cx| {
+            Dialog::new(
+                DialogRequest {
+                    id: "confirm".into(),
+                    title: "Clear session?".into(),
+                    body: None,
+                    kind: DialogKind::Confirm,
+                },
+                Box::new(move |answer, _, _| response.set(Some(answer))),
+                cx,
+            )
+        });
+        cx.update(|window, cx| window.focus(&dialog.read(cx).focus_handle(cx)));
+        cx.run_until_parked();
+        (cx, answer)
     }
 
     #[test]

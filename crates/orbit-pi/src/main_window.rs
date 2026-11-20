@@ -75,6 +75,7 @@ fn shell(cx: &mut App) -> Entity<OrbitApp> {
         .borrow_mut()
         .replace(app.clone());
     spawn_heartbeat(cx, &app);
+    spawn_backdrop_clock(cx, &app);
     app
 }
 
@@ -137,10 +138,11 @@ pub fn open(cx: &mut App) {
     cx.activate(true);
 }
 
-/// Where the main window opens: the frame it last had (#131), clamped onto
-/// a display that is still attached, or — on first launch, or when that
-/// display is gone — maximized over a centred restore frame sized to the
-/// primary display so it fits even on small or scaled screens.
+/// Where the main window opens: the frame and windowed/maximized/fullscreen
+/// state it last had (#131), clamped onto a display that is still attached, or
+/// — on first launch, or when that display is gone — maximized over a centred
+/// restore frame sized to the primary display so it fits even on small or
+/// scaled screens.
 ///
 /// Also returns the state the window opened as, which seeds the bounds
 /// watcher: macOS reports a zoomed window's zoomed frame, so the restore
@@ -169,6 +171,7 @@ fn initial_bounds(
             window_state::Saved {
                 bounds: restore.bounds,
                 maximized: restore.maximized,
+                fullscreen: restore.fullscreen,
                 display: infos[restore.display].uuid.clone(),
             },
         );
@@ -188,6 +191,7 @@ fn initial_bounds(
         window_state::Saved {
             bounds: restore_bounds,
             maximized: true,
+            fullscreen: false,
             display: None,
         },
     )
@@ -307,6 +311,40 @@ fn spawn_heartbeat(cx: &mut App, app: &Entity<OrbitApp>) {
             } else {
                 Duration::from_millis(90)
             };
+        }
+    })
+    .detach();
+}
+
+/// The new-task dither field's own clock.
+///
+/// Deliberately not the RPC heartbeat: that beat idles at ~90 ms because that
+/// is how often pi's stdout must be drained, and a field drawn on it can only
+/// reach ~11 Hz — too few steps for a one-bit screen, whose grain boils rather
+/// than flows when a single step turns over several per cent of the plane.
+///
+/// This loop only advances the field's phase and asks for one repaint. It never
+/// drains events, never runs a background poll, and costs a sleeping timer
+/// while no new-task page is on screen (and no raster while Reduce Motion
+/// holds the frame) — `tick_backdrop` says which cadence applies.
+fn spawn_backdrop_clock(cx: &mut App, app: &Entity<OrbitApp>) {
+    let field = app.clone();
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        loop {
+            // 30 Hz while the field is moving — a full-window raster is ~5.6 ms,
+            // so a 33 ms beat leaves the raster off the critical path. The
+            // field only advances a frame when the phase crosses one, so a
+            // page that is not on screen asks for nothing.
+            let delay = Duration::from_millis(33);
+            Timer::after(delay).await;
+            let Ok(moving) = field.update(cx, |app: &mut OrbitApp, cx| app.tick_backdrop(cx)) else {
+                return;
+            };
+            if !moving {
+                // Nothing to animate: wait for the page to come back rather
+                // than waking 30 times a second over a session.
+                Timer::after(Duration::from_millis(500)).await;
+            }
         }
     })
     .detach();

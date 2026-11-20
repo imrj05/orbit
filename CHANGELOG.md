@@ -7,8 +7,554 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The server's branch on remote sessions.** The header and status bar show the branch (and
+  ahead/behind) of the session's folder **on the server** — never this Mac's — in the same
+  branch selector as local sessions: search, the server's branches newest first, and
+  **Create and checkout new branch…**. Picking or creating a branch switches it on the server
+  over ssh; git's own error is shown if it refuses (for example over uncommitted changes).
+- **Sidebar "By date" view.** The sidebar view menu has a new **By date**
+  grouping: one list under day sections (Pinned, Today, Yesterday, This week,
+  This month, Older), counted in local calendar days and newest first inside
+  each section. Pinned sessions keep their own section on top, so no session
+  is listed twice. The choice is remembered across restarts.
+
+- **Your backgrounds.** Settings → Appearance → Background now lists the
+  pictures in your own folder, `~/.orbit-pi/wallpapers/library/`, next to the
+  built-in ones; **Open folder** opens it, and pictures you add or remove show
+  up while Settings is open. Orbit only reads the folder, so your pictures stay
+  on your computer.
+
+- **Pull requests and checks on a commit.** Opening a commit on the Git
+  page's History or Graph tab now shows the pull request it belongs to (who
+  opened it, who merged it — click to open it on the Pull requests tab) and
+  its CI checks, with failing and running checks listed by name. The card is
+  also tidier: labeled Author / Committer / Commit / Parents rows with
+  relative times (exact time on hover), and a file-change total. Needs a
+  GitHub remote and a signed-in `gh`; one request per commit you open.
+
+- **Initialize Git from the Git page.** Opening Git in a folder that is not a
+  repository now says so and offers **Initialize Git repository**, instead of
+  showing empty tabs. It runs `git init` with your own default branch name.
+
+- **Git details for remote sessions.** On a remote session the Git page shows
+  the host's own Git state for the session's folder — repository root, branch,
+  upstream with ahead/behind, changed files, last commit and `origin` (any
+  credentials removed) — read over SSH without changing anything. A folder
+  that is not a repository, or a host without `git`, is said plainly.
+
+- **Remote sessions in their project's group.** A remote host entry can now be
+  linked to a project on this computer (Settings → Remote hosts → **Local
+  project folder**). With the sidebar grouped by project, that host's sessions
+  list inside the project's group, after its local sessions, instead of in a
+  group of their own at the bottom. **Add this project to a server…** links
+  the entry it saves to the project it cloned.
+
+- **Built-in backgrounds.** Settings → Appearance → Background now offers
+  one-click backgrounds in four rows: Gradients (seven generated gradients),
+  Nature, Anime (original anime-style illustrations) and Japanese art (woodblock
+  prints by Hokusai and Hiroshige). The images ship with the app and are
+  credited in `assets/wallpapers/CREDITS.md` and in each thumbnail's tooltip.
+  They work like a picked image: placement, blur, effects, glass and
+  accent-from-image all apply.
+
+- **Dithered Hero wallpaper preset.** Apply fine dither, no image blur, and a
+  bottom fade to your chosen image on the new-task screen. The preset is opt-in
+  under Settings → Appearance → Background. The separate **Bottom fade** toggle
+  also blends full-window wallpaper into the active theme at the bottom edge.
+
+- **Frosted glass pages.** With a full-window wallpaper, the Git, Usage, Files and
+  Worktrees pages, the expanded terminal, and the Review, Explorer and session-details
+  docks are now frosted glass cards: the picture blurs softly behind them, their inner
+  cards and headers are translucent on the glass, and the Review diff's sticky headers
+  frost the code scrolling under them. Previously each page painted an opaque canvas over
+  its card, so the wallpaper never showed through. Hero wallpaper and no wallpaper keep
+  the opaque pages.
+
+- **Remote sessions in the sidebar.** Each enabled remote host entry gets a group under your
+  projects listing the sessions that ran in its folder on that server, newest first; clicking
+  one resumes it **on the server** (the session's own model and Plan/Build/Ask mode kept). The
+  server lists its own pi store over ssh — read-only, only each row's title, folder and time,
+  never a transcript. Lists refresh at launch, on ⌘R and after a remote turn settles without
+  asking for anything; a server that wants a password says so, and its group's refresh button
+  signs in.
+- **Focus comes back after more dialogs close.** The MCP server editor, the remote
+  host editor, the provider account editor, the remote API-key prompt, "Add to a
+  server" and the SSH password prompt now return the keyboard to whatever opened
+  them when they close — by button, Escape, the scrim or a finished operation —
+  instead of leaving focus nowhere. While they are open, **Tab** and **Shift-Tab** move
+  between their fields and wrap, instead of doing nothing. An extension's question
+  dialog labels itself in your interface language instead of always in English. Menus that close from an outside click now
+  all ignore that same click's release on their trigger for the same 200 ms.
+
+- **Home / End in long pickers, and Retry when Review cannot load.** The worktree
+  "Work in" menu and an extension's select dialog jump to their first and last
+  rows with **Home** and **End**. When the Review pane fails to read a diff, its
+  error now carries a **Retry** button that runs the same reload as the header's
+  refresh.
+- **One button and badge vocabulary across the app.** Buttons now come from one
+  component with named variants (primary, secondary, outline, tinted, danger,
+  ghost), so the same meaning looks the same in Settings, Subagents, MCP, Git,
+  Worktrees, Usage and the updater. A few buttons changed slightly as a result:
+  primary buttons gain the 1px edge their neighbours already had (2px wider),
+  primary buttons press by colour instead of also dimming, disabled buttons use
+  the shared disabled frame, and the session-retention, plugin and runtime
+  buttons take the shared medium weight. Provider badges are 18px tall like
+  Git's ref badges. Inline warning and error notices share one banner, so the
+  Worktrees error and the inactive-subagents notice match the app's other
+  error cards.
+
+- **Frosted floating surfaces without a wallpaper.** In dark palettes on macOS,
+  menus, pickers, popovers, tooltips, notifications, modals and the
+  jump-to-latest button now frost the workbench behind them, a 24 pt blur
+  under a tint of the card colour, instead of painting a solid card. Each
+  palette gets the lightest tint its text allows: the lowest opacity (never
+  below 55%) at which text keeps its contrast even over a pure white backdrop,
+  so Onyx shows more glass than Flexoki.
+  Light palettes keep their solid cards. macOS **Reduce Transparency** or
+  **Increase Contrast** brings the solid card back everywhere, and over a
+  wallpaper, Settings → Appearance → Glass panes still decides. The sidebar,
+  panes and the composer frost only over a wallpaper, as before.
+
+- **Reordering projects and sessions in the sidebar.** Drag a project header onto
+  another one and a line shows exactly where it will land; release, and the order is
+  yours. Session rows rearrange the same way inside their own project (a session never
+  changes folder), newest-created tasks still landing at the top of the group. With the
+  sidebar focused, **⌥↑ / ⌥↓** move the row the cursor is on — a project header or a
+  session — and both row menus list **Move up** / **Move down** (shown disabled with the
+  reason at either end). A project move is applied to the order on screen and pins the
+  project sort to **Manual (added order)**, with a toast when that changes, so the new
+  order stays put instead of being re-sorted by activity on the next repaint.
+- **More than one account per provider, all usable at once.** Settings → Providers &
+  models has an **Accounts** panel in every provider's row: add, rename or remove an
+  extra account and see whether each one is signed in. Every account is its own
+  provider row (`ChatGPT (Codex) · Work`) with its own sign-in — browser, device code,
+  pasted code or API key — and all accounts are live in every session at the same
+  time: pick any account's model in the model picker, no switching and no restart.
+  A bundled pi extension registers each account as a copy of its provider under its
+  own id, so pi stores and refreshes every account's credential separately in its own
+  `auth.json`. Stores from the earlier per-session design migrate automatically (each
+  sign-in moves to its account; nothing is copied). Remote sessions keep the host's
+  own credentials.
+- **Add a project to a server.** Like t3code's "Add to another machine": the new-task
+  folder picker's **Add this project to a server…** (or a host card's **Add a project from
+  this Mac…**) clones the project's `origin` with git **on the server** — SSH or HTTPS, any
+  token in the URL stripped — into a folder you choose (`~/<repo>` by default), then copies
+  the ignored files you tick (`.env`, `.env.*`, `.envrc`, `.dev.vars` ticked by default; up
+  to 1 MB each) over ssh's stdin, written 0600 and kept inside the clone. Clone failures are
+  explained (git missing, git host key not trusted, key refused, HTTPS login needed), a
+  host entry is saved for the new folder, and a session starts there.
+- **Remote sessions now respect Plan / Build / Ask, the default model and the access mode.**
+  The workflow extension is installed on the host beside the access guard, the session
+  starts in the chosen mode (`ORBIT_WORKFLOW_MODE`), and a mid-session change is written
+  to the host's `~/.orbit-pi/workflow.json` over ssh — a failed write says so. A new remote
+  task applies the default model through RPC when the host's own catalog has it. The
+  access chip shows Supervised while remote (what the host is pinned to) and its menu
+  stays shut with the reason. Non-image file attachments are refused with a toast instead
+  of sending a path that does not exist on the host.
+- **Run the agent on a VPS over SSH.** Settings → Remote hosts manages the machines,
+  after t3code's environment panel: **Add host** opens a form for the SSH host or
+  `~/.ssh/config` alias (your aliases are offered as suggestions), an optional user and
+  port, the remote directory and a display name, and **Test connection** checks — without
+  changing anything on the host — that ssh connects, the directory exists and `pi` is
+  installed, before you save. Each host row shows `user@host:port`, the directory and its
+  last check, with Test, Edit and Remove. Hosts are stored in
+  `~/.orbit-pi/remote-hosts.json`, written surgically so hand edits survive. The new-task
+  folder picker lists the hosts, and **Add a remote host…** opens the form. Picking
+  a host spawns `pi --mode rpc` there over `ssh`; the RPC stream rides ssh's stdio, so
+  no server, port forward or pairing is involved. Agent only: Files, Git, Review,
+  Worktrees, the Explorer and `@` mentions read this machine's disk and are off for a
+  remote session, which the folder chip and status bar name by host. The access guard is
+  installed on the host on every launch and the host's mode is pinned to Supervised; a
+  session never starts without it. Connections try SSH keys first; when the server refuses
+  them and accepts a password, Orbit asks for it in a masked dialog and hands it to that
+  one ssh process through an askpass helper — kept in memory until Orbit quits, never
+  written to disk, up to three tries. Unknown host keys are verified in a terminal, never
+  trusted from the app. Password logins need macOS or Linux; keys work everywhere.
+  Each host is a card (name, `SSH user@host:port · status`, an on/off switch that hides
+  it from the folder picker, and a ⋯ menu with Test connection / Edit / Remove). A failed
+  check says why — a cloud image that only allows `opc`/`ubuntu` (**Use opc**), a login
+  profile stopped by a signal, or pi missing — and **Install pi** installs it over ssh
+  with pi's official installer, plus checksum-verified Node.js 22 from nodejs.org when the
+  server has none; no sudo, no profile edits. Orbit also finds pi through your own login
+  shell and in pi's usual install folders, as t3code does for its agent CLIs.
+  During a remote session, Settings → Providers → **Sign in** runs `pi /login` on the
+  server in Terminal (over `ssh -t`, so ssh and pi ask their own questions there), and
+  **Restart pi** reattaches to the server's session so the model picker lists the newly
+  signed-in provider. The page says which machine each control acts on.
+  Providers & models has a **Machine** selector (This Mac, plus each enabled remote host,
+  after t3code's environment picker). A host shows its own signed-in providers and their
+  models, read from that server's `pi --list-models` over ssh so credentials never leave
+  it, with **Sign in** (pi's own `/login` on the server: OAuth and API keys) and **Refresh**.
+  The page opens on the machine the current session runs on. On a host, **Add API key**
+  saves a key there without leaving Orbit (typed into a masked field, or **Use this Mac's
+  key**); it travels on ssh's stdin only and is merged into the server's `auth.json`
+  (0600). Subscription sign-ins open pi's `/login` for the server in a tab of Orbit's own
+  terminal panel. OAuth credentials are never copied between machines.
+  Restarts and reconnects stay on the host; leaving a remote session stops its process,
+  and remote sessions are not listed in the sidebar (pi keeps their files on the host).
+- **New project without starting a task.** **New project…** in the new-task folder
+  picker (and in the command palette) asks for a folder and adds it to the sidebar as an
+  empty project group, whose own `+` starts a task there. Nothing is written to pi, and a
+  folder that is already listed says so instead of appearing twice (#131).
+- **Delete project & files.** The sidebar project menu now separates the two meanings:
+  **Delete project** drops the row from the sidebar (pi's sessions untouched, as before),
+  and **Delete project & files** asks once, naming the folder, before removing it from
+  disk — to the Trash on macOS, permanently where the platform has no recoverable delete
+  (the confirmation says which). Guards refuse a filesystem root, the home folder, a
+  folder that contains another project, and a folder a live task is still working in; the
+  row only leaves the sidebar once the folder is actually gone (#131).
+- **The terminal opens as a page.** The bottom panel's header carries an expand
+  control beside Restart: one click and the shell leaves its strip to own the main
+  column the way the Git page and Usage do — chat skipped, tab strip and controls at
+  the top, the grid filling everything below, a **Back** and the page title in the
+  shared top bar. The same control (now a shrink glyph) puts the strip back. The
+  docks keep their place, since a page is the column, not the window, and the panel
+  reopens docked after it is closed — ⌘J never changes two things at once.
+
 ### Fixed
 
+- **Issue and pull request rows show their title and labels again.** A list
+  longer than the pane squeezed every row down to its first line, so each row
+  read only "Issue · #154" with the time. Rows now keep their full height and
+  the list scrolls.
+
+- **The Remote hosts card's ⋯ menu closes when ⋯ is pressed again.** The press
+  first dismissed the menu as an outside click and its release re-opened it, so
+  the menu could only be closed by clicking elsewhere. The menu is also sized to
+  its labels now, so "Add a project from this Mac…" is no longer cut off.
+
+- **Fullscreen is remembered across launches.** Closing or quitting while the main
+  window is in native fullscreen now reopens it in fullscreen, not merely maximized.
+  The ordinary window frame is still remembered and restored when leaving fullscreen;
+  maximized remains a separate state (#131).
+
+### Changed
+
+- **Quieter chrome.** Top-bar controls (quota, details, open-in, review,
+  terminal, explorer) no longer sit in framed chips. They rest as plain icons
+  and text and pick up their glass only on hover or while their panel is
+  open. The provider-quota meter shows the provider's mark only (its name is
+  in the tooltip and the popover). The model and
+  thinking-level chips now read as one setting ("Opus 5.5 Medium ▾"): the
+  level loses its icon and sits in muted ink after the model name, and each
+  half still opens its own picker. The composer placeholder now mentions `@`
+  files and `/` commands. Both meters stay neutral until they need attention:
+  the context meter turns amber at 70% and red at 90%, and the quota chip
+  turns amber at 75% and red at 90%.
+
+- **A calmer transcript.** The "Worked for 20s" row at the head of a settled
+  turn is now a quiet left-aligned disclosure instead of a centred divider
+  with rules on both sides. Under each answer, the footer shows only tokens
+  in and out (`↑141.4K ↓24.7K`); cache share, cost and output rate are in
+  its hover card, which already listed them. The end-of-task changed-files
+  summary is a borderless tonal panel with a one-line header ("Changed 3
+  files +247 −104" and Review) instead of a framed card with an icon tile and
+  rules between its sections. It still shows three files, then "Show N more".
+
+- **Quieter session rows.** The branch icon on a session row (and in its
+  hover card) is monochrome, and ahead/behind counts show on the open
+  session's row only; every row's hover card still lists them. The sidebar's
+  section label shows how many sessions it lists.
+
+- **Remote hosts are marked Experimental.** Settings → Remote hosts, its
+  navigation entry and each server in the new-task folder picker carry an
+  *Experimental* tag, and the page says what that means: remote sessions may
+  misbehave or change between releases.
+
+- **The new-task dither field actually moves.** The dots in the background
+  behind a fresh session used to drift one noise cell every 29 seconds and be
+  re-rastered five times a second, so most frames came out identical and the
+  field read as a still image. It now drifts a cell every 2.5 seconds at 10 Hz
+  — the idle heartbeat's own ceiling — on a finer 7 px ruling with a slightly
+  wider density band, so the grain visibly flows without the grain catching up
+  with the watermark or the page leaving the theme's canvas. Reduce Motion still
+  holds the frame it was showing.
+
+- **Your messages and terminal output on glass.** With a wallpaper and Glass
+  on, the bubble around your own messages is now frosted glass like the tool
+  cards beside it, and a tool card's command and output pane no longer covers
+  the card's frost with a solid block. Thinking cards now use the same frosted
+  card as tool cards, instead of a lighter wash that made the two look like
+  different materials. Without glass, everything looks as it did before.
+
+- **Subtle hover on glass.** Outlined chips (such as the transcript's
+  "1 thought" chip) and Secondary and Outline buttons no longer turn
+  see-through under the pointer over a wallpaper or a frosted menu; their face
+  lifts one subtle step and stays solid.
+
+- **A cleaner Theme section.** Light / Dark / System is now a small segmented
+  control, and the dark theme, light theme and accent are compact dropdowns.
+  Each theme option shows a small swatch of that theme in your accent, and each
+  accent option a dot of its colour. The large picture cards and thumbnail
+  galleries are gone.
+
+- **Selected and hovered rows on glass.** Over a wallpaper, and inside frosted
+  menus, pickers, popovers and dialogs in dark palettes, the open row, the
+  chosen option, an open chip or icon button and the active tab now use a
+  translucent wash instead of an opaque block, so the glass shows through the
+  state. Info, success and warning banners and Usage's loading bars are
+  translucent on glass pages too. Opaque surfaces look exactly as before.
+
+- **One component layer for the whole app.** Every button, chip, banner, field,
+  menu, popover, modal, row, table, tree, tab strip, diff line, status bar and
+  rail now comes from one shared component, so they look and behave the same on
+  every screen. Visible effects: segmented controls share one cross-fading
+  style with medium labels; icon buttons press with the same wash; the Git
+  failure notice, the worktree setup banner and the Explorer's notice strip use
+  the shared banner; the Review tree's keyboard cursor matches the Explorer's;
+  transcript edit diffs use Review's red/green strengths; dialog headers share
+  one layout. Settings → Appearance theme previews no longer show square corners
+  inside their rounded cards.
+- **Context menus work from the keyboard.** The Explorer, transcript text and
+  sidebar session/project menus take the arrow keys, Home/End, Enter and
+  Escape; Shift-F10 or the Menu key opens a sidebar row's menu (and the
+  Explorer's). Form dialogs' Cancel and Save buttons are Tab stops — Enter or
+  Space presses them.
+- **The wallpaper's page tint is yours, not the contrast pass's.** In full-window
+  mode the sidebar, the chat column and the settings nav used to take at least
+  65% of the palette's own background colour over the picture, and the contrast
+  pass could raise that further on a bright image — so a chosen wallpaper read as
+  a black-tinted backdrop however translucent you asked for. **Card opacity** now
+  paints those panes at exactly the value you set, all the way down to 0%, where
+  the image is shown as processed with no tint at all. Cards, the composer,
+  menus and dialogs keep their contrast pass, so their text stays readable.
+  Dimming the picture is now only **Image opacity** (plus **Glass panes** for the
+  panes themselves, which blur without tinting).
+
+- **One design system, and a redesigned Theme and Background.** The
+  Classic / Operational switch is gone: Operational and Operational Light are
+  now ordinary palettes beside the Orbit family, Flexoki and Onyx. Settings →
+  Appearance → **Theme** shows Light, Dark and System as picture cards, then a
+  **Dark themes** and a **Light themes** gallery of thumbnails, each a
+  miniature workbench painted from that palette with your accent; each gallery
+  remembers its own choice and the one on screen is marked **In use**. Accent
+  colour is a row of swatches instead of a dropdown. **Background** leads with
+  a larger preview that, with no image, is an empty state with **Choose
+  image…**; placement is a segmented control, and the sliders and pane toggles
+  move to their own **Image adjustments** board once an image exists. Language
+  has its own section. Every picker is one tab stop, with arrow keys moving
+  inside it. If you had chosen the Operational design system, Orbit opens on
+  the Operational palettes as before.
+
+- **Toasts restyled after shadcn's toast.** Cards are cleaner: an inline status
+  glyph instead of a tinted tile, a medium title over a muted description at
+  the same size, roomier padding and a quiet × centred on the right. Several
+  toasts now rest as a collapsed deck, the newest in front and up to two older
+  ones peeking above it, and fan out into a column under the pointer. While
+  the pointer is over the stack nothing expires; leaving resumes each card's
+  timer where it stopped. New cards rise into place as they fade in; with
+  Reduce Motion on they simply appear.
+
+- **Settings → Subagents reads as one workflow.** The agent header is a single
+  bar — name and status on the left, Duplicate, Save and the Enabled switch on
+  the right — and the form follows the order an agent is written in: identity,
+  prompt, tools, mode, model, file, then the read-only preview. Delegation
+  limits apply to every agent, so they moved off each agent's form to their own
+  page, opened from a pinned row above the agent list; the open agent's edits
+  survive the trip. The form stops widening at 760 px.
+
+- **Sidebar Projects panel polish.** Sessions under an expanded project now step in
+  under the project mark, with a hairline tree guide down the chevron column, so the
+  project → session hierarchy reads at a glance; the "Show N more" / "Show less" rows
+  sit on the same indent and guide. Project marks are one consistent tile (logos fill
+  it, glyphs sit centred on it, both behind the same hairline). Session counts are
+  plain muted figures instead of filled chips, the preview line is muted beneath a
+  tighter title, and the section label is a small eyebrow with a rule to the edge.
+- **The UI got its own layer.** `crates/orbit-pi/src/ui/` now sits between the design
+  tokens and the surfaces, which is where every element will move as it gains one named
+  owner (`docs/plans/ui-component-layer.md`). This first landing is a pure move:
+  `TipExt`, `ControlExt`, `StatefulControlExt`, `PressedRamp` and `AccentWash` live in
+  `ui/style/control.rs` (re-exported, so no call site changed), the tooltip view moved
+  from `usage/tooltip.rs` to `ui/tooltip.rs` because a shared element was living under a
+  page, and `scripts/check_ui_layers.py` now fails the build if `ui/` imports a surface
+  or re-derives the backdrop-blur marker outside `ui/style/surface.rs`. Rendering is
+  unchanged.
+- **Settings → Providers & models is a list, not a card grid.** The three-column grid
+  squeezed each provider card to ~200px, so facts, buttons and model lists clipped on
+  ordinary window sizes. Providers are now rows on the same grouped boards the other
+  settings pages use (Connected / Not connected, with counts). A row is one calm line —
+  brand mark, name and status over a line of facts, and on the right only the model
+  count, a **Sign in** / **Add API key** call to action while the provider is not
+  connected, and a chevron. Clicking the row opens its panel: every action (each sign-in
+  method, Models/Configure, Usage, Disconnect, Remove) on a full-width bar that wraps
+  inside the row, then the provider's models as a two-column, height-bounded list of
+  click-to-show chips. The panel opens on its own for the provider of the session's
+  model, while a search or the Favorites filter narrows the list, and while a sign-in
+  runs. Search and the page's buttons share one row, and the active-model selector sits
+  on the shared board.
+
+- **The Git page (GitHub) button moved from the top bar's "…" overflow menu to
+  the left sidebar's footer**, ahead of the Usage button, where it sits as a
+  workbench destination (⌘⇧G unchanged). The top bar keeps only live-state
+  controls: quota, session details, open-in, Review, Terminal, and "…" for the
+  Explorer.
+- **The Explorer has its own top-bar button, and the project panel is redesigned.**
+  The "…" overflow menu held only the Explorer toggle, so it is gone: a folder
+  button after the Terminal chip toggles the project panel (⌘⇧E), lifting while
+  it is open. The panel's header now names the workspace over its `~/` path
+  (full path on hover) with a spinner while the tree loads, and keeps New File,
+  New Folder and Close visible; Refresh, **Collapse All Folders** and the
+  hidden-files toggle moved into a "…" menu beside them. The filter is an inset,
+  rounded field whose border takes the focus ring, rows draw indent guides
+  through each ancestor's chevron so nesting reads at a glance, and the file
+  count sits in a quieter footer.
+- **The Terminal toggle has its own top-bar chip.** ⌘J's control left the "…"
+  overflow menu and now sits directly after the Review chip, lifting while the
+  panel is open — the bottom panel is one click away, like Review, instead of
+  two.
+- **Session details is a side panel with its own top-bar chip.** The `ⓘ` row
+  left the "…" overflow menu and now sits immediately after the usage meter.
+  It no longer drops a popover: it opens the session's details in the right
+  dock beside the chat, laid out as an inspector with a close button in its
+  header. **Session** shows the title as text with an edit (pencil) button and Generate
+  title; editing swaps in a compact rename field with **Update** and **Cancel**
+  (Enter commits, Escape cancels), sized from the same tokens as the rest of
+  the panel so it follows the UI font size;
+  **Environment** names the machine (this computer, or the remote host), the
+  folder and the branch with its ↑/↓ divergence; **Model** shows the provider
+  mark, model and thinking level; **Context** shows a fill bar, the percentage
+  and tokens used of the window (or "No usage yet" before pi measures any);
+  **Changes** shows the working tree's `+N −N` with **Review** and, when there
+  is something to commit, **Commit**; **Details** keeps the copyable session id
+  and file. The same chip closes it; an outside
+  click does not, and Escape only hands focus back from the rename field. The
+  panel shares the dock with Review and the Explorer, one at a time, and the
+  palette's Rename Session opens it. A new task has no session to describe, so the chip and the panel stay hidden on the new-task page until the first message; a panel left open comes back with it.
+- **The folder picker is a machine picker.** The two places that ask "where does
+  this task run?" — the new-task composer's folder chip and a session's status
+  bar **Work in** chip — now list two kinds of place: **this device** (the current
+  working folder) and each configured **remote host** from Settings → Remote hosts.
+  Linked worktrees, the eight recent session folders and the new / existing /
+  remote-branch verbs no longer crowd the list. Worktrees keep their own page
+  (which now also carries **Clone repository**, since cloning left the picker),
+  and the new-task picker still has **Choose folder…** for the native dialog.
+  The picker's **Add a remote host…** row is gone — host setup lives in
+  Settings → Remote hosts, reached from the **Work in** menu. The device row
+  now leads with the workspace's own logo (the same mark the header's folder
+  chip shows) and carries the active branch as its trailing note, and the
+  section header reads **This device**.
+- **Remote hosts are reachable from an open session.** The status bar's **Work in**
+  picker reads `~/.orbit-pi/remote-hosts.json` when it opens, so a running session
+  can move to a host without going back to the new-task page; the connection check,
+  password prompt and guarded launch are the same path the picker uses.
+- **Providers & models: one grid, with each provider's models on its own card.**
+  Connected and unconnected providers are the same three-column cards, so a connected
+  provider is no taller than a disconnected one, and every provider that pi reports
+  models for lists them **on its card** as click-to-select chips: a chip is selected when
+  the composer's picker offers that model, one click hides or shows it, each shows its
+  context window, and **Hide all / Show all** sits beside the count. Choosing never
+  deletes anything — the provider's catalog (pi's, or `models.json`) is untouched, so a
+  model the provider adds later still arrives. The card's **Models**/**Configure** button
+  still opens the ids, endpoint and key editor (ids stay editable there as the bulk-paste
+  path, and after **Fetch models** the fetched ids are added to them); it no longer
+  repeats the list, and a provider pi reports nothing for shows no list at all (#131).
+
+### Fixed
+
+- **No focus ring on the selected Settings section.** Clicking a section in
+  the Settings list left a focus outline around it on top of its selected
+  fill. The ring now shows only when the keyboard cursor rests on a
+  different row, where it marks the row Enter will open.
+
+- **Remote host menu opens under its button.** The "…" menu on a Settings →
+  Remote hosts card opened about 100 px to the left of its button and above
+  it, over the card. It now hangs right-aligned under the button, like every
+  other dropdown.
+
+- **Settings → Remote hosts no longer crashes with Reduce Motion on.** The
+  Add host button, each card's "…" button and the host editor's Cancel/Save
+  had their hover set twice, which GPUI rejects when Reduce Motion is on.
+  They now use the buttons' own fade.
+
+- **Navigate Settings without a mouse.** Tab reaches Back and the section
+  list. Arrow keys move focus without switching pages; Enter or Space opens
+  the focused section. Back and Escape return focus to the previous control.
+
+- **Extension confirmations default to No.** Enter answers No when the
+  dialog opens, even if the pointer is over Yes. Tab moves between the
+  buttons without answering.
+
+- **The folder selector no longer nudges its row.** Closing the new-task
+  folder picker (or tabbing onto any button) moved the folder name and the
+  branch chip 1–2 px, because the focus ring added a border the button did
+  not have at rest. Buttons now keep that 1 px edge transparent until they
+  are focused, so focus only changes its colour.
+
+- **Solid blocks over the wallpaper glass.** With a full-window wallpaper,
+  the sidebar's sticky project header, the Settings → Skills and Subagents
+  pages, the boxes inside provider, account and MCP cards, the About page's
+  star banner and the Usage page's loading placeholders now take the same
+  frosted or tinted material as the surfaces around them instead of painting
+  opaque panels. Without a wallpaper nothing changes.
+
+- **Dialogs and overlays now match.** Settings dialogs (provider usage and
+  key, account, MCP server) dim the window as much as every other dialog
+  instead of a darker hand-mixed shade; the Git page's confirmations dim it
+  the same way the command palette does. The sidebar's drag preview, the
+  composer's second send button and the empty-state cards in Settings
+  (no plugins, no matching providers or settings) now take the same glass
+  as the surfaces around them.
+
+- **One look for errors and notices.** Error messages in dialogs (provider
+  key and editor, accounts, SSH password, remote hosts, MCP server, server
+  clone, bug report) share one tint, a failed turn in the transcript shows
+  the standard error notice, and a merge or rebase in progress on the Git
+  page uses the standard warning notice, as does the branch menu's
+  uncommitted-changes warning. The MCP server switch and the
+  Settings sidebar toggle are now the shared switch, so Tab reaches them and
+  Space or Enter flips them. The open Settings section now looks selected
+  rather than hovered.
+
+- **Commit details showed the wrong values.** An opened commit on the Git
+  page listed its committer date as **Parents** and folded its branch and
+  tag names into the message, because one field was read out of order. The
+  open commit and its details now also read as one card instead of two
+  stacked boxes.
+
+- **Dialogs grow to fit what they hold.** The Add account dialog on Models &
+  providers cut its Cancel and Create account buttons off at the bottom, and the
+  API key, provider, usage, MCP, remote host, remote API key, "Add to a server",
+  SSH password, extension question and Git branch / stage dialogs could come out
+  shorter than their content, scrolling a body that would have fit. Each dialog
+  now takes its full height and scrolls only when the window is too short for it.
+
+- **Subagents detail sections no longer collapse.** The detail pane's scroll
+  body had no definite width, so each board shrank to its content and the
+  delegation-limit labels ran under their steppers.
+
+- **Sidebar previews of skill prompts:** a session started with `/skill:name` showed
+  the raw `<skill name="…" location="/Users/…">` wrapper as its preview (and as its
+  title until pi named it). It now reads `/skill:name` plus what you typed, the same
+  form the transcript shows. The "Show N more" / "Show less" rows now draw the
+  keyboard focus ring they were already asking for.
+- **Providers page:** every provider row's details line painted as a bare "…"; it
+  reads in full again. Sign-in buttons on unconnected providers are secondary
+  buttons instead of a column of filled ones.
+- Tests no longer write fixture session bindings into the real `~/.orbit-pi`
+  account store, and two test fixtures no longer collide when tests run in parallel.
+
+- **The Explorer no longer slides off the window as files open.** The Files,
+  Git, Usage and Worktrees pages could not shrink below their content's width,
+  so a long run of open file tabs pushed the project panel past the right edge
+  (its Close button out of reach). The page now yields and its tab strip
+  scrolls, keeping the panel at its width against the edge. The panel's minimum
+  width is now 220 px — enough for the redesigned header — and a narrower saved
+  width opens at that minimum. The header's path line now shows the path
+  instead of a lone "…".
+
+- **Double-clicking the header now zooms the window.** Orbit paints its own titlebar,
+  so the press never reached AppKit's titlebar view and the system's
+  Double-click-a-window's-title-bar action did nothing. The header strips (the sidebar
+  wordmark, the top bar's drag spacer, the Settings header) now ask the platform to run
+  that action on a double-click — zoom, minimise, fill, or nothing, exactly as
+  System Settings → Desktop & Dock says — while a single press still just drags.
+- **Delete session no longer disappears from the task menu.** It was hidden for the task
+  that was open or running, which read as a missing feature; the row is now always
+  listed and, while pi's process still owns the file, disabled with the reason on hover.
+  **Reveal in Finder** — a macOS-only label shown on every platform — is gone from that
+  menu (#131).
 - **Wide glyphs in the terminal take their real two-column pitch.** A CJK or emoji
   character no longer draws at a one-cell pitch and overlaps its neighbour, so every
   following column stays lined up with the cursor and selection. The grid supplies a

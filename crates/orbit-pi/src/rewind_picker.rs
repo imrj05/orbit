@@ -15,14 +15,16 @@ use gpui::{
     ScrollHandle, SharedString, Styled, Subscription, Window,
 };
 
-use crate::app::{
-    icon, menu_header, picker_entry, picker_search_frame, picker_surface,
-    working_folder_keyboard_hints, ControlExt, PressedRamp, StatefulControlExt,
-};
 use crate::composer::ComposerInput;
 use crate::rewind::{self, ForkPoint};
-use crate::theme::tokens::{input, list, picker, DynamicSpacing, TextSize};
+use crate::theme::tokens::{list, picker, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
+use crate::ui::field::search_field;
+use crate::ui::popover::PopoverExt;
+use crate::ui::prelude::{
+    menu_header, picker_entry, picker_surface, working_folder_keyboard_hints, ControlExt,
+    PressedRamp, StatefulControlExt,
+};
 
 const CARD_W: f32 = 460.;
 /// Rows visible before the list scrolls.
@@ -272,7 +274,7 @@ impl RewindPicker {
         .flex_none()
         .cursor_pointer()
         .pressed_state(&theme, PressedRamp::Wash)
-        .when(highlighted, |row| row.bg(theme.surface_selected))
+        .when(highlighted, |row| row.bg(theme.selected_wash()))
         .when(!highlighted, |row| row.hover_state(&theme))
         // Pointer movement moves the highlight; a scroll sliding a row under a
         // stationary pointer must not hijack ↑/↓ navigation.
@@ -330,7 +332,7 @@ impl Focusable for RewindPicker {
 
 impl Render for RewindPicker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.entity();
         let rows = self.filtered(&self.last_filter);
 
@@ -365,15 +367,7 @@ impl Render for RewindPicker {
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
-            .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
-            )
+            .child(search_field(self.filter.clone(), &theme))
             .child(
                 menu_header(tr!("rewind.title"), &theme)
                     .pt(picker::list_padding_y(&theme))
@@ -435,7 +429,7 @@ impl Render for RewindPicker {
                     .px(picker::search_padding_x(&theme))
                     .py(DynamicSpacing::Base06.px(&theme))
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .flex_none()
                     .w_full()
                     .whitespace_normal()
@@ -443,21 +437,20 @@ impl Render for RewindPicker {
                     .text_color(theme.text_muted)
                     .child(tr!("rewind.note")),
             )
-            .child(working_folder_keyboard_hints(&theme, false));
+            .child(working_folder_keyboard_hints(&theme));
 
         div()
             .id("rewind-layer")
             .debug_selector(|| "rewind-layer".to_string())
             .absolute()
             .inset_0()
-            .occlude()
             .bg(theme.scrim())
             .px(DynamicSpacing::Base24.px(&theme))
             .py(DynamicSpacing::Base24.px(&theme))
             .flex()
             .items_center()
             .justify_center()
-            .on_mouse_down_out(cx.listener(Self::on_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_outside_down))
             // The dialog entrance: the card fades in on the Layout role.
             .child(crate::motion::enter(
                 card,

@@ -60,7 +60,7 @@ GLOSSARY = {
         'Dim overlay': 'Затемнение',
         'A black overlay that settles a bright image behind the interface.': 'Чёрный слой, приглушающий яркое изображение за интерфейсом.',
         'Card opacity': 'Непрозрачность карточек',
-        'Requested translucency for cards, panels, and dialogs. Contrast checks may raise it.': 'Желаемая прозрачность карточек, панелей и диалогов. Проверка контрастности может её повысить.',
+        "How much surface paint sits over the image, for cards and for the page itself (sidebar, chat column, settings nav). At 0% the image is shown exactly as processed; cards may still be raised for text contrast.": "Сколько краски поверхности лежит поверх изображения — и на карточках, и на самой странице (боковая панель, колонка чата, навигация настроек). При 0 % изображение показывается ровно таким, каким его обработали; карточки всё равно могут стать плотнее ради контраста текста.",
         'Glass panes': 'Стеклянные панели',
         'Blur the wallpaper behind the sidebar, the composer, and floating surfaces. Text keeps its contrast; the picture goes soft where a pane sits over it.': 'Размывать обои за боковой панелью, полем ввода и плавающими поверхностями. Текст сохраняет контрастность; изображение смягчается там, где над ним панель.',
         'Use wallpaper accent': 'Акцент из обоев',

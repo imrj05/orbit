@@ -12,8 +12,6 @@
 
 use std::time::{Duration, Instant};
 
-use crate::theme::tokens::Motion;
-use crate::theme::Theme;
 
 /// One value moving toward another over a role's duration.
 #[derive(Debug, Clone, Copy)]
@@ -39,7 +37,9 @@ impl Transition {
         }
     }
 
-    /// A transition from an explicit value toward `to`.
+    /// A transition from an explicit value toward `to`. Tests only: surfaces
+    /// start [`Self::settled`] and [`Self::retarget`].
+    #[cfg(test)]
     pub(crate) fn new(
         from: f32,
         to: f32,
@@ -57,16 +57,6 @@ impl Transition {
         }
     }
 
-    /// A transition between two values on a role.
-    ///
-    /// The role carries both halves of the design system's contract: its easing
-    /// and its Reduce Motion guard. A suppressed role resolves to
-    /// `Duration::ZERO`, so the transition reports its target immediately and
-    /// the caller's animator paints the end state on the first frame.
-    pub(crate) fn role(from: f32, to: f32, role: Motion, theme: &Theme, now: Instant) -> Self {
-        Self::new(from, to, role.duration(theme), role.easing(), now)
-    }
-
     /// Set the curve the transition eases with.
     ///
     /// Builder rather than a constructor argument for the common case: a
@@ -78,6 +68,7 @@ impl Transition {
     }
 
     /// The value the transition started from — what the animator calls `from`.
+    #[cfg(test)]
     pub(crate) fn from(&self) -> f32 {
         self.from
     }
@@ -197,26 +188,5 @@ mod tests {
         assert!(transition.retarget(1.0, Duration::from_millis(80), at(start, 50)));
     }
 
-    #[test]
-    fn reduce_motion_collapses_the_transition_to_its_target() {
-        let mut theme = Theme::default();
-        theme.ui.motion = crate::theme::MotionPreference::Reduced;
-        let start = Instant::now();
-        let transition = Transition::role(0.0, 1.0, Motion::Interaction, &theme, start);
-        assert_eq!(transition.value_at(start), 1.0);
-        assert!(transition.is_done(start));
-    }
 
-    #[test]
-    fn a_role_transition_uses_the_roles_duration_and_easing() {
-        let theme = Theme::default();
-        let start = Instant::now();
-        let transition = Transition::role(0.0, 1.0, Motion::Layout, &theme, start);
-        assert_eq!(transition.value_at(start), 0.0);
-        assert!(transition.value_at(at(start, 200)) == 1.0);
-        // The role's easing, not linear: quint is already past the halfway
-        // point at half the duration.
-        let halfway = transition.value_at(at(start, 100));
-        assert!(halfway > 0.5, "Layout decelerates, got {halfway}");
-    }
 }

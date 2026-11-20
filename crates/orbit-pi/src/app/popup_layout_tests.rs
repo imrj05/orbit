@@ -1,5 +1,6 @@
 use super::*;
-use crate::app::helpers::anchored_popover_in_window;
+use crate::ui::popover::anchored_popover_in_window;
+use crate::ui::prelude::*;
 
 // ── settings select popup anchoring ───────────────────────────────────
 
@@ -307,7 +308,7 @@ fn worktree_advanced_button_click_toggles_the_menu_closed(cx: &mut gpui::TestApp
             // A click outside the menu (the button sits outside the occluded
             // popup) dismisses it on mouse-down and stamps the gesture...
             app.worktree_advanced_open = false;
-            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.menu_dismissed_at.arm();
             // ...so the same click's mouse-up must not reopen it.
             app.toggle_worktree_advanced(cx);
             assert!(
@@ -316,7 +317,7 @@ fn worktree_advanced_button_click_toggles_the_menu_closed(cx: &mut gpui::TestApp
             );
 
             // A later, deliberate click opens it again.
-            app.menu_dismissed_at = None;
+            app.menu_dismissed_at.clear();
             app.toggle_worktree_advanced(cx);
             assert!(app.worktree_advanced_open, "a later click reopens the menu");
         });
@@ -802,7 +803,12 @@ fn chip_click_does_not_let_the_composer_steal_picker_focus(cx: &mut gpui::TestAp
 fn quota_popup_scrolls_instead_of_clipping_its_last_card(cx: &mut gpui::TestAppContext) {
     use crate::theme::{Theme, ThemeId};
 
-    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    // Reduced motion paints the popover at its resting place on the first
+    // frame, so the placement checks below read where it lands, not the
+    // first frame of its entrance slide.
+    let mut theme = Theme::for_id(ThemeId::Orbit);
+    theme.ui.motion = crate::theme::MotionPreference::Reduced;
+    cx.update(|cx| cx.set_global(theme));
     let cx = cx.add_empty_window();
     let app = cx.update(|_, cx| cx.new(OrbitApp::new));
     let _ = cx.draw(
@@ -864,6 +870,29 @@ fn quota_popup_scrolls_instead_of_clipping_its_last_card(cx: &mut gpui::TestAppC
     assert!(
         body.size.height < popup.size.height,
         "the card list did not leave room for the header: body {body:?}, popup {popup:?}"
+    );
+    // The chip is a top-bar meter: it sits above the composer, and its
+    // popover hangs below it without covering it.
+    let chip = cx
+        .debug_bounds("top-quota")
+        .expect("quota chip laid out in the top bar");
+    let composer = cx.debug_bounds("composer-box").expect("composer laid out");
+    assert!(
+        chip.bottom() <= composer.top(),
+        "the quota chip is not in the top bar: chip {chip:?}, composer {composer:?}"
+    );
+    assert!(
+        popup.top() >= chip.bottom(),
+        "the popover must open below its chip: popup {popup:?}, chip {chip:?}"
+    );
+    // The chip identifies the provider by its mark alone (the tooltip and the
+    // popover's cards carry the name), so the identity is one icon wide.
+    let mark = cx
+        .debug_bounds("status-quota-provider")
+        .expect("the chip shows the provider mark");
+    assert!(
+        mark.size.width <= px(16.),
+        "the chip shows the provider name, not just its mark: {mark:?}"
     );
 }
 
@@ -1279,7 +1308,7 @@ fn the_gesture_guard_does_not_swallow_the_keyboard_shortcut(cx: &mut gpui::TestA
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             // A chip or row menu was just dismissed with the mouse.
-            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.menu_dismissed_at.arm();
             app.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx);
             assert!(
                 app.command_palette.is_some(),
@@ -1288,7 +1317,7 @@ fn the_gesture_guard_does_not_swallow_the_keyboard_shortcut(cx: &mut gpui::TestA
 
             // The pointer path still guards the same gesture.
             app.command_palette = None;
-            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.menu_dismissed_at.arm();
             app.toggle_command_palette(window, cx);
             assert!(
                 app.command_palette.is_none(),
@@ -1419,4 +1448,241 @@ fn settings_select_shows_no_matches_inside_the_popup(cx: &mut gpui::TestAppConte
         empty.left() >= popup.left() && empty.right() <= popup.right(),
         "the no-matches row {empty:?} must sit inside the popup {popup:?}"
     );
+}
+
+// ── modal cards size to their content ─────────────────────────────────
+
+/// The real app on the Providers page, Reduce Motion on so the card rests.
+fn providers_page(
+    cx: &mut gpui::VisualTestContext,
+    viewport: gpui::Size<Pixels>,
+) -> Entity<OrbitApp> {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|_, cx| {
+        let mut theme = Theme::for_id(ThemeId::Orbit);
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        cx.set_global(theme);
+    });
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Providers;
+            cx.notify();
+        });
+    });
+    app
+}
+
+/// The Add-account card must be tall enough for its footer: with `w_full` +
+/// `max_w` its height was measured at the unclamped width, where the hint
+/// wraps to fewer lines, and Cancel / Create account were clipped.
+#[gpui::test]
+fn provider_account_modal_keeps_its_footer_inside_the_card(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let viewport = gpui::size(px(1200.), px(820.));
+    let app = providers_page(cx, viewport);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.account_editor_open(
+                "openai-codex".into(),
+                "ChatGPT (Codex)".into(),
+                None,
+                window,
+                cx,
+            );
+        });
+    });
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+    let card = cx
+        .debug_bounds("provider-account-card")
+        .expect("the card laid out");
+    let footer = cx
+        .debug_bounds("provider-account-footer")
+        .expect("the footer laid out");
+    assert!(
+        footer.bottom() <= card.bottom() && footer.size.height > px(30.),
+        "the footer {footer:?} must sit whole inside the card {card:?}"
+    );
+}
+
+/// Opens the API-key modal (a wrapping note and the OAuth line) and returns
+/// the card, its scrolling body, and the body's content.
+fn provider_key_modal(
+    cx: &mut gpui::VisualTestContext,
+    viewport: gpui::Size<Pixels>,
+) -> (
+    gpui::Bounds<Pixels>,
+    gpui::Bounds<Pixels>,
+    gpui::Bounds<Pixels>,
+) {
+    let app = providers_page(cx, viewport);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.provider_key_open(
+                "openai-codex".into(),
+                "ChatGPT (Codex)".into(),
+                true,
+                "ChatGPT Plus/Pro subscription.",
+                window,
+                cx,
+            );
+        });
+    });
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    (
+        cx.debug_bounds("provider-key-card")
+            .expect("the card laid out"),
+        cx.debug_bounds("provider-key-body")
+            .expect("the body laid out"),
+        cx.debug_bounds("provider-key-content")
+            .expect("the content laid out"),
+    )
+}
+
+/// With room in the window the card grows to its content: the body shows
+/// everything instead of scrolling a card measured too short.
+#[gpui::test]
+fn provider_key_modal_grows_to_its_content(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let (card, body, content) = provider_key_modal(cx, gpui::size(px(1200.), px(820.)));
+    assert!(
+        content.bottom() <= body.bottom(),
+        "the content {content:?} overflows its body {body:?}: the card {card:?} is too short"
+    );
+}
+
+/// In a window too short for the card it stops at the window and the body
+/// scrolls; the card never runs past the scrim's padding.
+#[gpui::test]
+fn provider_key_modal_scrolls_only_when_the_window_is_short(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let viewport = gpui::size(px(1200.), px(200.));
+    let (card, body, content) = provider_key_modal(cx, viewport);
+    assert!(
+        card.top() >= px(0.) && card.bottom() <= viewport.height,
+        "the card {card:?} must stay inside the {viewport:?} window"
+    );
+    assert!(
+        content.size.height > body.size.height,
+        "the body {body:?} should scroll its content {content:?} here"
+    );
+}
+
+/// Settings → Appearance is one compact row per choice: the appearance as a
+/// segmented control, each palette and the accent as a dropdown. The palette
+/// dropdown lists every palette of its appearance, each row as wide as the
+/// popup, and every trigger stays inside the settings column.
+#[gpui::test]
+fn appearance_theme_rows_are_compact_dropdowns(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{AppearancePrefs, Theme, ThemeId, ThemeMode};
+
+    let cx = cx.add_empty_window();
+    cx.update(|_, cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.set_global(AppearancePrefs::default());
+    });
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let viewport = gpui::size(px(1200.), px(900.));
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Appearance;
+            app.settings_select = Some(SettingsSelect::DarkTheme);
+            cx.notify();
+        });
+    });
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+    let mode = cx
+        .debug_bounds("appearance-mode-system")
+        .expect("the appearance segmented control laid out");
+    for id in ["dark-theme-select", "light-theme-select", "accent-color-select"] {
+        let chip = cx.debug_bounds(id).unwrap_or_else(|| panic!("{id} laid out"));
+        assert!(chip.size.height <= px(40.), "{id} is a compact trigger: {chip:?}");
+        assert!(
+            chip.right() <= mode.right() + px(1.),
+            "{id} shares the control column: {chip:?} vs {mode:?}"
+        );
+    }
+
+    let popup = cx
+        .debug_bounds("settings-select-popup")
+        .expect("the palette dropdown opened");
+    let palettes = crate::theme::themes_for(ThemeMode::Dark).count();
+    for ix in 0..palettes {
+        let row = cx
+            .debug_bounds(Box::leak(format!("settings-select-row-{ix}").into_boxed_str()))
+            .unwrap_or_else(|| panic!("palette row {ix} laid out"));
+        assert!(row.size.width > px(0.), "row {ix} collapsed");
+        assert!(row.right() <= popup.right(), "row {ix} inside the popup");
+    }
+    let past_end: &'static str = Box::leak(format!("settings-select-row-{palettes}").into_boxed_str());
+    assert!(cx.debug_bounds(past_end).is_none());
+}
+
+/// Background lists every built-in (gradients, nature, anime, Japanese art)
+/// as a thumbnail in its category's row, even with no image chosen yet, and
+/// each row stays inside the settings column.
+#[gpui::test]
+fn builtin_backgrounds_show_every_gradient(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{AppearancePrefs, Theme, ThemeId};
+    use crate::wallpaper_builtin::BuiltinBackground;
+
+    let cx = cx.add_empty_window();
+    cx.update(|_, cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.set_global(AppearancePrefs::default());
+    });
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Appearance;
+            cx.notify();
+        });
+    });
+    // Narrow windows are where a wrapping strip collapsed to one thumbnail
+    // per line and spilled over the rows below.
+    for width in [800., 1000., 1300., 1600.] {
+        let viewport = gpui::size(px(width), px(1600.));
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+        for background in BuiltinBackground::ALL {
+            let group: &'static str =
+                Box::leak(format!("builtin-{}", background.category().id()).into_boxed_str());
+            let strip = cx
+                .debug_bounds(group)
+                .unwrap_or_else(|| panic!("{group} laid out with no image chosen"));
+            assert!(strip.right() <= viewport.width, "{width}: {strip:?}");
+            let id: &'static str =
+                Box::leak(format!("builtin-{}", background.id()).into_boxed_str());
+            let thumb = cx
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} laid out"));
+            assert!(thumb.size.width > thumb.size.height, "{id} is landscape: {thumb:?}");
+            assert!(
+                thumb.top() >= strip.top() && thumb.bottom() <= strip.bottom(),
+                "{width}: {id} spills out of its row: {thumb:?} vs {strip:?}"
+            );
+            assert!(
+                strip.size.height < thumb.size.height * 2.,
+                "{width}: {group} is one line, not a stacked column: {strip:?}"
+            );
+        }
+        // Rows never overlap: each category's strip ends above the next one.
+        let strips: Vec<_> = crate::wallpaper_builtin::Category::ALL
+            .iter()
+            .map(|category| {
+                let id: &'static str =
+                    Box::leak(format!("builtin-{}", category.id()).into_boxed_str());
+                cx.debug_bounds(id).expect("strip laid out")
+            })
+            .collect();
+        for pair in strips.windows(2) {
+            assert!(pair[0].bottom() <= pair[1].top(), "{width}: rows overlap: {pair:?}");
+        }
+    }
 }

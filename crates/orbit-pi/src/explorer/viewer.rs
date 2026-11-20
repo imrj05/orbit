@@ -23,15 +23,19 @@ use gpui::{
     Timer, Window,
 };
 
-use crate::app::{
-    button_frame, empty_state, file_badge, file_glyph, icon, icon_button_frame, nerd_font_family,
-    press, ControlExt, EmptyFill, TipExt,
-};
+use crate::ui::button::{Button, ButtonVariant};
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
-use crate::theme::tokens::RaisedExt;
-use crate::theme::tokens::{button, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
+use crate::ui::button::IconButton;
+use crate::ui::chip::{Badge, BadgeFill};
+use crate::ui::list::virtual_list;
+use crate::ui::prelude::{
+    empty_state, file_badge, file_glyph, icon, nerd_font_family,
+    EmptyFill,
+};
+use crate::ui::tab::{tab_strip, Tab as TabButton};
 
 /// Files above this are not previewed. Two megabytes is far past any source
 /// file a person reads and well under anything that would stall a frame.
@@ -306,7 +310,7 @@ enum SaveState {
     Failed(String),
 }
 
-struct Tab {
+struct FileTab {
     /// Stable id: observers and save timers outlive a shift in the tab vec.
     id: u64,
     path: PathBuf,
@@ -333,7 +337,7 @@ struct Tab {
     _sub: Subscription,
 }
 
-impl Tab {
+impl FileTab {
     fn editable(&self) -> bool {
         self.content.as_ref().is_some_and(FileContent::editable)
     }
@@ -347,7 +351,7 @@ impl Tab {
 /// [`ComposerInput`].
 pub struct FileViewer {
     open: bool,
-    tabs: Vec<Tab>,
+    tabs: Vec<FileTab>,
     active: usize,
     loading: bool,
     list: ListState,
@@ -482,7 +486,7 @@ impl FileViewer {
         let sub = cx.observe(&editor, move |this, editor, cx| {
             this.on_editor_changed(id, &editor, cx);
         });
-        self.tabs.push(Tab {
+        self.tabs.push(FileTab {
             id,
             path,
             display,
@@ -769,14 +773,7 @@ impl FileViewer {
         // The tabs live in their own horizontally scrollable row: a long run of
         // open files stays reachable (trackpad / shift-wheel) instead of
         // clipping off the right edge. The close button stays pinned outside it.
-        let mut tabs = div()
-            .id("viewer-tabs")
-            .h_full()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .overflow_x_scroll()
-            .track_scroll(&self.tab_scroll);
+        let mut tabs = tab_strip("viewer-tabs", &self.tab_scroll, ButtonSize::Medium, &theme);
         for (index, tab) in self.tabs.iter().enumerate() {
             let active = index == self.active;
             let name = tab
@@ -796,87 +793,28 @@ impl FileViewer {
                 fallback,
             );
             tabs = tabs.child(
-                press(
-                    div()
-                        .id(gpui::ElementId::Name(format!("viewer-tab-{index}").into()))
-                        .h(ButtonSize::Medium.height(&theme))
-                        .max_w(px(220.))
-                        // Never shrink below a readable width: past the strip's
-                        // edge the row scrolls instead of crushing every tab.
-                        .flex_none()
-                        .px(DynamicSpacing::Base08.px(&theme))
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .rounded(button::RADIUS.px(&theme))
-                        .cursor_pointer()
-                        .text_size(TextSize::Small.px(&theme))
-                        .when(active, |el| el.bg(theme.surface_active))
-                        .when(!active, |el| {
-                            el.text_color(theme.text_muted).hover_quiet(&theme)
-                        }),
+                TabButton::new(
+                    gpui::ElementId::Name(format!("viewer-tab-{index}").into()),
+                    name,
                 )
+                .size(ButtonSize::Medium)
+                .glyph(glyph)
+                .active(active)
+                .dirty(tab.dirty)
+                .close(
+                    gpui::ElementId::Name(format!("viewer-tab-close-{index}").into()),
+                    tr!("explorer.close_tab"),
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.close_tab(index, cx);
+                    }),
+                )
+                .render(&theme)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.activate(index, cx);
                     // Reveal the tab the user just activated if the strip has
                     // scrolled.
                     this.tab_scroll.scroll_to_item(index);
-                }))
-                .child(glyph)
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(if active {
-                            FontWeight::MEDIUM
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .text_color(if active {
-                            theme.text_primary
-                        } else {
-                            theme.text_muted
-                        })
-                        .child(name),
-                )
-                .when(tab.dirty, |el| {
-                    el.child(
-                        div()
-                            .size(DynamicSpacing::Base06.px(&theme))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(theme.accent),
-                    )
-                })
-                .child(
-                    icon_button_frame(
-                        div().id(gpui::ElementId::Name(
-                            format!("viewer-tab-close-{index}").into(),
-                        )),
-                        &theme,
-                        ButtonSize::None,
-                    )
-                    .tip(tr!("explorer.close_tab"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.close_tab(index, cx);
-                        // Click handlers bubble: without this the tab's
-                        // own `on_click` below would also run with the
-                        // now-stale `index` and index past the shrunken
-                        // tab list (out-of-bounds panic).
-                        cx.stop_propagation();
-                    }))
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::None.icon_size().px(&theme),
-                        if active {
-                            theme.text_primary
-                        } else {
-                            theme.text_muted
-                        },
-                    )),
-                ),
+                })),
             );
         }
         div()
@@ -896,26 +834,24 @@ impl FileViewer {
                 f32::from(DynamicSpacing::Base16.px(&theme))
             }))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .child(tabs.flex_1().min_w_0())
             .child(
-                icon_button_frame(div().id("viewer-close"), &theme, ButtonSize::Default)
+                IconButton::new("viewer-close", "icons/x.svg")
+                    .size(ButtonSize::Default)
+                    .ink(theme.text_muted)
                     .tip(tr!("common.close"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        // Close here — this listener already holds the viewer's
-                        // lease, so the app callback must not re-enter `update`
-                        // on this entity (that would double-lease and abort).
-                        let on_close = this.on_close.clone();
-                        this.hide(cx);
-                        on_close(cx);
-                    }))
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_muted,
-                    )),
+                    .on_click(
+                        &theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            // Close here — this listener already holds the viewer's
+                            // lease, so the app callback must not re-enter `update`
+                            // on this entity (that would double-lease and abort).
+                            let on_close = this.on_close.clone();
+                            this.hide(cx);
+                            on_close(cx);
+                        }),
+                    ),
             )
             .into_any_element()
     }
@@ -937,7 +873,7 @@ impl FileViewer {
             .items_center()
             .gap(DynamicSpacing::Base12.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .font_family(theme::code_font_family())
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
@@ -964,22 +900,16 @@ impl FileViewer {
             })
             .when(content.mode == Mode::Markdown && content.editable(), |el| {
                 el.child(
-                    button_frame(div().id("viewer-md-toggle"), &theme, ButtonSize::Compact)
-                        .raised(theme.surface_elevated, &theme)
-                        .border_1()
-                        .border_color(theme.border)
-                        .font_family(theme::ui_font_family())
-                        .cursor_pointer()
-                        .text_color(theme.text_secondary)
-                        .hover_state(&theme)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.toggle_markdown_preview(cx)
-                        }))
-                        .child(if tab.markdown_preview {
+                    Button::new("viewer-md-toggle", ButtonVariant::Secondary)
+                    .size(ButtonSize::Compact)
+                    .label(if tab.markdown_preview {
                             tr!("explorer.edit")
                         } else {
                             tr!("explorer.preview")
-                        }),
+                        })
+                    .on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.toggle_markdown_preview(cx)
+                        })),
                 )
             })
             .child(self.status_chip(theme, tab))
@@ -987,7 +917,7 @@ impl FileViewer {
     }
 
     /// Read-only lock for non-editable modes; autosave status for editable ones.
-    fn status_chip(&self, theme: Theme, tab: &Tab) -> AnyElement {
+    fn status_chip(&self, theme: Theme, tab: &FileTab) -> AnyElement {
         let (label, color) = if !tab.editable() {
             (tr!("explorer.read_only"), theme.text_muted)
         } else if tab.conflict {
@@ -1003,27 +933,24 @@ impl FileViewer {
                 ),
             }
         };
-        div()
-            .flex_none()
-            .h(px(20.))
-            .px(DynamicSpacing::Base06.px(&theme))
-            .rounded(Radius::Small.px(&theme))
-            .bg(theme.surface_elevated)
-            .border_1()
-            .border_color(theme.border)
-            .font_family(theme::ui_font_family())
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base04.px(&theme))
-            .when(!tab.editable(), |el| {
-                el.child(icon(
-                    "icons/lock.svg",
-                    IconSize::Indicator.px(&theme),
-                    theme.text_muted,
-                ))
-            })
-            .child(div().text_color(color).child(label))
-            .into_any_element()
+        let badge = Badge::new(
+            label,
+            color,
+            BadgeFill::Framed {
+                face: theme.surface_elevated,
+                edge: theme.hairline(),
+            },
+        );
+        let badge = if tab.editable() {
+            badge
+        } else {
+            badge.leading(icon(
+                "icons/lock.svg",
+                IconSize::Indicator.px(&theme),
+                theme.text_muted,
+            ))
+        };
+        badge.render(&theme)
     }
 
     fn body(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1142,13 +1069,13 @@ impl FileViewer {
 
     fn text_body(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
-        let list = gpui::list(self.list.clone(), move |index, _window, cx| {
+        let list = virtual_list(self.list.clone(), move |index, _window, cx| {
             entity
                 .upgrade()
                 .map(|entity| entity.update(cx, |this, cx| this.render_line(index, cx)))
                 .unwrap_or_else(|| div().into_any_element())
         })
-        .size_full();
+        .w_full();
         div()
             .flex_1()
             .min_h_0()
@@ -1193,7 +1120,7 @@ impl FileViewer {
                     .flex()
                     .justify_end()
                     .border_r_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .text_color(theme.text_muted)
                     .child((index + 1).to_string()),
             )
@@ -1255,7 +1182,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(DynamicSpacing::Base08.px(theme))
-        .child(crate::app::spinner(
+        .child(crate::ui::prelude::spinner(
             "viewer-loading",
             IconSize::Small.px(theme),
             theme.text_muted,
@@ -1349,7 +1276,7 @@ fn active_after_close(active: usize, index: usize, len_after: usize) -> usize {
 /// Whether a tab currently paints its editor, as opposed to a read-only body
 /// or the Markdown preview. Used to pick a focus target that exists in the
 /// tree: focusing a hidden editor would drop focus and the `Files` context.
-fn editor_shown(tab: &Tab) -> bool {
+fn editor_shown(tab: &FileTab) -> bool {
     let Some(content) = tab.content.as_ref() else {
         return false;
     };
@@ -1362,7 +1289,7 @@ fn editor_shown(tab: &Tab) -> bool {
 
 /// The Explorer's editing surface. A column so the editor's `flex_1` grows
 /// vertically; a row would leave its height auto and collapse the buffer to 0.
-fn editor_body(theme: Theme, tab: &Tab) -> AnyElement {
+fn editor_body(theme: Theme, tab: &FileTab) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -1419,7 +1346,7 @@ impl Render for FileViewer {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(theme.background)
+            .bg(theme.page_canvas())
             .child(self.tab_strip(theme, cx))
             .child(self.toolbar(theme, cx))
             .child(self.body(theme, cx))

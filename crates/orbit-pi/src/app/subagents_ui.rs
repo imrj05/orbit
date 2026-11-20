@@ -1,24 +1,31 @@
 //! Settings → Subagents: a master-detail manager for the agents the
 //! `subagent` tool can pick.
 //!
-//! The left column lists builtins and user files. The right column is one
-//! scrolling form under a pinned identity bar: name and description, the
-//! tool list (presets plus per-tool toggles), the workflow mode, model and
-//! thinking, the prompt, the rendered preview, the file it saves to, and the
-//! delegation limits that apply to every agent. Discovery and the surgical
+//! The left column lists builtins and user files under a pinned row for the
+//! machine-wide delegation limits, which open as their own page. The right
+//! column is one scrolling form under a pinned identity-and-actions bar: name
+//! and description, the prompt, the tool list (presets plus per-tool
+//! toggles), the workflow mode, model and thinking, the file it saves to, and
+//! the rendered preview. Discovery and the surgical
 //! writer live in [`crate::subagent_file`]; the Orbit-only half (enabled,
 //! mode, limits) lives in [`crate::subagents`]. Nothing here duplicates
 //! either: a save re-reads the file, refuses to clobber an external edit, and
 //! leaves every key it does not own byte-for-byte.
 
-use super::helpers::*;
 use super::*;
-use crate::git_panel::widgets::check_box;
 use crate::subagent_file::{self, Agent, Source, Tier};
 use crate::subagents;
 use crate::theme::tokens::{
     button, input, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::banner::{truncated_line, Banner, BannerTone};
+use crate::ui::button::{Button, ButtonVariant, IconButton, LinkButton};
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::field::search_field;
+use crate::ui::field::{FormRow, TextField};
+use crate::ui::prelude::*;
+use crate::ui::style::surface::SurfaceExt;
 
 /// One Skills-page-style dispatch point for every Subagents control.
 #[derive(Clone)]
@@ -41,6 +48,8 @@ pub(super) enum SubagentAction {
     SetMode(&'static str),
     SetThinking(String),
     SetLimit(SubagentLimit, i32),
+    /// Show the machine-wide delegation limits in the detail pane.
+    ShowLimits,
     AskDelete,
     ConfirmDelete,
     CancelDelete,
@@ -141,7 +150,8 @@ impl OrbitApp {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(theme.background)
+            // Clear, like every other Settings section: the surface root
+            // already paints `panel_fill(background)` behind it.
             .font_family(theme::ui_font_family())
             .when_some(
                 self.subagent_inactive_banner(theme, this.clone()),
@@ -154,7 +164,11 @@ impl OrbitApp {
                     .min_h_0()
                     .flex()
                     .child(self.subagents_list(theme, this.clone(), cx))
-                    .child(self.subagent_detail(theme, this, cx)),
+                    .child(if self.subagent_limits_visible() {
+                        self.subagent_limits_detail(theme, this)
+                    } else {
+                        self.subagent_detail(theme, this, cx)
+                    }),
             )
             .into_any_element()
     }
@@ -181,71 +195,32 @@ impl OrbitApp {
             _ => status.reason.clone(),
         };
 
-        let mut column = div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base02.px(&theme))
-            .child(
-                div()
-                    .text_size(TextSize::Default.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(tr!("subagents_ui.inactive_title")),
-            )
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_secondary)
-                    .child(tr!("subagents_ui.inactive_body")),
-            );
+        let mut banner = Banner::new(BannerTone::Warning)
+            .id("subagents-inactive")
+            .title(tr!("subagents_ui.inactive_title"))
+            .detail(tr!("subagents_ui.inactive_body"));
         if !detail.trim().is_empty() {
             // Truncated like every other path in the workbench: the full value
             // is the tooltip, and the file is reachable from Plugins either way.
-            column = column.child(
-                div()
-                    // A tooltip needs an id to keep its hover state.
-                    .id("subagents-inactive-detail")
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
-                    .truncate()
-                    .tip(detail.clone())
-                    .child(detail),
-            );
+            banner = banner.line(truncated_line("subagents-inactive-detail", detail, &theme));
         }
+        let banner = banner
+            .action(self.subagent_button(
+                "subagents-inactive-plugins",
+                tr!("subagents_ui.open_plugins"),
+                ButtonVariant::Secondary,
+                theme,
+                this,
+                SubagentAction::OpenPlugins,
+            ))
+            .render(&theme);
 
         Some(
             div()
-                .id("subagents-inactive")
-                .debug_selector(|| "subagents-inactive".to_string())
-                // No `w_full`: the column stretches it, and full width plus
-                // the side margins would push its right edge off the page.
+                // The page's side margins; the banner fills what is left.
                 .mx(DynamicSpacing::Base16.px(&theme))
                 .mt(DynamicSpacing::Base12.px(&theme))
-                .bg(theme.surface_secondary)
-                .border_1()
-                .border_color(theme.border)
-                .rounded(Radius::XLarge.px(&theme))
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base12.px(&theme))
-                .flex()
-                .items_start()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(icon(
-                    "icons/info.svg",
-                    IconSize::Medium.px(&theme),
-                    theme.warning,
-                ))
-                .child(column)
-                .child(self.subagent_button(
-                    "subagents-inactive-plugins",
-                    tr!("subagents_ui.open_plugins"),
-                    SubagentButtonKind::Secondary,
-                    theme,
-                    this,
-                    SubagentAction::OpenPlugins,
-                ))
+                .child(banner)
                 .into_any_element(),
         )
     }
@@ -266,21 +241,10 @@ impl OrbitApp {
         };
         let filtered: Vec<&Agent> = self.subagents.iter().filter(matches).collect();
 
-        let search = picker_search_frame(div(), &theme)
+        let search = search_field(self.subagents_filter.clone(), &theme)
             .mx(DynamicSpacing::Base12.px(&theme))
             .mt(DynamicSpacing::Base12.px(&theme))
-            .mb(DynamicSpacing::Base08.px(&theme))
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(self.subagents_filter.clone()),
-            );
+            .mb(DynamicSpacing::Base08.px(&theme));
 
         let mut list = div()
             .id("subagents-list")
@@ -358,19 +322,9 @@ impl OrbitApp {
 
         let new_agent = {
             let this = this.clone();
-            button_frame(
-                div().id(ElementId::Name("subagents-new".into())),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .hover_state(&theme)
+            Button::keyed(ElementId::Name("subagents-new".into()), ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
             .child(icon(
                 "icons/plus.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
@@ -386,10 +340,11 @@ impl OrbitApp {
         };
 
         let mut footer = div()
+            .flex_none()
             .px(px(14.))
             .py(DynamicSpacing::Base08.px(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base06.px(&theme))
@@ -405,21 +360,14 @@ impl OrbitApp {
                     .text_color(theme.text_muted)
                     .child(tr!("subagents_ui.deleted_agent", name = undo.name.clone()))
                     .child(
-                        button_frame(
-                            div().id(ElementId::Name("subagents-undo".into())),
+                        LinkButton::new("subagents-undo", tr!("subagents_ui.undo")).on_click(
                             &theme,
-                            ButtonSize::Medium,
-                        )
-                        .group(BUTTON_GROUP)
-                        .cursor_pointer()
-                        .text_color(theme.accent_text)
-                        .hover_state(&theme)
-                        .child(tr!("subagents_ui.undo"))
-                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                            this.update(cx, |app, cx| {
-                                app.apply_subagent_action(SubagentAction::UndoDelete, cx)
-                            });
-                        }),
+                            move |_, _, cx| {
+                                this.update(cx, |app, cx| {
+                                    app.apply_subagent_action(SubagentAction::UndoDelete, cx)
+                                });
+                            },
+                        ),
                     ),
             );
         }
@@ -457,19 +405,32 @@ impl OrbitApp {
             .w(px(320.))
             .h_full()
             .flex_shrink_0()
-            .bg(theme.surface)
+            // The Settings nav's twin: translucent and frosted over a
+            // full-window wallpaper, the palette's surface otherwise.
+            .bg(theme.panel_fill(theme.surface))
+            .frosted_pane(&theme.for_page())
             .border_r_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .child(search)
+            .child(self.subagent_limits_row(theme, this))
+            .child(
+                div()
+                    .flex_none()
+                    .mx(DynamicSpacing::Base12.px(&theme))
+                    .mt(DynamicSpacing::Base06.px(&theme))
+                    .h(BORDER_WIDTH)
+                    .bg(theme.hairline()),
+            )
             .child(list)
             .child(footer)
             .into_any_element()
     }
 
     fn subagent_row(&self, agent: &Agent, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let selected = self.selected_subagent.as_deref() == Some(agent.name());
+        let selected = !self.subagent_limits_visible()
+            && self.selected_subagent.as_deref() == Some(agent.name());
         let name = agent.name().to_string();
         let config = &self.subagent_config;
         let enabled = config.agent_enabled(&name);
@@ -498,7 +459,7 @@ impl OrbitApp {
             .items_start()
             .gap_2p5()
             .cursor_pointer()
-            .when(selected, |row| row.bg(theme.surface_selected))
+            .when(selected, |row| row.bg(theme.selected_wash()))
             .when(!selected, |row| row.hover_state(&theme))
             .on_mouse_up(MouseButton::Left, {
                 let select = name.clone();
@@ -516,7 +477,7 @@ impl OrbitApp {
                     .rounded(Radius::Medium.px(&theme))
                     .bg(theme.surface_elevated)
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .flex()
                     .items_center()
                     .justify_center()
@@ -647,31 +608,7 @@ impl OrbitApp {
             .flex_col()
             .child(header);
         if let Some(error) = &self.subagent_error {
-            column = column.child(
-                div()
-                    .px(DynamicSpacing::Base20.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .bg(theme.error.opacity(0.07))
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(icon(
-                        "icons/alert-circle.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.error,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.error)
-                            .whitespace_normal()
-                            .child(SharedString::from(error.clone())),
-                    ),
-            );
+            column = column.child(error_strip(error, &theme));
         }
 
         let mut sections = div()
@@ -679,12 +616,15 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base20.px(&theme));
+        // The order a developer writes an agent in: who it is, what it is
+        // told, what it may touch, how it thinks; then where it lives and
+        // the read-only result. Machine-wide limits are not per agent and
+        // live on their own page (the pinned row above the list).
         sections = sections.child(self.subagent_identity_section(&theme, editor, cx));
+        sections = sections.child(self.subagent_prompt_section(&theme, editor));
         sections = sections.child(self.subagent_tools_section(&theme, this.clone(), editor));
         sections = sections.child(self.subagent_mode_section(&theme, this.clone(), editor));
         sections = sections.child(self.subagent_model_section(&theme, this.clone(), editor, cx));
-        sections = sections.child(self.subagent_prompt_section(&theme, editor));
-        sections = sections.child(self.subagent_preview_section(&theme));
         if let Some(file) = self.subagent_file_section(
             &theme,
             this.clone(),
@@ -695,23 +635,11 @@ impl OrbitApp {
         ) {
             sections = sections.child(file);
         }
-        sections = sections.child(self.subagent_limits_section(&theme, this.clone()));
+        sections = sections.child(self.subagent_preview_section(&theme));
 
-        let body = div()
-            .id("subagents-detail")
-            .debug_selector(|| "subagents-detail".to_string())
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .w_full()
-                    .px(DynamicSpacing::Base20.px(&theme))
-                    .pt(DynamicSpacing::Base16.px(&theme))
-                    .pb(DynamicSpacing::Base32.px(&theme))
-                    .child(sections),
-            );
-        column.child(body).into_any_element()
+        column
+            .child(detail_scroll("subagents-detail", &theme, sections))
+            .into_any_element()
     }
 
     fn subagent_empty_detail(
@@ -799,10 +727,32 @@ impl OrbitApp {
             });
         });
 
+        let dirty_marker: AnyElement = if editor.is_new {
+            div()
+                .flex_none()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_muted)
+                .child(tr!("subagents_ui.not_saved"))
+                .into_any_element()
+        } else if dirty {
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.accent_text)
+                .child(div().size(px(6.)).rounded_full().bg(theme.accent))
+                .child(tr!("subagents_ui.unsaved"))
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
         let identity = div()
             .px(DynamicSpacing::Base20.px(&theme))
-            .pt(DynamicSpacing::Base16.px(&theme))
-            .pb(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base16.px(&theme))
+            .gap_y(DynamicSpacing::Base08.px(&theme))
             // The app paints its own caption buttons over the window's
             // top-right corner on Windows (above every surface); keep the
             // switch out from under them without eating the normal inset.
@@ -812,23 +762,7 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap_3()
-            .child(
-                div()
-                    .size(px(36.))
-                    .flex_none()
-                    .rounded(Radius::Large.px(&theme))
-                    .bg(theme.surface_elevated)
-                    .border_1()
-                    .border_color(theme.border)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon(
-                        "icons/task.svg",
-                        IconSize::Medium.px(&theme),
-                        theme.text_secondary,
-                    )),
-            )
+            .child(detail_badge("icons/task.svg", &theme))
             .child(
                 div()
                     .flex_1()
@@ -852,52 +786,21 @@ impl OrbitApp {
                     )
                     .child(
                         div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .truncate()
-                            .child(meta.join(" · ")),
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base08.px(&theme))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .text_color(theme.text_muted)
+                                    .truncate()
+                                    .child(meta.join(" · ")),
+                            )
+                            .child(dirty_marker),
                     ),
-            )
-            .when(!editor.is_new, |row| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_size(TextSize::XSmall.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(if enabled {
-                                    tr!("subagents_ui.enabled")
-                                } else {
-                                    tr!("subagents_ui.disabled_state")
-                                }),
-                        )
-                        .child(enabled_switch),
-                )
-            });
-
-        let dirty_marker: AnyElement = if editor.is_new {
-            div()
-                .text_size(TextSize::XSmall.px(&theme))
-                .text_color(theme.text_muted)
-                .child(tr!("subagents_ui.not_saved"))
-                .into_any_element()
-        } else if dirty {
-            div()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base06.px(&theme))
-                .text_size(TextSize::XSmall.px(&theme))
-                .text_color(theme.accent_text)
-                .child(div().size(px(6.)).rounded_full().bg(theme.accent))
-                .child(tr!("subagents_ui.unsaved"))
-                .into_any_element()
-        } else {
-            div().into_any_element()
-        };
+            );
 
         // Leaving with edits asks first, in place of the actions it would
         // otherwise run beside, so the question sits where the eye already
@@ -947,23 +850,18 @@ impl OrbitApp {
                 .flex_col()
                 .child(identity)
                 .child(confirm)
-                .child(div().h(BORDER_WIDTH).bg(theme.border))
+                .child(div().h(BORDER_WIDTH).bg(theme.hairline()))
                 .into_any_element();
         }
 
+        // One bar: identity on the left; on the right the secondary action,
+        // the one filled control, and the enabled switch behind a hairline,
+        // so Save sits where the eye ends the row.
         let actions = div()
-            .px(DynamicSpacing::Base20.px(&theme))
-            .pb(DynamicSpacing::Base12.px(&theme))
+            .flex_none()
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .child(self.subagent_primary_button(
-                "subagents-save",
-                action_label.clone(),
-                theme,
-                this.clone(),
-                SubagentAction::Save,
-            ))
             .when(!editor.is_new, |row| {
                 row.child(self.subagent_secondary_button(
                     "subagents-duplicate",
@@ -973,16 +871,47 @@ impl OrbitApp {
                     SubagentAction::Duplicate,
                 ))
             })
-            .child(div().flex_1())
-            .child(dirty_marker);
+            .child(self.subagent_primary_button(
+                "subagents-save",
+                action_label.clone(),
+                theme,
+                this.clone(),
+                SubagentAction::Save,
+            ))
+            .when(!editor.is_new, |row| {
+                row.child(
+                    div()
+                        .w(BORDER_WIDTH)
+                        .h(ButtonSize::Default.height(&theme))
+                        .mx(DynamicSpacing::Base04.px(&theme))
+                        .bg(theme.hairline()),
+                )
+                .child(
+                    div()
+                        .id("subagent-enabled-label")
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(TextSize::XSmall.px(&theme))
+                                .text_color(theme.text_muted)
+                                .child(if enabled {
+                                    tr!("subagents_ui.enabled")
+                                } else {
+                                    tr!("subagents_ui.disabled_state")
+                                }),
+                        )
+                        .child(enabled_switch),
+                )
+            });
 
         div()
             .flex_none()
             .flex()
             .flex_col()
-            .child(identity)
-            .child(actions)
-            .child(div().h(BORDER_WIDTH).bg(theme.border))
+            .child(identity.flex_wrap().child(actions))
+            .child(div().h(BORDER_WIDTH).bg(theme.hairline()))
             .into_any_element()
     }
 
@@ -1200,7 +1129,7 @@ impl OrbitApp {
             .py(DynamicSpacing::Base06.px(theme))
             .rounded(Radius::Medium.px(theme))
             .cursor_pointer()
-            .when(active, |row| row.bg(theme.surface_selected))
+            .when(active, |row| row.bg(theme.selected_wash()))
             .when(!active, |row| row.hover_state(theme))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 let action = action.clone();
@@ -1261,45 +1190,27 @@ impl OrbitApp {
             "ask" => tr!("subagents_ui.mode_ask_hint"),
             _ => tr!("subagents_ui.mode_inherit_hint"),
         };
-        let segments = div()
-            .flex()
-            .items_center()
-            .children(modes.into_iter().enumerate().map(|(index, mode)| {
-                let this = this.clone();
-                let active = editor.mode == mode;
-                let label = match mode {
-                    "plan" => tr!("subagents_ui.mode_plan"),
-                    "build" => tr!("subagents_ui.mode_build"),
-                    "ask" => tr!("subagents_ui.mode_ask"),
-                    _ => tr!("subagents_ui.inherit"),
-                };
-                segmented_segment(
-                    div().id(("subagent-mode", index)),
-                    theme,
-                    ButtonSize::Medium,
-                    SegmentPosition::at(index, modes.len()),
-                )
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .border_color(theme.border)
-                .when(active, |segment| {
-                    segment
-                        .raised_flat(theme.surface_selected)
-                        .text_color(theme.text_primary)
-                })
-                .when(!active, |segment| {
-                    segment
-                        .raised_flat(theme.surface_elevated)
-                        .text_color(theme.text_secondary)
-                        .hover_state(theme)
-                })
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        let mut segments = ButtonGroup::new(SegmentFill::Selected);
+        for (index, mode) in modes.into_iter().enumerate() {
+            let this = this.clone();
+            let label = match mode {
+                "plan" => tr!("subagents_ui.mode_plan"),
+                "build" => tr!("subagents_ui.mode_build"),
+                "ask" => tr!("subagents_ui.mode_ask"),
+                _ => tr!("subagents_ui.inherit"),
+            };
+            segments = segments.segment(
+                ("subagent-mode", index),
+                label,
+                editor.mode == mode,
+                move |_, _, cx| {
                     this.update(cx, |app, cx| {
                         app.apply_subagent_action(SubagentAction::SetMode(mode), cx)
                     });
-                })
-                .child(label)
-            }));
+                },
+            );
+        }
+        let segments = segments.render(theme);
         let row = div()
             .px(DynamicSpacing::Base16.px(theme))
             .py(DynamicSpacing::Base12.px(theme))
@@ -1493,12 +1404,7 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .gap(input::gap(theme))
-            .child(
-                input_field_frame(div(), theme)
-                    .w_full()
-                    .bg(theme.background)
-                    .child(editor.prompt.clone()),
-            )
+            .child(TextField::new(editor.prompt.clone(), theme.background).render(theme))
             .child(
                 div()
                     .text_size(TextSize::XSmall.px(theme))
@@ -1529,7 +1435,7 @@ impl OrbitApp {
                     .w_full()
                     .rounded(Radius::Medium.px(theme))
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .bg(theme.code_bg)
                     .p(DynamicSpacing::Base08.px(theme))
                     .font_family(theme::code_font_family())
@@ -1732,11 +1638,164 @@ impl OrbitApp {
         ))
     }
 
-    fn subagent_limits_section(&self, theme: &Theme, this: Entity<OrbitApp>) -> AnyElement {
+    /// Whether the detail pane shows the limits page. A pending discard
+    /// question lives in the agent header, so it always wins.
+    fn subagent_limits_visible(&self) -> bool {
+        self.subagent_limits_open && self.subagent_discard_pending.is_none()
+    }
+
+    /// The pinned list row that opens the machine-wide limits, kept apart
+    /// from the agents so it never reads as a setting of one of them.
+    fn subagent_limits_row(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let selected = self.subagent_limits_visible();
+        let enabled = self.subagent_config.enabled;
+        div()
+            .id("subagents-limits-row")
+            .mx(px(10.))
+            .px(DynamicSpacing::Base08.px(&theme))
+            .py(px(7.))
+            .rounded(Radius::Medium.px(&theme))
+            .flex()
+            .items_center()
+            .gap_2p5()
+            .cursor_pointer()
+            .when(selected, |row| row.bg(theme.selected_wash()))
+            .when(!selected, |row| row.hover_state(&theme))
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| {
+                    app.apply_subagent_action(SubagentAction::ShowLimits, cx)
+                });
+            })
+            .child(
+                div()
+                    .size(px(26.))
+                    .flex_none()
+                    .rounded(Radius::Medium.px(&theme))
+                    .bg(theme.surface_elevated)
+                    .border_1()
+                    .border_color(theme.hairline())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(
+                        "icons/settings.svg",
+                        IconSize::Small.px(&theme),
+                        if selected {
+                            theme.text_primary
+                        } else {
+                            theme.text_secondary
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(if selected {
+                                theme.selection_fg
+                            } else {
+                                theme.text_primary
+                            })
+                            .truncate()
+                            .child(tr!("subagents_ui.limits")),
+                    )
+                    .child(
+                        div()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(if selected {
+                                theme.selection_fg
+                            } else {
+                                theme.text_muted
+                            })
+                            .truncate()
+                            .child(tr!("subagents_ui.limits_hint")),
+                    ),
+            )
+            // Delegation switched off is the one fact worth seeing from the
+            // list: every agent below is then unreachable.
+            .when(!enabled, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.warning)
+                        .child(tr!("subagents_ui.disabled_state")),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The limits page: the same pinned header as an agent, over one board.
+    fn subagent_limits_detail(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let header = div()
+            .flex_none()
+            .px(DynamicSpacing::Base20.px(&theme))
+            .py(DynamicSpacing::Base16.px(&theme))
+            .when(platform::draws_window_controls(), |row| {
+                row.pr(px(platform::WINDOW_CONTROLS_W))
+            })
+            .border_b_1()
+            .border_color(theme.hairline())
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(detail_badge("icons/settings.svg", &theme))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_size(TextSize::Large.px(&theme))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text_primary)
+                            .truncate()
+                            .child(tr!("subagents_ui.limits")),
+                    )
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
+                            .truncate()
+                            .child(tr!("subagents_ui.limits_hint")),
+                    ),
+            );
+
+        let mut column = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(header);
+        if let Some(error) = &self.subagent_error {
+            column = column.child(error_strip(error, &theme));
+        }
+        let body = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(self.settings_group(theme, self.subagent_limit_rows(&theme, this)));
+        column
+            .child(detail_scroll("subagents-limits", &theme, body))
+            .into_any_element()
+    }
+
+    fn subagent_limit_rows(&self, theme: &Theme, this: Entity<OrbitApp>) -> Vec<AnyElement> {
         let config = &self.subagent_config;
         let enabled_this = this.clone();
         let enabled = config.enabled;
-        let rows = vec![
+        vec![
             self.subagent_control_row(
                 theme,
                 tr!("subagents_ui.limit_enabled"),
@@ -1807,13 +1866,7 @@ impl OrbitApp {
                     SubagentLimit::Timeout,
                 ),
             ),
-        ];
-        self.settings_section_desc(
-            *theme,
-            &tr!("subagents_ui.limits"),
-            Some(&tr!("subagents_ui.limits_hint")),
-            rows,
-        )
+        ]
     }
 
     // ── rows and controls ───────────────────────────────────────────
@@ -1829,38 +1882,27 @@ impl OrbitApp {
         hint_color: Hsla,
         trailing: Option<AnyElement>,
     ) -> AnyElement {
+        let help = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(theme))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(TextSize::XSmall.px(theme))
+                    .text_color(hint_color)
+                    .whitespace_normal()
+                    .child(hint),
+            )
+            .children(trailing);
         div()
             .px(DynamicSpacing::Base16.px(theme))
             .py(DynamicSpacing::Base12.px(theme))
-            .flex()
-            .flex_col()
-            .gap(input::gap(theme))
             .child(
-                input_label(label, theme)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary),
-            )
-            .child(
-                input_field_frame(div(), theme)
-                    .w_full()
-                    .bg(theme.background)
-                    .child(input),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(theme))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(TextSize::XSmall.px(theme))
-                            .text_color(hint_color)
-                            .whitespace_normal()
-                            .child(hint),
-                    )
-                    .children(trailing),
+                FormRow::new(label, TextField::new(input, theme.background).render(theme))
+                    .help(help)
+                    .render(theme),
             )
             .into_any_element()
     }
@@ -1887,49 +1929,17 @@ impl OrbitApp {
     ) -> AnyElement {
         let id = format!("subagent-tool-{tool}");
         let toggle = tool.clone();
-        button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Default,
-        )
-        .group(BUTTON_GROUP)
-        .border_1()
-        .border_color(if on {
-            theme.border_strong
-        } else {
-            theme.border
-        })
-        .raised(
-            if on {
-                theme.surface_selected
-            } else {
-                theme.surface_elevated
-            },
-            &theme,
-        )
-        .text_color(if on {
-            theme.text_primary
-        } else {
-            theme.text_muted
-        })
-        .cursor_pointer()
-        // A checked chip keeps its selected fill under the pointer, like the
-        // thinking chips: hover never reads as "unchecked".
-        .when(!on, |chip| chip.hover_state(&theme))
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            let tool = toggle.clone();
-            this.update(cx, |app, cx| {
-                app.apply_subagent_action(SubagentAction::ToggleTool(tool), cx)
-            });
-        })
-        .child(check_box(on, theme))
-        .child(
-            div()
-                .font_family(theme::code_font_family())
-                .text_size(theme.code_px(11.))
-                .child(tool),
-        )
-        .into_any_element()
+        ChipButton::new(id, ChipStyle::Outlined { inset: false })
+            .size(ButtonSize::Default)
+            .label(tool)
+            .mono()
+            .checked(on)
+            .on_mouse_up(&theme, move |_, _, cx| {
+                let tool = toggle.clone();
+                this.update(cx, |app, cx| {
+                    app.apply_subagent_action(SubagentAction::ToggleTool(tool), cx)
+                });
+            })
     }
 
     fn subagent_thinking_chip(
@@ -1950,38 +1960,13 @@ impl OrbitApp {
             crate::model_selector::thinking_display(&level)
         };
         let action = SubagentAction::SetThinking(level.clone());
-        button_frame(
-            div().id(ElementId::Name(id.into())),
-            theme,
-            ButtonSize::Default,
-        )
-        .group(BUTTON_GROUP)
-        .border_1()
-        .border_color(if active {
-            theme.border_strong
-        } else {
-            theme.border
-        })
-        .raised(
-            if active {
-                theme.surface_selected
-            } else {
-                theme.surface_elevated
-            },
-            theme,
-        )
-        .text_color(if active {
-            theme.text_primary
-        } else {
-            theme.text_secondary
-        })
-        .cursor_pointer()
-        .when(!active, |chip| chip.hover_state(theme))
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            this.update(cx, |app, cx| app.apply_subagent_action(action.clone(), cx));
-        })
-        .child(label)
-        .into_any_element()
+        ChipButton::new(id, ChipStyle::Outlined { inset: false })
+            .size(ButtonSize::Default)
+            .label(label)
+            .selected(active)
+            .on_mouse_up(theme, move |_, _, cx| {
+                this.update(cx, |app, cx| app.apply_subagent_action(action.clone(), cx));
+            })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2012,7 +1997,7 @@ impl OrbitApp {
             .flex()
             .items_center()
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .rounded(button::radius(ButtonSize::Medium).px(&theme))
             .raised(theme.surface_elevated, &theme)
             .child(minus)
@@ -2044,28 +2029,11 @@ impl OrbitApp {
         } else {
             "icons/minus.svg"
         };
-        let color = if enabled {
-            theme.text_secondary
-        } else {
-            theme.text_disabled
-        };
-        let button = icon_button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .child(icon(
-            glyph,
-            ButtonSize::Medium.icon_size().px(&theme),
-            color,
-        ));
-        if !enabled {
-            return button.cursor_not_allowed().into_any_element();
-        }
-        button
-            .cursor_pointer()
-            .hover_overlay(&theme)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        IconButton::new(ElementId::Name(id.into()), glyph)
+            .size(ButtonSize::Medium)
+            .ink(theme.text_secondary)
+            .disabled(!enabled)
+            .on_mouse_up(&theme, move |_, _, cx| {
                 let delta = if plus { 1 } else { -1 };
                 this.update(cx, |app, cx| {
                     app.apply_subagent_action(SubagentAction::SetLimit(limit, delta), cx)
@@ -2082,7 +2050,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SubagentAction,
     ) -> AnyElement {
-        self.subagent_button(id, label, SubagentButtonKind::Primary, theme, this, action)
+        self.subagent_button(id, label, ButtonVariant::Primary, theme, this, action)
     }
 
     fn subagent_secondary_button(
@@ -2093,14 +2061,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SubagentAction,
     ) -> AnyElement {
-        self.subagent_button(
-            id,
-            label,
-            SubagentButtonKind::Secondary,
-            theme,
-            this,
-            action,
-        )
+        self.subagent_button(id, label, ButtonVariant::Secondary, theme, this, action)
     }
 
     fn subagent_danger_button(
@@ -2111,50 +2072,21 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SubagentAction,
     ) -> AnyElement {
-        self.subagent_button(id, label, SubagentButtonKind::Danger, theme, this, action)
+        self.subagent_button(id, label, ButtonVariant::Danger, theme, this, action)
     }
 
     fn subagent_button(
         &self,
         id: &'static str,
         label: String,
-        kind: SubagentButtonKind,
+        kind: ButtonVariant,
         theme: Theme,
         this: Entity<OrbitApp>,
         action: SubagentAction,
     ) -> AnyElement {
-        let base = button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM);
-        let button = match kind {
-            SubagentButtonKind::Primary => base
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .raised(theme.action, &theme)
-                .text_color(theme.action_fg)
-                .hover_action(&theme)
-                .pressed_state(&theme, PressedRamp::Action),
-            SubagentButtonKind::Secondary => base
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.text_secondary)
-                .hover_state(&theme),
-            SubagentButtonKind::Danger => base
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.error)
-                .hover_danger_soft(&theme),
-        };
-        press(button)
-            .child(div().child(label))
-            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+        Button::new(id, kind)
+            .label(label)
+            .on_mouse_up(&theme, move |_, window, cx| {
                 let action = action.clone();
                 this.update(cx, |app, cx| {
                     if matches!(action, SubagentAction::ConfirmDiscard) {
@@ -2468,6 +2400,15 @@ impl OrbitApp {
 
     /// Single dispatch point for every Subagents-page control.
     pub(super) fn apply_subagent_action(&mut self, action: SubagentAction, cx: &mut Context<Self>) {
+        // From the limits page, the open agent's row returns to its form as
+        // it was left: nothing is rebuilt, so nothing typed is lost.
+        if let SubagentAction::Select(name) = &action {
+            if self.subagent_limits_open && Some(name) == self.selected_subagent.as_ref() {
+                self.subagent_limits_open = false;
+                cx.notify();
+                return;
+            }
+        }
         // Leaving the form rebuilds it from disk, so an action that leaves
         // it waits for an answer while there are edits to lose.
         let leaves_form = matches!(
@@ -2510,7 +2451,9 @@ impl OrbitApp {
                 }
             }
             SubagentAction::CancelDiscard => {}
+            SubagentAction::ShowLimits => self.subagent_limits_open = true,
             SubagentAction::Select(name) => {
+                self.subagent_limits_open = false;
                 self.selected_subagent = Some(name);
                 self.subagent_delete_confirm = false;
                 self.rebuild_subagent_editor(cx);
@@ -2534,9 +2477,15 @@ impl OrbitApp {
                 self.close_settings_unchecked(cx);
                 self.open_file_in_viewer(path, display, cx);
             }
-            SubagentAction::New => self.start_new_subagent(cx),
+            SubagentAction::New => {
+                self.subagent_limits_open = false;
+                self.start_new_subagent(cx)
+            }
             SubagentAction::Save => self.save_subagent(cx),
-            SubagentAction::Duplicate => self.duplicate_subagent(cx),
+            SubagentAction::Duplicate => {
+                self.subagent_limits_open = false;
+                self.duplicate_subagent(cx)
+            }
             SubagentAction::Reveal => {
                 let path = self
                     .subagent_editor
@@ -2647,7 +2596,10 @@ impl OrbitApp {
             SubagentAction::AskDelete => self.subagent_delete_confirm = true,
             SubagentAction::CancelDelete => self.subagent_delete_confirm = false,
             SubagentAction::ConfirmDelete => self.delete_subagent(cx),
-            SubagentAction::UndoDelete => self.undo_subagent_delete(cx),
+            SubagentAction::UndoDelete => {
+                self.subagent_limits_open = false;
+                self.undo_subagent_delete(cx)
+            }
         }
         cx.notify();
     }
@@ -2826,14 +2778,6 @@ impl OrbitApp {
     }
 }
 
-/// The three button weights the Subagents page uses.
-#[derive(Clone, Copy)]
-enum SubagentButtonKind {
-    Primary,
-    Secondary,
-    Danger,
-}
-
 /// A deleted user agent's bytes, kept until the page reloads or another agent
 /// is deleted, so Undo restores the exact file.
 pub(super) struct SubagentUndo {
@@ -2845,6 +2789,81 @@ pub(super) struct SubagentUndo {
 /// The tools the page can draw a checkbox for. The list mirrors
 /// `subagent_file::Tier::tools` plus the platform's command tool; anything
 /// else a file declares is shown as-is and preserved.
+/// The widest the detail form grows. Past this, a label and its control sit
+/// too far apart to read as one row on a wide window.
+const DETAIL_MAX_W: f32 = 760.;
+
+/// The detail pane's scrolling body. The scroll container needs a definite
+/// width (`w_full`): without it the `w_full` boards inside resolve against
+/// an indefinite size, shrink to their content, and the limit rows' labels
+/// run under their steppers.
+fn detail_scroll(id: &'static str, theme: &Theme, content: impl IntoElement) -> AnyElement {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_string())
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .overflow_y_scroll()
+        .child(
+            div()
+                .w_full()
+                .max_w(px(DETAIL_MAX_W))
+                .px(DynamicSpacing::Base20.px(theme))
+                .pt(DynamicSpacing::Base20.px(theme))
+                .pb(DynamicSpacing::Base32.px(theme))
+                .child(content),
+        )
+        .into_any_element()
+}
+
+/// The 36px mark at the start of a detail header.
+fn detail_badge(glyph: &'static str, theme: &Theme) -> impl IntoElement {
+    div()
+        .size(px(36.))
+        .flex_none()
+        .rounded(Radius::Large.px(theme))
+        .bg(theme.surface_elevated)
+        .border_1()
+        .border_color(theme.hairline())
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon(
+            glyph,
+            IconSize::Medium.px(theme),
+            theme.text_secondary,
+        ))
+}
+
+/// A failed save, delete or config write, pinned under the detail header.
+fn error_strip(error: &str, theme: &Theme) -> AnyElement {
+    div()
+        .px(DynamicSpacing::Base20.px(theme))
+        .py(DynamicSpacing::Base08.px(theme))
+        .border_b_1()
+        .border_color(theme.hairline())
+        .bg(theme.error.opacity(0.07))
+        .flex()
+        .items_start()
+        .gap_2()
+        .child(icon(
+            "icons/alert-circle.svg",
+            IconSize::XSmall.px(theme),
+            theme.error,
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(TextSize::Small.px(theme))
+                .text_color(theme.error)
+                .whitespace_normal()
+                .child(SharedString::from(error.to_string())),
+        )
+        .into_any_element()
+}
+
 fn known_tools() -> Vec<&'static str> {
     let mut tools = vec!["read", "grep", "find", "ls", "edit", "write", "bash"];
     if cfg!(windows) {
@@ -3178,6 +3197,44 @@ mod tests {
                 app.apply_subagent_action(SubagentAction::Select(names[0].clone()), cx);
                 assert!(app.subagent_discard_pending.is_none());
                 assert_eq!(app.selected_subagent.as_deref(), Some(names[0].as_str()));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn the_limits_page_keeps_the_open_form_and_its_edits(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.subagents = crate::subagent_file::builtin_agents();
+                let names: Vec<String> =
+                    app.subagents.iter().map(|a| a.name().to_string()).collect();
+                app.selected_subagent = Some(names[0].clone());
+                app.rebuild_subagent_editor(cx);
+                let prompt = app.subagent_editor.as_ref().unwrap().prompt.clone();
+                prompt.update(cx, |input, cx| input.set_text("edited", cx));
+
+                // Opening the limits asks nothing: the form stays alive.
+                app.apply_subagent_action(SubagentAction::ShowLimits, cx);
+                assert!(app.subagent_limits_visible());
+                assert!(app.subagent_discard_pending.is_none());
+                assert!(app.subagent_editor.as_ref().unwrap().is_dirty(cx));
+
+                // The open agent's row returns to the form as it was left.
+                app.apply_subagent_action(SubagentAction::Select(names[0].clone()), cx);
+                assert!(!app.subagent_limits_visible());
+                assert!(app.subagent_editor.as_ref().unwrap().is_dirty(cx));
+
+                // Another agent still asks first, and the question wins the pane.
+                app.apply_subagent_action(SubagentAction::ShowLimits, cx);
+                app.apply_subagent_action(SubagentAction::Select(names[1].clone()), cx);
+                assert!(app.subagent_discard_pending.is_some());
+                assert!(!app.subagent_limits_visible(), "the question is on screen");
+                app.apply_subagent_action(SubagentAction::ConfirmDiscard, cx);
+                assert!(!app.subagent_limits_open);
+                assert_eq!(app.selected_subagent.as_deref(), Some(names[1].as_str()));
             });
         });
     }

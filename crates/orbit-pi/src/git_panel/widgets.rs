@@ -7,16 +7,13 @@
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window};
 
-use crate::app::helpers::empty_state_glyph;
-use crate::app::{
-    button_frame, icon, icon_button_frame, press, ControlExt, PressedRamp, StatefulControlExt,
-    BUTTON_GROUP,
-};
 use crate::git::RefKind;
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::Theme;
-use crate::usage::tooltip::Tooltip;
+use crate::ui::button::{Button, ButtonVariant, IconButton};
+use crate::ui::chip::{Badge, BadgeFill};
+use crate::ui::prelude::empty_state_glyph;
+use crate::ui::prelude::icon;
 
 /// The color for a `git status` porcelain badge byte.
 pub fn status_color(badge: char, theme: Theme) -> Hsla {
@@ -57,8 +54,9 @@ pub fn check_box(checked: bool, theme: Theme) -> gpui::Div {
         })
 }
 
-/// A Medium action button with an optional leading glyph. `primary` paints it
-/// in the send/accent colors; `disabled` mutes it and drops the click handler.
+/// A Medium action button with an optional leading glyph: the shared
+/// [`ButtonVariant::Primary`] when `primary`, otherwise the outlined secondary
+/// the Git bar uses. `disabled` renders the disabled state and drops the click.
 pub fn action_button(
     id: &'static str,
     label: &str,
@@ -68,40 +66,18 @@ pub fn action_button(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    let mut button = button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .font_weight(FontWeight::MEDIUM)
-        .border_1();
-    if disabled {
-        button = button
-            .border_color(theme.border)
-            .bg(theme.overlay)
-            .text_color(theme.text_disabled);
-    } else if primary {
-        // Accent buttons press by color (the theme's pressed step), not the
-        // generic opacity dim, so the primary action keeps a real edge.
-        button = button
-            .group(BUTTON_GROUP)
-            .border_color(gpui::transparent_black())
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .cursor_pointer()
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
-            .on_click(listener);
+    let variant = if primary {
+        ButtonVariant::Primary
     } else {
-        button = press(button)
-            .group(BUTTON_GROUP)
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_primary)
-            .cursor_pointer()
-            .hover_bordered(&theme)
-            .on_click(listener);
-    }
+        ButtonVariant::Outline
+    };
+    let mut button = Button::new(id, variant)
+        .label(label.to_string())
+        .disabled(disabled);
     if let Some(leading) = leading {
-        button = button.child(leading);
+        button = button.leading(leading);
     }
-    button.child(label.to_string()).into_any_element()
+    button.on_click(&theme, listener).into_any_element()
 }
 
 /// An icon-only row-action button (`ButtonSize::Default`), with a tooltip so
@@ -115,50 +91,29 @@ pub fn row_button(
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let label = tr!(tip_key);
-    press(
-        icon_button_frame(
-            div().id(gpui::ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Default,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .hover_state(&theme),
-    )
-    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-    .on_click(move |event, window, cx| {
-        cx.stop_propagation();
-        listener(event, window, cx);
-    })
-    .child(icon(
-        icon_path,
-        ButtonSize::Default.icon_size().px(&theme),
-        theme.text_muted,
-    ))
-    .into_any_element()
+    IconButton::new(gpui::ElementId::Name(id.into()), icon_path)
+        .tip(label)
+        .on_click(&theme, move |event, window, cx| {
+            cx.stop_propagation();
+            listener(event, window, cx);
+        })
+        .into_any_element()
 }
 
-/// A small ref chip (`main`, `origin/main`, `v1.2.0`), colored by kind.
+/// A small ref badge (`main`, `origin/main`, `v1.2.0`), colored by kind.
 pub fn ref_badge(name: &str, kind: RefKind, theme: Theme) -> AnyElement {
     let (fg, border) = match kind {
         RefKind::Head => (theme.accent_text, theme.accent),
         RefKind::Branch => (theme.text_secondary, theme.border_strong),
-        RefKind::Remote => (theme.text_muted, theme.border),
+        RefKind::Remote => (theme.text_muted, theme.hairline()),
         RefKind::Tag => (theme.warning, theme.warning),
     };
-    div()
-        .h(px(18.))
-        .px(DynamicSpacing::Base06.px(&theme))
-        .rounded(Radius::Small.px(&theme))
-        .border_1()
-        .border_color(border.opacity(0.6))
-        .flex()
-        .items_center()
-        .text_size(TextSize::XSmall.px(&theme))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(fg)
-        .child(name.to_string())
-        .into_any_element()
+    Badge::new(
+        name.to_string(),
+        fg,
+        BadgeFill::Outline(border.opacity(0.6)),
+    )
+    .render(&theme)
 }
 
 /// The pager at the end of a paginated list.
@@ -167,24 +122,18 @@ pub fn load_more(
     loading: bool,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    press(
-        button_frame(div().id("git-load-more"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .mx(DynamicSpacing::Base12.px(&theme))
-            .mt(DynamicSpacing::Base06.px(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .cursor_pointer()
-            .text_color(theme.text_secondary)
-            .hover_state(&theme),
-    )
-    .on_click(listener)
-    .child(if loading {
-        tr!("git_panel.loading")
-    } else {
-        tr!("git_panel.load_more")
-    })
-    .into_any_element()
+    Button::new("git-load-more", ButtonVariant::Secondary)
+        .size(ButtonSize::Large)
+        .label(if loading {
+            tr!("git_panel.loading")
+        } else {
+            tr!("git_panel.load_more")
+        })
+        .loading(loading)
+        .on_click(&theme, listener)
+        .mx(DynamicSpacing::Base12.px(&theme))
+        .mt(DynamicSpacing::Base06.px(&theme))
+        .into_any_element()
 }
 
 /// A centered empty/error state: an icon tile, a title, and optional detail.

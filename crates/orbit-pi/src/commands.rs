@@ -22,6 +22,10 @@ use crate::platform::shortcuts;
 pub enum CommandId {
     // Session
     NewSession,
+    /// Add a folder to the sidebar as a project, without starting a task.
+    /// Palette-only: the new-task page's folder picker carries the pointer
+    /// path (#131).
+    NewProject,
     RefreshSessions,
     FocusSessions,
     /// ⌘1–⌘9 (payload: which slot).
@@ -272,6 +276,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         ),
         shortcuts::NEW_SESSION,
     ),
+    command(
+        CommandId::NewProject,
+        Session,
+        "icons/folder-plus.svg",
+        "command_palette.new_project",
+        "new project folder workspace sidebar add directory",
+    ),
     with_chord(
         command(
             CommandId::RefreshSessions,
@@ -439,7 +450,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         command(
             CommandId::AbortRun,
             Agent,
-            "icons/stop.svg",
+            "icons/stop-run.svg",
             "command_palette.abort_run",
             "abort stop cancel run agent working",
         ),
@@ -552,7 +563,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             command(
                 CommandId::ToggleSidebar,
                 Panels,
-                "icons/layout-left.svg",
+                "icons/sidebar-toggle.svg",
                 "command_palette.show_sidebar",
                 "toggle show hide left sidebar sessions history",
             ),
@@ -564,7 +575,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         command(
             CommandId::ToggleSidePanel,
             Panels,
-            "icons/panel-right.svg",
+            "icons/sidebar-toggle-right.svg",
             "command_palette.show_side_panel",
             "toggle show hide right panel review git diff",
         ),
@@ -1280,6 +1291,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::ReviewClose => KeyBinding::new(chord, ReviewClose, context),
         // Palette-only commands have no keymap row.
         CommandId::RenameSession
+        | CommandId::NewProject
         | CommandId::PinSession
         | CommandId::CloneSession
         | CommandId::RewindConversation

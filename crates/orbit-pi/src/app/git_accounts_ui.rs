@@ -1,8 +1,9 @@
 //! Settings presentation and background lifecycle for local Git diagnostics.
-use super::helpers::*;
 use super::*;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::git_accounts::{self, State};
-use crate::theme::tokens::{ButtonSize, RaisedExt, TextSize};
+use crate::theme::tokens::{ButtonSize, TextSize};
+use crate::ui::prelude::*;
 
 fn state_text<T>(state: &State<T>) -> String {
     match state {
@@ -89,37 +90,24 @@ impl OrbitApp {
     }
 
     pub(super) fn git_accounts_toolbar(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        button_frame(div().id("git-accounts-refresh"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .when(self.git_accounts_loading, |button| button.opacity(0.6))
-            .when(!self.git_accounts_loading, |button| {
-                button.cursor_pointer().hover_state(&theme).on_mouse_up(
-                    MouseButton::Left,
-                    move |_, _, cx| {
-                        this.update(cx, |app, cx| {
-                            if !app.git_accounts_loading {
-                                app.refresh_git_accounts_for_workspace(cx);
-                            }
-                        });
-                    },
-                )
-            })
-            .child(refresh_glyph(
+        Button::new("git-accounts-refresh", ButtonVariant::Secondary)
+            .size(ButtonSize::Large)
+            .leading(refresh_glyph(
                 "git-accounts-refresh-spin",
                 ButtonSize::Large.icon_size().px(&theme),
                 self.git_accounts_loading,
                 theme.text_secondary,
                 theme,
             ))
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary)
-                    .child(tr!("git_accounts.refresh")),
-            )
+            .label(tr!("git_accounts.refresh"))
+            .loading(self.git_accounts_loading)
+            .on_mouse_up(&theme, move |_, _, cx| {
+                this.update(cx, |app, cx| {
+                    if !app.git_accounts_loading {
+                        app.refresh_git_accounts_for_workspace(cx);
+                    }
+                });
+            })
             .into_any_element()
     }
 
@@ -179,21 +167,12 @@ impl OrbitApp {
             other => state_text(other),
         };
         let checking = self.gh_latest == GhUpdateStatus::Checking;
-        let check_button = button_frame(div().id("gh-check-updates"), &theme, ButtonSize::Medium)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .when(checking, |button| button.opacity(0.6))
-            .when(!checking, |button| {
-                button.cursor_pointer().hover_state(&theme).on_mouse_up(
-                    MouseButton::Left,
-                    move |_, _, cx| {
-                        this.update(cx, |app, cx| app.check_gh_release(cx));
-                    },
-                )
+        let check_button = Button::new("gh-check-updates", ButtonVariant::Secondary)
+            .label(tr!("git_accounts.update_check"))
+            .loading(checking)
+            .on_mouse_up(&theme, move |_, _, cx| {
+                this.update(cx, |app, cx| app.check_gh_release(cx));
             })
-            .text_color(theme.text_secondary)
-            .child(tr!("git_accounts.update_check"))
             .into_any_element();
         sections.push(self.settings_section_desc(
             theme,

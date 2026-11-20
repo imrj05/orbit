@@ -32,13 +32,19 @@
 //!
 //! Sections: Summary · Usage over time · Breakdown · Records · Daily activity.
 
+use crate::ui::popover::anchored_menu;
+use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::button::{IconButton, IconButtonVariant};
+use crate::ui::card::{card, section};
+use crate::ui::feedback::{progress_bar, ProgressSize, ProgressTrack};
+use crate::ui::field::search_field;
+use crate::ui::popover::{popover_list, PopoverExt};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, relative, Animation, AnimationExt, AnyElement, App,
-    Context, Corner, ElementId, Entity, Font, FontFeatures, FontWeight, Hsla, IntoElement,
-    MouseButton, Pixels, Render, SharedString, Stateful, Window,
+    div, prelude::*, px, AnyElement, App, Context, Corner, ElementId, Entity,
+    FontWeight, Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Stateful, Window,
 };
 
 use super::aggregate::{
@@ -57,25 +63,23 @@ use super::page::{
     FailureQueryResult, MenuKind, SessionQueryResult, SessionSort, ToolQueryResult, UsagePage,
 };
 use super::sparkline;
-use super::table::{
-    cell_shell, data_table, empty_cell, status_badge, text_cell, two_line_cell, Column,
-    FailureSort, SortState, TableHandlers, TableKind, FILL_SLACK, HEADER_H, ROW_H,
-};
-use super::tooltip::Tooltip;
-use crate::app::{
-    button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
-    icon_dyn, picker_entry, picker_search_frame, picker_surface, press, provider_mark_color,
-    ControlExt, TipExt, BUTTON_GROUP,
-};
+use super::table::{FailureSort, TableKind};
 use crate::composer::ComposerInput;
 use crate::model_selector::{leading_tile, provider_icon};
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
-    Motion, Radius, StyledExt, TextSize,
+    context_menu, panel, picker, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::transcript_view::activity_icon;
+use crate::ui::prelude::{
+    button_frame, context_menu_separator, empty_state_glyph, icon, icon_button_frame, icon_dyn,
+    picker_entry, press, provider_mark_color, ControlExt,
+};
+use crate::ui::table::{
+    cell_shell, data_table, empty_cell, status_badge, table_row, text_cell, two_line_cell, Column,
+    SortState, TableHandlers, FILL_SLACK, HEADER_H, ROW_H,
+};
+use crate::ui::tooltip::Tooltip;
 
 /// Inner column width for a data surface (§58): wide enough for a full table,
 /// narrow enough that the eye does not have to travel a metre.
@@ -110,7 +114,7 @@ impl Render for UsagePage {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.background)
+            .bg(theme.page_canvas())
             .text_color(theme.text_primary)
             .font_family(theme::ui_font_family())
             .text_size(TextSize::Default.px(&theme))
@@ -160,10 +164,9 @@ impl UsagePage {
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 press(
-                    button_frame(div().id("usage-top-back"), &theme, ButtonSize::Medium)
-                        .group(BUTTON_GROUP)
-                        .cursor_pointer()
-                        .hover_state(&theme),
+                    Button::keyed("usage-top-back", ButtonVariant::Ghost)
+.size(ButtonSize::Medium)
+.render(&theme),
                 )
                 .on_mouse_down(MouseButton::Left, {
                     let entity = cx.entity();
@@ -384,7 +387,7 @@ impl UsagePage {
             .px(DynamicSpacing::Base20.px(&theme))
             .py(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_wrap()
             .items_center()
@@ -710,16 +713,10 @@ impl UsagePage {
             // The store could not be read at all: say so, and offer the retry.
             if let Some(error) = self.error().map(str::to_string) {
                 let entity = cx.entity();
-                let action = press(
-                    button_frame(div().id("usage-retry"), &theme, ButtonSize::Medium)
-                        .group(BUTTON_GROUP)
+                let action = Button::keyed("usage-retry", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
                         .mt(DynamicSpacing::Base02.px(&theme))
-                        .border_1()
-                        .border_color(theme.border)
-                        .raised(theme.surface_elevated, &theme)
-                        .cursor_pointer()
-                        .hover_state(&theme),
-                )
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |page, cx| page.refresh(cx));
                 })
@@ -923,16 +920,10 @@ impl UsagePage {
         }
         let entity = cx.entity();
         Some(
-            press(
-                button_frame(div().id("usage-state-clear"), &theme, ButtonSize::Medium)
-                    .group(BUTTON_GROUP)
+            Button::keyed("usage-state-clear", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
                     .mt(DynamicSpacing::Base02.px(&theme))
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .cursor_pointer()
-                    .hover_state(&theme),
-            )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 entity.update(cx, |page, cx| page.clear_filters(cx));
             })
@@ -945,12 +936,7 @@ impl UsagePage {
     fn skeleton(&self, theme: Theme) -> AnyElement {
         // A placeholder bar, drawn in the trough so it reads against a card.
         let bar = |width: f32, height: f32| {
-            div()
-                .w(px(width))
-                .h(px(height))
-                .rounded(Radius::Small.px(&theme))
-                .bg(theme.surface_secondary)
-                .into_any_element()
+            crate::ui::feedback::skeleton_bar(px(width), px(height), &theme).into_any_element()
         };
         // One card shell, so the load→loaded swap keeps the same shape: a
         // header strip over a body.
@@ -960,8 +946,8 @@ impl UsagePage {
                 .flex_none()
                 .rounded(panel::RADIUS.px(&theme))
                 .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface_elevated)
+                .border_color(theme.hairline())
+                .bg(theme.page_fill(theme.surface_elevated))
                 .flex()
                 .flex_col()
                 .overflow_hidden()
@@ -973,7 +959,7 @@ impl UsagePage {
                         .flex()
                         .items_center()
                         .border_b_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .child(bar(96., 10.)),
                 )
                 .child(body)
@@ -986,14 +972,14 @@ impl UsagePage {
             .flex()
             .flex_wrap()
             .gap(DynamicSpacing::Base01.px(&theme))
-            .bg(theme.border);
+            .bg(theme.hairline());
         for _ in 0..4 {
             grid = grid.child(
                 div()
                     .flex_1()
                     .min_w(px(150.))
                     .p(DynamicSpacing::Base12.px(&theme))
-                    .bg(theme.surface_elevated)
+                    .bg(theme.page_fill(theme.surface_elevated))
                     .flex()
                     .flex_col()
                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -1016,21 +1002,21 @@ impl UsagePage {
                     .h(px(168.))
                     .w_full()
                     .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary),
+                    .bg(theme.page_fill(theme.surface_secondary)),
             )
             .child(
                 div()
                     .h(px(96.))
                     .w_full()
                     .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary),
+                    .bg(theme.page_fill(theme.surface_secondary)),
             )
             .child(
                 div()
                     .h(px(72.))
                     .w_full()
                     .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary),
+                    .bg(theme.page_fill(theme.surface_secondary)),
             );
 
         // Records: a header rule and a handful of rows.
@@ -1048,7 +1034,7 @@ impl UsagePage {
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base12.px(&theme))
-                    .when(ix > 0, |row| row.border_t_1().border_color(theme.border))
+                    .when(ix > 0, |row| row.border_t_1().border_color(theme.hairline()))
                     .child(bar(140., 10.))
                     .child(div().flex_1())
                     .child(bar(72., 10.)),
@@ -1071,7 +1057,7 @@ impl UsagePage {
                         .flex_col()
                         .gap(DynamicSpacing::Base04.px(&theme))
                         .border_b_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .child(bar(120., 12.))
                         .child(bar(220., 10.)),
                 )
@@ -1091,7 +1077,7 @@ impl UsagePage {
                     .h(px(96.))
                     .w_full()
                     .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_secondary),
+                    .bg(theme.page_fill(theme.surface_secondary)),
             );
 
         div()
@@ -1282,10 +1268,10 @@ impl UsagePage {
                     .flex_col()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .when(row_ix > 0, |cell| {
-                        cell.border_t_1().border_color(theme.border)
+                        cell.border_t_1().border_color(theme.hairline())
                     })
                     .when(col_ix + 1 < chunk.len(), |cell| {
-                        cell.border_r_1().border_color(theme.border)
+                        cell.border_r_1().border_color(theme.hairline())
                     })
                     .when(cell.click.is_some(), |cell| {
                         cell.cursor_pointer().hover_state(&theme)
@@ -1368,7 +1354,7 @@ impl UsagePage {
             // Pad a short final row so its cells keep the grid's column widths.
             for _ in chunk.len()..cols {
                 row = row.child(div().flex_1().min_w(px(150.)).when(row_ix > 0, |cell| {
-                    cell.border_t_1().border_color(theme.border)
+                    cell.border_t_1().border_color(theme.hairline())
                 }));
             }
             grid = grid.child(row);
@@ -1378,7 +1364,7 @@ impl UsagePage {
             div()
                 .w_full()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .child(self.summary_strip(snapshot, theme, cols < 4, cx)),
         );
 
@@ -1675,6 +1661,8 @@ impl UsagePage {
         // The failed-request drill-down sits under the rate it explains.
         let failures_link = (totals.errors > 0).then(|| {
             let fail_entity = cx.entity();
+            // Bespoke: a bare danger link inside a stat panel — an inline
+            // drill-down; `Button`'s Danger would add the raised chip chrome.
             let link = press(
                 button_frame(
                     div().id("usage-summary-failures"),
@@ -1715,10 +1703,10 @@ impl UsagePage {
                     .flex_1()
                     .min_w_0()
                     .when(ix < last && !stacked, |cell| {
-                        cell.border_r_1().border_color(theme.border)
+                        cell.border_r_1().border_color(theme.hairline())
                     })
                     .when(ix > 0 && stacked, |cell| {
-                        cell.border_t_1().border_color(theme.border)
+                        cell.border_t_1().border_color(theme.hairline())
                     })
                     .child(panel)
             }))
@@ -2615,28 +2603,18 @@ impl UsagePage {
     ) -> AnyElement {
         let rows = &result.rows;
         let (columns, keys) = self.breakdown_columns();
-        let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let total_tokens = result.totals.tokens.total;
         let entity = cx.entity();
         let mut elements = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
             let last = ix + 1 == rows.len();
             let target = row.id;
-            let mut line = div()
+            let mut line = table_row(&columns, last, &theme)
                 .id(SharedString::from(format!(
                     "usage-breakdown-{kind}-{}",
                     row.label
                 )))
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(total_w))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .cursor_pointer()
-                .hover_state(&theme);
+                .cursor_pointer();
             for column in &columns {
                 let cell = match column.id {
                     "name" => breakdown_name_cell(
@@ -2944,20 +2922,10 @@ impl UsagePage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let columns = self.tool_columns();
-        let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut elements = Vec::with_capacity(result.rows.len());
         for (ix, row) in result.rows.iter().enumerate() {
             let last = ix + 1 == result.rows.len();
-            let mut line = div()
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(total_w))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .hover_state(&theme);
+            let mut line = table_row(&columns, last, &theme);
             for column in &columns {
                 let cell = match column.id {
                     "tool" => cell_shell(column)
@@ -3648,20 +3616,11 @@ impl UsagePage {
         let mut out = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
             let last = ix + 1 == rows.len();
-            let mut line = div()
+            let mut line = table_row(columns, last, &theme)
                 .id(("usage-session-row", ix))
                 .group("usage-row")
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(columns.iter().map(|column| column.width).sum::<f32>()))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .hover_state(&theme)
                 .when(selected == Some(row.session), |line| {
-                    line.bg(theme.surface_selected)
+                    line.bg(theme.selected_wash())
                 })
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
@@ -3714,20 +3673,10 @@ impl UsagePage {
         granularity: Granularity,
         theme: Theme,
     ) -> Vec<AnyElement> {
-        let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut out = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
             let last = ix + 1 == rows.len();
-            let mut line = div()
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(total_w))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .hover_state(&theme);
+            let mut line = table_row(columns, last, &theme);
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(BucketSort::Date);
                 if key == BucketSort::Date {
@@ -3788,20 +3737,10 @@ impl UsagePage {
         keys: &[FailureSort],
         theme: Theme,
     ) -> Vec<AnyElement> {
-        let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut elements = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
             let last = ix + 1 == rows.len();
-            let mut line = div()
-                .h(px(ROW_H))
-                .w_full()
-                .min_w(px(total_w))
-                .flex()
-                .items_center()
-                .when(!last, |row| {
-                    row.border_b_1().border_color(theme.border_subtle)
-                })
-                .hover_state(&theme);
+            let mut line = table_row(columns, last, &theme);
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(FailureSort::When);
                 if key == FailureSort::Kind {
@@ -4108,30 +4047,28 @@ fn open_session_cell(
         .items_center()
         .justify_center()
         .child(
-            icon_button_frame(div(), &theme, ButtonSize::Default)
-                .id(SharedString::from(format!("usage-open-{session}")))
-                .tip(tr!("usage.ctx_open_session"))
-                .cursor_pointer()
-                .opacity(0.)
-                .group_hover("usage-row", |style| style.opacity(1.))
-                .hover_on_glass(&theme)
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    // Do not let the row's own click handler also fire: this
-                    // is a jump to another surface, not a scope change.
-                    cx.stop_propagation();
-                    page.update(cx, |page, cx| page.open_session(window, cx, session));
-                })
-                .child(icon(
-                    "icons/arrow-up-right.svg",
-                    ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_muted,
-                )),
+            IconButton::new(
+                SharedString::from(format!("usage-open-{session}")),
+                "icons/arrow-up-right.svg",
+            )
+            .variant(IconButtonVariant::Glass)
+            .tip(tr!("usage.ctx_open_session"))
+            .on_mouse_down(&theme, move |_, window, cx| {
+                // Do not let the row's own click handler also fire: this
+                // is a jump to another surface, not a scope change.
+                cx.stop_propagation();
+                page.update(cx, |page, cx| page.open_session(window, cx, session));
+            })
+            // Revealed on row hover.
+            .opacity(0.)
+            .group_hover("usage-row", |style| style.opacity(1.)),
         )
         .into_any_element()
 }
 
 /// The session row's right-click menu (§43): only actions that are wired.
 fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>) -> AnyElement {
+    let theme = theme.for_floating();
     let session = row.session;
     let session_id = row.id.clone();
     let provider_id = row.provider_id;
@@ -4201,26 +4138,17 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
         }
     }));
 
-    anchored()
-        .position_mode(gpui::AnchoredPositionMode::Local)
-        .anchor(Corner::TopLeft)
-        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-        .child(deferred(context_menu_shell(theme, page, items)))
-        .into_any_element()
+    anchored_menu(Corner::TopLeft, gpui::point(gpui::px(0.), gpui::px(0.)), context_menu_shell(theme, page, items))
 }
 
 /// The menu shell, on the branch selector's picker metrics
 /// ([`picker_surface`]), dismissed by an outside click.
 fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyElement>) -> AnyElement {
-    picker_surface(div().id("usage-row-menu"), &theme)
-        .py(picker::list_padding_y(&theme))
-        .flex()
-        .flex_col()
-        .gap(DynamicSpacing::Base01.px(&theme))
+    let theme = theme.for_floating();
+    popover_list(div().id("usage-row-menu"), &theme)
         .overflow_hidden()
-        .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_down_out(move |_, _, cx| {
+        .dismiss_on_outside(move |_, _, cx| {
             page.update(cx, |page, cx| page.close_context_menu(cx));
         })
         .children(items)
@@ -4252,108 +4180,6 @@ fn context_separator(theme: Theme) -> AnyElement {
 }
 
 // ── shared pieces ─────────────────────────────────────────────────────────
-
-/// A top-level band on the canvas: a semantic title, a one-line description,
-/// optional meta, a hairline, then the content. Used for every secondary
-/// section so the page reads as hairlines and whitespace rather than a stack
-/// of boxes (DESIGN.md: hairlines over boxes). The summary metric board is
-/// the one place that keeps a card.
-fn section(
-    id: &'static str,
-    title: &str,
-    description: Option<&str>,
-    meta: Option<String>,
-    right: Option<AnyElement>,
-    content: AnyElement,
-    theme: Theme,
-) -> AnyElement {
-    card(
-        id,
-        title,
-        description,
-        meta,
-        right,
-        div()
-            .w_full()
-            .px(DynamicSpacing::Base12.px(&theme))
-            .pt(DynamicSpacing::Base12.px(&theme))
-            .pb(DynamicSpacing::Base12.px(&theme))
-            .child(content)
-            .into_any_element(),
-        theme,
-        false,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn card(
-    id: &'static str,
-    title: &str,
-    description: Option<&str>,
-    meta: Option<String>,
-    right: Option<AnyElement>,
-    content: AnyElement,
-    theme: Theme,
-    clip: bool,
-) -> AnyElement {
-    let mut root = div()
-        .id(SharedString::from(id))
-        .flex_none()
-        .w_full()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        // Translucent whenever a wallpaper is behind the column, whatever the
-        // renderer can do with it: the frost is the extra, not the condition.
-        .bg(theme.card_fill(theme.surface_elevated))
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .flex_none()
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base12.px(&theme))
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base04.px(&theme))
-                .border_b_1()
-                .border_color(theme.border)
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .child(
-                            div()
-                                .text_size(TextSize::Large.px(&theme))
-                                .line_height(theme.ui_px(20.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_primary)
-                                .child(title.to_string()),
-                        )
-                        .children(meta.map(|meta| {
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(meta)
-                        }))
-                        .child(div().flex_1())
-                        .children(right),
-                )
-                .children(description.map(|description| {
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(16.))
-                        .text_color(theme.text_muted)
-                        .child(description.to_string())
-                })),
-        )
-        .child(content);
-    if clip {
-        root = root.overflow_hidden();
-    }
-    root.into_any_element()
-}
 
 /// A segmented control's selection callback, boxed so one segment's handler
 /// can be cloned into every option.
@@ -4389,71 +4215,29 @@ where
     L: IntoElement,
 {
     let on_pick: SegmentPick<T> = Rc::new(on_pick);
-    let resting = if inset {
-        theme.background
-    } else {
-        theme.surface_elevated
-    };
-    let radius = button::RADIUS.px(&theme);
-    let many = options.len() > 1;
-    let last = options.len().saturating_sub(1);
-    let mut row = div().flex().items_center();
-    for (ix, option) in options.iter().copied().enumerate() {
-        let is_active = option == active;
-        let is_enabled = enabled(option);
+    // A metric with no source data stays visible but disabled, so the group
+    // keeps its shape as availability changes.
+    let mut group = ButtonGroup::new(SegmentFill::Active).inset(inset);
+    for option in options.iter().copied() {
         let handler = on_pick.clone();
-        row = row.child(
-            button_frame(div(), &theme, ButtonSize::Medium)
-                .id(SharedString::from(format!("{prefix}-{}", key(option))))
-                .rounded_none()
-                .border_1()
-                .border_color(theme.border)
-                // One control: only the outer corners round, and the segments
-                // share the hairline between them.
-                .when(!many, |tab| tab.rounded(radius))
-                .when(many && ix == 0, |tab| tab.rounded_l(radius))
-                .when(many && ix == last, |tab| tab.rounded_r(radius).border_l_0())
-                .when(many && ix > 0 && ix < last, |tab| tab.border_l_0())
-                .when(is_active, |tab| {
-                    tab.raised_flat(theme.surface_active)
-                        .text_color(theme.text_primary)
-                        .font_weight(FontWeight::MEDIUM)
-                        .cursor_pointer()
-                })
-                .when(!is_active && is_enabled, |tab| {
-                    tab.raised_flat(resting)
-                        .text_color(theme.text_secondary)
-                        .cursor_pointer()
-                        .hover_state(&theme)
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            handler(option, window, cx)
-                        })
-                })
-                // A metric with no source data stays visible but disabled, so
-                // the group keeps its shape as availability changes.
-                .when(!is_active && !is_enabled, |tab| {
-                    tab.bg(resting)
-                        .text_color(theme.text_disabled)
-                        .cursor_default()
-                })
-                .child(label(option)),
-        );
+        group = group
+            .segment(
+                SharedString::from(format!("{prefix}-{}", key(option))),
+                label(option),
+                option == active,
+                move |_, window, cx| handler(option, window, cx),
+            )
+            .disabled(option != active && !enabled(option));
     }
-    row.into_any_element()
+    group.render(&theme).into_any_element()
 }
 
 /// A search field, shared by the Sessions table and the Breakdown table so both
 /// read the same.
 fn search_box(input: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
-    picker_search_frame(div(), &theme)
+    search_field(input.clone(), &theme)
         .flex_1()
         .min_w(px(180.))
-        .child(icon(
-            "icons/search.svg",
-            input::ICON.px(&theme),
-            theme.text_muted,
-        ))
-        .child(div().flex_1().min_w_0().child(input.clone()))
         .into_any_element()
 }
 
@@ -4510,10 +4294,12 @@ fn table_pager(
     let square = ButtonSize::Medium.height(&theme);
     let arrow = |key: &'static str, path: &'static str, target: usize, enabled: bool| {
         let on_page = on_page.clone();
+        // Bespoke: a pager step sharing the bordered square of the page
+        // numbers beside it, not a toolbar icon button.
         let frame = icon_button_frame(div(), &theme, ButtonSize::Medium)
             .id(SharedString::from(format!("{id}-{key}")))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .when(enabled, |button| {
                 button
                     .cursor_pointer()
@@ -4553,13 +4339,14 @@ fn table_pager(
                 .text_color(theme.text_muted)
                 .child("…")
                 .into_any_element(),
+            // Bespoke: the current page — an inert marker in the pager (the other pages are buttons).
             Some(page) if page == current => button_frame(div(), &theme, ButtonSize::Medium)
                 .id(SharedString::from(format!("{id}-page-{ix}")))
                 .min_w(square)
                 .justify_center()
                 .border_1()
                 .border_color(theme.border_strong)
-                .bg(theme.surface_active)
+                .bg(theme.pressed_wash())
                 .font(num_font())
                 .font_weight(FontWeight::MEDIUM)
                 .text_size(TextSize::Small.px(&theme))
@@ -4568,23 +4355,20 @@ fn table_pager(
                 .into_any_element(),
             Some(page) => {
                 let on_page = on_page.clone();
-                crate::motion::hover(
-                    button_frame(div(), &theme, ButtonSize::Medium)
-                        .id(SharedString::from(format!("{id}-page-{ix}")))
-                        .min_w(square)
-                        .justify_center()
-                        .cursor_pointer()
-                        .font(num_font())
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            on_page(page, window, cx)
-                        })
-                        .child(page.to_string()),
-                    format!("{id}-page-{ix}"),
-                    &theme,
-                    crate::motion::Hover::wash(&theme),
+                Button::keyed(
+                    ElementId::Name(SharedString::from(format!("{id}-page-{ix}"))),
+                    ButtonVariant::Ghost,
                 )
+                .label(page.to_string())
+                .faded(&theme, |el| {
+                    el.font(num_font()).min_w(square).on_mouse_down(
+                        MouseButton::Left,
+                        move |_, window, cx| {
+                            on_page(page, window, cx)
+                        },
+                    )
+                })
+                .into_any_element()
             }
         })
         .collect();
@@ -4677,16 +4461,7 @@ fn retry_note(theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// Tabular figures for numeric columns (§54). Both bundled faces carry `tnum`,
-/// and requesting it is what stops columns from jittering as digits change.
-pub(crate) fn num_font() -> Font {
-    let mut font = gpui::font(theme::ui_font_family());
-    font.features = FontFeatures(Arc::new(vec![
-        ("tnum".to_string(), 1),
-        ("lnum".to_string(), 1),
-    ]));
-    font
-}
+pub(crate) use crate::ui::style::text::num_font;
 
 /// One row of a breakdown legend, shared by every breakdown tab: the row's
 /// glyph, its name and scope, the figure and its share, and a track whose fill
@@ -4773,7 +4548,7 @@ fn legend_row(
         .flex_col()
         .gap(DynamicSpacing::Base06.px(&theme))
         .cursor_pointer()
-        .when(row.selected, |wash| wash.bg(theme.surface_selected))
+        .when(row.selected, |wash| wash.bg(theme.selected_wash()))
         .hover_state(&theme)
         .child(head)
         .child(bar)
@@ -4788,34 +4563,14 @@ fn legend_bar(
     theme: Theme,
     reduced_motion: bool,
 ) -> AnyElement {
-    let fraction = if fraction.is_finite() {
-        fraction.clamp(0.0, 1.0) as f32
-    } else {
-        0.0
-    };
-    let fill = div()
-        .h_full()
-        .w(relative(fraction))
-        .rounded(Radius::Full.px(&theme))
-        .bg(fill);
-    let fill = if reduced_motion {
-        fill.into_any_element()
-    } else {
-        fill.with_animation(
-            ElementId::Name(format!("{id}-reveal").into()),
-            Animation::new(Motion::Layout.duration(&theme)).with_easing(Motion::Layout.easing()),
-            move |fill, progress| fill.w(relative(fraction * progress)),
-        )
-        .into_any_element()
-    };
-    div()
-        .w_full()
-        .h(px(6.))
-        .rounded(Radius::Full.px(&theme))
-        .bg(theme.surface_secondary)
-        .overflow_hidden()
-        .child(fill)
-        .into_any_element()
+    progress_bar(
+        &theme,
+        fraction as f32,
+        fill,
+        ProgressSize::Large,
+        ProgressTrack::Solid,
+        (!reduced_motion).then(|| ElementId::Name(format!("{id}-reveal").into())),
+    )
 }
 
 /// The name cell of a breakdown table: the row's label, with its secondary
@@ -4966,7 +4721,7 @@ fn strip_panel(
                 .w_full()
                 .pt(DynamicSpacing::Base12.px(&theme))
                 .border_t_1()
-                .border_color(theme.border_subtle)
+                .border_color(theme.hairline_subtle())
                 .child(grid),
         )
         .children(trailing)

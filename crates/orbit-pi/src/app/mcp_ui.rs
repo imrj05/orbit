@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::helpers::*;
 use super::*;
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::button::{Button, ButtonVariant};
 use crate::mcp::config::{self as mcp_config, SecretUpdate};
 use crate::mcp::manager::McpProbe;
 use crate::mcp::{
@@ -28,6 +29,12 @@ use crate::mcp::{
 use crate::theme::tokens::{
     button, input, list_item, modal, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
+use crate::ui::button::IconButton;
+use crate::ui::chip::Pill;
+use crate::ui::dialog::modal_button;
+use crate::ui::field::search_field;
+use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 
 /// How long after a configuration change the probe is debounced, so several
 /// quick edits share one `pi mcp list` run.
@@ -275,10 +282,7 @@ impl OrbitApp {
         }
         let workspace = self.workspace_dir();
         self.drop_client();
-        match self
-            .extensions
-            .spawn(&workspace, false, &self.mcp.secret_env())
-        {
+        match self.spawn_pi(&workspace, false) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(Some(&workspace));
@@ -504,7 +508,8 @@ impl OrbitApp {
             oauth_text(&oauth.scope),
             cx,
         );
-        window.focus(&name.read(cx).focus_handle(cx));
+        let target = name.read(cx).focus_handle(cx);
+        self.mcp_editor_focus.open(&target, window, cx);
         self.mcp_editor = Some(McpEditor {
             original: server,
             kind,
@@ -952,24 +957,29 @@ impl OrbitApp {
         }
         let entity = cx.entity();
         Some(
-            button_frame(div().id("status-mcp"), &theme, ButtonSize::Default)
-                .cursor_pointer()
-                .hover_quiet(&theme)
+            Button::new("status-mcp", ButtonVariant::Ghost)
+                .size(ButtonSize::Default)
+                .leading(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::theme::tokens::button::gap(&theme))
+                        .child(icon(
+                            "icons/tools/mcp.svg",
+                            ButtonSize::Default.icon_size().px(&theme),
+                            theme.text_muted,
+                        ))
+                        .child(div().size(px(6.)).rounded_full().bg(dot)),
+                )
+                .label(label)
                 .tip(tr!("mcp.command_open"))
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                .on_mouse_up(&theme, move |_, _, cx| {
                     entity.update(cx, |app, cx| {
                         app.settings_open = true;
                         app.set_settings_section(SettingsSection::Mcp, cx);
                         app.sync_terminal_active(cx);
                     });
                 })
-                .child(icon(
-                    "icons/tools/mcp.svg",
-                    ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_muted,
-                ))
-                .child(div().size(px(6.)).rounded_full().bg(dot))
-                .child(div().text_color(theme.text_secondary).child(label))
                 .into_any_element(),
         )
     }
@@ -1053,41 +1063,32 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         _cx: &Context<Self>,
     ) -> AnyElement {
-        let search = picker_search_frame(div(), &theme)
-            .w_full()
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.mcp_filter.clone()));
+        let search = search_field(self.mcp_filter.clone(), &theme).w_full();
 
-        let refresh = icon_button_frame(div().id("mcp-refresh"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .tip(tr!("mcp.refresh"))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
-            })
-            .child(refresh_glyph(
+        let refresh = IconButton::glyph(
+            "mcp-refresh",
+            refresh_glyph(
                 "mcp-refresh-spin",
                 ButtonSize::Large.icon_size().px(&theme),
                 self.mcp.is_probing(),
                 theme.text_secondary,
                 theme,
-            ));
+            ),
+        )
+        .size(ButtonSize::Large)
+        .tip(tr!("mcp.refresh"))
+        .on_mouse_up(&theme, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
+        })
+        // Outlined to sit beside the labelled Add button at the same weight.
+        .border_1()
+        .border_color(theme.hairline())
+        .raised(theme.surface_elevated, &theme);
 
-        let add = button_frame(div().id("mcp-add"), &theme, ButtonSize::Large)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
+        let add = Button::keyed("mcp-add", ButtonVariant::Primary)
+.size(ButtonSize::Large)
+.render(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1384,7 +1385,7 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base16.px(&theme))
             .when(first, |row| row.rounded_t(panel::RADIUS.px(&theme)))
             .when(last, |row| row.rounded_b(panel::RADIUS.px(&theme)))
-            .when(selected, |row| row.bg(theme.surface_selected))
+            .when(selected, |row| row.bg(theme.selected_wash()))
             .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
@@ -1711,13 +1712,9 @@ impl OrbitApp {
                         .child(tr!("mcp.empty_hint")),
                 )
                 .child(
-                    button_frame(div().id("mcp-empty-add"), &theme, ButtonSize::Medium)
-                        .cursor_pointer()
-                        .font_weight(FontWeight::MEDIUM)
-                        .raised(theme.action, &theme)
-                        .text_color(theme.action_fg)
-                        .hover_action(&theme)
-                        .pressed_state(&theme, PressedRamp::Action)
+                    Button::keyed("mcp-empty-add", ButtonVariant::Primary)
+.size(ButtonSize::Medium)
+.render(&theme)
                         .on_mouse_up(MouseButton::Left, {
                             let this = this.clone();
                             move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1752,7 +1749,7 @@ impl OrbitApp {
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border_strong)
-            .bg(theme.surface_secondary)
+            .bg(theme.card_fill(theme.surface_secondary))
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base12.px(&theme))
@@ -1844,6 +1841,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         let editor = self.mcp_editor.as_ref()?;
         let editing = editor.original.is_some();
         let title = if editing {
@@ -1889,35 +1887,11 @@ impl OrbitApp {
         for kind in [McpTransportKind::Stdio, McpTransportKind::StreamableHttp] {
             let selected = editor.kind == kind;
             transport_chips = transport_chips.child(
-                button_frame(
-                    div().id(ElementId::Name(
-                        format!("mcp-editor-kind-{}", kind_label(kind)).into(),
-                    )),
-                    &theme,
-                    ButtonSize::Default,
-                )
-                .border_1()
-                .border_color(if selected {
-                    theme.accent.opacity(0.5)
-                } else {
-                    theme.border
-                })
-                .raised(
-                    if selected {
-                        theme.accent.opacity(0.12)
-                    } else {
-                        theme.surface_elevated
-                    },
-                    &theme,
-                )
-                .text_color(if selected {
-                    theme.accent_text
-                } else {
-                    theme.text_secondary
-                })
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_up(MouseButton::Left, {
+                ChipButton::new(format!("mcp-editor-kind-{}", kind_label(kind)), ChipStyle::Outlined { inset: false })
+.size(ButtonSize::Default)
+.label(tr!(kind.label_key()))
+.selected(selected)
+.on_mouse_up(&theme, {
                     let this = this.clone();
                     move |_, _, cx| {
                         this.update(cx, |app, cx| {
@@ -1927,8 +1901,7 @@ impl OrbitApp {
                             }
                         });
                     }
-                })
-                .child(tr!(kind.label_key())),
+                }),
             );
         }
 
@@ -2106,7 +2079,7 @@ impl OrbitApp {
                     .focus(|style| style.border_color(theme.focus_ring))
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.surface_selected))
+                    .when(selected, |row| row.bg(theme.selected_wash()))
                     .hover_state(&theme)
                     .on_key_down({
                         let this = this.clone();
@@ -2194,7 +2167,7 @@ impl OrbitApp {
                     .focus(|style| style.border_color(theme.focus_ring))
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.surface_selected))
+                    .when(selected, |row| row.bg(theme.selected_wash()))
                     .hover_state(&theme)
                     .on_key_down({
                         let this = this.clone();
@@ -2318,77 +2291,43 @@ impl OrbitApp {
             );
         if let Some(error) = &editor.error {
             body = body.child(
-                div()
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.1))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.clone()),
+                Banner::note(BannerTone::Error, error.clone(), &theme),
             );
         }
 
-        let cancel = button_frame(div().id("mcp-editor-cancel"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_close(cx))
-            })
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(tr!("mcp.cancel")),
-            );
-        let save = button_frame(div().id("mcp-editor-save"), &theme, ButtonSize::Large)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_save(cx))
-            })
-            .child(tr!("mcp.save"));
+        let cancel = modal_button(
+            "mcp-editor-cancel",
+            tr!("mcp.cancel"),
+            ButtonVariant::Secondary,
+            &self.modal_cancel_focus,
+        )
+        .size(ButtonSize::Large)
+        .on_click(&theme, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_close(cx))
+        });
+        let save = modal_button(
+            "mcp-editor-save",
+            tr!("mcp.save"),
+            ButtonVariant::Primary,
+            &self.modal_confirm_focus,
+        )
+        .size(ButtonSize::Large)
+        .on_click(&theme, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_save(cx))
+        });
 
         let card = modal_card(&theme)
-            .w_full()
-            .max_w(px(560.))
+            .modal_width(px(560.))
             .max_h(relative(1.))
             .on_action(cx.listener(Self::mcp_editor_cancel))
             .on_action(cx.listener(Self::mcp_editor_confirm))
-            .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(modal::header_gap(&theme))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .text_size(modal::HEADLINE.px(&theme))
-                            .line_height(modal::HEADLINE.line_height(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(tr!("mcp.editor_subtitle")),
-                    ),
-            )
+            .child(modal_header(
+                &theme,
+                title,
+                Some(ModalSubtitle::Text(tr!("mcp.editor_subtitle").into())),
+            ))
             .child(
                 div()
                     .id("mcp-editor-body")
@@ -2399,35 +2338,10 @@ impl OrbitApp {
                     .py(DynamicSpacing::Base16.px(&theme))
                     .child(body),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .px(modal::footer_padding(&theme))
-                    .py(modal::footer_padding(&theme))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(modal::footer_gap(&theme))
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(cancel)
-                    .child(save),
-            );
+            .child(modal_footer(&theme).child(cancel).child(save));
 
-        let scrim = match theme.mode {
-            ThemeMode::Dark => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.42,
-            },
-            ThemeMode::Light => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.22,
-            },
-        };
+        // The backdrop every modal shares (`ui::dialog::modal_scrim`'s role).
+        let scrim = theme.scrim_modal();
         Some(
             div()
                 .id("mcp-editor-layer")
@@ -2536,23 +2450,22 @@ impl OrbitApp {
             .iter()
             .filter(|server| self.mcp.runtime(&server.name).status == McpServerStatus::Connected)
             .count();
-        let refresh = icon_button_frame(div().id("quota-mcp-refresh"), &theme, ButtonSize::Medium)
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .tip(tr!("mcp.refresh"))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
-            })
-            .child(refresh_glyph(
+        let refresh = IconButton::glyph(
+            "quota-mcp-refresh",
+            refresh_glyph(
                 "quota-mcp-refresh-spin",
                 ButtonSize::Medium.icon_size().px(&theme),
                 self.mcp.is_probing(),
                 theme.text_secondary,
                 theme,
-            ));
+            ),
+        )
+        .size(ButtonSize::Medium)
+        .tip(tr!("mcp.refresh"))
+        .on_mouse_up(&theme, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.mcp_refresh(cx))
+        });
         div()
             .flex()
             .items_center()
@@ -2829,7 +2742,7 @@ impl OrbitApp {
             .mt(DynamicSpacing::Base04.px(&theme))
             .pt(DynamicSpacing::Base06.px(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
@@ -2886,29 +2799,15 @@ fn mcp_popup_action(
     this: Entity<OrbitApp>,
     action: impl Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 ) -> AnyElement {
-    let action = Rc::new(action);
-    let mut button = button_frame(
-        div().id(ElementId::Name(id.into())),
-        &theme,
-        ButtonSize::Compact,
-    )
-    .cursor_pointer()
-    .font_weight(FontWeight::MEDIUM);
-    button = if primary {
-        button
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
+    let variant = if primary {
+        ButtonVariant::Primary
     } else {
-        button
-            .raised(theme.overlay, &theme)
-            .text_color(theme.text_secondary)
-            .hover_overlay_strong(&theme)
+        ButtonVariant::Glass
     };
-    press(button)
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+    Button::new(id, variant)
+        .size(ButtonSize::Compact)
+        .label(label)
+        .on_mouse_up(&theme, move |_, _, cx| {
             cx.stop_propagation();
             this.update(cx, |app, cx| action(app, cx));
         })
@@ -2961,14 +2860,9 @@ fn mcp_status_pill(id: &str, status: McpServerStatus, theme: Theme) -> AnyElemen
     } else {
         icon(mcp_status_glyph(status), IconSize::XSmall.px(&theme), color).into_any_element()
     };
-    div()
-        .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base04.px(&theme))
-        .text_size(TextSize::Small.px(&theme))
-        .text_color(color)
-        .child(glyph)
-        .child(tr!(status.label_key()))
+    Pill::new(tr!(status.label_key()), color)
+        .leading(glyph)
+        .render(&theme)
         .into_any_element()
 }
 
@@ -2998,24 +2892,21 @@ fn mcp_error_hint(error: &str) -> Option<String> {
 }
 
 fn mcp_chip(label: String, theme: Theme) -> AnyElement {
-    div()
-        .flex_none()
-        .h(DynamicSpacing::Base20.px(&theme))
-        .px(DynamicSpacing::Base06.px(&theme))
-        .rounded(Radius::Medium.px(&theme))
-        .bg(theme.surface_elevated)
-        .border_1()
-        .border_color(theme.border)
-        .flex()
-        .items_center()
-        .text_size(TextSize::XSmall.px(&theme))
-        .text_color(theme.text_muted)
-        .child(label)
-        .into_any_element()
+    // An informational tag (scope, exposure, a tool): the shared badge on a
+    // card-tinted face, so it is translucent on a glass page.
+    crate::ui::chip::Badge::new(
+        label,
+        theme.text_muted,
+        crate::ui::chip::BadgeFill::Framed {
+            face: theme.card_fill(theme.surface_elevated),
+            edge: theme.hairline(),
+        },
+    )
+    .render(&theme)
 }
 
-/// The per-row enable switch. Mirrors `settings_toggle` but routes through an
-/// app entity so a server name can ride along.
+/// The per-row enable switch: `settings_toggle`'s shared switch, with an
+/// action that can capture a server name.
 fn mcp_switch(
     id: String,
     on: bool,
@@ -3023,30 +2914,14 @@ fn mcp_switch(
     this: Entity<OrbitApp>,
     action: impl Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 ) -> AnyElement {
-    let action = std::rc::Rc::new(action);
-    div()
-        .id(ElementId::Name(id.into()))
-        .w(px(36.))
-        .h(DynamicSpacing::Base20.px(&theme))
-        .rounded_full()
-        .p(DynamicSpacing::Base02.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .when(on, |t| t.bg(theme.accent).justify_end())
-        .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
-        .hover_border(&theme)
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            this.update(cx, |app, cx| action(app, cx));
-        })
-        .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-        .into_any_element()
+    // The shared switch: focus ring, Space/Enter and the knob's motion.
+    crate::ui::switch::switch(id, on, &theme, move |_, cx| {
+        this.update(cx, |app, cx| action(app, cx));
+    })
 }
 
 /// An icon-only row action with a tooltip and press feedback.
-fn mcp_icon_action(
+pub(super) fn mcp_icon_action(
     id: String,
     glyph_path: &'static str,
     tip: String,
@@ -3081,7 +2956,7 @@ fn mcp_icon_action(
 
 /// A compact labelled button used by the notice cards and the remove
 /// confirmation.
-fn mcp_text_button(
+pub(super) fn mcp_text_button(
     id: String,
     label: String,
     theme: Theme,
@@ -3089,31 +2964,14 @@ fn mcp_text_button(
     this: Entity<OrbitApp>,
     action: impl Fn(&mut OrbitApp, &mut Window, &mut Context<OrbitApp>) + 'static,
 ) -> AnyElement {
-    let action = std::rc::Rc::new(action);
-    let mut button = button_frame(
-        div().id(ElementId::Name(id.into())),
-        &theme,
-        ButtonSize::Medium,
-    )
-    .cursor_pointer()
-    .font_weight(FontWeight::MEDIUM);
-    button = if primary {
-        button
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
+    let variant = if primary {
+        ButtonVariant::Primary
     } else {
-        button
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .hover_state(&theme)
+        ButtonVariant::Secondary
     };
-    press(button)
-        .child(label)
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+    Button::new(id, variant)
+        .label(label)
+        .on_mouse_up(&theme, move |_, window, cx| {
             this.update(cx, |app, cx| action(app, window, cx));
         })
         .into_any_element()

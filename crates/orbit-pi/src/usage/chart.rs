@@ -269,7 +269,7 @@ pub fn timeline(
             max,
             accent,
             theme.text_muted,
-            theme.border,
+            theme.hairline(),
             reduced_motion,
         )))
         // The x labels, in the axis strip below the plot.
@@ -649,6 +649,7 @@ fn readout(
     theme: Theme,
     count: usize,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let Some(bucket) = series.points.get(ix) else {
         return div().into_any_element();
     };
@@ -770,7 +771,7 @@ fn readout(
             body = body.child(readout_row(&label, &value, theme));
         }
         // Everything under the rule describes the whole bucket.
-        body = body.child(div().h(px(1.)).w_full().bg(theme.border)).child(
+        body = body.child(div().h(px(1.)).w_full().bg(theme.hairline())).child(
             div()
                 .text_size(TextSize::XSmall.px(&theme))
                 .text_color(theme.text_muted)
@@ -782,7 +783,7 @@ fn readout(
     }
     if let Some((label, value)) = footer {
         body = body
-            .child(div().h(px(1.)).w_full().bg(theme.border))
+            .child(div().h(px(1.)).w_full().bg(theme.hairline()))
             .child(readout_row(&label, &value, theme));
     }
 

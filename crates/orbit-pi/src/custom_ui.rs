@@ -16,15 +16,17 @@
 use alacritty_terminal::term::TermMode;
 use gpui::{
     deferred, div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, Font,
-    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, ScrollHandle,
-    SharedString, StyledText, Window,
+    KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, ScrollHandle, SharedString,
+    StyledText, Window,
 };
 use serde_json::Value;
 
-use crate::app::{icon, icon_button_frame, modal_card, modal_scrim, ControlExt, TipExt};
 use crate::terminal::encode_key;
 use crate::theme;
-use crate::theme::tokens::{panel, ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::theme::tokens::{panel, DynamicSpacing, IconSize, TextSize};
+use crate::ui::button::IconButton;
+use crate::ui::dialog::ModalHeader;
+use crate::ui::prelude::{icon, modal_card, modal_scrim};
 use crate::widgets;
 
 /// Column budget the host offers the component: the card is exactly this many
@@ -278,7 +280,7 @@ impl Focusable for CustomUi {
 
 impl Render for CustomUi {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let font_size = theme.code_px(12.);
         let line_height = theme.code_px(18.);
         let font = widgets::widget_font();
@@ -338,44 +340,13 @@ impl Render for CustomUi {
             .map(str::trim)
             .filter(|title| !title.is_empty())
             .unwrap_or("Extension UI");
-        let meta = div()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .child(
-                div()
-                    .truncate()
-                    .text_size(TextSize::Default.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(SharedString::from(title.to_string())),
-            )
-            .when(
-                self.surface
-                    .title
-                    .as_deref()
-                    .is_some_and(|title| !title.trim().is_empty()),
-                |meta| {
-                    meta.child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from("Extension UI")),
-                    )
-                },
-            );
-        let header = div()
-            .flex_none()
-            .h(theme.ui_px(64.))
-            .debug_selector(|| "custom-ui-header".to_string())
-            .px(DynamicSpacing::Base16.px(&theme))
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base12.px(&theme))
-            .border_b_1()
-            .border_color(theme.border_subtle)
-            .child(
+        let has_title = self
+            .surface
+            .title
+            .as_deref()
+            .is_some_and(|title| !title.trim().is_empty());
+        let header = ModalHeader::new(SharedString::from(title.to_string()))
+            .leading(
                 div()
                     .size(theme.ui_px(36.))
                     .flex_none()
@@ -385,27 +356,29 @@ impl Render for CustomUi {
                     .rounded(panel::RADIUS.px(&theme))
                     .bg(theme.surface_secondary)
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .child(icon(
                         "icons/extensions.svg",
                         IconSize::Medium.px(&theme),
                         theme.text_secondary,
                     )),
             )
-            .child(div().flex_1().min_w_0().flex().items_center().child(meta))
-            .child(
-                icon_button_frame(div().id("custom-ui-close"), &theme, ButtonSize::Default)
-                    .debug_selector(|| "custom-ui-close".to_string())
+            .trailing(
+                IconButton::new("custom-ui-close", "icons/x.svg")
                     .tip(tr!("common.close"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .on_click(cx.listener(Self::on_close_click))
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_muted,
-                    )),
+                    .on_click(&theme, cx.listener(Self::on_close_click))
+                    .debug_selector(|| "custom-ui-close".to_string()),
             );
+        // A named surface says where it comes from under its title.
+        let header = if has_title {
+            header.subtitle(crate::ui::dialog::ModalSubtitle::Text(
+                "Extension UI".into(),
+            ))
+        } else {
+            header
+        }
+        .render(&theme)
+        .debug_selector(|| "custom-ui-header".to_string());
 
         // ── body: an inset code surface holding the server's grid ──
         let body = div()
@@ -418,7 +391,7 @@ impl Render for CustomUi {
             .rounded(panel::RADIUS.px(&theme))
             .bg(theme.code_bg)
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .min_h(px(f32::from(line_height)))
             .max_h(px((viewport_h * 0.68).max(f32::from(line_height) * 3.)))
             .overflow_scroll()
@@ -438,7 +411,7 @@ impl Render for CustomUi {
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .border_t_1()
-            .border_color(theme.border_subtle)
+            .border_color(theme.hairline_subtle())
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
             .child(icon(

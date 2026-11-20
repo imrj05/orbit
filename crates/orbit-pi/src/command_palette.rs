@@ -36,19 +36,20 @@ use gpui::{
     SharedString, Styled, Subscription, Window,
 };
 
-use crate::app::{
-    icon, menu_header, picker_entry, picker_search_frame, picker_surface, PressedRamp,
-    SettingsSection, StatefulControlExt,
-};
+use crate::app::SettingsSection;
 use crate::commands::{self, CommandId, CommandSpec};
 use crate::composer::ComposerInput;
 use crate::platform::shortcuts;
 use crate::sessions::SessionInfo;
 use crate::theme::tokens::{
-    context_menu, input, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing,
-    Radius, TextSize,
+    context_menu, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing, Radius,
+    TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::field::search_field;
+use crate::ui::prelude::{
+    icon, menu_header, picker_entry, picker_surface, PressedRamp, StatefulControlExt,
+};
 
 /// The palette's layout metrics, resolved from the theme so the card's
 /// height caps and the keyboard reveal math measure exactly what renders.
@@ -636,6 +637,12 @@ impl CommandPalette {
                 "settings preferences mcp model context protocol servers tools",
             ),
             (
+                SettingsSection::RemoteHosts,
+                "icons/server-stack.svg",
+                tr!("settings.remote_hosts"),
+                "settings preferences remote hosts ssh server vps machine environment add host",
+            ),
+            (
                 SettingsSection::About,
                 "icons/info.svg",
                 tr!("settings.about"),
@@ -824,7 +831,7 @@ impl Render for CommandPalette {
         let rows = self.results(&self.last_filter);
 
         let this = cx.entity();
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let metrics = PaletteMetrics::new(&theme);
 
         // Hug the content, capped so the card never owns the window.
@@ -920,16 +927,7 @@ impl Render for CommandPalette {
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
             // search row
-            .child(
-                picker_search_frame(div(), &theme)
-                    .text_color(theme.text_primary)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
-            )
+            .child(search_field(self.filter.clone(), &theme).text_color(theme.text_primary))
             .child(list)
             // footer — the palette is new chrome; name the keys once, quietly.
             .child(
@@ -941,7 +939,7 @@ impl Render for CommandPalette {
                     .items_center()
                     .gap(DynamicSpacing::Base16.px(&theme))
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_muted)
                     .child(tr!("command_palette.navigate"))
@@ -1029,7 +1027,7 @@ fn render_row(
                 });
             }
         })
-        .when(highlighted, |row| row.bg(theme.surface_selected))
+        .when(highlighted, |row| row.bg(theme.selected_wash()))
         .child(icon(
             icon_path,
             context_menu::ICON.px(&theme),

@@ -23,6 +23,11 @@ static DEV_ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/dev-assets");
 
 pub struct Assets;
 
+/// The bytes of one embedded production asset, without a copy.
+pub fn bytes(path: &str) -> Option<&'static [u8]> {
+    ASSETS.get_file(path).map(|file| file.contents())
+}
+
 impl Assets {
     /// The embedded directories, production first, the macOS debug overlay
     /// second. The length is compile-time selected so release builds carry
@@ -83,7 +88,7 @@ pub fn register_zed_fonts(cx: &mut gpui::App) -> anyhow::Result<()> {
 }
 
 /// The Nerd Fonts symbols face backing the devicons file glyphs (see
-/// `app::helpers::file_glyph`). It carries only private-use glyphs, so it is
+/// `ui::glyph::file_glyph`). It carries only private-use glyphs, so it is
 /// loaded with the core faces rather than through the curated picker catalog.
 const SYMBOL_FONTS: [&str; 1] = ["fonts/SymbolsNerdFont-Regular.ttf"];
 

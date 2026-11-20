@@ -1019,26 +1019,32 @@ impl GhPull {
 
     /// The overall CI state, or `None` when the PR has no checks.
     pub fn checks_summary(&self) -> Option<CheckBucket> {
-        if self.checks.is_empty() {
-            return None;
+        checks_rollup(&self.checks)
+    }
+}
+
+/// The overall CI state of a set of checks: any failure wins, then anything
+/// still running, then a pass; `None` when there are no checks at all.
+pub fn checks_rollup(checks: &[GhCheck]) -> Option<CheckBucket> {
+    if checks.is_empty() {
+        return None;
+    }
+    let mut pending = false;
+    let mut passed = false;
+    for check in checks {
+        match check.bucket_kind() {
+            CheckBucket::Failed => return Some(CheckBucket::Failed),
+            CheckBucket::Pending => pending = true,
+            CheckBucket::Passed => passed = true,
+            _ => {}
         }
-        let mut pending = false;
-        let mut passed = false;
-        for check in &self.checks {
-            match check.bucket_kind() {
-                CheckBucket::Failed => return Some(CheckBucket::Failed),
-                CheckBucket::Pending => pending = true,
-                CheckBucket::Passed => passed = true,
-                _ => {}
-            }
-        }
-        if pending {
-            Some(CheckBucket::Pending)
-        } else if passed {
-            Some(CheckBucket::Passed)
-        } else {
-            Some(CheckBucket::Skipped)
-        }
+    }
+    if pending {
+        Some(CheckBucket::Pending)
+    } else if passed {
+        Some(CheckBucket::Passed)
+    } else {
+        Some(CheckBucket::Skipped)
     }
 }
 
@@ -1259,6 +1265,170 @@ pub fn checkout_pull(cwd: &Path, number: u64) -> Result<String, String> {
     Ok(tr!("git_panel.gh_pr_checked_out"))
 }
 
+
+// ── Commit → pull requests and checks ─────────────────────────────────────
+
+/// A pull request a commit belongs to, as GitHub associates them (the PR that
+/// introduced it, or the one that merged it).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommitPull {
+    pub number: u64,
+    pub title: String,
+    /// `OPEN`, `CLOSED` or `MERGED`.
+    pub state: String,
+    pub is_draft: bool,
+    pub url: String,
+    pub author: Option<String>,
+    /// Who pressed merge on GitHub. Git itself never records who pushed a
+    /// commit; this is the closest fact GitHub keeps, so it is labeled as such.
+    pub merged_by: Option<String>,
+    pub head_ref: String,
+    pub base_ref: String,
+}
+
+impl CommitPull {
+    pub fn is_open(&self) -> bool {
+        self.state.eq_ignore_ascii_case("open")
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.state.eq_ignore_ascii_case("merged")
+    }
+}
+
+/// What GitHub knows about one commit: its pull requests and its CI checks.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommitGithub {
+    pub pulls: Vec<CommitPull>,
+    pub checks: Vec<GhCheck>,
+}
+
+const COMMIT_GITHUB_QUERY: &str = "query($owner:String!,$name:String!,$oid:GitObjectID!){repository(owner:$owner,name:$name){object(oid:$oid){... on Commit{associatedPullRequests(first:5){nodes{number title state isDraft url headRefName baseRefName author{login} mergedBy{login}}} statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status conclusion detailsUrl} ... on StatusContext{context state targetUrl description}}}}}}}}";
+
+/// The pull requests and checks for `oid` in `owner/name`, in one GraphQL
+/// round trip through `gh api`. A commit GitHub has never seen (local only,
+/// not pushed) comes back empty, not as an error.
+pub fn commit_github(cwd: &Path, owner: &str, name: &str, oid: &str) -> Result<CommitGithub, String> {
+    let query = format!("query={COMMIT_GITHUB_QUERY}");
+    let owner = format!("owner={owner}");
+    let name = format!("name={name}");
+    let oid = format!("oid={oid}");
+    let raw = run(
+        cwd,
+        &["api", "graphql", "-f", &query, "-f", &owner, "-f", &name, "-f", &oid],
+    )?;
+    parse_commit_github(&raw)
+}
+
+/// Parse [`commit_github`]'s response. Every field GitHub may send as `null`
+/// (an in-progress run's conclusion, a deleted author) is optional here.
+pub fn parse_commit_github(raw: &str) -> Result<CommitGithub, String> {
+    #[derive(Deserialize, Default)]
+    struct Login {
+        login: Option<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RawPull {
+        number: u64,
+        title: Option<String>,
+        state: Option<String>,
+        is_draft: Option<bool>,
+        url: Option<String>,
+        head_ref_name: Option<String>,
+        base_ref_name: Option<String>,
+        author: Option<Login>,
+        merged_by: Option<Login>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RawCheck {
+        name: Option<String>,
+        status: Option<String>,
+        conclusion: Option<String>,
+        details_url: Option<String>,
+        context: Option<String>,
+        state: Option<String>,
+        target_url: Option<String>,
+        description: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Nodes<T> {
+        #[serde(default = "Vec::new")]
+        nodes: Vec<Option<T>>,
+    }
+    #[derive(Deserialize)]
+    struct Rollup {
+        contexts: Option<Nodes<RawCheck>>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Commit {
+        associated_pull_requests: Option<Nodes<RawPull>>,
+        status_check_rollup: Option<Rollup>,
+    }
+    #[derive(Deserialize)]
+    struct Repo {
+        object: Option<Commit>,
+    }
+    #[derive(Deserialize)]
+    struct Data {
+        repository: Option<Repo>,
+    }
+    #[derive(Deserialize)]
+    struct Envelope {
+        data: Option<Data>,
+    }
+
+    let envelope: Envelope = parse_json(raw)?;
+    let Some(commit) = envelope
+        .data
+        .and_then(|data| data.repository)
+        .and_then(|repo| repo.object)
+    else {
+        return Ok(CommitGithub::default());
+    };
+    let login = |who: Option<Login>| who.and_then(|who| who.login).filter(|l| !l.is_empty());
+    let pulls = commit
+        .associated_pull_requests
+        .map(|nodes| nodes.nodes)
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .map(|pull| CommitPull {
+            number: pull.number,
+            title: pull.title.unwrap_or_default(),
+            state: pull.state.unwrap_or_default(),
+            is_draft: pull.is_draft.unwrap_or(false),
+            url: pull.url.unwrap_or_default(),
+            author: login(pull.author),
+            merged_by: login(pull.merged_by),
+            head_ref: pull.head_ref_name.unwrap_or_default(),
+            base_ref: pull.base_ref_name.unwrap_or_default(),
+        })
+        .collect();
+    let checks = commit
+        .status_check_rollup
+        .and_then(|rollup| rollup.contexts)
+        .map(|nodes| nodes.nodes)
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .map(|check| GhCheck {
+            name: check.name.unwrap_or_default(),
+            context: check.context.unwrap_or_default(),
+            state: check.state.unwrap_or_default(),
+            status: check.status.unwrap_or_default(),
+            conclusion: check.conclusion.unwrap_or_default(),
+            description: check.description.unwrap_or_default(),
+            details_url: check.details_url.unwrap_or_default(),
+            target_url: check.target_url.unwrap_or_default(),
+            ..GhCheck::default()
+        })
+        .collect();
+    Ok(CommitGithub { pulls, checks })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1473,5 +1643,39 @@ mod tests {
         // A `<` that does not open a tag is prose, not markup.
         let prose = "assert!(a < b && c > d)";
         assert_eq!(markdown_body(prose), prose);
+    }
+
+    #[test]
+    fn commit_github_reads_pulls_checks_and_nulls() {
+        let raw = r#"{"data":{"repository":{"object":{
+            "associatedPullRequests":{"nodes":[{"number":42,"title":"Add graph","state":"MERGED","isDraft":false,
+              "url":"https://github.com/o/r/pull/42","headRefName":"feat/graph","baseRefName":"main",
+              "author":{"login":"ada"},"mergedBy":{"login":"lin"}},
+              {"number":7,"title":null,"state":"OPEN","isDraft":true,"url":null,"headRefName":null,
+               "baseRefName":null,"author":null,"mergedBy":null}]},
+            "statusCheckRollup":{"contexts":{"nodes":[
+              {"__typename":"CheckRun","name":"build","status":"IN_PROGRESS","conclusion":null,"detailsUrl":null},
+              {"__typename":"StatusContext","context":"ci/lint","state":"SUCCESS","targetUrl":"https://ci","description":null}]}}
+        }}}}"#;
+        let info = parse_commit_github(raw).unwrap();
+        assert_eq!(info.pulls.len(), 2);
+        assert_eq!(info.pulls[0].number, 42);
+        assert!(info.pulls[0].is_merged());
+        assert_eq!(info.pulls[0].merged_by.as_deref(), Some("lin"));
+        assert_eq!(info.pulls[1].author, None);
+        assert!(info.pulls[1].is_draft);
+        assert_eq!(info.checks[0].bucket_kind(), CheckBucket::Pending);
+        assert_eq!(info.checks[1].bucket_kind(), CheckBucket::Passed);
+        assert_eq!(checks_rollup(&info.checks), Some(CheckBucket::Pending));
+    }
+
+    #[test]
+    fn commit_github_unknown_commit_is_empty_not_an_error() {
+        let raw = r#"{"data":{"repository":{"object":null}}}"#;
+        assert_eq!(parse_commit_github(raw).unwrap(), CommitGithub::default());
+        let raw = r#"{"data":{"repository":{"object":{"associatedPullRequests":{"nodes":[]},"statusCheckRollup":null}}}}"#;
+        let info = parse_commit_github(raw).unwrap();
+        assert!(info.pulls.is_empty() && info.checks.is_empty());
+        assert_eq!(checks_rollup(&info.checks), None);
     }
 }

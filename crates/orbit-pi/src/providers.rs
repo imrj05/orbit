@@ -668,7 +668,7 @@ pub(crate) fn read_auth() -> Result<HashMap<String, ProviderAuth>, String> {
     read_auth_at(&auth_path())
 }
 
-fn read_auth_at(path: &Path) -> Result<HashMap<String, ProviderAuth>, String> {
+pub(crate) fn read_auth_at(path: &Path) -> Result<HashMap<String, ProviderAuth>, String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -732,17 +732,48 @@ fn write_api_key_at(path: &Path, id: &str, key: &str) -> Result<(), String> {
     write_json_secure(path, &root)
 }
 
+/// This Mac's stored API key for `id`, for **Use this Mac's key** on a remote
+/// host. Only a literal `api_key` entry qualifies: an OAuth credential is
+/// never copied (providers rotate refresh tokens, so two machines sharing one
+/// sign each other out), and a `!command` key names a secret manager that
+/// exists on this machine, not the host.
+pub(crate) fn local_api_key(id: &str) -> Option<String> {
+    let root = read_auth_root_at(&auth_path()).ok()?;
+    let entry = root.get(id)?.as_object()?;
+    if entry.get("type").and_then(Value::as_str) != Some("api_key") {
+        return None;
+    }
+    let key = entry.get("key").and_then(Value::as_str)?.trim();
+    (!key.is_empty() && !key.starts_with('!')).then(|| key.to_string())
+}
+
 /// Remove a provider's stored credential (sign out).
 pub(crate) fn remove_auth(id: &str) -> Result<(), String> {
     remove_auth_at(&auth_path(), id)
 }
 
-fn remove_auth_at(path: &Path, id: &str) -> Result<(), String> {
+pub(crate) fn remove_auth_at(path: &Path, id: &str) -> Result<(), String> {
     let mut root = read_auth_root_at(path)?;
     if let Some(entries) = root.as_object_mut() {
         entries.remove(id);
     }
     write_json_secure(path, &root)
+}
+
+/// Add `value` as `id`'s credential unless `id` already has one. Used to move
+/// a credential under a new provider id without ever overwriting a live one;
+/// `Ok(false)` means an entry was already there.
+pub(crate) fn insert_auth_entry_at(path: &Path, id: &str, value: Value) -> Result<bool, String> {
+    let mut root = read_auth_root_at(path)?;
+    let entries = root
+        .as_object_mut()
+        .ok_or_else(|| tr!("providers.auth_json_not_object"))?;
+    if entries.contains_key(id) {
+        return Ok(false);
+    }
+    entries.insert(id.to_string(), value);
+    write_json_secure(path, &root)?;
+    Ok(true)
 }
 
 fn read_auth_root_at(path: &Path) -> Result<Value, String> {
@@ -794,6 +825,12 @@ fn write_json_secure(path: &Path, root: &Value) -> Result<(), String> {
 /// Human label for a provider id (`amazon-bedrock` → `Amazon Bedrock`), with
 /// the handful of brands that don't title-case cleanly spelled out.
 pub(crate) fn provider_display_name(id: &str) -> String {
+    // An extra account of a provider (`openai-codex~work`): the provider's own
+    // name and the account's.
+    if let Some((base, slug)) = crate::provider_accounts::split_alias(id) {
+        let label = crate::provider_accounts::alias_label(id).unwrap_or_else(|| slug.to_string());
+        return format!("{} · {label}", provider_display_name(base));
+    }
     if let Some(provider) = builtin(id) {
         return provider.name.to_string();
     }

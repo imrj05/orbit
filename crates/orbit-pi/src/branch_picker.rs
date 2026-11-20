@@ -11,18 +11,20 @@ use gpui::{
     Subscription, Window,
 };
 
-use crate::app::helpers::text_width;
-use crate::app::{
-    button_frame, icon, input_field_frame, menu_header, picker_entry, picker_search_frame,
-    picker_surface, ControlExt, PressedRamp, StatefulControlExt,
-};
+use crate::ui::button::{Button, ButtonVariant};
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, list, list_item, picker, ButtonSize, DynamicSpacing, TextSize,
+    context_menu, list, list_item, picker, DynamicSpacing, TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::field::search_field;
+use crate::ui::field::TextField;
+use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::text_width;
+use crate::ui::prelude::{
+    icon, menu_header, picker_entry, ControlExt, PressedRamp, StatefulControlExt,
+};
 
 const POPOVER_W: f32 = 320.;
 /// Branch rows visible before the list scrolls.
@@ -285,21 +287,17 @@ impl Focusable for BranchPicker {
 
 impl Render for BranchPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.entity();
 
         if self.mode == Mode::Create {
             // The same picker surface as Browse, so switching modes never
             // swaps the popover's chrome.
-            return picker_surface(div(), &theme)
+            return popover_picker(div(), &theme)
                 .debug_selector(|| "branch-picker".to_string())
                 .w(px(POPOVER_W))
                 .py(DynamicSpacing::Base06.px(&theme))
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .occlude()
-                .on_mouse_down_out(cx.listener(Self::on_outside_down))
+                .dismiss_on_outside(cx.listener(Self::on_outside_down))
                 .on_action(cx.listener(Self::on_cancel))
                 .on_action(cx.listener(Self::on_confirm))
                 .child(
@@ -324,31 +322,21 @@ impl Render for BranchPicker {
                                 .child(tr!("branch_picker.uncommitted_changes_come_with_you")),
                         )
                         .child(
-                            input_field_frame(div(), &theme)
-                                .w_full()
-                                .bg(theme.background)
-                                .child(self.create_input.clone()),
+                            TextField::new(self.create_input.clone(), theme.background)
+                                .render(&theme),
                         ),
                 )
                 .child(
-                    button_frame(div(), &theme, ButtonSize::Medium)
-                        .mx(DynamicSpacing::Base08.px(&theme))
-                        .mb(DynamicSpacing::Base04.px(&theme))
-                        .raised(theme.action, &theme)
-                        .hover_action(&theme)
-                        .cursor_pointer()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.action_fg)
-                        .on_mouse_up(
-                            gpui::MouseButton::Left,
-                            cx.listener(|picker, _, window, cx| {
+                    Button::new("branch-picker-create", ButtonVariant::Primary)
+                        .label(tr!("branch_picker.create_branch"))
+                        .on_mouse_up(&theme, cx.listener(|picker, _, window, cx| {
                                 let name = picker.create_input.read(cx).text().trim().to_string();
                                 if !name.is_empty() {
                                     (picker.on_create)(name, window, cx);
                                 }
-                            }),
-                        )
-                        .child(tr!("branch_picker.create_branch")),
+                            }))
+                        .mx(DynamicSpacing::Base08.px(&theme))
+                        .mb(DynamicSpacing::Base04.px(&theme)),
                 );
         }
 
@@ -401,7 +389,7 @@ impl Render for BranchPicker {
                 .cursor_pointer()
                 .pressed_state(&theme, PressedRamp::Wash)
                 .when(selected || highlighted, |row| {
-                    row.bg(theme.surface_selected)
+                    row.bg(theme.selected_wash())
                 })
                 .when(!selected && !highlighted, |row| row.hover_state(&theme))
                 .on_hover({
@@ -498,27 +486,15 @@ impl Render for BranchPicker {
             );
         }
 
-        picker_surface(div(), &theme)
+        popover_picker(div(), &theme)
             .debug_selector(|| "branch-picker".to_string())
             .w(px(POPOVER_W))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(Self::on_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_outside_down))
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
-            .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
-            )
+            .child(search_field(self.filter.clone(), &theme))
             .child(
                 menu_header(tr!("branch_picker.branches"), &theme)
                     .pt(picker::list_padding_y(&theme))
@@ -558,7 +534,7 @@ impl Render for BranchPicker {
                 div()
                     .py(picker::list_padding_y(&theme))
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .child(
                         picker_entry(div(), &theme)
                             .h(picker::entry_height(&theme))

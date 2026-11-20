@@ -60,7 +60,7 @@ GLOSSARY = {
         'Dim overlay': '暗めのオーバーレイ',
         'A black overlay that settles a bright image behind the interface.': '明るい画像をインターフェースの背後で落ち着かせる黒いオーバーレイ。',
         'Card opacity': 'カードの不透明度',
-        'Requested translucency for cards, panels, and dialogs. Contrast checks may raise it.': 'カード、パネル、ダイアログの半透明度の希望値。コントラストの確認により上がる場合があります。',
+        "How much surface paint sits over the image, for cards and for the page itself (sidebar, chat column, settings nav). At 0% the image is shown exactly as processed; cards may still be raised for text contrast.": "画像の上にどれだけ面の塗りを重ねるか。カードとページ自体（サイドバー、チャット列、設定のナビ）の両方に効きます。0% では画像は加工されたままの状態で表示され、カードはテキストのコントラストのために濃いままになることがあります。",
         'Glass panes': 'ガラスペイン',
         'Blur the wallpaper behind the sidebar, the composer, and floating surfaces. Text keeps its contrast; the picture goes soft where a pane sits over it.': 'サイドバー、入力欄、フローティング面の背後の壁紙をぼかします。テキストのコントラストは保たれ、ペインが重なる部分の画像がぼやけます。',
         'Use wallpaper accent': '壁紙のアクセントカラーを使用',

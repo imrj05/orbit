@@ -130,6 +130,9 @@ impl PromptHistory {
 
 pub type SharedPromptHistory = std::rc::Rc<std::cell::RefCell<PromptHistory>>;
 
+/// What a masked field paints for each byte of its text.
+const MASK_GLYPH: &str = "•";
+
 /// One undo point: the buffer plus the caret/selection to restore.
 #[derive(Clone)]
 struct Snapshot {
@@ -141,6 +144,9 @@ struct Snapshot {
 pub struct ComposerInput {
     focus_handle: FocusHandle,
     content: String,
+    /// A secret field (an SSH password): paints one [`MASK_GLYPH`] per byte
+    /// of the text and refuses copy and cut. See [`Self::with_masked`].
+    masked: bool,
     placeholder: SharedString,
     /// Translation key for the placeholder, resolved at paint time so
     /// switching the interface language updates the field without rebuilding
@@ -275,6 +281,7 @@ impl ComposerInput {
             last_total_rows: 1,
             scroll_offset: px(0.),
             last_caret: 0,
+            masked: false,
             max_lines: MAX_LINES,
             autocomplete: None,
             prompt_history: None,
@@ -379,6 +386,34 @@ impl ComposerInput {
 
     /// Cap how many visual rows the editor grows to before scrolling.
     /// Form fields pass `1` so they stay a single line.
+    /// Mask the field for a secret. The buffer is unchanged; only the paint
+    /// differs, so editing, IME and undo behave as in any field. Offsets map
+    /// between the text and the mask by a fixed factor (one glyph per byte),
+    /// which keeps every caret, selection and hit-test conversion exact.
+    pub fn with_masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
+        self
+    }
+
+    /// Display bytes per content byte: the mask glyph's width when masked.
+    fn mask_scale(&self) -> usize {
+        if self.masked {
+            MASK_GLYPH.len()
+        } else {
+            1
+        }
+    }
+
+    /// A display offset back to a content offset, on a character boundary so
+    /// a click can never split a multi-byte character of the secret.
+    fn content_offset_from_display(&self, display: usize) -> usize {
+        let mut offset = (display / self.mask_scale()).min(self.content.len());
+        while !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        offset
+    }
+
     pub fn with_max_lines(mut self, max_lines: usize) -> Self {
         self.max_lines = max_lines.max(1);
         self
@@ -1125,6 +1160,10 @@ impl ComposerInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        // A secret never reaches the clipboard.
+        if self.masked {
+            return;
+        }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -1133,7 +1172,7 @@ impl ComposerInput {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_composing() {
+        if self.is_composing() || self.masked {
             return;
         }
         if !self.selected_range.is_empty() {
@@ -1193,7 +1232,8 @@ impl ComposerInput {
                 let local = line
                     .closest_index_for_position(point(local_x, local_y), line_height)
                     .unwrap_or_else(|ix| ix);
-                return self.last_line_starts.get(i).copied().unwrap_or(0) + local;
+                let display = self.last_line_starts.get(i).copied().unwrap_or(0) + local;
+                return self.content_offset_from_display(display);
             }
             y_acc += height;
         }
@@ -1207,6 +1247,7 @@ impl ComposerInput {
     /// The (x, y) of a byte offset in content coordinates — y is the top of
     /// the visual row the offset sits on, counting all preceding lines.
     fn position_for_offset(&self, offset: usize) -> gpui::Point<Pixels> {
+        let offset = offset * self.mask_scale();
         let line_height = self.last_line_height;
         let line_lens: Vec<usize> = self.last_lines.iter().map(|line| line.len()).collect();
         if let Some((i, local)) = line_at_offset(&self.last_line_starts, &line_lens, offset) {
@@ -1957,6 +1998,7 @@ impl Element for TextElement {
             gutter,
             wrap,
             syntax,
+            mask_scale,
         ) = {
             let input = self.input.read(cx);
             (
@@ -1970,8 +2012,14 @@ impl Element for TextElement {
                 input.gutter,
                 input.wrap,
                 input.syntax,
+                input.mask_scale(),
             )
         };
+        let masked = mask_scale > 1;
+        // The caret and selection are content offsets; the shaped text is the
+        // mask when masked, so scale them into display offsets.
+        let cursor = cursor * mask_scale;
+        let selected_range = selected_range.start * mask_scale..selected_range.end * mask_scale;
         let style = window.text_style();
         let theme = theme::get(cx);
 
@@ -1991,6 +2039,13 @@ impl Element for TextElement {
             run.len = placeholder.len();
             run.color = theme.text_muted;
             (placeholder, vec![run])
+        } else if masked {
+            let mask = MASK_GLYPH.repeat(content.len());
+            let run = TextRun {
+                len: mask.len(),
+                ..base.clone()
+            };
+            (SharedString::from(mask), vec![run])
         } else if let Some(lang) = syntax {
             // Code files: paint the whole buffer with the same lexer the
             // read-only viewer uses.
@@ -2475,7 +2530,7 @@ mod tests {
         let queue =
             resolve_placeholder(Some("composer.placeholder_follow_up"), "", &[], Some("en"));
         let steer = resolve_placeholder(Some("composer.placeholder_steer"), "", &[], Some("en"));
-        assert_eq!(idle, "Describe the task…");
+        assert_eq!(idle, "Describe the task · @ files, / commands");
         assert_eq!(queue, "Queue a follow-up…");
         assert_eq!(steer, "Steer the current task…");
         assert_ne!(idle, queue);
@@ -2703,6 +2758,55 @@ mod geometry_tests {
     fn draw(cx: &mut VisualTestContext, harness: &Entity<Harness>) {
         let _ = cx.draw(point(px(0.), px(0.)), size(px(500.), px(400.)), |_, _| {
             harness.clone()
+        });
+    }
+
+    /// A masked field paints one glyph per byte, a click maps back onto a
+    /// character boundary of the secret, and copy never reaches the
+    /// clipboard.
+    #[gpui::test]
+    fn a_masked_field_hides_its_text_and_maps_clicks_exactly(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.new(|cx| ComposerInput::new(cx).with_masked(true).with_max_lines(1))
+        });
+        let harness = cx.update(|_, cx| {
+            cx.new(|_| Harness {
+                input: input.clone(),
+            })
+        });
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| input.set_text("aé!".to_string(), cx));
+        });
+        draw(cx, &harness);
+
+        cx.update(|_, cx| {
+            let input = input.read(cx);
+            assert_eq!(input.text(), "aé!", "the buffer keeps the real text");
+            // `a` (1 byte), `é` (2 bytes), `!` (1 byte): four glyphs.
+            let shaped: usize = input.last_lines.iter().map(|line| line.len()).sum();
+            assert_eq!(shaped, 4 * MASK_GLYPH.len(), "one glyph per byte");
+            // Display offset 2 glyphs in falls inside `é`: snap back to its start.
+            assert_eq!(input.content_offset_from_display(2 * MASK_GLYPH.len()), 1);
+            assert_eq!(input.content_offset_from_display(3 * MASK_GLYPH.len()), 3);
+            assert_eq!(input.content_offset_from_display(99), 4);
+        });
+
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("before".into()));
+            input.update(cx, |input, cx| {
+                input.selected_range = 0..input.content.len();
+                input.copy(&Copy, window, cx);
+                input.cut(&Cut, window, cx);
+            });
+            let clipboard = cx.read_from_clipboard().and_then(|item| item.text());
+            assert_eq!(
+                clipboard.as_deref(),
+                Some("before"),
+                "a secret is never copied"
+            );
+            assert_eq!(input.read(cx).text(), "aé!", "and cut does nothing");
         });
     }
 

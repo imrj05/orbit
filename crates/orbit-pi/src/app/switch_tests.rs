@@ -4,8 +4,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::helpers::switch;
 use super::*;
+use crate::ui::switch::switch;
 
 /// A window holding nothing but one switch, counting its flips. Its root holds
 /// focus the way the app's composer does at launch, so Tab has somewhere to

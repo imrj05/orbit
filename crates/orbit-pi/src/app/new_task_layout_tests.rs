@@ -676,11 +676,17 @@ fn the_folder_picker_width_excludes_visible_docks(cx: &mut gpui::TestAppContext)
     let popup = cx
         .debug_bounds("workspace-picker-popup")
         .expect("the picker laid out");
-    let main_width = 960. - 248. - 300.;
-    assert_eq!(
-        popup.size.width,
-        px(crate::workspace_picker::width_for_window(main_width)),
-        "the picker must use the dock-aware chat-column width"
+    // Render clamps the sidebar to its minimum (248px asks for less than the
+    // floor), so the column is measured against the width actually drawn. The
+    // picker follows that every frame, not the request made before render.
+    let sidebar = cx.update(|_, cx| f32::from(app.read(cx).sidebar_width));
+    let main_width = 960. - sidebar - 300.;
+    let expected = px(crate::workspace_picker::width_for_window(main_width));
+    // Layout snaps to half pixels.
+    assert!(
+        (popup.size.width - expected).abs() <= px(0.5),
+        "the picker must use the dock-aware chat-column width: {:?} vs {expected:?}",
+        popup.size.width
     );
 }
 
@@ -822,4 +828,105 @@ fn the_branch_menu_opens_beside_its_chip_not_over_it(cx: &mut gpui::TestAppConte
         (menu.left() - chip.left()).abs() <= px(1.),
         "and shares the chip's left edge: menu {menu:?}, chip {chip:?}"
     );
+}
+
+/// The header's three controls are peers, so they are one control size: the
+/// folder chip used to be a hand-built 28px button beside two 22px ones.
+#[gpui::test]
+fn the_header_controls_share_one_button_size(cx: &mut gpui::TestAppContext) {
+    let app = new_task_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.branch = Some(crate::app::BranchStatus {
+                name: "main".into(),
+                ahead_behind: None,
+            });
+            app.worktree_repo_root = app.current_workspace.clone();
+            cx.notify();
+        });
+    });
+    let cx = cx.add_empty_window();
+    draw(cx, &app, 1100., 720.);
+
+    let theme = cx.update(|_, cx| *crate::theme::get(cx));
+    let expected = crate::theme::tokens::ButtonSize::Default.height(&theme);
+    for selector in ["new-task-folder", "branch-chip", "status-work-in"] {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        assert!(
+            (bounds.size.height - expected).abs() <= px(0.5),
+            "{selector} is {:?} tall, the shared button is {expected:?}",
+            bounds.size.height
+        );
+    }
+}
+
+/// The picker follows the column it hangs under: shrinking the window while
+/// it is open must not leave it at the width it opened with.
+#[gpui::test]
+fn the_folder_picker_follows_a_window_resize(cx: &mut gpui::TestAppContext) {
+    let app = new_task_app(cx);
+    let cx = cx.add_empty_window();
+    draw(cx, &app, 1100., 720.);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.toggle_workspace_picker(window, cx));
+    });
+    draw(cx, &app, 1100., 720.);
+    let wide = cx
+        .debug_bounds("workspace-picker-popup")
+        .expect("the picker laid out");
+
+    cx.simulate_resize(gpui::size(px(380.), px(720.)));
+    draw(cx, &app, 380., 720.);
+    draw(cx, &app, 380., 720.);
+    let narrow = cx
+        .debug_bounds("workspace-picker-popup")
+        .expect("the picker still laid out");
+    assert!(
+        narrow.size.width < wide.size.width,
+        "the picker narrowed with the window: {wide:?} → {narrow:?}"
+    );
+    assert!(
+        narrow.right() <= px(380.),
+        "and stays inside it: {narrow:?}"
+    );
+}
+
+
+/// Closing the folder picker hands focus back to the folder control, and focus
+/// draws a ring. The ring must cost no layout: the control, its name and the
+/// branch chip beside it stay exactly where they were before the picker opened
+/// (they once moved 1-2 px, because focus added a border the rest state lacked).
+#[gpui::test]
+fn closing_the_folder_picker_moves_nothing_in_the_header(cx: &mut gpui::TestAppContext) {
+    let app = new_task_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.branch = Some(crate::app::BranchStatus {
+                name: "main".into(),
+                ahead_behind: None,
+            });
+            app.worktree_repo_root = app.current_workspace.clone();
+            cx.notify();
+        });
+    });
+    let cx = cx.add_empty_window();
+    let pieces = ["new-task-folder", "new-task-folder-name", "branch-chip"];
+    let measure = |cx: &mut gpui::VisualTestContext| -> Vec<_> {
+        pieces
+            .iter()
+            .map(|piece| cx.debug_bounds(piece).expect("laid out"))
+            .collect()
+    };
+    draw(cx, &app, 1100., 720.);
+    let before = measure(cx);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_workspace_picker(window, cx)));
+    draw(cx, &app, 1100., 720.);
+    assert_eq!(measure(cx), before, "opening the picker moves nothing");
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_workspace_picker(window, cx)));
+    draw(cx, &app, 1100., 720.);
+    let focused = cx.update(|window, cx| app.read(cx).new_task_folder_focus.is_focused(window));
+    assert!(focused, "closing hands focus back to the folder control");
+    assert_eq!(measure(cx), before, "the focus ring costs no layout");
 }

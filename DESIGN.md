@@ -210,13 +210,14 @@ shadows, with the existing composer contact-shadow treatment as an exception.
 - Density with air: 22–32px control heights, 4–8px padding, 44px page headers. The
   Appearance panel exposes this as UI, Terminal/Editor font sizes (px), and
   Spacing Density (a global multiplier applied through `DynamicSpacing::px`).
-- Two palette families, one grammar: **Classic** is the ember/blue/graphite/paper
-  catalog; **Operational** is the near-black, lime-accented colorway. Shapes, control
-  heights, caption size and elevation are shared by both — a palette changes color, not
-  geometry. Every value is read from `theme::get(cx)`, never hardcoded.
-- Twelve palettes: Appearance lists only the palettes belonging to the chosen palette
-  family and appearance mode, so the common choice is never made inside a
-  catalog-sized list.
+- One design system, many colorways: the ember/blue/graphite/paper Orbit family,
+  Flexoki, Onyx and the near-black, lime-accented Operational pair share one grammar.
+  Shapes, control heights, caption size and elevation are the same everywhere — a
+  palette changes color, not geometry. Every value is read from `theme::get(cx)`,
+  never hardcoded.
+- Thirteen palettes, chosen by sight: Appearance shows a Dark and a Light gallery of
+  thumbnails painted from each palette, so a choice is made by looking, not by reading
+  a catalog-sized list.
 
 ## Linear Alignment
 
@@ -233,7 +234,7 @@ does today, so this section never describes a surface that has not shipped.
 | Density over air: 28px rows, 13–14px body | `ButtonSize::Medium` 28px, `list_item` rows, `TextSize::Default` | Shipped |
 | Accent and action are separate roles | `accent` marks identity; primary fills read `action`, which a palette may key to the accent | Shipped |
 | Restrained UI type, 400–600 | `TextSize` 11–16 at default settings; a separate monospace family serves code | Shipped |
-| Motion is fast and decelerating | `Motion` roles (`Instant` / `Interaction` / `Layout` / `Travel`) plus `motion::hover` · `control` · `state` · `enter` · `disclosure_chevron` · `switch` | Shipped in §Motion System; the hover fade covers the whole sidebar (rows, workspace headers, group rows, menu entries, every control), the Settings back/search/action controls, the transcript copy button, the changelog link and the caption buttons; every other pane still swaps on one frame |
+| Motion is fast and decelerating | `Motion` roles (`Interaction` / `Layout` / `Travel`) plus `motion::hover` · `control` · `state` · `enter` · `disclosure_chevron` · `switch` | Shipped in §Motion System; the hover fade covers the whole sidebar (rows, workspace headers, group rows, menu entries, every control), the Settings back/search/action controls, the transcript copy button, the changelog link and the caption buttons; every other pane still swaps on one frame |
 | Interactive surfaces share state treatments | `interaction::InteractionState` resolves colours; `motion::hover` fades them | Primitives shipped and press treatments adopted; the sidebar and part of Settings fade their hovers, the rest of the app still swaps on one frame (see §The interaction layer) |
 | Keyboard is a first-class path | Command registry + palette; every chip has a `command()` route | Shipped |
 
@@ -245,15 +246,17 @@ Four things Orbit deliberately does **not** take from Linear:
   accent (Orbit Azure does) or to a neutral step (Orbit's light primary buttons).
   The accent keeps its meaning either way.
 - **Translucency and glass.** Chrome is opaque. The wallpaper surface treatment is
-  opt-in and never the default.
+  opt-in and never the default; with a full-window wallpaper the pages and docks
+  become glass cards (see *Wallpaper*), and nothing frosts without one except
+  floating layers in dark palettes.
 - **Marketing motion.** No parallax, no spring overshoot, no scroll-triggered
   reveals. Motion confirms a state change and stops.
 
 ## Colors
 
-Classic is a charcoal canvas whose accent is the palette's own — ember in Orbit, blue in
-Orbit Azure, and so on; light mode is warm-neutral off-white, not white. Operational is a
-near-black neutral canvas with a lime interaction accent. Every palette keeps its own
+The Orbit family is a charcoal canvas whose accent is the palette's own — ember in Orbit,
+blue in Orbit Azure, and so on; light mode is warm-neutral off-white, not white. Operational
+is a near-black neutral canvas with a lime interaction accent. Every palette keeps its own
 signature hue inside the same grammar.
 
 ### Primary
@@ -353,15 +356,21 @@ depends on the OS. The bundled IBM Plex Sans and Lilex faces stay in the list
 under their own names (their gpui aliases are `.ZedSans` / `.ZedMono`).
 
 **The Palette Catalog.** `ThemeId::ALL` ships thirteen palettes: Orbit's own family plus
-Flexoki, Orbit Onyx, and the two Operational palettes. The Classic system keeps six dark (Orbit,
-Orbit Darker, Orbit Cobalt, Orbit Azure, Flexoki, Orbit Onyx) and five light (Orbit Light, Orbit
-Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light) palettes. The blue design is
-**Orbit Azure** (dark) and **Orbit Azure Light**; the original ember palette is simply
-**Orbit** / **Orbit Light**. Settings → Appearance → **Theme** is a single control, not
-one row per appearance mode: it shows and edits the palette currently in effect, listing
-only the palettes of that mode and design system. `themes_for_system(mode, system)` is
-the single ordering the dropdown paints and a click resolves, so a row index always maps
-to the palette it painted. Retired editor themes still load from a saved preference:
+Flexoki, Orbit Onyx, and the two Operational palettes — seven dark (Orbit, Orbit Darker,
+Orbit Cobalt, Orbit Azure, Flexoki, Orbit Onyx, Operational) and six light (Orbit Light,
+Orbit Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light, Operational Light), all in
+one design system. The blue design is **Orbit Azure** (dark) and **Orbit Azure Light**; the
+original ember palette is simply **Orbit** / **Orbit Light**. Settings → Appearance →
+**Theme** shows the appearance as three picture cards (Light, Dark, and a split System
+card), then a **Dark themes** and a **Light themes** gallery: four-column grids of
+thumbnails, each a miniature workbench painted from that palette with the chosen accent.
+The chosen tile takes an accent frame and a check; the gallery whose appearance is on
+screen carries an **In use** badge. Each gallery remembers its own palette, and picking
+from the other gallery under an explicit Light or Dark appearance switches to it, so a
+click always shows its result. `themes_for(mode)` is the single ordering the tiles paint
+and the keyboard handler resolves, so an index always maps to the palette it painted.
+Accent is a row of swatches, each painted with the accent it would give the current
+palette, the palette's own default first and set apart. Retired editor themes still load from a saved preference:
 dark keys fall back to Orbit, light keys to Orbit Light.
 
 Orbit Onyx uses a near-black `#010102` canvas, neutral charcoal surfaces, `#f7f8f8`
@@ -369,15 +378,12 @@ primary ink and a `#5e6ad2` action fill. Its muted ink and button states are
 adjusted for Orbit's contrast requirements; error and warning retain distinct
 semantic colours. The surface steps are Orbit adaptations, not sourced Linear tokens.
 
-**The Design-System Switch.** Settings → Appearance → **Design system** chooses
-**Classic** (default) or **Operational**. It selects the *palette family* — which
-themes exist, and the accent and surface colors they carry. It does not change
-geometry: every palette draws the same corners, control heights, captions, and
-elevation, so a Classic palette and an Operational one are two colorways of one
-system. The choice is persisted separately from each family's remembered palette, so
-switching to Operational and back restores the previous Classic palette.
-`AppearancePrefs::resolve` still honors Light/Dark/System; only the `ThemeId` pair
-changes.
+**One Design System.** Classic and Operational were once separate palette families
+behind a Settings switch. They share every corner, control height, caption and
+elevation, so the switch was retired: Operational and Operational Light are ordinary
+palettes in the Dark and Light galleries. A saved `"design_system": "operational"`
+preference migrates to the Operational pair. `AppearancePrefs::resolve` honors
+Light/Dark/System and paints the palette remembered for that appearance.
 
 ### Restrained Operational Minimalism
 
@@ -413,7 +419,7 @@ A few values are deliberately corrected from the first draft for contrast: dark
 `text_secondary` is lifted slightly to clear 4.5:1 on the text-selection wash, and light
 `text_muted` is darkened to clear 4.5:1 on the canvas and selected rows. Operational light's `surface_elevated` is a hair
 off white so the shared light toggle knob stays visible on its off track. The row wash
-is its own `surface_selected` role: Classic sets it equal to `selection`, so existing
+is its own `surface_selected` role: the Orbit family sets it equal to `selection`, so existing
 palettes are pixel-identical, while Operational gets the olive-tinted selected row.
 
 Operational's colorway is the near-black canvas, the lime interaction accent, and the
@@ -494,8 +500,8 @@ existing contact-shadow exception is listed separately below:
   menus, dropdowns, tooltips, popovers.
 - **`ElevationIndex::ModalSurface`** (`elevation_3`, one restrained layer): modals,
   dialogs, the command palette.
-- **`ElevationIndex::Background` / `Surface` / `EditorSurface`** cast nothing. A panel
-  is a tonal step and a hairline, not a shadow.
+- Structural chrome (panels, panes, title bar) is not an elevation and casts nothing.
+  A panel is a tonal step and a hairline, not a shadow.
 - **`Theme::composer_shadow`** is a tight contact-shadow treatment for the chat
   composer and the Git commit box that mirrors it. It is an exception to the flat
   structural default, not permission to add shadows to ordinary cards: usage-board
@@ -556,12 +562,22 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   effect pixel size, and a **black** overlay — never a palette tint, which washed a bright
   picture out while claiming to dim it. Hero mode paints it only in the main column;
   full-window mode paints it behind the sidebar too, with translucent surfaces above.
-  The reader's own message bubble remains opaque. The chat composer is an explicit
+  The reader's own message bubble, like the transcript's tool and activity cards, is
+  frosted glass while wallpaper glass is on (the contrast-floored card tint over a
+  blurred backdrop) and opaque otherwise; a tool card's terminal plane takes the card
+  tint instead of covering the frost. The chat composer is an explicit
   exception: with supported wallpaper glass behind it, it uses the contrast-adjusted card fill
   and a rounded backdrop frost; otherwise it retains its opaque surface. Hero mode
   has no wallpaper behind the composer in active chat. The page itself never goes below
   88% of the palette canvas, so an artwork effect's dots tint the page instead of drawing
   behind the transcript; panels and cards keep the card-opacity treatment and its frost,
+  and in full-window mode every page (Git, Usage, Files, Worktrees, the expanded
+  terminal) and every dock card (Review, Explorer, session details) is one glass card:
+  `SurfaceExt::page_card` paints the contrast-floored card tint over a frosted
+  backdrop with the hairline drawn above the page, the page's own root paints
+  `Theme::page_canvas` (clear over glass, `background` otherwise), raised surfaces inside
+  it use `Theme::page_fill`, and a sticky header frosts the rows scrolling under it
+  (`page_sticky_frost`). Hero mode has no wallpaper behind a page, so pages stay opaque,
   and the black overlay is resolved against the image's own dot extremes (not its cell
   averages) wherever text reads on the sharp picture. Edge fades — the transcript's
   bottom settle above the composer, the navigation rail's ends — **frost** what they
@@ -581,6 +597,24 @@ the chat page has neither.
 
 ## Components
 
+Every component below has **one owner** in `crates/orbit-pi/src/ui/`
+(INTENT.md D22); a surface uses it or extends it, and never re-derives it.
+`scripts/check_ui_owners.py` fails a second definition.
+
+| Element | Owner |
+|---|---|
+| Button, icon button, segmented control, link | `ui/button.rs` — `Button`, `IconButton`, `ButtonGroup`, `LinkButton` |
+| Trigger chip, badge, pill | `ui/chip.rs` — `ChipButton`, `Badge`, `Pill` |
+| Banner, empty / error state, spinner, progress, skeleton | `ui/banner.rs`, `ui/feedback.rs` |
+| Text field, search field, form row | `ui/field.rs` — `TextField`, `search_field`, `FormRow` |
+| Menu cursor, menu surface and rows | `ui/menu.rs` — `MenuState`, `MenuCursor`, `context_menu_*` |
+| Dropdown, popover placement, dismissal | `ui/popover.rs` — `dropdown_below/above`, `column_menu` |
+| Modal card, header, footer, focus | `ui/dialog.rs` — `ModalHeader`, `modal_button`, `ModalFocus` |
+| Rows, list rows, table, tree, tabs, virtual list | `ui/row.rs`, `ui/table.rs`, `ui/tree.rs`, `ui/tab.rs`, `ui/list.rs` |
+| Diff row, status bar, navigation rail | `ui/diff.rs`, `ui/status_bar.rs`, `ui/rail.rs` |
+| Card treatment | `SurfaceExt::card_surface` (`ui/style/surface.rs`), `ui/card.rs` |
+| Toast card, avatar, lightbox, keycaps, switch, tooltip | `ui/toast.rs`, `ui/avatar.rs`, `ui/lightbox.rs`, `ui/kbd.rs`, `ui/switch.rs`, `ui/tooltip.rs` |
+
 ### Buttons
 - **Shape:** `button::radius(size)` — 5px on compact frames, 6px on the standard scale;
   32px (`Large`), 28px (`Medium`), 22px (`Default`), 18px (`Compact`), 16px (`None`).
@@ -591,7 +625,7 @@ the chat page has neither.
 - **Raised:** every filled button (primary, accent, danger, chip) paints its face
   through `RaisedExt::raised`, which is a flat fill: the color and its 1px border carry
   the affordance, with no gradient and no lift shadow. Segmented controls use
-  `raised_flat`. Ghost and disabled buttons stay flat too.
+  the same `raised` face. Ghost and disabled buttons stay flat too.
 - **Ghost:** no fill until hover (`surface_hover`); used for every icon action in a header.
 - **Disabled:** `overlay` fill with `text_disabled` content; never opacity-faded color.
 
@@ -631,7 +665,7 @@ the chat page has neither.
 ### Modals and dialogs
 
 A modal is the only live layer while it is open, and every one of them is built from
-the same two pieces (`modal_card`, `modal_scrim` in `app/helpers.rs`):
+the same two pieces (`modal_card`, `modal_scrim` in `ui/dialog.rs`):
 
 - **Scrim:** `scrim_modal` over the whole window, `Base24` padding, card centred. A
   click on the scrim cancels a dismissible dialog; a click on the card never reaches
@@ -674,11 +708,10 @@ other modal floated on `surface_elevated`.
 - Row-level actions are revealed on row hover, never as a permanent icon rail.
 - Sort indicators are small chevrons in `text_muted`; the sorted column's label steps to
   `text_secondary`.
-- **Data tables and plots are drawn with GPUI's own elements.** The usage tables
-  are built from `div` in `usage::table` and the timeline from `canvas` in
-  `usage::chart`, each reading colors only from `theme::get(cx)` — the same
-  surface as the rest of the page. There is no component layer and no second
-  palette to synchronise.
+- **Data tables and plots are drawn with GPUI's own elements.** The grid is
+  `ui/table.rs` (`data_table`, `table_row`, cells) and the timeline is `canvas`
+  in `usage::chart`, each reading colors only from `theme::get(cx)` — the same
+  surface as the rest of the page. There is no second palette to synchronise.
 
 **The Bridge Rule.** A table or chart reads every color from `theme::get(cx)`. If
 it renders in a color this file does not list, the element is wrong — fix the
@@ -707,7 +740,7 @@ Do not give two competing actions the same visual weight.
 Focus is a first-class state, not a stronger hover state. It is one token, drawn one way.
 
 - Pointer hover fills `surface_hover`.
-- Keyboard focus draws a **1px border in `focus_ring`** (`FOCUS_RING_WIDTH`), never a
+- Keyboard focus draws a **1px border in `focus_ring`** (`BORDER_WIDTH`), never a
   fill and never an outline that changes layout. On a filled control the border sits
   on the control's own edge; on a row it sits on the row's rounded rect.
 - Focus is never signalled by accent color alone — the ring is its own role, and it is
@@ -723,7 +756,7 @@ Focus is a first-class state, not a stronger hover state. It is one token, drawn
 Selection means "the object currently being operated on"; focus means "the object currently
 receiving keyboard input." They must remain visually distinct.
 
-- Selected rows fill `surface_selected`. Classic palettes resolve it equal to
+- Selected rows fill `surface_selected`. Orbit-family palettes resolve it equal to
   `selection`, so their paint is unchanged; Operational gives rows their own
   olive-tinted step.
 - Text selection (transcript, editor, terminal, find matches) fills `selection` and
@@ -747,6 +780,21 @@ the call site. Existing adoption is still in progress:
 | `Selected` | `surface_selected` | role's own | `selection_fg` | `selection_fg` |
 | `Focused` | none | `focus_ring` | `text_primary` | `text_primary` |
 | `Disabled` | `overlay` | `border_subtle` | `text_disabled` | `text_disabled` |
+
+The Hover, Pressed and Selected fills are read through `Theme::hover_wash()`,
+`pressed_wash()` and `selected_wash()`. On an opaque surface they are exactly the
+palette steps above. On glass — over a wallpaper, or inside a floating layer that
+frosts the workbench (a builder scoped with `Theme::for_floating()`) — they are
+ink at alpha instead: `overlay_strong` for hover, then deeper for selected and
+deeper again for pressed/open, so no state paints an opaque slab on the glass.
+`pressed_wash()` is also the open/active fill (an open chip or icon button, the
+active tab). A control with its own opaque face (a Secondary or Outline button, an
+Outlined chip, the segmented track) never takes a wash: it hovers through
+`Theme::face_hover(face)` (`ControlExt::hover_face`, `hover_face_bordered`,
+`hover_face_open`), which is `surface_hover` on an opaque surface and, on glass,
+the face lifted by the same ink layer composited to one opaque colour, so the
+control stays solid and the change is one subtle step. An open control holds
+its face under the pointer. The washes are for faceless rows and controls.
 
 Filled controls step their own role instead of the wash, because `surface_active`
 over a primary, accent or danger fill changes what the button means while it is being
@@ -1065,19 +1113,19 @@ Chart reveals and morphs use the separate data-visualisation cadence below:
 
 | Role | Duration | Band | Used for | Status |
 | -- | --: | -- | -- | -- |
-| `Instant` | 50ms | 0–80ms | Press acknowledgement, focus, simple visual feedback | Shipped |
+| `Instant` | 50ms | 0–80ms | Press acknowledgement, focus, simple visual feedback | Not built — press and focus swap on one frame; add the role back to `Motion` with its first caller |
 | `Interaction` | 150ms | 120–160ms | Hover, selection, menu appearance | Shipped |
 | `Layout` | 200ms | 160–220ms | Panel open/close, disclosure, dialog entrance, contextual transitions | Shipped |
 | `Travel` | 260ms | 220–320ms | A surface moving as a whole, composer dock, send morph | Shipped |
 
-`Instant` and `Interaction` are Zed's own values (`AnimationDuration::Instant` /
-`Fast`), so a surface ported from Zed keeps its cadence. `Layout` is Orbit's: Zed's
+`Interaction` is Zed's own value (`AnimationDuration::Fast`; `Instant` would be
+`AnimationDuration::Instant`), so a surface ported from Zed keeps its cadence. `Layout` is Orbit's: Zed's
 `Slow` is 300ms, which reads as hesitation on a workbench panel. `Travel` is Orbit's
 too: a card crossing 200px in 150ms reads as a teleport, and in 260ms it reads as
 travel.
 
-- **Easing is part of the role.** `Instant` is linear (it is feedback, not travel);
-  `Interaction`, `Layout`, and `Travel` decelerate (ease-out quint). Nothing bounces,
+- **Easing is part of the role.** `Interaction`, `Layout`, and `Travel` decelerate
+  (ease-out quint); `Instant`, when built, is linear (it is feedback, not travel). Nothing bounces,
   nothing overshoots.
 - **Streaming is not a role.** Content updates are driven by incoming state and must
   not introduce layout animation; nothing animates text position.
@@ -1098,14 +1146,14 @@ swap states instantly rather than transitioning.
 | Hover out | the same | `Interaction` | the same fade in reverse, from what is on screen | both swap |
 | Press | button, icon button, chip, segment | `Instant` | the pressed ramp; the toolkit offers no transform for a box, so a press cannot scale | the ramp still applies |
 | Release | the same | settle | back to rest, no overshoot | snap to rest |
-| Focus | field, row, card, dialog | `Instant` | the focus ring fades in; the control reserves that 1px border at rest so no layout moves | ring appears at once |
+| Focus | field, row, card, dialog | `Instant` (not built) | the ring appears at once; the control reserves that 1px border at rest so no layout moves | ring appears at once |
 | Selection | row, tab, segment | `Interaction` | selected wash and ink crossfade, on top of the hover's own fade (`motion::control` owns both) | swap |
-| Disclosure | chevron, expandable section | `Interaction` | the chevron turns a quarter turn (`helpers::disclosure_chevron`); the section's height is measured at the current width, then eased | rotation completes instantly, height snaps |
+| Disclosure | chevron, expandable section | `Interaction` | the chevron turns a quarter turn (`helpers::disclosure_chevron`); the section's height snaps | rotation completes instantly, height snaps |
 | Picker caret | chip, dropdown trigger | `Interaction` | the trailing caret points down at rest and turns a half turn to point up while the menu is open (`helpers::dropdown_chevron`); the menu opens below the trigger | rotation completes instantly |
 | Switch | settings toggle (`helpers::switch`) | `Interaction` | the knob travels 18px (the track's inner span) and the track crossfades `surface_elevated` → `accent` | the knob jumps |
 | Menu / popover open | anchored card, context menu | `Interaction` + travel | fade plus an 8px travel out of the anchor edge, as one card; `anchored_popover_at` (a context menu at the pointer) fades only, because it has no edge | the card appears at once |
 | Dialog open | modal card | `Layout` | the card fades in over the scrim; it cannot scale for the reason below | the card appears at once |
-| Panel open / close | sidebar, side pane, explorer, terminal, Git | `Layout` / `Spring` | the panel's own width; chips on its edge ride the same curve | panels snap |
+| Panel open / close | sidebar, side pane, explorer, terminal, Git | `Layout` | the panel's own width; chips on its edge ride the same curve | panels snap |
 | Send morph | composer submit | `Travel` (state) + `Interaction` (hover) | the square grows into a labelled button that names the action, and folds back to a square while a turn runs; width and label ride one transition | the end state is drawn immediately |
 | Composer dock | first send from the new-task page | `Travel` | the composer leaves the page's centered column for the session's: the space below it closes, the column widens 800 → 960, the folder row collapses, and the transcript's ink fades in, all on one clock (`new_task::settle`) | the session frame is painted on the frame of the send |
 
@@ -1139,21 +1187,15 @@ because a future upgrade can reopen them:
 
 ### Primitives
 
-Every treatment above resolves to one of five primitives, kept together in
+Every treatment above resolves to one of these primitives, kept together in
 `src/motion/` so a call site composes them rather than inventing a curve:
 
 - **`Transition`** — `from` / `to` / `started` / `generation`. `retarget()` samples the
   value currently on screen and fades from there, so a reversal resumes instead of
   snapping. `SectionHover` in `transcript_view.rs` is the shape it generalises.
-- **`Spring`** — critically damped, velocity preserved across a retarget, exact settle
-  within 0.2px. It reaches the target without passing it, which is what keeps it inside
-  *nothing bounces*.
-- **`Disclosure`** — measures the child at the current width and interpolates its
-  height, so a section that grows while the window is being resized eases from a real
-  measurement instead of an estimate.
 - **`Travel`** — fade plus an offset out of an anchor side, for popovers and dialogs.
-- **`bezier(t, x1, y1, x2, y2)`** — the one easing-curve builder; `Motion::easing` and
-  `chart::ease` both resolve through it.
+- **`bezier(t, x1, y1, x2, y2)`** / **`ease_out_quint`** — the easing curves;
+  `chart::ease` resolves through `bezier`, every `Motion` role through `ease_out_quint`.
 
 A frame-driven primitive owns its own start instant and is sampled at paint; it does
 not start a timer that competes with the display. Each exposes its curve as a pure
@@ -1695,20 +1737,19 @@ frames       shared component shells          app/helpers.rs
   `input_field_frame`, `context_menu_surface`, `segmented_segment`, `empty_state`.
   A new surface composes these; it does not re-derive their geometry.
 
-### Palettes and design systems
+### Palettes
 
-Twelve palettes, two modes, two palette families. Geometry is shared across all of
-them; `themes_for_system(mode, system)` is the single ordering both the dropdown and the
-click resolve through. The "design system" control selects which family you are
-choosing from — the shapes do not change with it.
+Thirteen palettes, two modes, one design system. Geometry is shared across all of
+them; `themes_for(mode)` is the single ordering both the gallery tiles and the keyboard
+handler resolve through.
 
-| System | Dark | Light |
-| -- | -- | -- |
-| Classic | Orbit, Orbit Darker, Orbit Cobalt, Orbit Azure, Flexoki | Orbit Light, Orbit Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light |
-| Operational | Operational | Operational Light |
+| Appearance | Palettes |
+| -- | -- |
+| Dark | Orbit, Orbit Darker, Orbit Cobalt, Orbit Azure, Flexoki, Orbit Onyx, Operational |
+| Light | Orbit Light, Orbit Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light, Operational Light |
 
 `AppearanceMode::System` follows the OS appearance live; an explicit Light or Dark
-choice ignores it. The choice and the remembered palette per system both persist.
+choice ignores it. The choice and the remembered palette per appearance both persist.
 
 These families share the non-color component grammar in the Orbit design skill.
 Components must resolve semantic roles from the active `Theme`, not reuse the Azure
@@ -1740,10 +1781,10 @@ below are before that preference.
 | Control heights | 16 / 18 / 22 / 28 / 32px | `ButtonSize` |
 | Icons | 10 / 12 / 14 / 16px | `IconSize`, or `ButtonSize::icon_size` inside a button |
 | Type | 11 / 12 / 14 / 16px | `TextSize` |
-| Spacing | 0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48px | `DynamicSpacing` |
+| Spacing | 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48px | `DynamicSpacing` |
 | Separators | 1px | `BORDER_WIDTH` |
-| Focus ring | 1px border | `FOCUS_RING_WIDTH` |
-| Motion | 50 / 150 / 200 / 260ms | `Motion` |
+| Focus ring | 1px border | `BORDER_WIDTH` in `focus_ring` |
+| Motion | 150 / 200 / 260ms | `Motion` |
 
 ### Verification
 

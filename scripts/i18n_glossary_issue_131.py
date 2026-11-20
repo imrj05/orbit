@@ -2,6 +2,9 @@
 
 GLOSSARY = {
     'zh-CN': {
+        'Custom': '自定义',
+        'Show details and models': '显示详情和模型',
+        'Hide details and models': '隐藏详情和模型',
         'Manage models…': '管理模型…',
         'Steering messages': '引导消息',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": '引导消息会在代理下一次调用模型之前逐条或一起发送。',
@@ -35,6 +38,9 @@ GLOSSARY = {
         'Open Settings → Providers & models for this provider': '打开“设置 → 提供商与模型”并筛选到此提供商',
     },
     'ja': {
+        'Custom': 'カスタム',
+        'Show details and models': '詳細とモデルを表示',
+        'Hide details and models': '詳細とモデルを隠す',
         'Manage models…': 'モデルを管理…',
         'Steering messages': '軌道修正メッセージ',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": '軌道修正メッセージはエージェントが次にモデルを呼び出す前に、1 件ずつまたはまとめて送信されます。',
@@ -68,6 +74,9 @@ GLOSSARY = {
         'Open Settings → Providers & models for this provider': 'このプロバイダーで「設定 → プロバイダーとモデル」を開く',
     },
     'ko': {
+        'Custom': '사용자 지정',
+        'Show details and models': '세부 정보 및 모델 표시',
+        'Hide details and models': '세부 정보 및 모델 숨기기',
         'Manage models…': '모델 관리…',
         'Steering messages': '방향 조정 메시지',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": '방향 조정 메시지는 에이전트가 다음에 모델을 호출하기 전에 하나씩 또는 한꺼번에 전달됩니다.',
@@ -101,6 +110,9 @@ GLOSSARY = {
         'Open Settings → Providers & models for this provider': '이 제공자로 설정 → 제공자 및 모델 열기',
     },
     'es': {
+        'Custom': 'Personalizado',
+        'Show details and models': 'Mostrar detalles y modelos',
+        'Hide details and models': 'Ocultar detalles y modelos',
         'Manage models…': 'Gestionar modelos…',
         'Steering messages': 'Mensajes de redirección',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": 'Los mensajes de redirección se envían antes de la siguiente llamada al modelo, uno por uno o todos juntos.',
@@ -134,6 +146,9 @@ GLOSSARY = {
         'Open Settings → Providers & models for this provider': 'Abrir Ajustes → Proveedores y modelos para este proveedor',
     },
     'fr': {
+        'Custom': 'Personnalisé',
+        'Show details and models': 'Afficher les détails et les modèles',
+        'Hide details and models': 'Masquer les détails et les modèles',
         'Manage models…': 'Gérer les modèles…',
         'Steering messages': 'Messages de réorientation',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": 'Les messages de réorientation sont envoyés avant le prochain appel au modèle, un par un ou tous ensemble.',
@@ -167,6 +182,9 @@ GLOSSARY = {
         'Open Settings → Providers & models for this provider': 'Ouvrir Réglages → Fournisseurs et modèles pour ce fournisseur',
     },
     'de': {
+        'Custom': 'Benutzerdefiniert',
+        'Show details and models': 'Details und Modelle anzeigen',
+        'Hide details and models': 'Details und Modelle ausblenden',
         'Manage models…': 'Modelle verwalten…',
         'Steering messages': 'Umlenk-Nachrichten',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": 'Umlenk-Nachrichten werden vor dem nächsten Modellaufruf des Agenten einzeln oder gemeinsam zugestellt.',
@@ -200,6 +218,9 @@ GLOSSARY = {
         'Open Settings → Providers & models for this provider': 'Einstellungen → Anbieter & Modelle für diesen Anbieter öffnen',
     },
     'pt-BR': {
+        'Custom': 'Personalizado',
+        'Show details and models': 'Mostrar detalhes e modelos',
+        'Hide details and models': 'Ocultar detalhes e modelos',
         'Manage models…': 'Gerenciar modelos…',
         'Steering messages': 'Mensagens de redirecionamento',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": 'As mensagens de redirecionamento são enviadas antes da próxima chamada ao modelo, uma por vez ou todas juntas.',
@@ -233,6 +254,9 @@ GLOSSARY = {
         'Open Settings → Providers & models for this provider': 'Abrir Configurações → Provedores e modelos para este provedor',
     },
     'ru': {
+        'Custom': 'Пользовательский',
+        'Show details and models': 'Показать подробности и модели',
+        'Hide details and models': 'Скрыть подробности и модели',
         'Manage models…': 'Управление моделями…',
         'Steering messages': 'Корректирующие сообщения',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": 'Корректирующие сообщения передаются перед следующим вызовом модели — по одному или все сразу.',
@@ -266,6 +290,9 @@ GLOSSARY = {
         'Open Settings → Providers & models for this provider': 'Открыть «Настройки → Провайдеры и модели» для этого провайдера',
     },
     'it': {
+        'Custom': 'Personalizzato',
+        'Show details and models': 'Mostra dettagli e modelli',
+        'Hide details and models': 'Nascondi dettagli e modelli',
         'Manage models…': 'Gestisci modelli…',
         'Steering messages': 'Messaggi di reindirizzamento',
         "Steering messages are delivered before the agent's next model call, one at a time or all together.": 'I messaggi di reindirizzamento vengono inviati prima della prossima chiamata al modello, uno alla volta o tutti insieme.',

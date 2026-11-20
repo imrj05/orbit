@@ -11,11 +11,15 @@
 //! `gh issue create --attach`; a signed-out `gh` or a preflight upload
 //! limitation falls back to GitHub's web form and the saved image folder.
 
-use super::helpers::*;
 use super::*;
+use crate::ui::chip::FileChip;
 use crate::git_panel::widgets::action_button;
 use crate::issue_message::ReportKind;
-use crate::theme::tokens::{input, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{input, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::ui::button::{ButtonGroup, SegmentFill};
+use crate::ui::field::{FormRow, TextField};
+use crate::ui::prelude::*;
+use crate::ui::banner::{Banner, BannerTone};
 use gpui::ClickEvent;
 
 /// The most screenshots one report may carry.
@@ -104,15 +108,8 @@ impl OrbitApp {
         let mut rows = vec![fields];
         if let Some(error) = self.bug_report_error.as_deref() {
             rows.push(
-                div()
+                Banner::note(BannerTone::Error, error.to_string(), &theme)
                     .w_full()
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.error.opacity(0.10))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(error.to_string())
                     .into_any_element(),
             );
         }
@@ -207,41 +204,20 @@ impl OrbitApp {
     /// names, and the draft prompt's framing.
     fn report_type_selector(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
         const KINDS: [ReportKind; 3] = [ReportKind::Bug, ReportKind::Feature, ReportKind::Other];
-        let mut row = div().flex().items_center();
-        for (ix, kind) in KINDS.iter().enumerate() {
-            let kind = *kind;
-            let selected = self.bug_report_kind == kind;
-            let seg = segmented_segment(
-                div().id(ElementId::Name(format!("bug-report-type-{ix}").into())),
-                &theme,
-                ButtonSize::Medium,
-                SegmentPosition::at(ix, KINDS.len()),
-            )
-            .cursor_pointer();
-            let seg = if selected {
-                seg.bg(theme.surface_active)
-                    .text_color(theme.text_primary)
-                    .border_color(theme.border)
-            } else {
-                seg.bg(theme.surface_elevated)
-                    .text_color(theme.text_secondary)
-                    .border_color(theme.border)
-                    .hover_state(&theme)
-            };
-            row = row.child(
-                press(seg)
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            this.bug_report_kind = kind;
-                            this.bug_report_error = None;
-                            cx.notify();
-                        }),
-                    )
-                    .child(tr!(report_kind_key(kind))),
+        let mut group = ButtonGroup::new(SegmentFill::Active);
+        for (ix, kind) in KINDS.iter().copied().enumerate() {
+            group = group.segment(
+                ElementId::Name(format!("bug-report-type-{ix}").into()),
+                tr!(report_kind_key(kind)),
+                self.bug_report_kind == kind,
+                cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                    this.bug_report_kind = kind;
+                    this.bug_report_error = None;
+                    cx.notify();
+                }),
             );
         }
-        row.into_any_element()
+        group.render(&theme).into_any_element()
     }
 
     /// The Screenshots row: an Add button plus a thumbnail chip per image.
@@ -329,36 +305,19 @@ impl OrbitApp {
                             )
                             .into_any_element(),
                         };
-                        button_frame(
-                            div().id(ElementId::NamedInteger("bug-screenshot".into(), ix as u64)),
-                            &theme,
-                            ButtonSize::Medium,
+                        FileChip::new(
+                            ElementId::NamedInteger("bug-screenshot".into(), ix as u64),
+                            visual,
+                            shot.name.clone(),
                         )
-                        .border_1()
-                        .border_color(theme.border)
-                        .raised(theme.surface_elevated, &theme)
-                        .cursor_pointer()
-                        .hover_overlay(&theme)
-                        .child(visual)
-                        .child(
-                            div()
-                                .max_w(px(160.))
-                                .truncate()
-                                .text_color(theme.text_secondary)
-                                .child(shot.name.clone()),
-                        )
-                        .child(icon(
-                            "icons/x.svg",
-                            ButtonSize::Medium.icon_size().px(&theme),
-                            theme.text_muted,
-                        ))
-                        .on_mouse_up(
-                            MouseButton::Left,
+                        .max_name_width(px(160.))
+                        .on_remove(
+                            tr!("common.remove"),
                             cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                                 this.remove_bug_report_screenshot(ix, cx)
                             }),
                         )
-                        .into_any_element()
+                        .render(&theme)
                     }),
             )
             .into_any_element()
@@ -689,45 +648,22 @@ fn bug_field(
     min_h: Pixels,
     action: Option<AnyElement>,
 ) -> AnyElement {
+    let row = FormRow::new(
+        label,
+        TextField::new(input, theme.surface_secondary)
+            .multiline(min_h)
+            .render(&theme),
+    );
+    let row = match action {
+        Some(action) => row.action(action),
+        None => row,
+    };
     div()
         .w_full()
         .px(DynamicSpacing::Base16.px(&theme))
         .py(DynamicSpacing::Base12.px(&theme))
-        .flex()
-        .flex_col()
-        .gap(DynamicSpacing::Base06.px(&theme))
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(
-                    div()
-                        .text_size(input::LABEL.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(label),
-                )
-                .children(action),
-        )
-        .child(
-            stretch(input_field_frame(div(), &theme))
-                .w_full()
-                .min_h(min_h.max(input::min_height(&theme)))
-                .bg(theme.surface_secondary)
-                .child(div().flex_1().min_w_0().flex().flex_col().child(input)),
-        )
+        .child(row.render(&theme))
         .into_any_element()
-}
-
-/// `input_field_frame` centers a one-line input; a multi-line field stretches
-/// its input column to the box instead. GPUI 0.2.2 has no `items_stretch`, so
-/// set the style directly (the same shim the Git page uses).
-fn stretch<E: Styled>(mut el: E) -> E {
-    el.style().align_items = Some(gpui::AlignItems::Stretch);
-    el
 }
 
 #[cfg(test)]

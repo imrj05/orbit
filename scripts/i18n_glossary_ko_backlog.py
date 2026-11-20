@@ -60,7 +60,7 @@ GLOSSARY = {
         'Dim overlay': '어둡게 오버레이',
         'A black overlay that settles a bright image behind the interface.': '밝은 이미지를 인터페이스 뒤에서 차분하게 만드는 검은색 오버레이입니다.',
         'Card opacity': '카드 불투명도',
-        'Requested translucency for cards, panels, and dialogs. Contrast checks may raise it.': '카드, 패널, 대화상자에 요청할 반투명도입니다. 대비 검사로 더 높아질 수 있습니다.',
+        "How much surface paint sits over the image, for cards and for the page itself (sidebar, chat column, settings nav). At 0% the image is shown exactly as processed; cards may still be raised for text contrast.": "이미지 위에 얼마나 많은 표면 색을 얹을지입니다. 카드와 페이지 자체(사이드바, 채팅 열, 설정 내비게이션) 모두에 적용됩니다. 0%에서는 이미지가 처리된 그대로 표시되며, 카드는 텍스트 대비를 위해 더 진하게 유지될 수 있습니다.",
         'Glass panes': '유리 패널',
         'Blur the wallpaper behind the sidebar, the composer, and floating surfaces. Text keeps its contrast; the picture goes soft where a pane sits over it.': '사이드바, 입력창, 떠 있는 표면 뒤의 배경화면을 흐리게 합니다. 텍스트 대비는 유지되고, 패널이 겹치는 부분의 그림만 흐려집니다.',
         'Use wallpaper accent': '배경화면 강조 색상 사용',

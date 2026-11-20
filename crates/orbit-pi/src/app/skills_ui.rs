@@ -6,12 +6,12 @@
 //! removes the skill directory. Discovery and file I/O live in
 //! [`crate::skills`].
 
-use super::helpers::*;
 use super::*;
 use crate::skills::{self, Skill, SkillScope};
-use crate::theme::tokens::{
-    input, list_item, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
-};
+use crate::theme::tokens::{list_item, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::ui::field::search_field;
+use crate::ui::prelude::*;
+use crate::ui::style::surface::SurfaceExt;
 
 /// A Skills-page control, dispatched through one entry point.
 #[derive(Clone)]
@@ -42,7 +42,8 @@ impl OrbitApp {
             .min_w_0()
             .min_h_0()
             .flex()
-            .bg(theme.background)
+            // Clear, like every other Settings section: the surface root
+            // already paints `panel_fill(background)` behind it.
             .font_family(theme::ui_font_family())
             .child(self.skills_list(theme, this.clone(), cx))
             .child(self.skill_detail(theme, this))
@@ -60,16 +61,10 @@ impl OrbitApp {
         };
         let filtered: Vec<&Skill> = self.skills.iter().filter(matches).collect();
 
-        let search = picker_search_frame(div(), &theme)
+        let search = search_field(self.skills_filter.clone(), &theme)
             .mx(DynamicSpacing::Base12.px(&theme))
             .mt(DynamicSpacing::Base12.px(&theme))
-            .mb(DynamicSpacing::Base08.px(&theme))
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.skills_filter.clone()));
+            .mb(DynamicSpacing::Base08.px(&theme));
 
         let all_row = div()
             .mx(DynamicSpacing::Base12.px(&theme))
@@ -77,9 +72,9 @@ impl OrbitApp {
             .h(px(30.))
             .px(DynamicSpacing::Base08.px(&theme))
             .rounded(list_item::RADIUS.px(&theme))
-            .bg(theme.surface_elevated)
+            .bg(theme.card_fill(theme.surface_elevated))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .gap_2()
@@ -156,7 +151,7 @@ impl OrbitApp {
             .px(px(14.))
             .py(DynamicSpacing::Base08.px(&theme))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
             .child(tr!("skills_ui.skill_count", count = filtered.len()));
@@ -165,9 +160,12 @@ impl OrbitApp {
             .w(px(320.))
             .h_full()
             .flex_shrink_0()
-            .bg(theme.surface)
+            // The Settings nav's twin: translucent and frosted over a
+            // full-window wallpaper, the palette's surface otherwise.
+            .bg(theme.panel_fill(theme.surface))
+            .frosted_pane(&theme.for_page())
             .border_r_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .child(search)
@@ -215,7 +213,7 @@ impl OrbitApp {
             .items_start()
             .gap_2p5()
             .cursor_pointer()
-            .when(selected, |row| row.bg(theme.surface_selected))
+            .when(selected, |row| row.bg(theme.selected_wash()))
             .when(!selected, |row| row.hover_state(&theme))
             .when(!skill.enabled, |row| row.opacity(0.55))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -268,7 +266,7 @@ impl OrbitApp {
             .rounded(Radius::Medium.px(&theme))
             .bg(theme.surface_elevated)
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .items_center()
             .justify_center()
@@ -343,7 +341,7 @@ impl OrbitApp {
                     .rounded(Radius::Large.px(&theme))
                     .bg(theme.surface_elevated)
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.hairline())
                     .flex()
                     .items_center()
                     .justify_center()
@@ -465,7 +463,7 @@ impl OrbitApp {
             )
             .child(facts)
             .child(actions)
-            .child(div().w_full().h(px(1.)).bg(theme.border))
+            .child(div().w_full().h(px(1.)).bg(theme.hairline()))
             .child(
                 div()
                     .text_size(TextSize::XSmall.px(&theme))
@@ -634,43 +632,17 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SkillAction,
     ) -> AnyElement {
-        let base = button_frame(
-            div().id(ElementId::Name(id.into())),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM);
-        let (button, icon_color) = if danger {
-            (
-                base.border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .text_color(theme.error)
-                    .hover_danger_soft(&theme),
-                theme.error,
-            )
+        let variant = if danger {
+            ButtonVariant::Danger
         } else {
-            (
-                base.border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .text_color(theme.text_secondary)
-                    .hover_state(&theme),
-                theme.text_secondary,
-            )
+            ButtonVariant::Secondary
         };
-        press(button)
-            .when_some(icon_path, |button, path| {
-                button.child(icon(
-                    path,
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    icon_color,
-                ))
-            })
-            .child(div().child(label.to_string()))
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        let mut button = Button::new(id, variant).label(label.to_string());
+        if let Some(path) = icon_path {
+            button = button.icon(path);
+        }
+        button
+            .on_mouse_up(&theme, move |_, _, cx| {
                 let action = action.clone();
                 this.update(cx, |app, cx| app.apply_skill_action(action, cx));
             })

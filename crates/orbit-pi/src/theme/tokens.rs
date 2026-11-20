@@ -31,9 +31,8 @@
 //! Resolve a token through the theme — `DynamicSpacing::Base08.px(&theme)`,
 //! `TextSize::Small.px(&theme)`, `div().elevation_2(&theme)`.
 
-// This is the whole Zed vocabulary; surfaces adopt it one at a time, so a
-// token no surface reads yet is expected rather than dead.
-#![allow(dead_code)]
+// Only tokens a surface reads live here; add a Zed step back when a surface
+// needs it rather than keeping the whole vocabulary on spec.
 
 use std::time::Duration;
 
@@ -62,10 +61,6 @@ impl Theme {
 /// Orbit's corner scale, in pixels before the corner-rounding preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Radius {
-    /// 0px.
-    None,
-    /// 2px.
-    XSmall,
     /// 4px.
     Small,
     /// 5px — compact buttons and list items.
@@ -74,32 +69,24 @@ pub enum Radius {
     Large,
     /// 8px — panels and elevated surfaces.
     XLarge,
-    /// 10px.
-    XXLarge,
-    /// 12px.
-    XXXLarge,
     /// 9999px — pills and discs.
     Full,
 }
 
 impl Radius {
     /// One radius ramp for every palette: the Linear-aligned scale. Shapes are
-    /// part of the design language, not of a palette, so a Classic palette and
-    /// an Operational one draw the same button and the same card.
+    /// part of the design language, not of a palette, so Orbit Azure and
+    /// Operational draw the same button and the same card.
     ///
     /// The user's corner-rounding setting still shifts every corner except
-    /// [`Radius::None`] and [`Radius::Full`], which stay square and circular.
+    /// [`Radius::Full`], which stays circular.
     pub fn px(self, theme: &Theme) -> Pixels {
         let base = match self {
-            Self::None => return px(0.),
             Self::Full => return px(9999.),
-            Self::XSmall => px(2.),
             Self::Small => px(4.),
             Self::Medium => px(5.),
             Self::Large => px(6.),
             Self::XLarge => px(8.),
-            Self::XXLarge => px(10.),
-            Self::XXXLarge => px(12.),
         };
         base + px(theme
             .ui
@@ -113,48 +100,10 @@ pub const BORDER_WIDTH: Pixels = px(1.);
 
 // ── Density + dynamic spacing (`ui/src/styles/spacing.rs`) ──────────────
 
-/// Zed's UI density.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UiDensity {
-    Compact,
-    #[default]
-    Default,
-    Comfortable,
-}
-
-impl UiDensity {
-    /// The Spacing Density percentage this density is anchored to.
-    pub const fn percent(self) -> u32 {
-        match self {
-            Self::Compact => 80,
-            Self::Default => 100,
-            Self::Comfortable => 120,
-        }
-    }
-
-    /// The density nearest a Spacing Density percentage.
-    pub fn nearest(percent: u32) -> Self {
-        if percent < 90 {
-            Self::Compact
-        } else if percent > 110 {
-            Self::Comfortable
-        } else {
-            Self::Default
-        }
-    }
-
-    /// The active density — Zed's `ui_density(cx)`. For UI that has to branch
-    /// on density; never compute a spacing from it, use [`DynamicSpacing`].
-    pub fn of(theme: &Theme) -> Self {
-        Self::nearest(theme.ui.spacing_density)
-    }
-}
-
 /// Zed's dynamic spacing scale. The number after `Base` is the pixel value
 /// at the default UI font size and density.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DynamicSpacing {
-    Base00,
     Base01,
     Base02,
     Base03,
@@ -171,29 +120,11 @@ pub enum DynamicSpacing {
 }
 
 impl DynamicSpacing {
-    pub const ALL: [Self; 14] = [
-        Self::Base00,
-        Self::Base01,
-        Self::Base02,
-        Self::Base03,
-        Self::Base04,
-        Self::Base06,
-        Self::Base08,
-        Self::Base12,
-        Self::Base16,
-        Self::Base20,
-        Self::Base24,
-        Self::Base32,
-        Self::Base40,
-        Self::Base48,
-    ];
-
     /// `(compact, default, comfortable)` px @16px/rem — the table Zed feeds
     /// `derive_dynamic_spacing!`. Base24 and up use its `(n - 4, n, n + 4)`
     /// formula.
     pub const fn values(self) -> (f32, f32, f32) {
         match self {
-            Self::Base00 => (0., 0., 0.),
             Self::Base01 => (1., 1., 2.),
             Self::Base02 => (1., 2., 4.),
             Self::Base03 => (2., 3., 4.),
@@ -207,16 +138,6 @@ impl DynamicSpacing {
             Self::Base32 => (28., 32., 36.),
             Self::Base40 => (36., 40., 44.),
             Self::Base48 => (44., 48., 52.),
-        }
-    }
-
-    /// Unscaled px at one of Zed's densities.
-    pub const fn at(self, density: UiDensity) -> f32 {
-        let (compact, default, comfortable) = self.values();
-        match density {
-            UiDensity::Compact => compact,
-            UiDensity::Default => default,
-            UiDensity::Comfortable => comfortable,
         }
     }
 
@@ -252,12 +173,8 @@ pub enum TextSize {
     Large,
     /// 12px.
     Small,
-    /// 10px.
+    /// 11px.
     XSmall,
-    /// The UI font size setting itself (Orbit's default is 14px; Zed's, 16px).
-    Ui,
-    /// The Editor font size setting.
-    Editor,
 }
 
 impl TextSize {
@@ -267,8 +184,6 @@ impl TextSize {
             Self::Default => theme.ui_px(14.),
             Self::Small => theme.ui_px(12.),
             Self::XSmall => theme.ui_px(11.),
-            Self::Ui => px(theme.ui.ui_font_size),
-            Self::Editor => px(theme.ui.editor_font_size),
         }
     }
 }
@@ -277,8 +192,6 @@ impl TextSize {
 /// Used for page headings and reserved by the modal metrics ([`modal::HEADLINE`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HeadlineSize {
-    /// ~14px.
-    XSmall,
     /// 16px.
     Small,
     /// ~18px.
@@ -286,18 +199,14 @@ pub enum HeadlineSize {
     Medium,
     /// ~20px.
     Large,
-    /// ~23px.
-    XLarge,
 }
 
 impl HeadlineSize {
     pub const fn rems(self) -> f32 {
         match self {
-            Self::XSmall => 0.88,
             Self::Small => 1.0,
             Self::Medium => 1.125,
             Self::Large => 1.27,
-            Self::XLarge => 1.43,
         }
     }
 
@@ -321,7 +230,6 @@ pub enum BufferLineHeight {
     Comfortable,
     /// 1.3×.
     Standard,
-    Custom(f32),
 }
 
 impl BufferLineHeight {
@@ -329,7 +237,6 @@ impl BufferLineHeight {
         match self {
             Self::Comfortable => 1.618,
             Self::Standard => 1.3,
-            Self::Custom(value) => value,
         }
     }
 
@@ -379,19 +286,6 @@ impl IconSize {
         }
     }
 
-    /// Padding on each side of the icon inside its square hit target.
-    pub fn padding(self, theme: &Theme) -> Pixels {
-        match self {
-            Self::Indicator | Self::Custom(_) => DynamicSpacing::Base00.px(theme),
-            _ => DynamicSpacing::Base02.px(theme),
-        }
-    }
-
-    /// The side of the square hit target (icon + padding) — an `IconButton`'s
-    /// size when its shape is square.
-    pub fn square(self, theme: &Theme) -> Pixels {
-        self.px(theme) + self.padding(theme) * 2.
-    }
 }
 
 // ── Buttons (`ui/src/components/button/button_like.rs`) ────────────────
@@ -462,11 +356,6 @@ pub mod button {
         DynamicSpacing::Base04.px(theme)
     }
 
-    /// Between a button's label and its keybinding.
-    pub fn keybinding_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base06.px(theme)
-    }
-
     /// Per corner for a full-size button. Compact frames take
     /// [`Radius::Medium`] instead — see [`radius`].
     pub const RADIUS: Radius = Radius::Large;
@@ -500,8 +389,6 @@ pub enum ListItemSpacing {
     /// No extra padding.
     #[default]
     Dense,
-    /// −1px each side (Zed's `py_neg_px`, unscaled).
-    ExtraDense,
     /// 4px each side (`py_1`).
     Sparse,
 }
@@ -510,7 +397,6 @@ impl ListItemSpacing {
     pub fn padding_y(self, theme: &Theme) -> Pixels {
         match self {
             Self::Dense => px(0.),
-            Self::ExtraDense => px(-1.),
             Self::Sparse => theme.rems(0.25),
         }
     }
@@ -534,14 +420,6 @@ pub mod list_item {
     /// Outer horizontal inset of an `.inset(true)` item (every menu entry).
     pub fn inset(theme: &Theme) -> Pixels {
         DynamicSpacing::Base04.px(theme)
-    }
-
-    /// Indent per nesting level; fixed px in Zed.
-    pub const INDENT_STEP: Pixels = px(12.);
-
-    /// Between the disclosure/start slot and the content (`gap_1`).
-    pub fn slot_gap(theme: &Theme) -> Pixels {
-        theme.rems(0.25)
     }
 
     /// Inside the content slot.
@@ -609,9 +487,6 @@ pub mod list {
 pub mod picker {
     use super::*;
 
-    /// Zed pickers draw the modal elevation even as popovers.
-    pub const ELEVATION: ElevationIndex = ElevationIndex::ModalSurface;
-
     /// `DEFAULT_MODAL_WIDTH`: 34rem.
     pub fn default_width(theme: &Theme) -> Pixels {
         theme.rems(34.)
@@ -665,27 +540,6 @@ pub mod picker {
 pub mod popover {
     use super::*;
 
-    /// `POPOVER_Y_PADDING`: vertical padding added around a popover's
-    /// contents, split between top and bottom. Fixed px.
-    pub const Y_PADDING: Pixels = px(8.);
-
-    /// Padding on each of the top and bottom edges.
-    pub fn padding_y() -> Pixels {
-        Y_PADDING * 0.5
-    }
-
-    /// Horizontal padding of a popover's aside panel (`px_1`).
-    pub fn aside_padding_x(theme: &Theme) -> Pixels {
-        theme.rems(0.25)
-    }
-
-    /// Between a popover and its aside (`gap_1`).
-    pub fn aside_gap(theme: &Theme) -> Pixels {
-        theme.rems(0.25)
-    }
-
-    pub const ELEVATION: ElevationIndex = ElevationIndex::ElevatedSurface;
-
     /// `PopoverMenu`'s default distance from its trigger: 4px of padding plus
     /// 1px of border compensation.
     pub const MENU_OFFSET: Pixels = px(5.);
@@ -702,9 +556,6 @@ pub mod context_menu {
     /// Minimum width when the menu has no fixed width. Fixed px in Zed.
     pub const MIN_WIDTH: Pixels = px(200.);
 
-    /// Tallest the menu grows, as a fraction of the viewport height.
-    pub const MAX_HEIGHT_FRACTION: f32 = 0.75;
-
     /// Entry label size (Zed's default `Label`).
     pub const TEXT: TextSize = TextSize::Default;
 
@@ -713,9 +564,6 @@ pub mod context_menu {
 
     /// Default entry icon.
     pub const ICON: IconSize = IconSize::Small;
-
-    /// A link entry's trailing arrow.
-    pub const LINK_ICON: IconSize = IconSize::XSmall;
 
     /// Between an entry's icon and its label (`gap_1p5`).
     pub fn icon_gap(theme: &Theme) -> Pixels {
@@ -732,21 +580,6 @@ pub mod context_menu {
     pub fn entry_height(theme: &Theme) -> Pixels {
         ListItemSpacing::Dense.row_height(LINE_HEIGHT.resolve(TEXT.px(theme)), theme)
     }
-
-    /// Width of the documentation aside: `max_w_96` in a wide window,
-    /// `max_w_48` otherwise.
-    pub fn aside_width(theme: &Theme, wide_window: bool) -> Pixels {
-        if wide_window {
-            theme.rems(24.)
-        } else {
-            theme.rems(12.)
-        }
-    }
-
-    /// Window width from which the aside sits beside the menu, not above it.
-    pub fn wide_window_min_width(theme: &Theme) -> Pixels {
-        theme.ui_px(800.)
-    }
 }
 
 // ── Toasts + notifications ─────────────────────────────────────────────
@@ -759,12 +592,26 @@ pub mod toast {
     pub const WIDTH: Pixels = px(360.);
     pub const BADGE_RADIUS: Radius = Radius::Small;
     pub const ENTER: Duration = Motion::Interaction.nominal();
+    /// How far a card rises into place as it arrives.
+    pub const ENTER_RISE: Pixels = px(12.);
     pub const TITLE: TextSize = TextSize::Default;
+    /// A card's description: the title's size in muted ink, so the two read
+    /// as one statement rather than a heading over fine print.
+    pub const DESCRIPTION: TextSize = TextSize::Default;
     pub const BODY: TextSize = TextSize::Small;
-    pub const ICON: IconSize = IconSize::Small;
+    /// The kind glyph sits inline with the text, not on a tinted tile.
+    pub const ICON: IconSize = IconSize::Medium;
     pub const CLOSE_BUTTON: ButtonSize = ButtonSize::Default;
     pub const ACTION_BUTTON: ButtonSize = ButtonSize::Medium;
-    pub const ICON_RADIUS: Radius = Radius::Large;
+    /// Older cards visible behind the front one while the deck is collapsed.
+    pub const DECK_DEPTH: usize = 2;
+    /// How much narrower each card behind the front one paints.
+    pub const DECK_SCALE_STEP: f32 = 0.1;
+
+    /// How far each card behind the front one peeks above it.
+    pub fn deck_peek(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base12.px(theme)
+    }
 
     pub fn surface<E: Styled + ParentElement>(element: E, theme: &Theme) -> E {
         element.elevation_2(theme)
@@ -775,27 +622,19 @@ pub mod toast {
     }
 
     pub fn stack_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base08.px(theme)
-    }
-
-    pub fn padding_x(theme: &Theme) -> Pixels {
         DynamicSpacing::Base12.px(theme)
     }
 
-    pub fn padding_y(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base08.px(theme)
+    pub fn padding(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base16.px(theme)
     }
 
     pub fn content_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base08.px(theme)
-    }
-
-    pub fn icon_tile_size(theme: &Theme) -> Pixels {
-        ACTION_BUTTON.height(theme)
+        DynamicSpacing::Base12.px(theme)
     }
 
     pub fn title_body_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base02.px(theme)
+        DynamicSpacing::Base04.px(theme)
     }
 
     pub fn header_gap(theme: &Theme) -> Pixels {
@@ -865,11 +704,6 @@ pub mod modal {
     /// The header's headline (drawn muted in Zed).
     pub const HEADLINE: HeadlineSize = HeadlineSize::Small;
 
-    /// Between sections.
-    pub fn body_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base08.px(theme)
-    }
-
     /// A section's horizontal padding: Base12 when contained, otherwise
     /// Base06 + Base06 (the same 12px at Default density).
     pub fn section_padding_x(theme: &Theme, contained: bool) -> Pixels {
@@ -885,20 +719,6 @@ pub mod modal {
         theme.rems(0.5)
     }
 
-    /// Between a section's rows.
-    pub fn section_gap(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base04.px(theme)
-    }
-
-    /// A `SectionHeader` row (`h_7`).
-    pub fn section_header_height(theme: &Theme) -> Pixels {
-        theme.rems(1.75)
-    }
-
-    pub fn section_header_padding_x(theme: &Theme) -> Pixels {
-        DynamicSpacing::Base08.px(theme)
-    }
-
     /// All four sides of the footer, which carries a 1px top border.
     pub fn footer_padding(theme: &Theme) -> Pixels {
         DynamicSpacing::Base08.px(theme)
@@ -908,8 +728,6 @@ pub mod modal {
     pub fn footer_gap(theme: &Theme) -> Pixels {
         theme.rems(0.25)
     }
-
-    pub const ELEVATION: ElevationIndex = ElevationIndex::ModalSurface;
 }
 
 // ── Tooltips (`ui/src/components/tooltip.rs`) ───────────────────────────
@@ -943,17 +761,10 @@ pub mod tooltip {
         theme.rems(18.)
     }
 
-    /// Between the title and its keybinding (`gap_4`).
-    pub fn keybinding_gap(theme: &Theme) -> Pixels {
-        theme.rems(1.)
-    }
-
     pub const TEXT: TextSize = TextSize::Default;
 
     /// The optional muted line under the title.
     pub const META_TEXT: TextSize = TextSize::Small;
-
-    pub const ELEVATION: ElevationIndex = ElevationIndex::ElevatedSurface;
 }
 
 // ── Text inputs (`ui_input/src/input_field.rs`) ─────────────────────────
@@ -961,9 +772,6 @@ pub mod tooltip {
 /// `InputField` metrics.
 pub mod input {
     use super::*;
-
-    /// Fixed px in Zed.
-    pub const MIN_WIDTH: Pixels = px(192.);
 
     /// `min_h_8`.
     pub fn min_height(theme: &Theme) -> Pixels {
@@ -1001,12 +809,6 @@ pub mod input {
 /// How close a surface sits to the user — Zed's `ElevationIndex`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElevationIndex {
-    /// The app background, under panels and panes.
-    Background,
-    /// Panels, panes, title bar, and tab bar.
-    Surface,
-    /// The editable content area.
-    EditorSurface,
     /// Popovers, menus, palettes, notifications, floating panels.
     ElevatedSurface,
     /// Modals and dialogs, above the scrim.
@@ -1014,26 +816,14 @@ pub enum ElevationIndex {
 }
 
 impl ElevationIndex {
-    /// The shadow stack for this layer. Only the two elevated layers cast one,
-    /// and each is restrained: a floating surface is defined by its hairline
-    /// first and its shadow second. No broad ambient layer, and nothing below
-    /// the elevated surfaces casts anything at all.
+    /// The shadow stack for this layer. Each is restrained: a floating surface
+    /// is defined by its hairline first and its shadow second, with no broad
+    /// ambient layer. Structural chrome (panels, panes, title bar) is not an
+    /// elevation and casts nothing.
     pub fn shadow(self, _theme: &Theme) -> Vec<BoxShadow> {
         match self {
             Self::ElevatedSurface => vec![drop_shadow(1., 2., 0.10)],
             Self::ModalSurface => vec![drop_shadow(2., 6., 0.16)],
-            Self::Background | Self::Surface | Self::EditorSurface => Vec::new(),
-        }
-    }
-
-    /// This layer's fill in Orbit's palette: the window chrome for the base
-    /// layers, the content pane for the editor surface, and the floating
-    /// fill for both elevated layers (Zed's `elevated_surface_background`).
-    pub fn bg(self, theme: &Theme) -> Hsla {
-        match self {
-            Self::Background | Self::Surface => theme.surface,
-            Self::EditorSurface => theme.background,
-            Self::ElevatedSurface | Self::ModalSurface => theme.surface_elevated,
         }
     }
 }
@@ -1058,27 +848,6 @@ fn drop_shadow(offset_y: f32, blur: f32, alpha: f32) -> BoxShadow {
 /// the blur request. [`Theme::glass_sigma`] decides; below it is `None` and
 /// nothing changes.
 pub trait StyledExt: Styled + ParentElement + Sized {
-    /// Preserve a card's hairline and layout while its border channel requests frost.
-    /// The fill and radius are chosen by the caller, including the non-glass fallback.
-    fn frosted_card(self, theme: &Theme, border: Hsla, radius: Pixels) -> Self {
-        let el = self.border_1();
-        if let Some(sigma) = theme.glass_sigma() {
-            el.border_color(gpui::backdrop_blur_marker(sigma))
-                .child(frosted_edge(border, radius))
-        } else {
-            el.border_color(border)
-        }
-    }
-
-    /// Title bar, panels, tab bar.
-    fn elevation_1(self, theme: &Theme) -> Self {
-        elevated(self, theme, ElevationIndex::Surface, true)
-    }
-
-    fn elevation_1_borderless(self, theme: &Theme) -> Self {
-        elevated(self, theme, ElevationIndex::Surface, false)
-    }
-
     /// Popovers, menus, tooltips, palettes, notifications.
     fn elevation_2(self, theme: &Theme) -> Self {
         elevated(self, theme, ElevationIndex::ElevatedSurface, true)
@@ -1092,10 +861,6 @@ pub trait StyledExt: Styled + ParentElement + Sized {
     /// the rest of the window responds.
     fn elevation_3(self, theme: &Theme) -> Self {
         elevated(self, theme, ElevationIndex::ModalSurface, true)
-    }
-
-    fn elevation_3_borderless(self, theme: &Theme) -> Self {
-        elevated(self, theme, ElevationIndex::ModalSurface, false)
     }
 }
 
@@ -1113,20 +878,13 @@ pub trait RaisedExt: Styled + Sized {
     fn raised(self, color: Hsla, _theme: &Theme) -> Self {
         self.bg(color)
     }
-
-    /// A segment of a grouped control. Identical to [`Self::raised`] now that
-    /// nothing lifts; retained so a segmented control reads as a deliberate
-    /// choice at the call site.
-    fn raised_flat(self, color: Hsla) -> Self {
-        self.bg(color)
-    }
 }
 
 impl<E: Styled> RaisedExt for E {}
 
 // ── Interaction states (§2) ─────────────────────────────────────────────
 
-/// The six states every interactive surface answers to.
+/// The states every interactive surface answers to.
 ///
 /// This is the colour half of the interaction-state contract, and the one
 /// place a state's fill, frame, and ink are decided. *How* a state is
@@ -1145,14 +903,10 @@ impl<E: Styled> RaisedExt for E {}
 /// *treatment* over whatever fill this returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InteractionState {
-    /// No pointer, no focus: the resting treatment.
-    Rest,
     /// The pointer is over the control.
     Hover,
     /// The pointer or space bar is held down.
     Pressed,
-    /// The control is the object currently being operated on.
-    Selected,
     /// Keyboard focus is on the control.
     Focused,
     /// Present but not operable.
@@ -1164,32 +918,20 @@ pub enum InteractionState {
 }
 
 impl InteractionState {
-    pub const ALL: [Self; 6] = [
-        Self::Rest,
-        Self::Hover,
-        Self::Pressed,
-        Self::Selected,
-        Self::Focused,
-        Self::Disabled,
-    ];
-
     /// The wash painted behind a row, a ghost control, or a menu entry.
     ///
     /// `None` means paint nothing: the control keeps the surface beneath it.
-    /// That covers `Rest` and `Focused` (focus is a frame, never a fill —
-    /// `DESIGN.md` §Focus) and the two role exceptions above.
+    /// That covers `Focused` (focus is a frame, never a fill — `DESIGN.md`
+    /// §Focus) and the two role exceptions above.
     ///
     /// Hover and pressed resolve through [`Theme::hover_wash`] /
     /// [`Theme::pressed_wash`], so a control inside a frosted card or pane
     /// takes an ink wash and one on an opaque surface keeps the palette step.
-    /// `Selected` stays a fill: a chosen row is a solid object, which is why a
-    /// menu highlights it rather than tinting it.
     pub fn fill(self, theme: &Theme) -> Option<Hsla> {
         match self {
-            Self::Rest | Self::Focused => None,
+            Self::Focused => None,
             Self::Hover => Some(theme.hover_wash()),
             Self::Pressed => Some(theme.pressed_wash()),
-            Self::Selected => Some(theme.surface_selected),
             Self::Disabled | Self::Glass => Some(theme.overlay),
         }
     }
@@ -1202,23 +944,8 @@ impl InteractionState {
     pub fn border(self, theme: &Theme) -> Option<Hsla> {
         match self {
             Self::Focused => Some(theme.focus_ring),
-            Self::Disabled => Some(theme.border_subtle),
+            Self::Disabled => Some(theme.hairline_subtle()),
             _ => None,
-        }
-    }
-
-    /// The ink for a label or icon in a row-like control: nav rows, list
-    /// rows, table rows, menu entries.
-    ///
-    /// Rows rest at secondary ink and lift to primary on hover, so the
-    /// hierarchy of a list survives its own pointer feedback.
-    pub fn row_ink(self, theme: &Theme) -> Hsla {
-        match self {
-            Self::Rest => theme.text_secondary,
-            Self::Hover | Self::Pressed | Self::Focused => theme.text_primary,
-            Self::Selected => theme.selection_fg,
-            Self::Disabled => theme.text_disabled,
-            Self::Glass => theme.text_primary,
         }
     }
 
@@ -1226,7 +953,6 @@ impl InteractionState {
     /// that already carry primary ink at rest.
     pub fn control_ink(self, theme: &Theme) -> Hsla {
         match self {
-            Self::Selected => theme.selection_fg,
             Self::Disabled => theme.text_disabled,
             _ => theme.text_primary,
         }
@@ -1238,11 +964,6 @@ impl InteractionState {
     }
 }
 
-/// Width of the focus ring. Orbit draws focus as a 1px border in
-/// [`Theme::focus_ring`] rather than a GPUI outline, so the ring costs no
-/// layout and reads the same inside a clipped row.
-pub const FOCUS_RING_WIDTH: Pixels = BORDER_WIDTH;
-
 fn elevated<E: Styled + ParentElement>(
     el: E,
     theme: &Theme,
@@ -1250,20 +971,12 @@ fn elevated<E: Styled + ParentElement>(
     bordered: bool,
 ) -> E {
     let radius = panel::RADIUS.px(theme);
-    let el = el
-        .bg(theme.card_fill(ElevationIndex::ElevatedSurface.bg(theme)))
-        .rounded(radius)
-        .shadow(index.shadow(theme));
-    // Only floating layers frost. Title bars, panels and tab bars are
-    // structural chrome and keep their opaque fill: the workbench has to stay
-    // readable over any picture.
-    let frost = match index {
-        ElevationIndex::ElevatedSurface | ElevationIndex::ModalSurface => theme.glass_sigma(),
-        ElevationIndex::Background | ElevationIndex::Surface | ElevationIndex::EditorSurface => {
-            None
-        }
-    };
-    if let Some(sigma) = frost {
+    // Every elevation floats, and floating layers frost over a wallpaper and,
+    // in dark palettes, over the workbench itself (`floating_glass_sigma`).
+    // Zed's `elevated_surface_background` is Orbit's `surface_elevated`.
+    let fill = theme.floating_fill(theme.surface_elevated);
+    let el = el.bg(fill).rounded(radius).shadow(index.shadow(theme));
+    if let Some(sigma) = theme.floating_glass_sigma() {
         let el = el.border_color(gpui::backdrop_blur_marker(sigma));
         return if bordered {
             el.border_1()
@@ -1327,13 +1040,11 @@ impl From<AnimationDuration> for Duration {
 ///
 /// | Role | Duration | Band | Used for |
 /// | -- | --: | -- | -- |
-/// | `Instant` | 50 ms | 0–80 | Focus, press acknowledgement |
 /// | `Interaction` | 150 ms | 120–160 | Hover, selection, menu appearance |
 /// | `Layout` | 200 ms | 160–220 | Panel open/close, disclosure |
 /// | `Travel` | 260 ms | 220–320 | A card moving as a whole: popover travel, dialog entrance, send morph |
 ///
-/// `Instant` and `Interaction` are Zed's own values
-/// ([`AnimationDuration::Instant`] / `Fast`). `Layout` and `Travel` are
+/// `Interaction` is Zed's own value ([`AnimationDuration::Fast`]). `Layout` and `Travel` are
 /// Orbit's: Zed's `Slow` is 300 ms, which reads as hesitation on a workbench
 /// panel, and a card crossing 200 px in 150 ms reads as a teleport rather than
 /// travel. `Travel` moves a card, never a row — hover, press, focus and
@@ -1347,8 +1058,6 @@ impl From<AnimationDuration> for Duration {
 /// their glyph while dropping the motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Motion {
-    /// 50 ms: the state change is already legible, motion only confirms it.
-    Instant,
     /// 150 ms: the pointer or keyboard moved; the surface follows immediately.
     Interaction,
     /// 200 ms: a region of the layout changed size or presence.
@@ -1359,12 +1068,12 @@ pub enum Motion {
 }
 
 impl Motion {
-    pub const ALL: [Self; 4] = [Self::Instant, Self::Interaction, Self::Layout, Self::Travel];
+    #[cfg(test)]
+    pub const ALL: [Self; 3] = [Self::Interaction, Self::Layout, Self::Travel];
 
     /// The role's duration before Reduce Motion is considered.
     pub const fn nominal(self) -> Duration {
         match self {
-            Self::Instant => AnimationDuration::Instant.duration(),
             Self::Interaction => AnimationDuration::Fast.duration(),
             Self::Layout => Duration::from_millis(200),
             Self::Travel => Duration::from_millis(260),
@@ -1382,29 +1091,11 @@ impl Motion {
     }
 
     /// The role's easing. Orbit does not bounce: every role decelerates out of
-    /// the transition, and `Instant` is linear because it is feedback rather
-    /// than travel.
+    /// the transition, through the motion layer's one curve.
     pub fn easing(self) -> fn(f32) -> f32 {
-        fn ease_out_quint(delta: f32) -> f32 {
-            gpui::ease_out_quint()(delta)
-        }
-        match self {
-            Self::Instant => gpui::linear,
-            Self::Interaction | Self::Layout | Self::Travel => ease_out_quint,
-        }
+        crate::motion::ease::ease_out_quint
     }
 }
-
-/// Zed's default easing for one-shot transitions. Re-exported vocabulary,
-/// like the rest of this module, before any surface animates with it.
-#[allow(unused_imports)]
-pub use gpui::ease_out_quint;
-
-/// How far an animate-in travels.
-pub const SLIDE_IN_DISTANCE: Pixels = px(40.);
-
-/// Where a fading animate-in starts.
-pub const FADE_IN_START_OPACITY: f32 = 0.4;
 
 // ── Looping affordances (§3) ────────────────────────────────────────────
 
@@ -1489,39 +1180,6 @@ pub mod chart {
     }
 }
 
-// ── Scrollbars (`ui/src/components/scrollbar.rs`) ───────────────────────
-
-/// Zed's `ScrollbarStyle`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ScrollbarStyle {
-    #[default]
-    Regular,
-    Editor,
-}
-
-impl ScrollbarStyle {
-    pub const fn width(self) -> Pixels {
-        match self {
-            Self::Regular => px(6.),
-            Self::Editor => px(15.),
-        }
-    }
-}
-
-/// Scrollbar metrics shared by both styles.
-pub mod scrollbar {
-    use super::*;
-
-    /// Around the thumb.
-    pub const PADDING: Pixels = px(4.);
-    pub const TRACK_BORDER: Pixels = BORDER_WIDTH;
-    pub const MIN_THUMB_LENGTH: Pixels = px(25.);
-    /// Idle time before an auto-hiding scrollbar fades.
-    pub const AUTOHIDE_DELAY: Duration = Duration::from_millis(1000);
-    pub const HIDE_DURATION: Duration = Duration::from_millis(400);
-    pub const SHOW_DURATION: Duration = Duration::from_millis(50);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1533,7 +1191,6 @@ mod tests {
         let base = Radius::Large.px(&theme);
         theme.ui.corner_rounding = crate::theme::MAX_CORNER_ROUNDING;
         assert_eq!(Radius::Large.px(&theme), base + px(4.));
-        assert_eq!(Radius::None.px(&theme), px(0.));
         assert_eq!(Radius::Full.px(&theme), px(9999.));
     }
 
@@ -1554,13 +1211,28 @@ mod tests {
         (f32::from(a) - b).abs() < 0.001
     }
 
+    /// Every spacing step, for the tables below.
+    const SPACINGS: [DynamicSpacing; 13] = [
+        DynamicSpacing::Base01,
+        DynamicSpacing::Base02,
+        DynamicSpacing::Base03,
+        DynamicSpacing::Base04,
+        DynamicSpacing::Base06,
+        DynamicSpacing::Base08,
+        DynamicSpacing::Base12,
+        DynamicSpacing::Base16,
+        DynamicSpacing::Base20,
+        DynamicSpacing::Base24,
+        DynamicSpacing::Base32,
+        DynamicSpacing::Base40,
+        DynamicSpacing::Base48,
+    ];
+
     #[test]
     fn default_settings_resolve_to_zeds_default_pixels() {
         let theme = default_theme();
-        let expected = [
-            0., 1., 2., 3., 4., 6., 8., 12., 16., 20., 24., 32., 40., 48.,
-        ];
-        for (spacing, px) in DynamicSpacing::ALL.into_iter().zip(expected) {
+        let expected = [1., 2., 3., 4., 6., 8., 12., 16., 20., 24., 32., 40., 48.];
+        for (spacing, px) in SPACINGS.into_iter().zip(expected) {
             assert!(close(spacing.px(&theme), px), "{spacing:?}");
         }
         assert!(close(TextSize::Large.px(&theme), 16.));
@@ -1577,18 +1249,12 @@ mod tests {
 
     #[test]
     fn density_anchors_hit_zeds_three_tables() {
-        for spacing in DynamicSpacing::ALL {
-            for density in [
-                UiDensity::Compact,
-                UiDensity::Default,
-                UiDensity::Comfortable,
-            ] {
-                assert_eq!(
-                    spacing.at_percent(density.percent()),
-                    spacing.at(density),
-                    "{spacing:?} at {density:?}"
-                );
-            }
+        // Compact, Default and Comfortable are anchored at 80, 100 and 120 %.
+        for spacing in SPACINGS {
+            let (compact, default, comfortable) = spacing.values();
+            assert_eq!(spacing.at_percent(80), compact, "{spacing:?} compact");
+            assert_eq!(spacing.at_percent(100), default, "{spacing:?} default");
+            assert_eq!(spacing.at_percent(120), comfortable, "{spacing:?} comfortable");
         }
         // Past the outer anchors the table is held, not extrapolated.
         assert_eq!(DynamicSpacing::Base08.at_percent(60), 4.);
@@ -1615,18 +1281,6 @@ mod tests {
         assert!(close(theme.rems(1.), 16. * scale));
         // Fixed-px tokens do not move.
         assert_eq!(context_menu::MIN_WIDTH, px(200.));
-        assert_eq!(list_item::INDENT_STEP, px(12.));
-        assert!(close(TextSize::Ui.px(&theme), 16.));
-    }
-
-    #[test]
-    fn icon_squares_add_their_padding() {
-        let theme = default_theme();
-        assert!(close(IconSize::Indicator.square(&theme), 10.));
-        assert!(close(IconSize::XSmall.square(&theme), 16.));
-        assert!(close(IconSize::Small.square(&theme), 18.));
-        assert!(close(IconSize::Medium.square(&theme), 20.));
-        assert!(close(IconSize::XLarge.square(&theme), 52.));
     }
 
     #[test]
@@ -1690,18 +1344,15 @@ mod tests {
 
     #[test]
     fn one_linear_geometry_ramp_serves_every_palette() {
-        // Shapes belong to the design language, not to a palette. A Classic
-        // palette and an Operational one must resolve every radius, caption
-        // size and elevation the same way.
+        // Shapes belong to the one design language, not to a palette. Every
+        // palette must resolve every radius, caption size and elevation the
+        // same way.
         for id in crate::theme::ThemeId::ALL {
             let theme = Theme::for_id(id);
-            assert!(close(Radius::XSmall.px(&theme), 2.), "{id:?}");
             assert!(close(Radius::Small.px(&theme), 4.), "{id:?}");
             assert!(close(Radius::Medium.px(&theme), 5.), "{id:?}");
             assert!(close(Radius::Large.px(&theme), 6.), "{id:?}");
             assert!(close(Radius::XLarge.px(&theme), 8.), "{id:?}");
-            assert!(close(Radius::XXLarge.px(&theme), 10.), "{id:?}");
-            assert!(close(Radius::XXXLarge.px(&theme), 12.), "{id:?}");
             assert!(close(TextSize::XSmall.px(&theme), 11.), "{id:?}");
             assert_eq!(
                 ElevationIndex::ElevatedSurface.shadow(&theme).len(),
@@ -1713,13 +1364,6 @@ mod tests {
                 1,
                 "{id:?}: one restrained modal layer"
             );
-            for layer in [
-                ElevationIndex::Background,
-                ElevationIndex::Surface,
-                ElevationIndex::EditorSurface,
-            ] {
-                assert!(layer.shadow(&theme).is_empty(), "{id:?}: {layer:?}");
-            }
         }
     }
 
@@ -1744,10 +1388,6 @@ mod tests {
         assert!(close(context_menu::entry_height(&theme), 23.));
         let line = px(20.);
         assert_eq!(ListItemSpacing::Dense.row_height(line, &theme), px(20.));
-        assert_eq!(
-            ListItemSpacing::ExtraDense.row_height(line, &theme),
-            px(18.)
-        );
         assert!(close(ListItemSpacing::Sparse.row_height(line, &theme), 28.));
     }
 
@@ -1755,13 +1395,6 @@ mod tests {
     fn elevation_shadows_are_restrained() {
         let dark = Theme::dark();
         let light = Theme::light();
-        for index in [
-            ElevationIndex::Background,
-            ElevationIndex::Surface,
-            ElevationIndex::EditorSurface,
-        ] {
-            assert!(index.shadow(&dark).is_empty(), "{index:?} casts no shadow");
-        }
         for theme in [dark, light] {
             let elevated = ElevationIndex::ElevatedSurface.shadow(&theme);
             assert_eq!(elevated.len(), 1, "one hairline-shaped popover layer");
@@ -1785,15 +1418,6 @@ mod tests {
     }
 
     #[test]
-    fn density_buckets_for_branching_ui() {
-        assert_eq!(UiDensity::nearest(80), UiDensity::Compact);
-        assert_eq!(UiDensity::nearest(85), UiDensity::Compact);
-        assert_eq!(UiDensity::nearest(90), UiDensity::Default);
-        assert_eq!(UiDensity::nearest(110), UiDensity::Default);
-        assert_eq!(UiDensity::nearest(115), UiDensity::Comfortable);
-    }
-
-    #[test]
     fn durations_are_zeds() {
         assert_eq!(
             Duration::from(AnimationDuration::Instant),
@@ -1812,14 +1436,11 @@ mod tests {
     #[test]
     fn motion_roles_fill_the_spec_bands() {
         let ms = |motion: Motion| motion.nominal().as_millis() as u64;
-        // DESIGN.md §Motion System: instant 0–80, interaction 120–160,
-        // layout 160–220, travel 220–320. The bands are a contract, not a
-        // suggestion.
-        assert!((0..=80).contains(&ms(Motion::Instant)));
+        // DESIGN.md §Motion System: interaction 120–160, layout 160–220,
+        // travel 220–320. The bands are a contract, not a suggestion.
         assert!((120..=160).contains(&ms(Motion::Interaction)));
         assert!((160..=220).contains(&ms(Motion::Layout)));
         assert!((220..=320).contains(&ms(Motion::Travel)));
-        assert!(ms(Motion::Instant) < ms(Motion::Interaction));
         assert!(ms(Motion::Interaction) < ms(Motion::Layout));
         assert!(ms(Motion::Layout) < ms(Motion::Travel));
     }
@@ -1899,9 +1520,7 @@ mod tests {
                 let pressed = InteractionState::Pressed
                     .fill(&theme)
                     .expect("pressed fills");
-                let selected = InteractionState::Selected
-                    .fill(&theme)
-                    .expect("selected fills");
+                let selected = theme.selected_wash();
                 assert_ne!(hover, pressed, "{id:?}: hover and pressed are one colour");
                 assert_ne!(selected, hover, "{id:?}: selected and hover are one colour");
                 assert_ne!(
@@ -1923,49 +1542,26 @@ mod tests {
             InteractionState::Disabled.border(&theme),
             Some(theme.border_subtle)
         );
-        for state in [
-            InteractionState::Rest,
-            InteractionState::Hover,
-            InteractionState::Pressed,
-            InteractionState::Selected,
-        ] {
+        for state in [InteractionState::Hover, InteractionState::Pressed] {
             assert_eq!(state.border(&theme), None, "{state:?} draws no frame");
         }
-        for state in [InteractionState::Rest, InteractionState::Focused] {
-            assert_eq!(state.fill(&theme), None, "{state:?} paints no fill");
-        }
-        assert_eq!(FOCUS_RING_WIDTH, BORDER_WIDTH);
+        assert_eq!(
+            InteractionState::Focused.fill(&theme),
+            None,
+            "focus is a frame, never a fill"
+        );
     }
 
     #[test]
-    fn disabled_and_selected_ink_are_their_own_roles() {
+    fn disabled_ink_is_its_own_role() {
         for theme in [Theme::dark(), Theme::light()] {
-            assert_eq!(
-                InteractionState::Disabled.row_ink(&theme),
-                theme.text_disabled
-            );
             assert_eq!(
                 InteractionState::Disabled.control_ink(&theme),
                 theme.text_disabled
             );
             assert_eq!(
-                InteractionState::Selected.row_ink(&theme),
-                theme.selection_fg
-            );
-            assert_eq!(
-                InteractionState::Selected.control_ink(&theme),
-                theme.selection_fg
-            );
-            // A control rests at primary ink; a row rests at secondary, so a
-            // row's hover lift is visible against its own rest state.
-            assert_eq!(
-                InteractionState::Rest.control_ink(&theme),
+                InteractionState::Hover.control_ink(&theme),
                 theme.text_primary
-            );
-            assert_eq!(InteractionState::Rest.row_ink(&theme), theme.text_secondary);
-            assert_ne!(
-                InteractionState::Hover.row_ink(&theme),
-                InteractionState::Rest.row_ink(&theme)
             );
         }
     }

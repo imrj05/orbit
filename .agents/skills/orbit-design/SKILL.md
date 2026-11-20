@@ -66,9 +66,9 @@ Resolve tokens through the current theme and verify scaling at the call site.
 | Spacing | `DynamicSpacing`: 0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 at default settings; density and UI scaling apply. |
 | Radius | `Radius::px`: 0, 2, 4, 5, 6, 8, 10, 12px, and full, before the corner-rounding preference. Use component role tokens rather than assuming a radius from an enum name. |
 | Controls | `ButtonSize` reference heights: 16, 18, 22, 28, 32px; `IconSize` has 10, 12, 14, 16 and 48px plus custom. |
-| Border and focus | `BORDER_WIDTH` and `FOCUS_RING_WIDTH` are 1px. Validate that focus remains visible in real contexts rather than copying a web outline rule. |
+| Border and focus | `BORDER_WIDTH` is 1px, and the focus ring is a `BORDER_WIDTH` border in `focus_ring`. Validate that focus remains visible in real contexts rather than copying a web outline rule. |
 | Depth | Flat structural surfaces; `ElevationIndex` reserves restrained shadows for elevated surfaces and modals. |
-| Motion | `Motion`: 50ms instant, 150ms interaction, 200ms layout, 260ms travel; reduced motion resolves centrally. Loops and chart cadences have separate contracts. |
+| Motion | `Motion`: 150ms interaction, 200ms layout, 260ms travel (50ms instant is specified but not built); reduced motion resolves centrally. Loops and chart cadences have separate contracts. |
 
 The values above are resolved by their respective tokens; they do not all scale
 in the same way. `TextSize::XSmall` resolves to 11px despite its stale 10px
@@ -89,7 +89,7 @@ All pixel values here are base values before user preferences, unless noted.
 | Component corners | Compact/none buttons and list entries use `Medium` 5px; default/medium/large buttons and inputs use `Large` 6px; the chat composer has a fixed 12px radius independent of preferences; panels use `XLarge` 8px; badges use `Small` 4px. Resolve through component tokens. |
 | Controls | Button heights are `None` 16, `Compact` 18, `Default` 22, `Medium` 28 and `Large` 32px before UI scaling. Match the icon to the button's `icon_size`; the icon scale is 10, 12, 14, 16 and 48px, plus custom. Visual size is not proof of usable hit area. |
 | Edges and depth | Borders and focus rings are 1px. Keep structural regions flat; floating surfaces may combine a hairline with a restrained shadow. Existing composer contact shadows are a documented exception, not a general card treatment. Focus remains distinct from selection. |
-| Motion | Instant 50ms, interaction 150ms, layout 200ms and travel 260ms; instant is linear and the others decelerate. Hover, press, focus and selection do not use travel; a control changing size and meaning may. No bounce by default. Reduced motion resolves to the end state. |
+| Motion | Interaction 150ms, layout 200ms and travel 260ms, all decelerating; instant (50ms, linear) is specified but not built — add it to `Motion` with its first caller. Hover, press, focus and selection do not use travel; a control changing size and meaning may. No bounce by default. Reduced motion resolves to the end state. |
 
 ### Colour roles and theme compatibility
 
@@ -103,7 +103,7 @@ and their reference values are `DESIGN.md` §Colors.
 | Panel and chrome | `surface` | Sidebars, panes, title bar, composer. This is Orbit's secondary background. |
 | Nested container | `surface_secondary` | A well inside a panel, not a substitute for one. |
 | Card, chip, menu, popover, dialog | `surface_elevated` | The one raised plane. Reach it through `ElevationIndex` / `StyledExt`, which also supply the hairline and the layer's shadow. |
-| Row and control states | `surface_hover`, `surface_active`, `surface_selected` | Pointer, pressed/open, open row. Choose a treatment, not a role: see §The State Contract in `DESIGN.md`. |
+| Row and control states | `surface_hover`, `surface_active`, `surface_selected` | Pointer, pressed/open, open row. Choose a treatment, not a role: see §The State Contract in `DESIGN.md`. A faceless row or control reads them through `hover_wash()` / `pressed_wash()` / `selected_wash()`, which turn into ink washes on glass; a floating layer's builder scopes its theme with `Theme::for_floating()`. |
 | Edges | `border`, `border_subtle`, `border_strong` | Region seam, quiet internal rule, floating-surface edge. |
 | Ink | `text_primary`, `text_secondary`, `text_muted`, `text_disabled` | Emphasis comes from ink weight and size, never from hue. |
 | Accent | `accent`, `accent_hover`, `accent_pressed`, `accent_fg`, `accent_text` | `accent_text` is the readable role for links, icons, keywords and mentions; `accent` is a fill, and never an automatic primary-button fill. |
@@ -206,7 +206,7 @@ existing components before creating a new primitive.
 | New-task page | The same composer in the middle of the page, not a second template: the chat column with an empty transcript, centered by flex weights (`new_task::settle`) at `new_task::COMPOSER_MAX_W` and narrowing with the window. Its context header shares the composer surface: folder and branch controls on the left, and the working-directory control on the right when in a repository. The location control names the project at its main checkout and the worktree inside a linked worktree; its picker retains the Local row. The folder control opens the workspace picker beneath itself; the status row does not duplicate these controls. No headline, mark or card above it. The composer border remains a quiet hairline while its input is focused; the caret indicates text focus. The empty footer leaves out the context meter until real usage exists. The first send docks the composer into the session layout on one `Travel` clock; Reduce Motion paints the session frame at once. |
 | Dialogs | Identify the task and affected object; keep actions in a predictable footer. Trap focus while modal and restore it on close. Escape and scrim clicks cancel dismissible dialogs; a mandatory or in-progress dialog may prevent dismissal when interruption would be unsafe, while explaining the state and any available action. Make destructive consequences explicit. Verify the actual focus and keyboard implementation. |
 | Rows, tables and lists | Use shared list metrics and interaction states; keep hover, selection and focus distinct, metadata readable, and dense content inspectable. Use stable alignment and keyboard-accessible disclosure for truncated values. |
-| Toggles, tooltips and feedback | Inspect `switch`, `empty_state` and `error_state` in `app/helpers.rs`, and `usage/tooltip.rs`. `switch` provides the visual, pointer and keyboard behavior (Tab focus, focus ring, Space/Enter), not an accessible name; supply or record that separately. Give switches clear state, avoid hover-only essential information, and place actionable errors near their cause. Use loading feedback without unnecessary layout shifts. |
+| Toggles, tooltips and feedback | Inspect `ui/switch.rs`, `empty_state` and `error_state` in `app/helpers.rs`, and `ui/tooltip.rs`. `switch` provides the visual, pointer and keyboard behavior (Tab focus, focus ring, Space/Enter), not an accessible name; supply or record that separately. Give switches clear state, avoid hover-only essential information, and place actionable errors near their cause. Use loading feedback without unnecessary layout shifts. |
 
 ## Icon policy
 
@@ -240,7 +240,7 @@ has adopted each treatment.
 
 | Interaction | Starting point |
 | --- | --- |
-| Hover, selection, press and focus | Shared interaction helpers and `Motion::Interaction` / `Instant`; retarget from the painted value and never delay the action. `.hover_state(...)` and its siblings swap on one frame — wrap the finished element in `motion::hover` (with a stable, unique name) when the surface should fade. Press is `pressed_state`/`press`, never a hand-picked fill. |
+| Hover, selection, press and focus | Shared interaction helpers and `Motion::Interaction`; retarget from the painted value and never delay the action. `.hover_state(...)` and its siblings swap on one frame — wrap the finished element in `motion::hover` (with a stable, unique name) when the surface should fade. Press is `pressed_state`/`press`, never a hand-picked fill. |
 | Disclosure and switch | Existing disclosure and switch helpers; keep layout and indicator state consistent. |
 | Menu, popover and dialog | `anchored_popover` applies entrance motion; `modal_card` supplies the frame, not animation. See `dialog.rs` for composing the card with `motion::enter`. Preserve the spatial relationship to the trigger. |
 | New-task composer dock | One `Motion::Travel`: the gap under the composer closes, the column widens to the session's, the folder row collapses and the transcript's ink fades in, all from `new_task::settle`. Its cubic ease-out softens the long slide; the clock starts on the first visible chat frame. A resumed session never replays it. |
@@ -283,9 +283,25 @@ shipped tokens or instructions to add abstractions prematurely:
 
 ## Apple-inspired materials: opt-in exploration only
 
-Opaque chrome is the default; the wallpaper-glass chat composer is an explicit
-exception, not a whole-app glassmorphism interface. If the user asks for material exploration, first present the
-tradeoff and obtain approval before changing that contract or the default.
+Opaque chrome is the default; the wallpaper-glass chat composer and the
+full-window glass pages are explicit exceptions, not a whole-app glassmorphism
+interface. The one shipped `floating`
+material: in dark palettes, layers built on `elevation_2` / `elevation_3` frost
+the workbench behind them even with no wallpaper (`Theme::floating_glass_sigma`,
+`FLOATING_GLASS_BLUR`, and a per-palette tint from `floating_glass_alpha`: the
+lowest alpha above `FLOATING_GLASS_MIN_ALPHA` that keeps text contrast over
+black and white backdrops). Light palettes, unsupported renderers and the OS Reduce
+Transparency / Increase Contrast preferences keep the opaque card. Do not give a
+floating surface its own blur value or override its fill after the elevation
+helper; structural panes, transcript cards and the composer stay wallpaper-only.
+Pages and dock cards are glass over a **full-window** wallpaper (approved
+2026-11-18): frame a page or dock with `SurfaceExt::page_card`, paint the page
+root with `Theme::page_canvas`, raised surfaces inside it with
+`Theme::page_fill`, and give a sticky band over scrolling rows
+`page_sticky_frost`. Do not nest another blur inside a page beyond the shared
+`card_surface` boards. Hero mode and no-wallpaper pages stay opaque. If the user
+asks for further material exploration, first present the tradeoff and obtain
+approval before changing that contract or the default.
 
 A possible **experimental** material system could have semantic roles such as
 `opaque`, `floating` and `overlay`, not arbitrary per-component blur values.

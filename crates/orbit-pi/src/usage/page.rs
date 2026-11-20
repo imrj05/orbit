@@ -850,7 +850,7 @@ pub struct UsagePage {
     calendar_restore: Option<DateRange>,
     /// When a popover was dismissed by an outside click; guards the same
     /// gesture's mouse-up from re-opening the menu it just closed.
-    dismissed_at: Option<Instant>,
+    dismissed_at: crate::ui::popover::DismissGuard,
 
     // ── transient state ──
     hover_bucket: Option<usize>,
@@ -1025,7 +1025,7 @@ impl UsagePage {
             custom_start: prefs.custom_start,
             custom_end: prefs.custom_end,
             calendar_restore: None,
-            dismissed_at: None,
+            dismissed_at: crate::ui::popover::DismissGuard::default(),
             hover_bucket: None,
             hover_day: None,
             kpi_hover: None,
@@ -1355,7 +1355,7 @@ impl UsagePage {
         let Some((table, id, start_x, start_width)) = self.resizing else {
             return;
         };
-        let width = (start_width + (x - start_x)).max(super::table::MIN_COL_W);
+        let width = (start_width + (x - start_x)).max(crate::ui::table::MIN_COL_W);
         self.widths.entry(table).or_default().insert(id, width);
         cx.notify();
     }
@@ -1689,9 +1689,7 @@ impl UsagePage {
     /// Toggle a chip's popover, ignoring the mouse-up half of a click that
     /// just dismissed a popover outside its bounds.
     pub fn toggle_menu(&mut self, kind: MenuKind, window: &mut Window, cx: &mut Context<Self>) {
-        let just_dismissed = self
-            .dismissed_at
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(250));
+        let just_dismissed = self.dismissed_at.is_recent();
         if self.menu == Some(kind) || just_dismissed {
             self.menu = None;
             self.calendar_open = false;
@@ -1720,7 +1718,7 @@ impl UsagePage {
             return;
         }
         if had_menu {
-            self.dismissed_at = Some(Instant::now());
+            self.dismissed_at.arm();
         }
         self.calendar_open = false;
         cx.notify();

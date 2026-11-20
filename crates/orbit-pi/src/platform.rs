@@ -170,6 +170,24 @@ pub fn os_reduce_motion() -> bool {
     false
 }
 
+/// Whether the operating system asks for solid surfaces instead of
+/// translucent ones: macOS's Reduce Transparency, or Increase Contrast (which
+/// AppKit itself answers by dropping vibrancy). Floating glass then paints
+/// its opaque card. Read at the same moments as [`os_reduce_motion`].
+#[cfg(target_os = "macos")]
+pub fn os_reduce_transparency() -> bool {
+    use objc2_app_kit::NSWorkspace;
+    let workspace = NSWorkspace::sharedWorkspace();
+    workspace.accessibilityDisplayShouldReduceTransparency()
+        || workspace.accessibilityDisplayShouldIncreaseContrast()
+}
+
+/// No backdrop pass exists off macOS, so there is nothing to reduce.
+#[cfg(not(target_os = "macos"))]
+pub fn os_reduce_transparency() -> bool {
+    false
+}
+
 /// Resolve which catalog apps are installed, with their icons.
 #[cfg(target_os = "macos")]
 pub fn detect_open_in_apps() -> Vec<ExternalApp> {

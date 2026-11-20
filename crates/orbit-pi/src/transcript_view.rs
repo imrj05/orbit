@@ -24,13 +24,13 @@ use std::{
 };
 
 use gpui::{
-    canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
-    relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
-    DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
-    Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
-    ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign,
-    TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
+    canvas, deferred, div, img, point, prelude::*, px, relative, Animation, AnimationExt,
+    AnyElement, App, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Element, ElementId, Font,
+    FontFeatures, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image,
+    ImageSource, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString,
+    StrikethroughStyle, StyledText, TextAlign, TextLayout, TextRun, TransformationMatrix,
+    UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -43,18 +43,15 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
+use crate::ui::button::disclosure_toggle;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::agent_call_display::AgentCallDisplay;
-use crate::app::{
-    anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
-    icon_button_frame, nerd_font_family, picker_entry, picker_surface, press, ControlExt, OrbitApp,
-    TipExt, BUTTON_GROUP,
-};
+use crate::app::OrbitApp;
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
 use crate::motion::Hover;
 use crate::shimmer::ShimmerText;
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     button, context_menu, looping, panel, picker, popover, BufferLineHeight, ButtonSize,
     DynamicSpacing, IconSize, Motion, Radius, StyledExt, TextSize, BORDER_WIDTH,
@@ -62,7 +59,21 @@ use crate::theme::tokens::{
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, HistoryCard, Step, SummaryRow, ToolCall, ToolFacts};
 use crate::turn_review::{ChangedFile, TurnFiles};
+use crate::ui::button::{IconButton, IconButtonVariant};
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::popover::{popover_list, PopoverExt};
+use crate::ui::prelude::{
+    anchored_popover_at, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
+    icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, TipExt, BUTTON_GROUP,
+};
+use crate::ui::style::surface::SurfaceExt;
+use crate::ui::banner::{Banner, BannerTone};
 
+/// A raised transcript surface's own fill on glass: `base` at the
+/// contrast-floored card tint while wallpaper glass is frosting behind it, and
+/// exactly `base` otherwise — so without glass (no wallpaper, Glass off, or a
+/// renderer with no backdrop pass) the surface keeps its opaque plane instead
+/// of showing a sharp picture through text.
 fn frosted_transcript_fill(theme: Theme) -> Hsla {
     if theme.glass_sigma().is_some() {
         theme.card_fill(theme.surface_secondary)
@@ -107,19 +118,14 @@ const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 /// 120–160 and 160–220 bands.
 const COPY_REST_OPACITY: f32 = 0.45;
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
-const NAVIGATION_RAIL_WIDTH: f32 = 44.0;
-const NAVIGATION_RAIL_TICK_WIDTH: f32 = 32.0;
-const NAVIGATION_RAIL_TICK_HEIGHT: f32 = 2.0;
-const NAVIGATION_RAIL_TURN_HEIGHT: f32 = 12.0;
-const NAVIGATION_RAIL_INACTIVE_OPACITY: f32 = 0.45;
-/// Tick width by emphasis distance from the hovered turn.
-const NAVIGATION_RAIL_EMPHASIS_SCALE: [f32; 4] = [1.0, 0.68, 0.44, 0.25];
+const NAVIGATION_RAIL_WIDTH: f32 = crate::ui::rail::WIDTH;
+const NAVIGATION_RAIL_TURN_HEIGHT: f32 = crate::ui::rail::STOP_HEIGHT;
 /// The rail caps at 80% of the viewport and hides below an 872px transcript
 /// container.
 const NAVIGATION_RAIL_MAX_HEIGHT: f32 = 0.8;
 const NAVIGATION_RAIL_MIN_MAIN_WIDTH: f32 = 1040.0;
 const CHANGED_FILES_PREVIEW_LIMIT: usize = 3;
-const NAVIGATION_RAIL_CONTENT_GAP: f32 = 12.0;
+const NAVIGATION_RAIL_CONTENT_GAP: f32 = crate::ui::rail::CARD_GAP;
 const NAVIGATION_RAIL_PREVIEW_WIDTH: f32 = 320.0;
 const NAVIGATION_RAIL_PREVIEW_MAX_HEIGHT: f32 = 126.0;
 /// Detail JSON/outputs are truncated to keep one virtualized row bounded.
@@ -417,6 +423,118 @@ impl Selection {
 struct TextMenu {
     position: gpui::Point<Pixels>,
     message_text: String,
+    /// The menu takes keyboard focus while open (the transcript itself has no
+    /// keyboard owner), so arrows, Enter and Escape reach it.
+    focus: gpui::FocusHandle,
+    /// What held focus when the menu opened; every close hands it back.
+    restore: Option<gpui::FocusHandle>,
+    /// The keyboard cursor over [`TextMenuItem::ALL`], painted only once a key
+    /// has moved it (a pointer-opened menu stays quiet).
+    highlight: crate::ui::menu::MenuState,
+    keyed: bool,
+}
+
+/// The text menu's actions, top to bottom: one list for pointer and keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextMenuItem {
+    CopySelection,
+    CopyMessage,
+}
+
+impl TextMenuItem {
+    const ALL: [Self; 2] = [Self::CopySelection, Self::CopyMessage];
+
+    /// Copy Selection only acts while there is a selection.
+    fn enabled(self, has_selection: bool) -> bool {
+        match self {
+            Self::CopySelection => has_selection,
+            Self::CopyMessage => true,
+        }
+    }
+}
+
+/// Close the text menu and give focus back to whatever held it before.
+fn close_text_menu(state: &TextSelectionState, window: &mut Window) {
+    let restore = state.borrow_mut().menu.take().and_then(|menu| menu.restore);
+    if let Some(restore) = restore {
+        window.focus(&restore);
+    }
+    window.refresh();
+}
+
+/// Run one text-menu action — the click path and the Enter path.
+fn run_text_menu_item(
+    state: &TextSelectionState,
+    item: TextMenuItem,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let text = {
+        let state = state.borrow();
+        match item {
+            TextMenuItem::CopySelection => state.selected_text(),
+            TextMenuItem::CopyMessage => state.menu.as_ref().map(|menu| menu.message_text.clone()),
+        }
+    };
+    if let Some(text) = text {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+    close_text_menu(state, window);
+}
+
+/// The keys the open text menu answers.
+const TEXT_MENU_KEYS: [&str; 7] = ["escape", "up", "down", "home", "end", "enter", "space"];
+
+/// Keys while the text menu is open. Disabled entries are skipped.
+fn text_menu_key(state: &TextSelectionState, key: &str, window: &mut Window, cx: &mut App) {
+    if key == "escape" {
+        close_text_menu(state, window);
+        return;
+    }
+    let has_selection = state.borrow().selected_text().is_some();
+    let enabled = |ix: usize| TextMenuItem::ALL[ix].enabled(has_selection);
+    let len = TextMenuItem::ALL.len();
+    let run = {
+        let mut guard = state.borrow_mut();
+        let Some(menu) = guard.menu.as_mut() else {
+            return;
+        };
+        let was_keyed = menu.keyed;
+        match key {
+            "down" | "up" | "home" | "end" if !was_keyed => {
+                // The first key shows the cursor on the first entry that can act.
+                menu.keyed = true;
+                menu.highlight.first(len, enabled);
+                None
+            }
+            "down" => {
+                menu.highlight.next_enabled(len, enabled);
+                None
+            }
+            "up" => {
+                menu.highlight.prev_enabled(len, enabled);
+                None
+            }
+            "home" => {
+                menu.highlight.first(len, enabled);
+                None
+            }
+            "end" => {
+                menu.highlight.last(len, enabled);
+                None
+            }
+            "enter" | "space" if was_keyed => menu
+                .highlight
+                .selected(len)
+                .filter(|ix| enabled(*ix))
+                .map(|ix| TextMenuItem::ALL[ix]),
+            _ => None,
+        }
+    };
+    match run {
+        Some(item) => run_text_menu_item(state, item, window, cx),
+        None => window.refresh(),
+    }
 }
 
 /// Shared text-selection state — one per transcript, cloned into every text
@@ -999,7 +1117,7 @@ fn register_text_selection(
 ) {
     window.on_mouse_event({
         let state = state.clone();
-        move |event: &MouseDownEvent, phase, window, _| {
+        move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Capture || !hitbox.is_hovered(window) {
                 return;
             }
@@ -1027,9 +1145,23 @@ fn register_text_selection(
                         .get(message_ix)
                         .map(ChatMessage::text)
                         .unwrap_or_default();
+                    let focus = cx.focus_handle();
+                    // A menu re-opened over an open one keeps the original
+                    // opener to return to.
+                    let restore = state
+                        .borrow()
+                        .menu
+                        .as_ref()
+                        .map(|menu| menu.restore.clone())
+                        .unwrap_or_else(|| window.focused(cx));
+                    window.focus(&focus);
                     state.borrow_mut().menu = Some(TextMenu {
                         position: event.position,
                         message_text,
+                        focus,
+                        restore,
+                        highlight: crate::ui::menu::MenuState::default(),
+                        keyed: false,
                     });
                     window.refresh();
                 }
@@ -1084,57 +1216,61 @@ fn register_text_selection(
 /// `Copy Message` (the clicked message's full text). Wears the branch
 /// selector's picker shell, like every other dropdown in the app.
 fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme) -> AnyElement {
-    let selected = state.borrow().selected_text();
-    let copy_selection = selected.clone();
-    let close = state.clone();
-    let copy_selection_item = selection_menu_item(
-        "transcript-copy-selection",
-        "icons/copy.svg",
-        tr!("transcript.copy_selection"),
-        selected.is_some(),
-        theme,
-        move |window, cx| {
-            if let Some(text) = copy_selection.clone() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-            }
-            close.borrow_mut().menu = None;
-            cx.stop_propagation();
-            window.refresh();
-        },
-    );
-    let copy_message = menu.message_text.clone();
-    let close = state.clone();
-    let copy_message_item = selection_menu_item(
-        "transcript-copy-message",
-        "icons/chat.svg",
-        tr!("transcript.copy_message"),
-        true,
-        theme,
-        move |window, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(copy_message.clone()));
-            close.borrow_mut().menu = None;
-            cx.stop_propagation();
-            window.refresh();
-        },
-    );
+    let theme = theme.for_floating();
+    let has_selection = state.borrow().selected_text().is_some();
+    let highlighted = menu
+        .keyed
+        .then(|| menu.highlight.selected(TextMenuItem::ALL.len()))
+        .flatten();
+    let items = TextMenuItem::ALL.iter().enumerate().map(|(ix, item)| {
+        let (id, icon_path, label) = match item {
+            TextMenuItem::CopySelection => (
+                "transcript-copy-selection",
+                "icons/copy.svg",
+                tr!("transcript.copy_selection"),
+            ),
+            TextMenuItem::CopyMessage => (
+                "transcript-copy-message",
+                "icons/chat.svg",
+                tr!("transcript.copy_message"),
+            ),
+        };
+        let item = *item;
+        let run = state.clone();
+        selection_menu_item(
+            id,
+            icon_path,
+            label,
+            item.enabled(has_selection),
+            highlighted == Some(ix),
+            theme,
+            move |window, cx| {
+                cx.stop_propagation();
+                run_text_menu_item(&run, item, window, cx);
+            },
+        )
+    });
     let dismiss = state.clone();
+    let keys = state.clone();
     anchored_popover_at(
         menu.position,
-        picker_surface(div().id("transcript-text-menu"), &theme)
-            .w(px(220.))
-            .py(picker::list_padding_y(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(move |_, window, _| {
-                dismiss.borrow_mut().menu = None;
-                window.refresh();
+        popover_list(div().id("transcript-text-menu"), &theme)
+            .track_focus(&menu.focus)
+            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                let modified = event.keystroke.modifiers.modified();
+                // Only the menu's own keys stop here; a chord (⌘C) still
+                // reaches its binding.
+                if !modified && TEXT_MENU_KEYS.contains(&key) {
+                    cx.stop_propagation();
+                    text_menu_key(&keys, key, window, cx);
+                }
             })
-            .child(copy_selection_item)
-            .child(copy_message_item),
+            .w(px(220.))
+            .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .dismiss_on_outside(move |_, window, _| close_text_menu(&dismiss, window))
+            .children(items),
         "anchored_popover_at-in-1",
         &theme,
     )
@@ -1145,12 +1281,15 @@ fn selection_menu_item(
     icon_path: &'static str,
     label: String,
     enabled: bool,
+    highlighted: bool,
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     picker_entry(div().id(id), &theme)
         .h(picker::entry_height(&theme))
         .flex_none()
+        // The keyboard cursor reads as the pointer's hover.
+        .when(highlighted, |item| item.bg(theme.hover_wash()))
         .text_color(if enabled {
             theme.text_secondary
         } else {
@@ -1164,7 +1303,7 @@ fn selection_menu_item(
                 },
             )
         })
-        .child(crate::app::icon(
+        .child(crate::ui::prelude::icon(
             icon_path,
             context_menu::ICON.px(&theme),
             theme.text_muted,
@@ -1358,238 +1497,238 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     // Devicons resolve once per frame: every file row in the list shares the
     // same Nerd Fonts family (or falls back to extension badges).
     let nerd = nerd_font_family(cx);
-    let list_el = list(view.scroller.list_state(), move |ix, _window, cx| {
-        let live = streaming.get() == Some(ix);
-        // The card can appear while a turn is still streaming. Its Copy
-        // footer belongs to a settled answer, so a live turn keeps the
-        // message row's own footer.
-        let card_owns_footer =
-            summary_files.is_some() && streaming.get().is_none() && !awaiting_reply.get();
-        // The rate's clock: prefer the turn's request start (`turn_start`),
-        // the same basis as pi's `durationMs`; fall back to the stream start
-        // when an older pi build never emitted one.
-        let rate_clock = turn_started
-            .get()
-            .or_else(|| stream_started.get())
-            .map(|started| started.elapsed());
-        // The "Working for…" clock measures the whole turn, so it must not
-        // share the rate's clock: `turn_start` re-arms on every provider
-        // request inside an agentic turn (once per tool-call step), which
-        // restarted the timer mid-run (#59). `stream_started` is armed once
-        // per turn and matches the settled `worked_for` duration.
-        let live_elapsed = if live {
-            stream_started.get().map(|started| started.elapsed())
-        } else {
-            None
-        };
-        // Tokens/sec for the streaming row: the provider's cumulative
-        // output (or a chars/4 estimate) over the turn's request clock.
-        let live_tps = if live {
-            messages.borrow().get(ix).and_then(|message| {
-                streaming_tps(message, live_generation_clock(message, rate_clock))
-            })
-        } else {
-            None
-        };
-        let fold_open = expanded_turns.borrow().contains(&ix);
-        let copied_now = copied
-            .borrow()
-            .get(&ix)
-            .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-        let row_count = messages.borrow().len();
-        // The list's tail slot (ix == row_count) is the end-of-task
-        // changed-files summary — pinned after the last message, in the
-        // same centered column as every other row.
-        if ix >= row_count {
-            let theme = *theme::get(cx);
-            // The prompt is out; the answer has not started. Show the same live
-            // row the streaming turn will wear, so pressing Enter is answered by
-            // the transcript itself and not only by the composer's Stop button.
-            if awaiting_reply.get() && streaming.get().is_none() {
-                let elapsed = stream_started
-                    .get()
-                    .map(|started| started.elapsed())
+    let list_el =
+        crate::ui::list::virtual_list(view.scroller.list_state(), move |ix, _window, cx| {
+            let live = streaming.get() == Some(ix);
+            // The card can appear while a turn is still streaming. Its Copy
+            // footer belongs to a settled answer, so a live turn keeps the
+            // message row's own footer.
+            let card_owns_footer =
+                summary_files.is_some() && streaming.get().is_none() && !awaiting_reply.get();
+            // The rate's clock: prefer the turn's request start (`turn_start`),
+            // the same basis as pi's `durationMs`; fall back to the stream start
+            // when an older pi build never emitted one.
+            let rate_clock = turn_started
+                .get()
+                .or_else(|| stream_started.get())
+                .map(|started| started.elapsed());
+            // The "Working for…" clock measures the whole turn, so it must not
+            // share the rate's clock: `turn_start` re-arms on every provider
+            // request inside an agentic turn (once per tool-call step), which
+            // restarted the timer mid-run (#59). `stream_started` is armed once
+            // per turn and matches the settled `worked_for` duration.
+            let live_elapsed = if live {
+                stream_started.get().map(|started| started.elapsed())
+            } else {
+                None
+            };
+            // Tokens/sec for the streaming row: the provider's cumulative
+            // output (or a chars/4 estimate) over the turn's request clock.
+            let live_tps = if live {
+                messages.borrow().get(ix).and_then(|message| {
+                    streaming_tps(message, live_generation_clock(message, rate_clock))
+                })
+            } else {
+                None
+            };
+            let fold_open = expanded_turns.borrow().contains(&ix);
+            let copied_now = copied
+                .borrow()
+                .get(&ix)
+                .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+            let row_count = messages.borrow().len();
+            // The list's tail slot (ix == row_count) is the end-of-task
+            // changed-files summary — pinned after the last message, in the
+            // same centered column as every other row.
+            if ix >= row_count {
+                let theme = *theme::get(cx);
+                // The prompt is out; the answer has not started. Show the same live
+                // row the streaming turn will wear, so pressing Enter is answered by
+                // the transcript itself and not only by the composer's Stop button.
+                if awaiting_reply.get() && streaming.get().is_none() {
+                    let elapsed = stream_started
+                        .get()
+                        .map(|started| started.elapsed())
+                        .unwrap_or_default();
+                    return div()
+                        .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .px(DynamicSpacing::Base20.px(&theme))
+                        .pb(px(14.))
+                        .child(
+                            div()
+                                .w_full()
+                                .max_w(px(CONTENT_MAX_WIDTH))
+                                .min_w_0()
+                                .child(render_working_indicator(elapsed, None, None, theme)),
+                        )
+                        .into_any_element();
+                }
+                let Some(files) = summary_files.as_ref() else {
+                    return div().into_any_element();
+                };
+                let card = render_changed_files(
+                    files,
+                    theme,
+                    nerd.as_ref(),
+                    ix,
+                    workspace.as_deref(),
+                    expanded_files.borrow().contains(&ix),
+                    expanded_files.clone(),
+                    scroller.clone(),
+                    summary_turn.and_then(|turn| review_changes.clone().map(|open| (turn, open))),
+                );
+                // One run footer, after the changed-files card (turn order:
+                // answer → files card → Copy): the copy affordance copies the
+                // answer, with the settled time and the run's usage. The last
+                // message's own footer is suppressed (see `suppress_footer`) so
+                // these details are not shown twice.
+                let last_ix = row_count.saturating_sub(1);
+                let copy_text = messages
+                    .borrow()
+                    .get(last_ix)
+                    .filter(|message| message.is_assistant())
+                    .map(|message| message.text())
                     .unwrap_or_default();
+                let copied_last = copied
+                    .borrow()
+                    .get(&last_ix)
+                    .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+                // Regenerate belongs to a response; an interrupted run's tail is a
+                // user prompt with no answer to replace.
+                let summary_regenerate = messages
+                    .borrow()
+                    .get(last_ix)
+                    .is_some_and(|message| message.is_assistant() && message.has_text())
+                    .then(|| regenerate.clone())
+                    .flatten();
+                let stamp = summary_finished_at
+                    .map(|millis| footer_time_stamp(summary_time_label(millis), theme));
+                let summary_generation = messages
+                    .borrow()
+                    .get(last_ix)
+                    .and_then(|message| message.generation_time());
+                let footer = div()
+                    .mt(px(10.))
+                    .px(DynamicSpacing::Base04.px(&theme))
+                    .child(render_message_footer(
+                        copy_text,
+                        last_ix,
+                        stamp,
+                        summary_usage.clone(),
+                        summary_generation,
+                        copied_last,
+                        false,
+                        theme,
+                        copied.clone(),
+                        hovered_usage.clone(),
+                        rewind.clone(),
+                        summary_regenerate,
+                        export_response.clone(),
+                    ));
                 return div()
                     .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
                     .w_full()
                     .flex()
                     .justify_center()
                     .px(DynamicSpacing::Base20.px(&theme))
-                    .pb(px(14.))
+                    .pb(px(22.))
                     .child(
                         div()
                             .w_full()
                             .max_w(px(CONTENT_MAX_WIDTH))
                             .min_w_0()
-                            .child(render_working_indicator(elapsed, None, None, theme)),
+                            .flex()
+                            .flex_col()
+                            .child(card)
+                            .when(card_owns_footer, |column| column.child(footer)),
                     )
                     .into_any_element();
             }
-            let Some(files) = summary_files.as_ref() else {
-                return div().into_any_element();
-            };
-            let card = render_changed_files(
-                files,
-                theme,
-                nerd.as_ref(),
-                ix,
-                workspace.as_deref(),
-                expanded_files.borrow().contains(&ix),
-                expanded_files.clone(),
-                scroller.clone(),
-                summary_turn.and_then(|turn| review_changes.clone().map(|open| (turn, open))),
-            );
-            // One run footer, after the changed-files card (turn order:
-            // answer → files card → Copy): the copy affordance copies the
-            // answer, with the settled time and the run's usage. The last
-            // message's own footer is suppressed (see `suppress_footer`) so
-            // these details are not shown twice.
-            let last_ix = row_count.saturating_sub(1);
-            let copy_text = messages
-                .borrow()
-                .get(last_ix)
-                .filter(|message| message.is_assistant())
-                .map(|message| message.text())
-                .unwrap_or_default();
-            let copied_last = copied
-                .borrow()
-                .get(&last_ix)
-                .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-            // Regenerate belongs to a response; an interrupted run's tail is a
-            // user prompt with no answer to replace.
-            let summary_regenerate = messages
-                .borrow()
-                .get(last_ix)
-                .is_some_and(|message| message.is_assistant() && message.has_text())
-                .then(|| regenerate.clone())
-                .flatten();
-            let stamp = summary_finished_at
-                .map(|millis| footer_time_stamp(summary_time_label(millis), theme));
-            let summary_generation = messages
-                .borrow()
-                .get(last_ix)
-                .and_then(|message| message.generation_time());
-            let footer = div()
-                .mt(px(10.))
-                .px(DynamicSpacing::Base04.px(&theme))
-                .child(render_message_footer(
-                    copy_text,
-                    last_ix,
-                    stamp,
-                    summary_usage.clone(),
-                    summary_generation,
-                    copied_last,
-                    false,
-                    theme,
-                    copied.clone(),
-                    hovered_usage.clone(),
-                    rewind.clone(),
-                    summary_regenerate,
-                    export_response.clone(),
-                ));
-            return div()
-                .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
-                .w_full()
-                .flex()
-                .justify_center()
-                .px(DynamicSpacing::Base20.px(&theme))
-                .pb(px(22.))
-                .child(
-                    div()
-                        .w_full()
-                        .max_w(px(CONTENT_MAX_WIDTH))
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(card)
-                        .when(card_owns_footer, |column| column.child(footer)),
-                )
-                .into_any_element();
-        }
-        let row = render_row(
-            RowPaint {
-                messages: messages.clone(),
-                text_selection: text_selection.clone(),
-                ix,
-                row_count,
-                theme: *theme::get(cx),
-                nerd: nerd.clone(),
-                agent_calls,
-                live,
-                live_elapsed,
-                live_tps,
-                fold_open,
-                copied: copied_now,
-                suppress_footer: suppress_message_footer(card_owns_footer, ix, row_count),
-                expanded_turns: expanded_turns.clone(),
-                expanded_activities: expanded_activities.clone(),
-                copied_at: copied.clone(),
-                scroller: scroller.clone(),
-                expanded_tools: expanded_tools.clone(),
-                open_child_logs: open_child_logs.clone(),
-                copied_sections: copied_sections.clone(),
-                hovered_sections: hovered_sections.clone(),
-                expanded_sections: expanded_sections.clone(),
-                expanded_blocks: expanded_blocks.clone(),
-                thinking_scrolls: thinking_scrolls.clone(),
-                collapsed_thoughts: collapsed_thoughts.clone(),
-                thinking_detached: thinking_detached.clone(),
-                hovered_usage: hovered_usage.clone(),
-                image_opener: image_opener.clone(),
-                rewind: rewind.clone(),
-                regenerate: regenerate.clone(),
-                export_response: export_response.clone(),
-                search_hit: search_hits
-                    .as_ref()
-                    .is_some_and(|hits| hits.borrow().contains(&ix)),
-                search_active: search_active
-                    .as_ref()
-                    .is_some_and(|active| active.get() == Some(ix)),
-                table_breakout,
-            },
-            cx,
-        )
-        .into_any_element();
-        if let Some((_, turn, files)) = history_cards.iter().find(|(last, _, _)| *last == ix) {
-            let card = render_changed_files(
-                files,
-                *theme::get(cx),
-                nerd.as_ref(),
-                ix,
-                workspace.as_deref(),
-                expanded_files.borrow().contains(&ix),
-                expanded_files.clone(),
-                scroller.clone(),
-                review_changes.clone().map(|open| (*turn, open)),
-            );
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .child(row)
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .justify_center()
-                        .px(DynamicSpacing::Base20.px(theme::get(cx)))
-                        .pb(px(22.))
-                        .child(
-                            div()
-                                .w_full()
-                                .max_w(px(CONTENT_MAX_WIDTH))
-                                .min_w_0()
-                                .child(card),
-                        ),
-                )
-                .into_any_element()
-        } else {
-            row
-        }
-    })
-    .w_full()
-    .h_full();
+            let row = render_row(
+                RowPaint {
+                    messages: messages.clone(),
+                    text_selection: text_selection.clone(),
+                    ix,
+                    row_count,
+                    theme: *theme::get(cx),
+                    nerd: nerd.clone(),
+                    agent_calls,
+                    live,
+                    live_elapsed,
+                    live_tps,
+                    fold_open,
+                    copied: copied_now,
+                    suppress_footer: suppress_message_footer(card_owns_footer, ix, row_count),
+                    expanded_turns: expanded_turns.clone(),
+                    expanded_activities: expanded_activities.clone(),
+                    copied_at: copied.clone(),
+                    scroller: scroller.clone(),
+                    expanded_tools: expanded_tools.clone(),
+                    open_child_logs: open_child_logs.clone(),
+                    copied_sections: copied_sections.clone(),
+                    hovered_sections: hovered_sections.clone(),
+                    expanded_sections: expanded_sections.clone(),
+                    expanded_blocks: expanded_blocks.clone(),
+                    thinking_scrolls: thinking_scrolls.clone(),
+                    collapsed_thoughts: collapsed_thoughts.clone(),
+                    thinking_detached: thinking_detached.clone(),
+                    hovered_usage: hovered_usage.clone(),
+                    image_opener: image_opener.clone(),
+                    rewind: rewind.clone(),
+                    regenerate: regenerate.clone(),
+                    export_response: export_response.clone(),
+                    search_hit: search_hits
+                        .as_ref()
+                        .is_some_and(|hits| hits.borrow().contains(&ix)),
+                    search_active: search_active
+                        .as_ref()
+                        .is_some_and(|active| active.get() == Some(ix)),
+                    table_breakout,
+                },
+                cx,
+            )
+            .into_any_element();
+            if let Some((_, turn, files)) = history_cards.iter().find(|(last, _, _)| *last == ix) {
+                let card = render_changed_files(
+                    files,
+                    *theme::get(cx),
+                    nerd.as_ref(),
+                    ix,
+                    workspace.as_deref(),
+                    expanded_files.borrow().contains(&ix),
+                    expanded_files.clone(),
+                    scroller.clone(),
+                    review_changes.clone().map(|open| (*turn, open)),
+                );
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(row)
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .px(DynamicSpacing::Base20.px(theme::get(cx)))
+                            .pb(px(22.))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(px(CONTENT_MAX_WIDTH))
+                                    .min_w_0()
+                                    .child(card),
+                            ),
+                    )
+                    .into_any_element()
+            } else {
+                row
+            }
+        })
+        .w_full();
 
     // Same height chain as the sessions sidebar: this panel is a `flex_1` +
     // `min_h_0` child of a column, so `h_full` on the list is a definite
@@ -1710,19 +1849,10 @@ fn render_navigation_rail(
         .copied()
         .enumerate()
         .map(|(turn_pos, user_ix)| {
-            let distance = emphasized_pos.map(|pos| pos.abs_diff(turn_pos));
-            let scale = distance
-                .and_then(|d| NAVIGATION_RAIL_EMPHASIS_SCALE.get(d))
-                .copied()
-                .unwrap_or(0.25);
+            let width =
+                crate::ui::rail::tick_width(emphasized_pos.map(|pos| pos.abs_diff(turn_pos)));
             let prominent = emphasized_turn == Some(user_ix) || active_turn == Some(user_ix);
-            let width = NAVIGATION_RAIL_TICK_WIDTH * scale;
-            let color = if prominent {
-                theme.text_primary
-            } else {
-                theme.text_muted.opacity(NAVIGATION_RAIL_INACTIVE_OPACITY)
-            };
-            (user_ix, width, color)
+            (user_ix, width, crate::ui::rail::tick_ink(prominent, &theme))
         })
         .collect();
 
@@ -1791,18 +1921,12 @@ fn render_navigation_rail(
                                 cx.refresh_windows();
                             }
                         })
-                        .child(
-                            div()
-                                .id(ElementId::NamedInteger(
-                                    "nav-tick-bar".into(),
-                                    user_ix as u64,
-                                ))
-                                .h(px(NAVIGATION_RAIL_TICK_HEIGHT))
-                                .w(px(width))
-                                .rounded_full()
-                                .bg(color)
-                                .hover_inverse(&theme),
-                        )
+                        .child(crate::ui::rail::tick_bar(
+                            ElementId::NamedInteger("nav-tick-bar".into(), user_ix as u64),
+                            width,
+                            color,
+                            &theme,
+                        ))
                 })),
         )
         .when(!at_top, |rail| rail.child(render_rail_fade(true, theme)))
@@ -1866,26 +1990,7 @@ fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
     // The page's own fill, for the same reason the transcript's bottom fade
     // uses it: over a wallpaper an opaque palette stop would print a band.
     let (clear, page) = crate::message_scroller::fade_stops(theme);
-    let base = div()
-        .absolute()
-        .left_0()
-        .right_0()
-        .h(px(20.))
-        .bg(linear_gradient(
-            180.,
-            linear_color_stop(clear, 0.),
-            linear_color_stop(page, 1.),
-        ));
-    if top {
-        // Solid at the top edge, fading down: flip the stop order.
-        base.top_0().bg(linear_gradient(
-            180.,
-            linear_color_stop(page, 0.),
-            linear_color_stop(clear, 1.),
-        ))
-    } else {
-        base.bottom_0()
-    }
+    crate::ui::rail::edge_fade(top, clear, page)
 }
 
 /// Rail hover card: the turn's number, the turn's prompt, and a
@@ -1899,14 +2004,9 @@ fn render_rail_preview(
     turn_number: usize,
     turn_total: usize,
 ) -> impl IntoElement {
-    div()
-        .absolute()
-        .left(px(NAVIGATION_RAIL_WIDTH + NAVIGATION_RAIL_CONTENT_GAP))
-        .top(top)
-        .w(px(NAVIGATION_RAIL_PREVIEW_WIDTH))
+    crate::ui::rail::side_card(top, px(NAVIGATION_RAIL_PREVIEW_WIDTH), &theme)
         .max_h(px(NAVIGATION_RAIL_PREVIEW_MAX_HEIGHT))
         .overflow_hidden()
-        .elevation_2(&theme)
         .px(px(15.))
         .py(DynamicSpacing::Base12.px(&theme))
         .flex()
@@ -1956,13 +2056,8 @@ fn render_rail_hint(
     rail_hint_dismissed: Rc<Cell<bool>>,
     rail_hint_shown_at: Rc<Cell<Option<Instant>>>,
 ) -> impl IntoElement {
-    div()
+    crate::ui::rail::side_card(px(0.), px(216.), &theme)
         .id(ElementId::Name("rail-hint".into()))
-        .absolute()
-        .left(px(NAVIGATION_RAIL_WIDTH + NAVIGATION_RAIL_CONTENT_GAP))
-        .top_0()
-        .w(px(216.))
-        .elevation_2(&theme)
         .px(px(13.))
         .py(px(10.))
         .flex()
@@ -2150,9 +2245,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .child(header);
     if expanded {
         card = card.child(
@@ -2160,7 +2253,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
                 .w_full()
                 .min_w_0()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .px(DynamicSpacing::Base12.px(&theme))
                 .py(DynamicSpacing::Base08.px(&theme))
                 .child(render_prose(
@@ -2224,7 +2317,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
                             .size(px(112.))
                             .rounded(panel::RADIUS.px(&theme))
                             .border_1()
-                            .border_color(theme.border)
+                            .border_color(theme.hairline())
                             .overflow_hidden()
                             .bg(theme.surface_elevated)
                             .when(opener.is_some(), |tile| {
@@ -2312,11 +2405,11 @@ fn user_message_bubble(body: &str, theme: Theme, column_width: Option<Pixels>) -
             },
         )
         .max_w(px(USER_BUBBLE_MAX_WIDTH))
-        .rounded(panel::RADIUS.px(&theme))
-        // The reader's own words keep the palette's surface over a wallpaper:
-        // a picture showing through the text they wrote is not a material, and
-        // the page behind the transcript already carries it.
-        .bg(theme.surface_elevated)
+        // Over wallpaper glass the reader's bubble is frosted like the cards
+        // beside it: the contrast-floored tint over a blurred backdrop, so the
+        // picture reads as a material and never as sharp detail under their
+        // text. Without glass it keeps the palette's opaque surface.
+        .edgeless_card(&theme, theme.surface_elevated)
         .text_color(theme.text_primary)
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
@@ -2359,7 +2452,7 @@ fn user_file_chip(
         .gap(DynamicSpacing::Base06.px(&theme))
         .rounded(button::radius(ButtonSize::Medium).px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.card_fill(theme.surface_elevated))
         .flex()
         .items_center()
@@ -2679,20 +2772,11 @@ fn render_assistant_error(
     retry: Option<RegenerateOpener>,
 ) -> AnyElement {
     let retry_button = retry.map(|opener| {
-        button_frame(
-            div().id(ElementId::NamedInteger("retry-response".into(), ix as u64)),
-            &theme,
-            ButtonSize::Default,
-        )
+        Button::keyed(ElementId::NamedInteger("retry-response".into(), ix as u64), ButtonVariant::Secondary)
+.size(ButtonSize::Default)
+.render(&theme)
         .debug_selector(move || format!("retry-response-{ix}"))
         .flex_none()
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.text_secondary)
-        .hover_state(&theme)
         .tip(tr!("transcript.retry_hint"))
         .child(glyph(
             "icons/refresh.svg",
@@ -2702,67 +2786,40 @@ fn render_assistant_error(
         .child(tr!("transcript.retry"))
         .on_click(move |_, window, cx| opener(ix, window, cx))
     });
-    div()
-        .w_full()
-        .max_w_full()
-        .min_w_0()
-        .bg(theme.error.opacity(0.1))
-        .border_1()
-        .border_color(theme.error.opacity(0.45))
-        .rounded(panel::RADIUS.px(&theme))
-        .px(DynamicSpacing::Base12.px(&theme))
-        .py(DynamicSpacing::Base08.px(&theme))
-        .flex()
-        .items_start()
-        .gap_2p5()
-        .child(glyph(
-            "icons/info.svg",
-            IconSize::Medium.px(&theme),
-            theme.error,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_0p5()
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(tr!("transcript_view.agent_error")),
-                )
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .whitespace_normal()
-                        .child({
-                            let text: SharedString = error.to_string().into();
-                            let key = ElementId::NamedInteger("agent-error".into(), ix as u64);
-                            let scope = text_scope();
-                            let range = scope
-                                .as_ref()
-                                .and_then(|scope| scope.state.borrow().range_for(&key, &text));
-                            let runs = highlight_runs(
-                                vec![code_run(text.len(), theme.text_secondary, &ui_font())],
-                                range,
-                                selection_color(theme),
-                            );
-                            SelectableText::new(
-                                key,
-                                StyledText::new(text.clone()).with_runs(runs),
-                                text,
-                                Vec::new(),
-                                scope,
-                            )
-                        }),
-                ),
-        )
-        .children(retry_button)
-        .into_any_element()
+    let detail = div()
+        .text_size(TextSize::Small.px(&theme))
+        .text_color(theme.text_secondary)
+        .whitespace_normal()
+        .child({
+            let text: SharedString = error.to_string().into();
+            let key = ElementId::NamedInteger("agent-error".into(), ix as u64);
+            let scope = text_scope();
+            let range = scope
+                .as_ref()
+                .and_then(|scope| scope.state.borrow().range_for(&key, &text));
+            let runs = highlight_runs(
+                vec![code_run(text.len(), theme.text_secondary, &ui_font())],
+                range,
+                selection_color(theme),
+            );
+            SelectableText::new(
+                key,
+                StyledText::new(text.clone()).with_runs(runs),
+                text,
+                Vec::new(),
+                scope,
+            )
+        });
+    // The app's one error notice: the same anatomy, tint and glyph as every
+    // other failed operation, with the message selectable for copying.
+    let banner = Banner::new(BannerTone::Error)
+        .title(tr!("transcript_view.agent_error"))
+        .line(detail);
+    match retry_button {
+        Some(retry) => banner.action(retry),
+        None => banner,
+    }
+    .render(&theme)
 }
 
 /// The turn's activity summary: counts every tool kind and every thought
@@ -2925,60 +2982,28 @@ fn render_activity_group(
         // Let the summary chip hug its content so it reads as a control
         // instead of a full-width band across the answer column.
         .items_start()
-        .child(
-            button_frame(
-                div().id(ElementId::NamedInteger(
-                    "activity-toggle".into(),
-                    ((ix as u64) << 20) | range.start as u64,
-                )),
-                &theme,
-                ButtonSize::Medium,
+        .child({
+            let glyph_ink = cluster_state.unwrap_or(theme.text_secondary);
+            ChipButton::new(
+                format!("activity-toggle-{}-{}", ix, key.1),
+                ChipStyle::Outlined { inset: false },
             )
-            .min_w_0()
-            .max_w_full()
-            // Raised fill + hairline = DESIGN.md's chip treatment: the
-            // open state steps the border up for emphasis.
-            .raised(theme.surface_elevated, &theme)
-            .border_1()
-            .border_color(if open {
-                theme.border_strong
-            } else {
-                theme.border
-            })
-            .cursor_pointer()
-            .hover_state(&theme)
-            .child(
+            .shrink()
+            .open(open)
+            .leading(
                 div()
                     .flex_none()
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base04.px(&theme))
-                    .children(icons.iter().copied().map(|icon| {
+                    .children(icons.iter().copied().map(move |icon| {
                         // Settled work is monochrome ink; only run/fail state
                         // takes a color (see `cluster_state`).
-                        glyph(
-                            icon,
-                            IconSize::XSmall.px(&theme),
-                            cluster_state.unwrap_or(theme.text_secondary),
-                        )
+                        glyph(icon, IconSize::XSmall.px(&theme), glyph_ink)
                     })),
             )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary)
-                    .child(title),
-            )
-            .child(disclosure_chevron(
-                format!("activity-caret-{ix}-{}", key.1),
-                open,
-                IconSize::XSmall.px(&theme),
-                theme.text_muted,
-                &theme,
-            ))
-            .on_click({
+            .label(title)
+            .on_click(&theme, {
                 let expanded_activities = expanded_activities.clone();
                 let scroller = scroller.clone();
                 move |_, _, cx| {
@@ -2987,8 +3012,8 @@ fn render_activity_group(
                     scroller.remeasure_toggle(ix);
                     cx.refresh_windows();
                 }
-            }),
-        );
+            })
+        });
 
     if open {
         let mut body = div()
@@ -2998,7 +3023,7 @@ fn render_activity_group(
             .pl(DynamicSpacing::Base12.px(&theme))
             .pb(px(2.))
             .border_l_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme));
@@ -3178,12 +3203,12 @@ fn render_thinking_body(
         )
         .into_any_element()
     };
+    // The same card treatment as the tool and activity cards beside it, so a
+    // thought and an edit read as one material: frosted over wallpaper glass,
+    // the `overlay` wash otherwise.
     let mut card = div()
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
-        .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.overlay)
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
         .flex()
@@ -3423,9 +3448,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -3536,7 +3559,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .px(DynamicSpacing::Base08.px(&theme))
                 .py(DynamicSpacing::Base04.px(&theme))
                 .rounded(Radius::Medium.px(&theme))
-                .when(chosen, |row| row.bg(theme.surface_selected));
+                .when(chosen, |row| row.bg(theme.selected_wash()));
             // A plain number keeps the list readable at a glance.
             row = row.child(
                 div()
@@ -3759,12 +3782,10 @@ fn render_subagent_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(panel::RADIUS.px(&theme))
         // The same quiet hairline as every activity card: a failure is said
         // by the child's glyph and the error line under the rows, so the
         // frame does not shout it a third time.
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -3799,7 +3820,7 @@ fn render_subagent_card(
             .cursor_pointer()
             // The open child's row is the index to the log below it, so it
             // carries the selected fill (DESIGN.md §The State Contract).
-            .when(open_child == Some(ix), |row| row.bg(theme.surface_selected))
+            .when(open_child == Some(ix), |row| row.bg(theme.selected_wash()))
             .hover_on_glass(&theme);
         // One activation, two consequences: open that child's log, and open
         // the card that holds it. Activating the open child closes both. The
@@ -3859,7 +3880,7 @@ fn render_subagent_card(
         // only signal.
         let queued = matches!(child.phase, crate::subagent::Phase::Queued);
         let status_mark = match child.status {
-            Status::Running if pulse && !queued => crate::app::spinner(
+            Status::Running if pulse && !queued => crate::ui::prelude::spinner(
                 ElementId::NamedInteger("subagent-spin".into(), id << 8 | ix as u64),
                 IconSize::Small.px(&theme),
                 theme.accent_text,
@@ -3903,7 +3924,7 @@ fn render_subagent_card(
                             format!("subagent-row-step-{}-{}-{ix}", key.0, key.1)
                         })
                         .flex_none()
-                        .font(crate::usage::view::num_font())
+                        .font(crate::ui::style::text::num_font())
                         .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_muted)
                         .child(SharedString::from(format!("{}", ix + 1))),
@@ -3950,7 +3971,7 @@ fn render_subagent_card(
                 .min_w(theme.ui_px(min_w))
                 .flex()
                 .justify_end()
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_muted)
                 .when_some(text, |cell, text| cell.child(text))
@@ -4008,7 +4029,7 @@ fn render_subagent_card(
         .debug_selector(|| "subagent-footer".to_string())
         .w_full()
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .when(!open, |footer| footer.rounded_b(panel::RADIUS.px(&theme)))
         .h(DynamicSpacing::Base32.px(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
@@ -4049,7 +4070,7 @@ fn render_subagent_card(
         footer = footer.child(
             div()
                 .flex_none()
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .child(if run.total_tools() == 1 {
                     tr!("transcript_view.subagent_tools_one", count = 1)
                 } else {
@@ -4064,7 +4085,7 @@ fn render_subagent_card(
         footer = footer.child(
             div()
                 .flex_none()
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .child(elapsed),
         );
     }
@@ -4095,7 +4116,7 @@ fn render_subagent_card(
         footer = footer.child(
             div()
                 .flex_none()
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .child(SharedString::from(label)),
         );
     }
@@ -4232,7 +4253,7 @@ fn render_subagent_strip(
         })
         .w_full()
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(tone.opacity(0.07))
         .when(round_bottom, |strip| {
             strip.rounded_b(panel::RADIUS.px(&theme))
@@ -4320,7 +4341,7 @@ fn render_subagent_detail(
         .w_full()
         .min_w_0()
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .rounded_b(panel::RADIUS.px(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
@@ -4399,7 +4420,7 @@ fn render_subagent_detail(
             .join(" · ");
         about = about.child(
             quiet_line(tally)
-                .font(crate::usage::view::num_font())
+                .font(crate::ui::style::text::num_font())
                 .debug_selector(|| "subagent-detail-tally".to_string()),
         );
     }
@@ -4486,6 +4507,8 @@ fn render_subagent_detail(
             .get(&copy_key)
             .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
         let full = report.to_string();
+        // Bespoke: the copied acknowledgement owns this button's hover (the
+        // success tint holds through it), which `IconButton` does not model.
         let copy = icon_button_frame(
             div().id(ElementId::NamedInteger(
                 "copy-subagent-report".into(),
@@ -4675,9 +4698,7 @@ fn render_activity_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(frosted_transcript_fill(theme))
+        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
         .child(
             div()
                 .id(ElementId::NamedInteger(
@@ -4751,34 +4772,20 @@ fn render_activity_card(
                         // that opens the browser without toggling the card
                         // (the row's own click expands the detail).
                         row.child(
-                            div()
-                                .id(ElementId::NamedInteger(
+                            crate::ui::button::LinkButton::new(
+                                ElementId::NamedInteger(
                                     "tool-link".into(),
                                     (key.0 as u64) << 16 | key.1 as u64,
-                                ))
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .items_center()
-                                .gap(DynamicSpacing::Base04.px(&theme))
-                                .cursor_pointer()
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_color(theme.accent_text)
-                                        .underline()
-                                        .child(display_url(&url).to_string()),
-                                )
-                                .child(glyph(
-                                    "icons/arrow-up-right.svg",
-                                    IconSize::XSmall.px(&theme),
-                                    theme.accent_text,
-                                ))
-                                .on_click(move |_, _, cx| {
-                                    cx.open_url(&url);
-                                    cx.stop_propagation();
-                                }),
+                                ),
+                                display_url(&url).to_string(),
+                            )
+                            .external()
+                            .underline()
+                            .grow()
+                            .on_click(&theme, move |_, _, cx| {
+                                cx.open_url(&url);
+                                cx.stop_propagation();
+                            }),
                         )
                     } else {
                         let mut preview = div()
@@ -4814,7 +4821,7 @@ fn render_activity_card(
                     row.child(render_line_delta(added, removed, theme, 12.5))
                 })
                 .when(pulse, |row| {
-                    row.child(crate::app::spinner(
+                    row.child(crate::ui::prelude::spinner(
                         ElementId::NamedInteger(
                             "activity-spin".into(),
                             (key.0 as u64) << 16 | key.1 as u64,
@@ -4846,31 +4853,29 @@ fn render_activity_card(
                     let patch = edit_patch_text(&rows);
                     let copied_sections = copied_sections.clone();
                     row.child(
-                        icon_button_frame(
-                            div().id(ElementId::NamedInteger(
+                        IconButton::glyph(
+                            ElementId::NamedInteger(
                                 "copy-edit-diff".into(),
                                 (key.0 as u64) << 16 | key.1 as u64,
-                            )),
-                            &theme,
-                            ButtonSize::Compact,
+                            ),
+                            glyph(
+                                if copied {
+                                    "icons/check.svg"
+                                } else {
+                                    "icons/copy.svg"
+                                },
+                                ButtonSize::Compact.icon_size().px(&theme),
+                                if copied {
+                                    theme.success
+                                } else {
+                                    theme.text_muted
+                                },
+                            ),
                         )
+                        .size(ButtonSize::Compact)
+                        .variant(IconButtonVariant::Glass)
                         .tip(tr!("transcript.copy_diff"))
-                        .cursor_pointer()
-                        .hover_on_glass(&theme)
-                        .child(glyph(
-                            if copied {
-                                "icons/check.svg"
-                            } else {
-                                "icons/copy.svg"
-                            },
-                            ButtonSize::Compact.icon_size().px(&theme),
-                            if copied {
-                                theme.success
-                            } else {
-                                theme.text_muted
-                            },
-                        ))
-                        .on_click(move |_, _, cx| {
+                        .on_click(&theme, move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()));
                             copied_sections
                                 .borrow_mut()
@@ -4979,7 +4984,7 @@ fn render_tool_error_strip(tool: &ToolCall, round_bottom: bool, theme: Theme) ->
     div()
         .w_full()
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.error.opacity(0.07))
         .when(round_bottom, |s| s.rounded_b(panel::RADIUS.px(&theme)))
         .px(DynamicSpacing::Base08.px(&theme))
@@ -5080,7 +5085,7 @@ fn render_tool_detail(
                 .w_full()
                 .min_w_0()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 // With no sections below it, the diff is the card's last
                 // child and carries its bottom radius.
                 .when(!has_sections && images.is_empty(), |d| {
@@ -5101,10 +5106,13 @@ fn render_tool_detail(
         // way a shell transcript does, instead of two blocks whose only
         // boundary is a gap. The surface is a code plane (`code_bg`), the
         // same treatment a markdown code block takes.
+        // On glass the plane takes the card tint instead of covering the
+        // card's frost with an opaque slab; the card already blurs the
+        // backdrop, so it adds no second blur.
         let mut surface = div()
             .w_full()
             .min_w_0()
-            .bg(theme.code_bg)
+            .bg(theme.glass_fill(theme.code_bg))
             .flex()
             .flex_col()
             // The surface is always the card's last child, so it carries the
@@ -5113,14 +5121,14 @@ fn render_tool_detail(
             // Without a diff above it, the surface owns the rule that
             // separates it from the card header.
             .when(diff.is_none(), |s| {
-                s.border_t_1().border_color(theme.border)
+                s.border_t_1().border_color(theme.hairline())
             });
         for (section_ix, (section, label, content, lang, prompt)) in
             sections.into_iter().enumerate()
         {
             if section_ix > 0 {
                 surface =
-                    surface.child(div().w_full().h(BORDER_WIDTH).flex_none().bg(theme.border));
+                    surface.child(div().w_full().h(BORDER_WIDTH).flex_none().bg(theme.hairline()));
             }
             surface = surface.child(render_detail_section(
                 key,
@@ -5143,7 +5151,7 @@ fn render_tool_detail(
             div()
                 .w_full()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .rounded_b(panel::RADIUS.px(&theme))
                 .p(DynamicSpacing::Base08.px(&theme))
                 .flex()
@@ -5379,6 +5387,8 @@ fn render_detail_section(
         copy_label.opacity(label_to).into_any_element()
     };
     let copied_wash = theme.success.opacity(0.10);
+    // Bespoke: the copied acknowledgement owns this button's hover (the
+    // success tint holds through it), which `IconButton` does not model.
     let copy_button = icon_button_frame(
         div().id(ElementId::NamedInteger(
             "copy-activity-section".into(),
@@ -5509,26 +5519,19 @@ fn render_detail_section(
             tr!("transcript.show_all_lines", count = total)
         };
         card.child(
-            button_frame(
-                div()
-                    .id(ElementId::NamedInteger(
-                        "section-fold".into(),
-                        ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                    ))
-                    .debug_selector(move || {
-                        format!("tool-section-fold-{}-{}-{section}", key.0, key.1)
-                    }),
+            disclosure_toggle(
+                ElementId::NamedInteger(
+                    "section-fold".into(),
+                    ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
+                ),
                 &theme,
                 ButtonSize::Default,
             )
+            .debug_selector(move || format!("tool-section-fold-{}-{}-{section}", key.0, key.1))
             // Full width with its label at the start, so the paint-cap note
             // can fill the rest of the row.
             .w_full()
             .justify_start()
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .hover_ink(&theme)
             .child(disclosure_chevron(
                 format!("section-fold-caret-{}-{}-{section}", key.0, key.1),
                 expanded,
@@ -5626,13 +5629,13 @@ enum DiffRowKind {
 
 /// One painted row: the text plus the syntax tokens resolved for its line.
 #[derive(Clone)]
-struct DiffRow {
+struct EditDiffLine {
     kind: DiffRowKind,
     text: String,
     tokens: Option<Vec<Token>>,
 }
 
-type EditDiffCache = HashMap<u64, Rc<Vec<DiffRow>>>;
+type EditDiffCache = HashMap<u64, Rc<Vec<EditDiffLine>>>;
 
 thread_local! {
     /// Bounded per-tool edit-diff memo. A card repaints every frame (and on
@@ -5643,7 +5646,7 @@ thread_local! {
 
 /// The inline diff for an `edit` / `write` tool, or `None` when its arguments
 /// carry no text to diff. Content comes only from the tool itself.
-fn edit_diff(tool: &ToolCall) -> Option<Rc<Vec<DiffRow>>> {
+fn edit_diff(tool: &ToolCall) -> Option<Rc<Vec<EditDiffLine>>> {
     let key = {
         let mut hasher = DefaultHasher::new();
         tool.name.hash(&mut hasher);
@@ -5679,12 +5682,12 @@ fn edit_diff(tool: &ToolCall) -> Option<Rc<Vec<DiffRow>>> {
     })
 }
 
-fn build_edit_diff(tool: &ToolCall) -> Option<Vec<DiffRow>> {
+fn build_edit_diff(tool: &ToolCall) -> Option<Vec<EditDiffLine>> {
     let lang = tool.path.as_deref().and_then(path_language);
     match tool.name.as_str() {
         "edit" => {
             let edits = tool.args.as_ref()?.get("edits")?.as_array()?;
-            let mut rows: Vec<DiffRow> = Vec::new();
+            let mut rows: Vec<EditDiffLine> = Vec::new();
             for edit in edits {
                 let (Some(old), Some(new)) = (
                     edit.get("oldText").and_then(Value::as_str),
@@ -5693,7 +5696,7 @@ fn build_edit_diff(tool: &ToolCall) -> Option<Vec<DiffRow>> {
                     continue;
                 };
                 if !rows.is_empty() {
-                    rows.push(DiffRow {
+                    rows.push(EditDiffLine {
                         kind: DiffRowKind::Break,
                         text: String::new(),
                         tokens: None,
@@ -5711,7 +5714,7 @@ fn build_edit_diff(tool: &ToolCall) -> Option<Vec<DiffRow>> {
                 lines
                     .iter()
                     .enumerate()
-                    .map(|(ix, text)| DiffRow {
+                    .map(|(ix, text)| EditDiffLine {
                         kind: DiffRowKind::Addition,
                         text: (*text).to_string(),
                         tokens: tokens.as_ref().and_then(|t| t.get(ix)).cloned(),
@@ -5743,7 +5746,7 @@ fn split_diff_lines(text: &str) -> Vec<&str> {
 /// Longest-common-subsequence line diff: unchanged lines become context, the
 /// rest are deletions (old only) and additions (new only). Oversized edits
 /// fall back to a whole-block replacement so the paint stays bounded.
-fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<DiffRow> {
+fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<EditDiffLine> {
     let old_lines = split_diff_lines(old);
     let new_lines = split_diff_lines(new);
     let old_tokens = lang.map(|lang| highlight::tokenize(lang, old));
@@ -5773,7 +5776,7 @@ fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<DiffRow
                         .and_then(|t| new_ix.and_then(|ix| t.get(ix))),
                 ),
             };
-            DiffRow {
+            EditDiffLine {
                 kind,
                 text: text.unwrap_or("").to_string(),
                 tokens: tokens.cloned(),
@@ -5784,7 +5787,7 @@ fn line_diff(old: &str, new: &str, lang: Option<highlight::Lang>) -> Vec<DiffRow
 
 /// Unified-patch text for the copy button — `+`/`-`/space prefixes, minus the
 /// cosmetic break rows.
-fn edit_patch_text(rows: &[DiffRow]) -> String {
+fn edit_patch_text(rows: &[EditDiffLine]) -> String {
     let mut out = String::new();
     for row in rows {
         let marker = match row.kind {
@@ -5806,7 +5809,7 @@ fn edit_patch_text(rows: &[DiffRow]) -> String {
 /// pane's rows. Long diffs fold to a preview; copy always carries the whole
 /// patch.
 fn render_edit_diff(
-    rows: &[DiffRow],
+    rows: &[EditDiffLine],
     key: (usize, usize),
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
@@ -5843,22 +5846,14 @@ fn render_edit_diff(
             tr!("transcript.show_all_lines", count = total)
         };
         body = body.child(
-            button_frame(
-                div().id(ElementId::NamedInteger(
+            disclosure_toggle(ElementId::NamedInteger(
                     "edit-diff-fold".into(),
                     ((key.0 as u64) << 16 | key.1 as u64) << 8 | EDIT_DIFF_COPY_SECTION as u64,
-                )),
-                &theme,
-                ButtonSize::Default,
-            )
+                ), &theme, ButtonSize::Default)
             // Full width with its label at the start, so the paint-cap note
             // can fill the rest of the row.
             .w_full()
             .justify_start()
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .hover_ink(&theme)
             .child(disclosure_chevron(
                 format!("edit-diff-caret-{}-{}", key.0, key.1),
                 expanded,
@@ -5900,7 +5895,7 @@ fn render_edit_diff(
 }
 
 fn render_edit_diff_row(
-    row: &DiffRow,
+    row: &EditDiffLine,
     line_ix: usize,
     key: (usize, usize),
     theme: Theme,
@@ -5911,85 +5906,33 @@ fn render_edit_diff_row(
             .flex_none()
             .h(px(9.))
             .border_t_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .into_any_element();
     }
     let line_id = ElementId::NamedInteger(
         "diff-line".into(),
         ((key.0 as u64) << 34) | ((key.1 as u64) << 18) | line_ix as u64,
     );
-    let (body_bg, gutter_bg, edge, marker_color, marker) = match row.kind {
-        DiffRowKind::Addition => (
-            Some(theme.success.opacity(diff_body_wash(theme))),
-            Some(theme.success.opacity(diff_gutter_wash(theme))),
-            Some(theme.success),
-            theme.success,
-            "+",
-        ),
-        DiffRowKind::Deletion => (
-            Some(theme.error.opacity(diff_body_wash(theme))),
-            Some(theme.error.opacity(diff_gutter_wash(theme))),
-            Some(theme.error),
-            theme.error,
-            "-",
-        ),
-        _ => (None, None, None, theme.text_muted, ""),
+    let (tone, marker) = match row.kind {
+        DiffRowKind::Addition => (crate::ui::diff::DiffTone::Addition, "+"),
+        DiffRowKind::Deletion => (crate::ui::diff::DiffTone::Deletion, "-"),
+        _ => (crate::ui::diff::DiffTone::Context, ""),
     };
-    div()
-        .w_full()
-        .min_w_0()
+    crate::ui::diff::DiffRow::new(tone, marker, diff_row_text(row, line_id, theme))
+        .gutter(crate::ui::diff::DiffGutter::Marker { width: px(24.) })
         .min_h(px(EDIT_DIFF_ROW_HEIGHT))
-        .flex()
+        .render(&theme)
+        .w_full()
         .font_family(theme::code_font_family())
         .text_size(theme.code_px(EDIT_DIFF_TEXT_SIZE))
         .line_height(theme.code_px(18.))
-        .when_some(edge, |row, edge| row.border_l_2().border_color(edge))
-        .child(
-            div()
-                .w(px(24.))
-                .flex_none()
-                .flex()
-                .items_start()
-                .justify_center()
-                .text_color(marker_color)
-                .when_some(gutter_bg, |gutter, bg| gutter.bg(bg))
-                .child(marker),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .pr(DynamicSpacing::Base12.px(&theme))
-                .overflow_hidden()
-                // A long line wraps to the next row instead of being clipped —
-                // the diff must stay readable at any pane width.
-                .whitespace_normal()
-                .when_some(body_bg, |body, bg| body.bg(bg))
-                .text_color(theme.code_text)
-                .child(diff_row_text(row, line_id, theme)),
-        )
+        .text_color(theme.code_text)
         .into_any_element()
-}
-
-fn diff_body_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.18
-    } else {
-        0.12
-    }
-}
-
-fn diff_gutter_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.24
-    } else {
-        0.15
-    }
 }
 
 /// Syntax-colored text for one diff row (tokens are already per-line); the
 /// row's text (with its `+`/`-` marker) is what a selection copies.
-fn diff_row_text(row: &DiffRow, key: ElementId, theme: Theme) -> SelectableText {
+fn diff_row_text(row: &EditDiffLine, key: ElementId, theme: Theme) -> SelectableText {
     let (display, runs) = syntax_runs(&row.text, row.tokens.as_deref(), theme.code_text, theme);
     let scope = text_scope();
     let range = scope
@@ -6059,28 +6002,26 @@ fn render_message_footer(
     export_response: Option<ResponseExporter>,
 ) -> impl IntoElement {
     let response_text = copy_text.clone();
-    let button = icon_button_frame(
-        div().id(ElementId::NamedInteger("copy-response".into(), ix as u64)),
-        &theme,
-        FOOTER_BUTTON,
+    let button = IconButton::glyph(
+        ElementId::NamedInteger("copy-response".into(), ix as u64),
+        glyph(
+            if copied {
+                "icons/check.svg"
+            } else {
+                "icons/copy.svg"
+            },
+            FOOTER_BUTTON.icon_size().px(&theme),
+            if copied {
+                theme.success
+            } else {
+                theme.text_muted
+            },
+        ),
     )
+    .size(FOOTER_BUTTON)
+    .variant(IconButtonVariant::Glass)
     .tip(tr!("transcript.copy_message"))
-    .cursor_pointer()
-    .hover_on_glass(&theme)
-    .child(glyph(
-        if copied {
-            "icons/check.svg"
-        } else {
-            "icons/copy.svg"
-        },
-        FOOTER_BUTTON.icon_size().px(&theme),
-        if copied {
-            theme.success
-        } else {
-            theme.text_muted
-        },
-    ))
-    .on_click(move |_, _, cx| {
+    .on_click(&theme, move |_, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
         copied_at.borrow_mut().insert(ix, Instant::now());
         cx.refresh_windows();
@@ -6096,89 +6037,79 @@ fn render_message_footer(
     // than behind a hover-only rail (DESIGN.md: never hide a state-changing
     // action behind hover).
     let rewind_button = rewind.map(|opener| {
-        icon_button_frame(
-            div().id(ElementId::NamedInteger("rewind-turn".into(), ix as u64)),
-            &theme,
-            FOOTER_BUTTON,
+        IconButton::glyph(
+            ElementId::NamedInteger("rewind-turn".into(), ix as u64),
+            glyph(
+                if align_right {
+                    "icons/rotate-ccw.svg"
+                } else {
+                    "icons/git-fork.svg"
+                },
+                FOOTER_BUTTON.icon_size().px(&theme),
+                theme.text_muted,
+            ),
         )
-        .debug_selector(move || format!("rewind-turn-{ix}"))
+        .size(FOOTER_BUTTON)
+        .variant(IconButtonVariant::Glass)
         .tip(if align_right {
             tr!("transcript.rewind_to_here")
         } else {
             tr!("transcript.fork_conversation")
         })
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .child(glyph(
-            if align_right {
-                "icons/rotate-ccw.svg"
-            } else {
-                "icons/git-fork.svg"
-            },
-            FOOTER_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_click(move |_, window, cx| opener(ix, window, cx))
+        .on_click(&theme, move |_, window, cx| opener(ix, window, cx))
+        .debug_selector(move || format!("rewind-turn-{ix}"))
     });
     // Regenerate is a response action and always says what it does: pi forks
     // the conversation into a new session and sends the prompt again there.
     let regenerate_button = regenerate.map(|opener| {
-        icon_button_frame(
-            div().id(ElementId::NamedInteger(
-                "regenerate-response".into(),
-                ix as u64,
-            )),
-            &theme,
-            FOOTER_BUTTON,
+        IconButton::glyph(
+            ElementId::NamedInteger("regenerate-response".into(), ix as u64),
+            glyph(
+                "icons/refresh.svg",
+                FOOTER_BUTTON.icon_size().px(&theme),
+                theme.text_muted,
+            ),
         )
-        .debug_selector(move || format!("regenerate-response-{ix}"))
+        .size(FOOTER_BUTTON)
+        .variant(IconButtonVariant::Glass)
         .tip(tr!("transcript.regenerate"))
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .child(glyph(
-            "icons/refresh.svg",
-            FOOTER_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_click(move |_, window, cx| opener(ix, window, cx))
+        .on_click(&theme, move |_, window, cx| opener(ix, window, cx))
+        .debug_selector(move || format!("regenerate-response-{ix}"))
     });
     let pdf_text = response_text.clone();
     let pdf_button = export_response.clone().map(|export| {
-        icon_button_frame(
-            div().id(ElementId::NamedInteger(
-                "export-response-pdf".into(),
-                ix as u64,
-            )),
-            &theme,
-            FOOTER_BUTTON,
+        IconButton::glyph(
+            ElementId::NamedInteger("export-response-pdf".into(), ix as u64),
+            glyph(
+                "icons/file.svg",
+                FOOTER_BUTTON.icon_size().px(&theme),
+                theme.text_muted,
+            ),
         )
-        .debug_selector(move || format!("export-response-pdf-{ix}"))
+        .size(FOOTER_BUTTON)
+        .variant(IconButtonVariant::Glass)
         .tip(tr!("transcript.export_response_pdf"))
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .child(glyph(
-            "icons/file.svg",
-            FOOTER_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_click(move |_, window, cx| export(pdf_text.clone(), true, ix, window, cx))
+        .on_click(&theme, move |_, window, cx| {
+            export(pdf_text.clone(), true, ix, window, cx)
+        })
+        .debug_selector(move || format!("export-response-pdf-{ix}"))
     });
     let export_button = export_response.map(|export| {
-        icon_button_frame(
-            div().id(ElementId::NamedInteger("export-response".into(), ix as u64)),
-            &theme,
-            FOOTER_BUTTON,
+        IconButton::glyph(
+            ElementId::NamedInteger("export-response".into(), ix as u64),
+            glyph(
+                "icons/arrow-down.svg",
+                FOOTER_BUTTON.icon_size().px(&theme),
+                theme.text_muted,
+            ),
         )
-        .debug_selector(move || format!("export-response-{ix}"))
+        .size(FOOTER_BUTTON)
+        .variant(IconButtonVariant::Glass)
         .tip(tr!("transcript.export_response_markdown"))
-        .cursor_pointer()
-        .hover_on_glass(&theme)
-        .child(glyph(
-            "icons/arrow-down.svg",
-            FOOTER_BUTTON.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .on_click(move |_, window, cx| export(response_text.clone(), false, ix, window, cx))
+        .on_click(&theme, move |_, window, cx| {
+            export(response_text.clone(), false, ix, window, cx)
+        })
+        .debug_selector(move || format!("export-response-{ix}"))
     });
     if align_right {
         // Right-aligned footer: timestamp first, then actions.
@@ -6203,8 +6134,21 @@ fn render_message_footer(
     footer
 }
 
-/// Compact `↑in ↓out · $cost` footer metric with a hover breakdown card.
-/// `None` when the turn has no reported usage, so the footer stays clean.
+/// The footer metric's resting text: tokens in and out, nothing else. Cache
+/// share, cost and output rate are the hover card's ([`usage_breakdown_card`]
+/// lists each), so a settled answer ends in one short quiet readout instead
+/// of a line of statistics under every response.
+fn footer_metric_label(usage: &MessageUsage) -> String {
+    format!(
+        "↑{} ↓{}",
+        format_tokens(usage.input),
+        format_tokens(usage.output)
+    )
+}
+
+/// Compact `↑in ↓out` footer metric with a hover breakdown card (input,
+/// output, cache, total, rate and cost). `None` when the turn has no reported
+/// usage, so the footer stays clean.
 fn usage_metric(
     usage: Option<MessageUsage>,
     generation: Option<Duration>,
@@ -6214,30 +6158,7 @@ fn usage_metric(
 ) -> Option<AnyElement> {
     let usage = usage?;
     let hovered = hovered_usage.get() == Some(ix);
-    let label = {
-        let mut label = format!(
-            "↑{} ↓{}",
-            format_tokens(usage.input),
-            format_tokens(usage.output)
-        );
-        if usage.cache_read > 0 {
-            if let Some(percent) = usage.cache_read_percent() {
-                label.push_str(&tr!(
-                    "transcript_view.cached_share",
-                    percent = hit_percent_label(percent)
-                ));
-            }
-        }
-        if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
-            label.push_str(" · ");
-            label.push_str(&format_message_cost(cost));
-        }
-        if let Some(tps) = generation_tps(&usage, generation) {
-            label.push_str(" · ");
-            label.push_str(&tr!("transcript_view.tps_value", rate = format_tps(tps)));
-        }
-        label
-    };
+    let label = footer_metric_label(&usage);
     let mut metric = div()
         .id(ElementId::NamedInteger("usage-metric".into(), ix as u64))
         .relative()
@@ -6276,6 +6197,7 @@ fn usage_breakdown_card(
     generation: Option<Duration>,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let cost = usage
         .cost
         .map(format_message_cost)
@@ -6318,7 +6240,7 @@ fn usage_breakdown_card(
             format_tokens(usage.cache_write),
             theme,
         ))
-        .child(div().w_full().h(px(1.)).bg(theme.border))
+        .child(div().w_full().h(px(1.)).bg(theme.hairline()))
         .child(usage_metric_row(
             "icons/usage-total.svg",
             tr!("transcript.total"),
@@ -6415,7 +6337,7 @@ fn format_time(millis: i64) -> Option<String> {
 fn glyph(path: &'static str, size: impl Into<Pixels>, color: Hsla) -> impl IntoElement {
     // The shared icon carries the button hover ink-lift, so every control in
     // the transcript that opts into `BUTTON_GROUP` brightens its glyph.
-    crate::app::icon(path, size, color)
+    crate::ui::prelude::icon(path, size, color)
 }
 
 fn fold_label(elapsed: Option<Duration>) -> String {
@@ -6481,24 +6403,17 @@ fn render_turn_fold(
     scroller: MessageScrollerState,
 ) -> impl IntoElement {
     let label = fold_label(elapsed);
+    // A quiet, left-aligned disclosure at the head of the turn — the same
+    // reading line as the activity group's summary row, not a centred divider
+    // ruled across the column. The answer below stays the first thing read.
     div()
         .w_full()
         .h(px(24.))
         .flex()
         .items_center()
-        .gap(px(10.))
-        .child(div().h(px(1.)).flex_1().bg(theme.border))
+        .debug_selector(move || format!("turn-fold-{ix}"))
         .child(
-            button_frame(
-                div().id(ElementId::NamedInteger("turn-fold".into(), ix as u64)),
-                &theme,
-                ButtonSize::Default,
-            )
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .hover_ink_quiet(&theme)
+            disclosure_toggle(ElementId::NamedInteger("turn-fold".into(), ix as u64), &theme, ButtonSize::Default)
             .child(label)
             .child(disclosure_chevron(
                 format!("turn-fold-caret-{ix}"),
@@ -6513,7 +6428,6 @@ fn render_turn_fold(
                 cx.refresh_windows();
             }),
         )
-        .child(div().h(px(1.)).flex_1().bg(theme.border))
 }
 
 fn working_wave_dots(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
@@ -8194,7 +8108,7 @@ fn render_block(
             scroller,
         )
         .into_any_element(),
-        Block::Rule => div().w_full().h(px(1.)).bg(theme.border).into_any_element(),
+        Block::Rule => div().w_full().h(px(1.)).bg(theme.hairline()).into_any_element(),
         Block::Alert(kind, lines) => {
             render_alert(*kind, lines, ix, id_namespace, block_ix, theme).into_any_element()
         }
@@ -8280,7 +8194,7 @@ fn render_markdown_image(
             // and the loaded image collapses to nothing.
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .object_fit(ObjectFit::Contain)
             .cursor_pointer()
             .with_fallback(move || markdown_image_fallback(&fallback_alt, theme))
@@ -8301,7 +8215,7 @@ fn markdown_image_fallback(alt: &str, theme: Theme) -> AnyElement {
         .py(DynamicSpacing::Base08.px(&theme))
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.overlay)
         .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_muted)
@@ -8560,7 +8474,7 @@ fn render_code_block(
         // rectangle, so the strip carries the card's top radius itself.
         .rounded_t(panel::RADIUS.px(&theme))
         .border_b_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .child(
             div()
                 .min_w_0()
@@ -8592,7 +8506,7 @@ fn render_code_block(
         .min_w_0()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.code_bg)
         .overflow_hidden()
         .child(header)
@@ -8622,7 +8536,7 @@ fn render_code_block(
                 .h(px(30.))
                 .px(DynamicSpacing::Base12.px(&theme))
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
@@ -8672,31 +8586,26 @@ fn code_copy_button(
         .borrow()
         .get(&(ix, block_key, CODE_COPY_SECTION))
         .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-    icon_button_frame(
-        div().id(ElementId::NamedInteger(
-            "copy-code".into(),
-            (ix as u64) << 32 | block_key as u64,
-        )),
-        &theme,
-        CODE_COPY_BUTTON,
+    IconButton::glyph(
+        ElementId::NamedInteger("copy-code".into(), (ix as u64) << 32 | block_key as u64),
+        glyph(
+            if copied {
+                "icons/check.svg"
+            } else {
+                "icons/copy.svg"
+            },
+            CODE_COPY_BUTTON.icon_size().px(&theme),
+            if copied {
+                theme.success
+            } else {
+                theme.text_muted
+            },
+        ),
     )
+    .size(CODE_COPY_BUTTON)
+    .variant(IconButtonVariant::Glass)
     .tip(tr!("transcript.copy_code"))
-    .cursor_pointer()
-    .hover_on_glass(&theme)
-    .child(glyph(
-        if copied {
-            "icons/check.svg"
-        } else {
-            "icons/copy.svg"
-        },
-        CODE_COPY_BUTTON.icon_size().px(&theme),
-        if copied {
-            theme.success
-        } else {
-            theme.text_muted
-        },
-    ))
-    .on_click(move |_, _, cx| {
+    .on_click(&theme, move |_, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
         copied_sections
             .borrow_mut()
@@ -8804,7 +8713,7 @@ fn render_mermaid_block(
         .bg(theme.overlay)
         .rounded_t(panel::RADIUS.px(&theme))
         .border_b_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .child(
             div()
                 .min_w_0()
@@ -8858,7 +8767,7 @@ fn render_mermaid_block(
         .h(px(30.))
         .px(DynamicSpacing::Base12.px(&theme))
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base06.px(&theme))
@@ -8892,7 +8801,7 @@ fn render_mermaid_block(
         .min_w_0()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .bg(theme.code_bg)
         .overflow_hidden()
         .child(header)
@@ -9138,7 +9047,7 @@ fn render_table(
                 .flex_none()
                 .flex()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .children((0..columns).map(|col| {
                     make_cell(
                         row.get(col).map(String::as_str).unwrap_or_default(),
@@ -9159,7 +9068,7 @@ fn render_table(
         .overflow_hidden()
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .child(
             div()
                 .id(ElementId::NamedInteger(
@@ -9221,10 +9130,10 @@ fn workspace_relative_path(path: &str, workspace: Option<&Path>) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// End-of-task changed-files summary: a hairlined group on the transcript
-/// canvas (canvas fill — not a raised/shadowed slab), "Changed N files"
-/// with a ±delta underneath, a Review chip, and roomy file rows. Shows 3
-/// rows; expanded shows up to 12 with a clip note.
+/// End-of-task changed-files summary: a borderless tonal well
+/// (`surface_secondary`, frosted on glass) — no hairline, no icon tile — with
+/// one header line ("Changed N files +a −d" and a Review chip) and roomy file
+/// rows. Shows 3 rows; expanded shows up to 12 with a clip note.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_changed_files(
     files: &[ChangedFile],
@@ -9248,13 +9157,13 @@ pub(crate) fn render_changed_files(
         files.len().min(CHANGED_FILES_PREVIEW_LIMIT)
     };
 
+    // The well's tone groups header and rows; no rule between them.
     let mut rows = div()
         .w_full()
         .min_w_0()
         .flex()
         .flex_col()
-        .border_t_1()
-        .border_color(theme.border_subtle);
+        .pb(DynamicSpacing::Base04.px(&theme));
     for (path, added, removed) in files.iter().take(visible) {
         let label = workspace_relative_path(path, workspace);
         rows = rows.child(
@@ -9301,21 +9210,12 @@ pub(crate) fn render_changed_files(
     // Review affordance: opens the changed-files diff in the right side
     // pane's Review tab (no external editor hop).
     let review = review_changes.map(|(turn, review)| {
-        button_frame(
-            div().id(ElementId::NamedInteger(
+        Button::keyed(ElementId::NamedInteger(
                 "review-changes".into(),
                 message_ix as u64,
-            )),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.text_secondary)
-        .hover_state(&theme)
+            ), ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
         .child(glyph(
             "icons/file-diff.svg",
             ButtonSize::Medium.icon_size().px(&theme),
@@ -9325,38 +9225,31 @@ pub(crate) fn render_changed_files(
         .on_click(move |_, window, cx| review(turn, window, cx))
     });
 
+    // One header line: the diff glyph bare (no tile), the title, the total
+    // delta beside it, and the Review chip at the end.
     let mut header = div()
-        .min_h(px(56.))
+        .debug_selector(move || format!("changed-files-header-{message_ix}"))
+        .min_h(px(44.))
         .px(px(14.))
-        .py(px(10.))
+        .py(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_center()
-        .gap(px(10.))
-        .child(
-            div()
-                .size(px(28.))
-                .flex_none()
-                .rounded(Radius::Large.px(&theme))
-                .bg(theme.surface_elevated)
-                .border_1()
-                .border_color(theme.border)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(glyph(
-                    "icons/file-diff.svg",
-                    IconSize::Small.px(&theme),
-                    theme.text_secondary,
-                )),
-        )
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(glyph(
+            "icons/file-diff.svg",
+            IconSize::Small.px(&theme),
+            theme.text_muted,
+        ))
         .child(
             div()
                 .min_w_0()
                 .flex_1()
                 .flex()
-                .flex_col()
+                .items_baseline()
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
+                        .min_w_0()
                         .truncate()
                         .text_size(TextSize::Default.px(&theme))
                         .line_height(theme.ui_px(17.))
@@ -9366,11 +9259,10 @@ pub(crate) fn render_changed_files(
                 )
                 .child(
                     div()
-                        .mt(px(2.))
+                        .flex_none()
                         .flex()
-                        .gap(DynamicSpacing::Base06.px(&theme))
+                        .gap(DynamicSpacing::Base04.px(&theme))
                         .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(14.))
                         .child(
                             div()
                                 .text_color(theme.success)
@@ -9383,12 +9275,18 @@ pub(crate) fn render_changed_files(
         header = header.child(review);
     }
 
+    // A tonal well, not a framed card: the edge is transparent (the frost
+    // still applies on glass) and `surface_secondary` alone sets it apart
+    // from the transcript canvas.
     let mut card = div()
+        .debug_selector(move || format!("changed-files-{message_ix}"))
         .w_full()
         .min_w_0()
-        .rounded(panel::RADIUS.px(&theme))
-        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
-        .bg(theme.card_fill(theme.background))
+        .card_surface(
+            &theme,
+            gpui::transparent_black(),
+            theme.card_fill(theme.surface_secondary),
+        )
         .overflow_hidden()
         .child(header)
         .child(rows);
@@ -9410,8 +9308,6 @@ pub(crate) fn render_changed_files(
             ))
             .h(px(34.))
             .px(px(14.))
-            .border_t_1()
-            .border_color(theme.border)
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
@@ -9646,6 +9542,67 @@ fn starts_followup_turn(messages: &[ChatMessage], ix: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A thought card and a tool card are one material: both paint the shared
+    /// transcript card fill through `card_surface`, with and without glass.
+    #[test]
+    fn thought_and_tool_cards_share_one_fill() {
+        for base in [Theme::dark(), Theme::light()] {
+            for (active, glass) in [(false, false), (true, false), (true, true)] {
+                let theme = base.with_wallpaper(theme::SurfaceTreatment {
+                    active,
+                    glass,
+                    card_alpha: 0.8,
+                    ..theme::SurfaceTreatment::OPAQUE
+                });
+                let mut card =
+                    div().card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme));
+                let expected = Some(frosted_transcript_fill(theme).into());
+                assert_eq!(card.style().background, expected);
+            }
+        }
+        // And the thought card's source uses that treatment, not a fill of
+        // its own (guards the regression where it painted `overlay` directly).
+        let source = include_str!("transcript_view.rs");
+        let start = source.find("fn render_thinking_body(").expect("thinking body");
+        let body = &source[start..start + 4000];
+        assert!(body.contains(
+            ".card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))"
+        ));
+        assert!(!body.contains(".bg(theme.overlay)"));
+    }
+
+    /// The reader's bubble and the tool card's terminal plane are glass only
+    /// while wallpaper glass actually frosts behind them; every other case
+    /// keeps the opaque palette surface.
+    #[test]
+    fn bubble_and_terminal_plane_go_glass_only_with_active_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            for (active, glass) in [(false, false), (false, true), (true, false), (true, true)] {
+                let theme = base.with_wallpaper(theme::SurfaceTreatment {
+                    active,
+                    glass,
+                    card_alpha: 0.8,
+                    ..theme::SurfaceTreatment::OPAQUE
+                });
+                let frosted = active && glass;
+                let (bubble, code) = if frosted {
+                    (
+                        theme.card_fill(theme.surface_elevated),
+                        theme.card_fill(theme.code_bg),
+                    )
+                } else {
+                    (theme.surface_elevated, theme.code_bg)
+                };
+                assert_eq!(theme.glass_fill(theme.code_bg), code);
+                let mut row = user_message_bubble("hi", theme, None);
+                assert_eq!(row.style().background, Some(bubble.into()));
+                if frosted {
+                    assert!(bubble.a < 1.0, "the bubble lets the frost through");
+                }
+            }
+        }
+    }
 
     #[test]
     fn frosted_transcript_fill_uses_guarded_surface_only_for_active_glass() {
@@ -10071,6 +10028,77 @@ mod tests {
         assert_eq!(format_tps(7.44), "7.4");
         assert_eq!(format_tps(0.0), "0");
         assert_eq!(format_tps(f64::NAN), "0");
+    }
+
+    /// The resting footer metric is tokens in and out only; cache share, cost
+    /// and output rate live in the hover breakdown card.
+    #[test]
+    fn footer_metric_rests_on_tokens_in_and_out() {
+        let usage = MessageUsage {
+            input: 141_400,
+            output: 24_700,
+            cache_read: 135_000,
+            cache_write: 0,
+            total: 166_100,
+            cost: Some(0.42),
+        };
+        let label = footer_metric_label(&usage);
+        assert_eq!(label, "↑141.4K ↓24.7K");
+        assert!(!label.contains('·'), "no trailing statistics: {label}");
+    }
+
+    /// The changed-files summary is a borderless well with ONE header line:
+    /// title and delta side by side (not stacked under an icon tile), three
+    /// file rows, and the "show more" toggle for the rest.
+    #[gpui::test]
+    fn changed_files_well_has_a_one_line_header(cx: &mut gpui::TestAppContext) {
+        struct Probe {
+            files: Vec<crate::turn_review::ChangedFile>,
+            scroller: MessageScrollerState,
+        }
+        impl gpui::Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let theme = Theme::for_id(theme::ThemeId::Orbit);
+                div().w(px(640.)).child(render_changed_files(
+                    &self.files,
+                    theme,
+                    None,
+                    0,
+                    None,
+                    false,
+                    Rc::default(),
+                    self.scroller.clone(),
+                    None,
+                ))
+            }
+        }
+
+        cx.update(|cx| cx.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+        let files = (0..5)
+            .map(|ix| (format!("src/file_{ix}.rs"), 10 + ix as u64, ix as u64))
+            .collect();
+        let (view, cx) = cx.add_window_view(|_, _| Probe {
+            files,
+            scroller: MessageScrollerState::new(1),
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(700.), px(400.)),
+            |_, _| view.clone(),
+        );
+        let header = cx
+            .debug_bounds("changed-files-header-0")
+            .expect("changed-files header laid out");
+        assert!(
+            header.size.height <= px(44.51),
+            "the header is one line, not a stacked title and delta: {header:?}"
+        );
+        let card = cx.debug_bounds("changed-files-0").expect("changed-files well");
+        // Header, three 32px rows, the bottom inset and the 34px toggle.
+        assert!(
+            card.size.height <= header.size.height + px(3. * 32. + 4. + 34. + 2.5),
+            "the well shows three rows and its toggle: card {card:?}, header {header:?}"
+        );
     }
 
     #[test]
@@ -11160,6 +11188,57 @@ mod tests {
                 theme,
             ))
         }
+    }
+
+    /// The right-click text menu has a keyboard path: with nothing selected
+    /// the cursor skips the disabled Copy Selection, Enter copies the message,
+    /// and closing hands focus back to whatever held it.
+    #[gpui::test]
+    fn the_text_menu_runs_from_the_keyboard_and_returns_focus(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let opener = cx.update(|window, cx| {
+            let opener = cx.focus_handle();
+            window.focus(&opener);
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            selection.borrow_mut().menu = Some(TextMenu {
+                position: gpui::point(px(10.), px(10.)),
+                message_text: "the whole message".to_string(),
+                focus,
+                restore: Some(opener.clone()),
+                highlight: crate::ui::menu::MenuState::default(),
+                keyed: false,
+            });
+            opener
+        });
+        cx.update(|window, cx| {
+            // Enter before any arrow does nothing: a pointer-opened menu has
+            // no cursor yet.
+            text_menu_key(&selection, "enter", window, cx);
+            assert!(selection.borrow().menu.is_some());
+            text_menu_key(&selection, "down", window, cx);
+            let menu = selection.borrow().menu.clone().expect("still open");
+            assert_eq!(
+                menu.highlight.selected(TextMenuItem::ALL.len()),
+                Some(1),
+                "Copy Selection is disabled without a selection"
+            );
+            text_menu_key(&selection, "up", window, cx);
+            let menu = selection.borrow().menu.clone().expect("still open");
+            assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(1));
+            text_menu_key(&selection, "enter", window, cx);
+        });
+        assert!(
+            selection.borrow().menu.is_none(),
+            "running an item closes the menu"
+        );
+        let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+        assert_eq!(copied.as_deref(), Some("the whole message"));
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "focus returns to the opener"
+        );
     }
 
     #[gpui::test]

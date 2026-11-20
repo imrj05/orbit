@@ -31,7 +31,8 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "Une session Orbit terminée : le résumé de l'agent sur la modification des options d'ouverture et une carte « 3 fichiers modifiés » avec le nombre de lignes par fichier, au-dessus du compositeur."
+    "replay": "Rejouer",
+    "shotAlt": "Une session Orbit : une tâche est envoyée, pi lit, modifie et teste le client RPC, diffuse sa réponse, puis une carte « 2 fichiers modifiés » liste les changements avec leur nombre de lignes."
   },
   "trust": {
     "items": [
@@ -614,5 +615,143 @@
       "home": "Retour à l'accueil",
       "reference": "Référence {digest}"
     }
+  },
+  "tour": {
+    "eyebrow": "Dans Orbit",
+    "title": "Chaque surface de pi, dans une fenêtre native.",
+    "copy": "Choisissez une surface pour la voir telle qu'elle est livrée. Ce sont de vraies captures d'Orbit avec la CLI pi, dans le thème où vous lisez cette page.",
+    "tablist": "Fonctionnalités d'Orbit"
+  },
+  "highlights": {
+    "eyebrow": "Pourquoi Orbit",
+    "title": "L'agent travaille. Vous gardez la main.",
+    "copy": "Orbit affiche les vrais appels d'outils, diffs et modèles de pi au moment où ils arrivent : chaque exécution se lit, se guide et s'approuve.",
+    "approve": {
+      "lead": "Rien ne s'exécute sans accord.",
+      "rest": "En mode Supervisé, le garde d'accès arrête chaque appel qui modifie quelque chose : autorisez-le une fois, autorisez toujours l'outil ou refusez, juste au-dessus du compositeur."
+    },
+    "modes": {
+      "lead": "Planifiez avant de construire.",
+      "rest": "Plan et Demander retirent les outils d'écriture et limitent bash aux commandes en lecture seule."
+    },
+    "review": {
+      "lead": "Relisez le tour, pas tout l'arbre.",
+      "rest": "Dernier tour montre exactement ce qu'un tour de l'agent a changé, grâce aux checkpoints par tour."
+    },
+    "stat": {
+      "value": "0",
+      "label": "télémétrie",
+      "rest": "Aucun client d'analyse, aucun identifiant d'installation, aucun ping d'usage. Le réseau ne transporte que ce que vous demandez."
+    },
+    "models": {
+      "lead": "Tout fournisseur, tout modèle.",
+      "rest": "Hébergé ou local via Ollama, avec un effort de réflexion réglé par tâche."
+    }
+  },
+  "capabilities": {
+    "eyebrow": "Tout le reste",
+    "title": "Les détails qui en font un atelier.",
+    "copy": "La visite montre les grandes surfaces. Voici le reste de ce qui est livré aujourd'hui, le tout avec votre propre installation de pi.",
+    "groups": [
+      {
+        "title": "Chat et transcription",
+        "items": [
+          "Guidez une exécution en cours ou mettez une relance en file ; modifiez un message en file ou envoyez-le tout de suite.",
+          "Une transcription rendue par le GPU et virtualisée, avec une coloration syntaxique au seul rendu, pour que le streaming ne réorganise jamais le texte.",
+          "Des organigrammes Mermaid dessinés nativement, avec la source copiable à un clic.",
+          "Pièces jointes d'images, de fichiers et de longs collages ; les images sont compressées à l'import.",
+          "Recherche ⌘F dans la transcription et export Markdown de n'importe quelle réponse."
+        ]
+      },
+      {
+        "title": "Sessions",
+        "items": [
+          "Groupées par projet, partagées avec la CLI pi et actualisées en direct quand le terminal écrit.",
+          "Statut en direct issu de vrais événements pi : En cours, En attente d'approbation, Nouvelle tentative, Compactage, Échec.",
+          "Une exécution terminée en arrière-plan laisse une marque « À consulter » et une notification de bureau.",
+          "Renommez, épinglez, clonez ou rembobinez ; ⌘1 à ⌘9 ouvrent directement une session."
+        ]
+      },
+      {
+        "title": "Garde-fous",
+        "items": [
+          "Supervisé, Accepter les éditions ou Accès complet, choisi par tâche depuis le compositeur.",
+          "Des règles de permission par famille d'outils avec motifs : bash peut s'exécuter tandis que rm demande toujours.",
+          "Des sous-agents avec leur propre fenêtre de contexte, tenus aux mêmes modes d'accès et de workflow.",
+          "Un garde de confirmation, pas un bac à sable, et Orbit le dit clairement."
+        ]
+      },
+      {
+        "title": "Revue et Git",
+        "items": [
+          "Sources de diff pour Dernier tour, Non validé, Indexé, Validé et Branche.",
+          "Indexez, validez, remisez, poussez, tirez, fusionnez et rebasez depuis la page Git.",
+          "Messages de commit et brouillons de pull request générés avec le modèle de votre choix.",
+          "Issues et pull requests via gh, et worktrees Git comme espaces de travail à part entière."
+        ]
+      },
+      {
+        "title": "Fichiers et terminal",
+        "items": [
+          "Une arborescence de projet qui respecte .gitignore, avec badges git et opérations sur les fichiers.",
+          "Des fichiers modifiables avec coloration syntaxique, sauvegarde automatique et aperçu Markdown.",
+          "Un terminal intégré (⌘J) dont les onglets en arrière-plan continuent de tourner.",
+          "Ouvrez l'espace de travail dans votre éditeur ou terminal depuis l'en-tête."
+        ]
+      },
+      {
+        "title": "Atelier",
+        "items": [
+          "Des fournisseurs avec connexion par clé d'API ou OAuth, plus des modèles locaux via Ollama.",
+          "Serveurs MCP, skills et paquets pi gérés sans modifier de JSON.",
+          "L'usage selon le compteur de pi : tokens, coût et cache, conservés sur votre machine.",
+          "Titres de session automatiques, une palette de commandes (⌘P) et dix langues d'interface."
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "eyebrow": "Sous le capot",
+    "copy": "Pas de webview, pas de démon Node, pas de compte. Orbit est une app Rust dessinée par GPUI qui parle au pi déjà installé chez vous, via le protocole RPC que pi documente.",
+    "nodes": [
+      {
+        "title": "Orbit",
+        "mono": "Rust · GPUI",
+        "detail": "La fenêtre native. Transcription, barre latérale et diffs dessinés sur le GPU et virtualisés."
+      },
+      {
+        "title": "JSONL sur stdio",
+        "mono": "JSON délimité par lignes",
+        "detail": "Les commandes entrent, les événements sortent. Les événements inconnus passent tels quels : un pi plus récent ne fait jamais planter l'app."
+      },
+      {
+        "title": "CLI pi",
+        "mono": "pi --mode rpc",
+        "detail": "Un processus enfant par session ouverte, les mêmes sessions que le terminal voit sur le disque."
+      },
+      {
+        "title": "Vos modèles",
+        "mono": "hébergés ou locaux",
+        "detail": "Ce que pi est configuré pour appeler : des fournisseurs hébergés ou un Ollama local sur votre machine."
+      }
+    ],
+    "stats": [
+      {
+        "value": "~90 ms",
+        "label": "de cadence d'événements ; une image n'attend jamais les E/S"
+      },
+      {
+        "value": "1 processus",
+        "label": "pi par session ouverte, maintenu en arrière-plan"
+      },
+      {
+        "value": "0",
+        "label": "webview, démon Node ou compte"
+      },
+      {
+        "value": "10",
+        "label": "langues d'interface, plus celle de votre système"
+      }
+    ]
   }
 }

@@ -53,6 +53,19 @@ fn open_controls_hug_the_sidebar_edge() {
     }
 }
 
+#[test]
+fn wordmark_and_controls_fit_at_minimum_sidebar_width() {
+    let controls_left = view::titlebar_controls_left(true, SIDEBAR_MIN_W);
+    if cfg!(windows) {
+        let mark_left = controls_left + view::TITLEBAR_CONTROLS_W + view::TITLEBAR_TITLE_GAP;
+        assert!(mark_left + view::SIDEBAR_WORDMARK_W + view::SIDEBAR_EDGE_PAD <= SIDEBAR_MIN_W);
+    } else {
+        let mark_right =
+            view::TRAFFIC_LIGHT_CLEARANCE + view::TITLEBAR_CONTROLS_LEAD + view::SIDEBAR_WORDMARK_W;
+        assert!(mark_right + view::TITLEBAR_TITLE_GAP <= controls_left);
+    }
+}
+
 /// Windows paints its own caption buttons on the window's *right*, so the
 /// titlebar row is empty at the left and the cluster left-aligns there —
 /// open or collapsed, and never moving with the sidebar's width (there is no

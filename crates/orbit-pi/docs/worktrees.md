@@ -77,24 +77,26 @@ new task there runs pi with that path as its cwd.
 ### From the status bar ("Work in")
 
 The status bar shows where the next task will run. In a Git repository, the
-**Work in** chip reads `Local` at the main working directory or the linked
+**Work in** chip reads `Local` at the main working directory or the active
 worktree's name. Outside a repository, a folder chip takes its place. Opening
-**Work in** lists:
+**Work in** lists two kinds of place:
 
-- **Local** — the repository's main working directory.
-- Every linked worktree (name over its branch).
-- **New worktree** — the quick create flow.
-- **Existing worktree** — choose a worktree folder to reconnect and open.
-- **Remote branch** — create a worktree on a local tracking branch.
-- **Clone repository** — clone a repository into a new folder.
-- **Choose folder** — browse to any directory.
-- **Recent folders** — reopen up to eight recent session folders, excluding the
-  active folder and listed worktrees.
+- **Local** — this device, in the working folder on screen.
+- Every enabled **remote host** from Settings → Remote hosts (`ssh:dir` under the
+  name). Picking one runs the same connection check, password prompt and guarded
+  launch as the new-task picker, then parks this session and starts a task on the
+  host.
 
-The new-task page's **Work in** picker offers the same choices. Its **Remote
-branch** action opens the create dialog's existing-branch list. Outside a
-repository, the new-task picker still offers **Clone repository** and folder
-selection, but not repository-specific worktree actions.
+The new-task page's **Work in** picker asks the same question and lists the same
+two kinds of place, plus **Choose folder…** for the native dialog and the
+**Add / Edit hosts** row. The host list is read once, when the picker opens, so
+no render path touches `remote-hosts.json`.
+
+Worktree verbs are not in either picker: **New worktree**, opening an existing
+worktree, a remote branch checked out as a local branch that tracks it, and
+**Clone repository** all live on the **Worktrees** page, which owns repository
+provisioning. A clone started there appears in the sidebar like any other
+project.
 
 To clone, enter a repository URL and folder name and choose a parent directory.
 Git runs in the background with progress and cancellation. A successful clone

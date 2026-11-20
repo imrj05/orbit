@@ -60,7 +60,7 @@ GLOSSARY = {
         'Dim overlay': 'Voile sombre',
         'A black overlay that settles a bright image behind the interface.': 'Un voile noir qui atténue une image lumineuse derrière l’interface.',
         'Card opacity': 'Opacité des cartes',
-        'Requested translucency for cards, panels, and dialogs. Contrast checks may raise it.': 'Translucidité demandée pour les cartes, panneaux et boîtes de dialogue. Les vérifications de contraste peuvent l’augmenter.',
+        "How much surface paint sits over the image, for cards and for the page itself (sidebar, chat column, settings nav). At 0% the image is shown exactly as processed; cards may still be raised for text contrast.": "Quelle quantité de teinte de surface recouvre l’image, pour les cartes comme pour la page elle-même (barre latérale, colonne de chat, navigation des réglages). À 0 %, l’image est affichée exactement telle qu’elle a été traitée ; les cartes peuvent encore être renforcées pour le contraste du texte.",
         'Glass panes': 'Panneaux en verre',
         'Blur the wallpaper behind the sidebar, the composer, and floating surfaces. Text keeps its contrast; the picture goes soft where a pane sits over it.': 'Floute le fond d’écran derrière la barre latérale, le composeur et les surfaces flottantes. Le texte garde son contraste ; l’image s’adoucit là où un panneau la recouvre.',
         'Use wallpaper accent': 'Utiliser l’accent du fond d’écran',

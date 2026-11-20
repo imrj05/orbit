@@ -31,7 +31,8 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "Eine abgeschlossene Orbit-Sitzung: die Zusammenfassung des Agenten zur Änderung der „Öffnen in“-Optionen und eine Karte „3 Dateien geändert“ mit Zeilenzahlen pro Datei, über dem Composer."
+    "replay": "Erneut abspielen",
+    "shotAlt": "Eine Orbit-Sitzung: Eine Aufgabe wird gesendet, pi liest, bearbeitet und testet den RPC-Client, streamt seine Antwort, und eine Karte „2 Dateien geändert“ listet die Änderungen mit ihren Zeilenzahlen."
   },
   "trust": {
     "items": [
@@ -614,5 +615,143 @@
       "home": "Zurück nach Hause",
       "reference": "Referenz {digest}"
     }
+  },
+  "tour": {
+    "eyebrow": "Einblick in Orbit",
+    "title": "Jede Oberfläche von pi in einem nativen Fenster.",
+    "copy": "Wähle eine Oberfläche, um sie so zu sehen, wie sie ausgeliefert wird. Das sind echte Screenshots von Orbit mit der pi CLI, im Theme, in dem du diese Seite liest.",
+    "tablist": "Orbit-Funktionen"
+  },
+  "highlights": {
+    "eyebrow": "Warum Orbit",
+    "title": "Der Agent arbeitet. Du behältst die Kontrolle.",
+    "copy": "Orbit zeigt pis echte Tool-Aufrufe, Diffs und Modelle, während sie passieren – jeder Lauf ist etwas, das du lesen, lenken und freigeben kannst.",
+    "approve": {
+      "lead": "Nichts läuft ungefragt.",
+      "rest": "Im Modus Beaufsichtigt hält der Zugriffswächter jeden verändernden Aufruf an: einmal erlauben, das Tool immer erlauben oder verweigern – direkt über dem Eingabefeld."
+    },
+    "modes": {
+      "lead": "Erst planen, dann bauen.",
+      "rest": "Plan und Fragen entfernen die Schreib-Tools und beschränken bash auf lesende Befehle."
+    },
+    "review": {
+      "lead": "Prüfe die Runde, nicht den ganzen Baum.",
+      "rest": "Letzte Runde zeigt genau, was eine Agent-Runde geändert hat, aus Checkpoints pro Runde."
+    },
+    "stat": {
+      "value": "0",
+      "label": "Telemetrie",
+      "rest": "Kein Analytics-Client, keine Installations-ID, keine Nutzungs-Pings. Übers Netz geht nur, was du anforderst."
+    },
+    "models": {
+      "lead": "Jeder Anbieter, jedes Modell.",
+      "rest": "Gehostet oder lokal über Ollama, mit Denkaufwand pro Aufgabe."
+    }
+  },
+  "capabilities": {
+    "eyebrow": "Alles Weitere",
+    "title": "Die Details, die es zur Arbeitsumgebung machen.",
+    "copy": "Die Tour zeigt die großen Oberflächen. Hier ist der Rest dessen, was heute ausgeliefert wird – alles mit deiner eigenen pi-Installation.",
+    "groups": [
+      {
+        "title": "Chat & Verlauf",
+        "items": [
+          "Einen Lauf mittendrin lenken oder eine Folgenachricht einreihen; eingereihte Nachrichten bearbeiten oder sofort senden.",
+          "Ein GPU-gerenderter, virtualisierter Verlauf mit reiner Paint-Syntaxhervorhebung, damit Streaming nie umbricht.",
+          "Mermaid-Flussdiagramme nativ gezeichnet, die kopierbare Quelle einen Klick entfernt.",
+          "Anhänge für Bilder, Dateien und lange Einfügungen; Bilder werden beim Einlesen komprimiert.",
+          "⌘F-Suche im Verlauf und Markdown-Export jeder Antwort."
+        ]
+      },
+      {
+        "title": "Sitzungen",
+        "items": [
+          "Nach Projekt gruppiert, mit der pi CLI geteilt und live aktualisiert, wenn das Terminal schreibt.",
+          "Live-Status aus echten pi-Ereignissen: Läuft, Wartet auf Freigabe, Erneuter Versuch, Komprimierung, Fehlgeschlagen.",
+          "Ein Lauf, der im Hintergrund endet, hinterlässt die Markierung „Prüfung nötig“ und eine Desktop-Benachrichtigung.",
+          "Umbenennen, anheften, klonen oder zurückspulen; ⌘1 bis ⌘9 springen direkt zu einer Sitzung."
+        ]
+      },
+      {
+        "title": "Schutzmechanismen",
+        "items": [
+          "Beaufsichtigt, Bearbeitungen automatisch übernehmen oder Vollzugriff – pro Aufgabe im Eingabefeld gewählt.",
+          "Berechtigungsregeln pro Tool-Familie mit Mustern: bash darf laufen, während rm weiter fragt.",
+          "Subagenten mit eigenem Kontextfenster, an dieselben Zugriffs- und Workflow-Modi gebunden.",
+          "Ein Bestätigungswächter, keine Sandbox – und Orbit sagt das offen."
+        ]
+      },
+      {
+        "title": "Review & Git",
+        "items": [
+          "Diff-Quellen für Letzte Runde, Nicht committet, Vorgemerkt, Committet und Branch.",
+          "Vormerken, committen, stashen, pushen, pullen, mergen und rebasen auf der Git-Seite.",
+          "Commit-Nachrichten und Pull-Request-Entwürfe, erzeugt mit einem Modell deiner Wahl.",
+          "Issues und Pull Requests über gh, Git-Worktrees als vollwertige Workspaces."
+        ]
+      },
+      {
+        "title": "Dateien & Terminal",
+        "items": [
+          "Ein gitignore-bewusster Projektbaum mit Git-Markierungen und Dateioperationen.",
+          "Bearbeitbare Dateien mit Syntaxhervorhebung, Autosave und Markdown-Vorschau.",
+          "Ein integriertes Terminal (⌘J), dessen Hintergrund-Tabs weiterlaufen.",
+          "Den Workspace aus der Kopfzeile in deinem Editor oder Terminal öffnen."
+        ]
+      },
+      {
+        "title": "Arbeitsumgebung",
+        "items": [
+          "Anbieter mit API-Schlüssel- oder OAuth-Anmeldung, dazu lokale Modelle über Ollama.",
+          "MCP-Server, Skills und pi-Pakete verwalten, ohne JSON zu bearbeiten.",
+          "Nutzung aus pis eigenem Zähler: Tokens, Kosten und Cache, auf deinem Rechner.",
+          "Automatische Sitzungstitel, eine Befehlspalette (⌘P) und zehn Oberflächensprachen."
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "eyebrow": "Unter der Haube",
+    "copy": "Keine Webviews, kein Node-Daemon, kein Konto. Orbit ist eine Rust-App, gezeichnet von GPUI, die mit dem pi spricht, das du schon installiert hast – über dasselbe RPC-Protokoll, das pi dokumentiert.",
+    "nodes": [
+      {
+        "title": "Orbit",
+        "mono": "Rust · GPUI",
+        "detail": "Das native Fenster. Verlauf, Seitenleiste und Diffs, auf der GPU gezeichnet und virtualisiert."
+      },
+      {
+        "title": "JSONL über stdio",
+        "mono": "zeilenweises JSON",
+        "detail": "Befehle rein, Ereignisse raus. Unbekannte Ereignisse werden durchgereicht, damit ein neueres pi die App nie zum Absturz bringt."
+      },
+      {
+        "title": "pi CLI",
+        "mono": "pi --mode rpc",
+        "detail": "Ein Kindprozess pro offener Sitzung – dieselben Sitzungen, die das Terminal auf der Festplatte sieht."
+      },
+      {
+        "title": "Deine Modelle",
+        "mono": "gehostet oder lokal",
+        "detail": "Was pi aufrufen soll: gehostete Anbieter oder ein lokales Ollama auf deinem Rechner."
+      }
+    ],
+    "stats": [
+      {
+        "value": "~90 ms",
+        "label": "Ereignistakt; ein Frame wartet nie auf I/O"
+      },
+      {
+        "value": "1 Prozess",
+        "label": "von pi pro offener Sitzung, im Hintergrund am Leben gehalten"
+      },
+      {
+        "value": "0",
+        "label": "Webviews, Node-Daemons oder Konten"
+      },
+      {
+        "value": "10",
+        "label": "Oberflächensprachen, plus die deines Systems"
+      }
+    ]
   }
 }

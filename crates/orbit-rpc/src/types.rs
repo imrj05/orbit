@@ -23,7 +23,7 @@ pub struct Command {
     pub body: CommandBody,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CommandBody {
     /// Send a user prompt. `images` are `{type:"image", data: base64, mimeType}`.
@@ -157,6 +157,22 @@ pub enum CommandBody {
         session_id: String,
     },
 
+    /// Answer one correlated OAuth text/manual-code prompt. Never logged.
+    #[serde(rename = "auth.respond")]
+    AuthRespond {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "requestId")]
+        request_id: String,
+        value: String,
+    },
+    /// Persist a key through pi's serialized credential store, not Rust file I/O.
+    #[serde(rename = "auth.set_api_key")]
+    AuthSetApiKey {
+        provider: String,
+        key: String,
+    },
+
     // ── provider quota / usage ──────────────────────────────────────────
     /// Account-level quota, balance, or spend for connected providers. pi
     /// resolves each provider's credential and queries the provider's own
@@ -170,6 +186,19 @@ pub enum CommandBody {
 
     /// Anything the typed enum does not cover yet; sent verbatim.
     Raw(Value),
+}
+
+impl std::fmt::Debug for CommandBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Outgoing auth material must not appear even in diagnostic Debug output.
+        let mut value = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
+        match self {
+            Self::AuthRespond { .. } => value["value"] = Value::String("[redacted]".into()),
+            Self::AuthSetApiKey { .. } => value["key"] = Value::String("[redacted]".into()),
+            _ => {}
+        }
+        std::fmt::Debug::fmt(&value, f)
+    }
 }
 
 impl Command {
@@ -481,6 +510,20 @@ pub enum AuthEvent {
         method: String,
         expires_at: Option<i64>,
     },
+    /// OAuth asks for text or an authorization code; no answer travels back here.
+    LoginPrompt {
+        session_id: String,
+        provider: String,
+        request_id: String,
+        kind: String,
+        message: String,
+        placeholder: Option<String>,
+    },
+    LoginPromptClosed {
+        session_id: String,
+        provider: String,
+        request_id: String,
+    },
     /// Browser flow: URL the OS opener should launch.
     LoginUrl {
         session_id: String,
@@ -532,6 +575,19 @@ impl AuthEvent {
         let session_id = str_field(&value, "sessionId");
         let provider = str_field(&value, "provider");
         match kind {
+            "auth_login_prompt" => Self::LoginPrompt {
+                session_id,
+                provider,
+                request_id: str_field(&value, "requestId"),
+                kind: str_field(&value, "kind"),
+                message: str_field(&value, "message"),
+                placeholder: opt_str_field(&value, "placeholder"),
+            },
+            "auth_login_prompt_closed" => Self::LoginPromptClosed {
+                session_id,
+                provider,
+                request_id: str_field(&value, "requestId"),
+            },
             "auth_login_started" => Self::LoginStarted {
                 session_id,
                 provider,
@@ -606,7 +662,9 @@ impl AuthEvent {
             | Self::LoginWaiting { session_id, .. }
             | Self::LoginSucceeded { session_id, .. }
             | Self::LoginFailed { session_id, .. }
-            | Self::LoginCancelled { session_id, .. } => Some(session_id),
+            | Self::LoginCancelled { session_id, .. }
+            | Self::LoginPrompt { session_id, .. }
+            | Self::LoginPromptClosed { session_id, .. } => Some(session_id),
             Self::CredentialsChanged { .. } | Self::Other { .. } => None,
         }
     }
@@ -1082,6 +1140,8 @@ fn auth_one_line(event: &AuthEvent) -> String {
             format!("auth ✗ {provider} ({})", code.as_str())
         }
         AuthEvent::LoginCancelled { provider, .. } => format!("auth cancelled: {provider}"),
+        AuthEvent::LoginPrompt { provider, .. } => format!("auth prompt: {provider}"),
+        AuthEvent::LoginPromptClosed { provider, .. } => format!("auth prompt closed: {provider}"),
         AuthEvent::CredentialsChanged { providers } => {
             format!("auth credentials changed: {}", providers.join(", "))
         }
@@ -2030,6 +2090,49 @@ mod tests {
         let cancel: Value = serde_json::from_str(&cancel).unwrap();
         assert_eq!(cancel["type"], "auth.cancel");
         assert_eq!(cancel["sessionId"], "orbit-login-1");
+    }
+
+    #[test]
+    fn auth_answers_serialize_but_debug_redacts_them() {
+        for (body, field, kind) in [
+            (
+                CommandBody::AuthRespond {
+                    session_id: "s1".into(),
+                    request_id: "r1".into(),
+                    value: "synthetic-secret".into(),
+                },
+                "value",
+                "auth.respond",
+            ),
+            (
+                CommandBody::AuthSetApiKey {
+                    provider: "example".into(),
+                    key: "synthetic-secret".into(),
+                },
+                "key",
+                "auth.set_api_key",
+            ),
+        ] {
+            let command = Command::new("a", body);
+            assert!(!format!("{command:?}").contains("synthetic-secret"));
+            let wire: Value = serde_json::from_str(&command.to_wire().unwrap()).unwrap();
+            assert_eq!(wire["type"], kind);
+            assert_eq!(wire[field], "synthetic-secret");
+        }
+    }
+
+    #[test]
+    fn parses_correlated_auth_prompt_and_close_without_answer_material() {
+        let event = Event::parse_line(
+            r#"{"type":"auth_login_prompt","sessionId":"s","provider":"example","requestId":"r","kind":"manual_code","message":"Paste code","value":"must-not-parse"}"#,
+        );
+        assert!(
+            matches!(&event, Event::Auth(AuthEvent::LoginPrompt { request_id, kind, .. }) if request_id == "r" && kind == "manual_code")
+        );
+        assert!(!format!("{event:?}").contains("must-not-parse"));
+        assert!(
+            matches!(Event::parse_line(r#"{"type":"auth_login_prompt_closed","sessionId":"s","provider":"example","requestId":"r","reason":"answered"}"#), Event::Auth(AuthEvent::LoginPromptClosed { request_id, .. }) if request_id == "r")
+        );
     }
 
     #[test]

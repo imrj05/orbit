@@ -40,11 +40,8 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
-use crate::app::{
-    button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_search_frame,
-    picker_surface, provider_mark_color, ControlExt, ModelEntry, PressedRamp, StatefulControlExt,
-    TipExt,
-};
+use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::app::ModelEntry;
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
 use crate::favorites::Favorites;
@@ -52,10 +49,17 @@ use crate::model_selector_match::is_model_selected;
 use crate::providers::provider_display_name;
 use crate::recent_models::Recents;
 use crate::theme::tokens::{
-    context_menu, input, list, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
-    Radius, TextSize,
+    context_menu, list, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius,
+    TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::ui::button::IconButton;
+use crate::ui::field::search_field;
+use crate::ui::popover::PopoverExt;
+use crate::ui::prelude::{
+    button_frame, icon, icon_dyn, picker_entry, picker_surface, provider_mark_color, ControlExt,
+    PressedRamp, StatefulControlExt, TipExt,
+};
 
 /// Model popover width — room for the search field, mode tabs, a provider
 /// header, and one-line rows with their metadata.
@@ -630,11 +634,6 @@ impl ModelSelector {
         for (ix, (label, scope)) in entries.into_iter().enumerate() {
             let count = Self::scope_count(&scope, &self.models, &favorites, &recents);
             let active = self.scope == scope;
-            let ink = if active {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            };
             // One iconography for every scope: the provider's mark when it has
             // one, and the shared mode glyphs for All/Recents/Favorites. The
             // mark stays brand-faithful; only the mono fallback follows the
@@ -687,30 +686,18 @@ impl ModelSelector {
             };
             let this = this.clone();
             row = row.child(
-                button_frame(
-                    div().id(ElementId::NamedInteger("scope-chip".into(), ix as u64)),
-                    &theme,
-                    ButtonSize::Medium,
-                )
-                .px(DynamicSpacing::Base08.px(&theme))
-                .rounded(Radius::Large.px(&theme))
-                .border_1()
-                .border_color(theme.border)
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(ink)
-                .when(active, |tab| tab.bg(theme.surface_selected))
-                .when(!active, |tab| tab.hover_quiet(&theme))
-                .cursor_pointer()
-                .on_click(move |_, _, cx| {
+                ChipButton::new(format!("scope-chip-{ix}"), ChipStyle::Outlined { inset: false })
+                    .leading(lead)
+                    .label(label)
+                    .trailing(div().text_color(theme.text_muted).child(count.to_string()))
+                    .selected(active)
+                    .on_click(&theme, move |_, _, cx| {
                     this.update(cx, |selector, cx| {
                         selector.set_scope(scope.clone(), cx);
                         selector.center_scope_chip(ix, cx);
                     })
                     .ok();
-                })
-                .child(lead)
-                .child(label)
-                .child(div().text_color(theme.text_muted).child(count.to_string())),
+                }),
             );
         }
 
@@ -1069,7 +1056,7 @@ impl Render for ModelSelector {
         }
 
         let this = cx.entity();
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let metrics = ListMetrics::new(self.kind, &theme);
         let width = match self.kind {
             PickerKind::Model => MODEL_POPOVER_W,
@@ -1128,14 +1115,13 @@ impl Render for ModelSelector {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .occlude()
             // A click inside the popup (a row, the search field, the scope
             // chips) is the popup's own business: stop it here so it never
             // bubbles out to the composer box, whose mouse-up refocuses the
             // composer input and would kill the popup's keyboard ownership.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             // any mouse-down outside the popup dismisses it
-            .on_mouse_down_out(cx.listener(Self::on_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_outside_down))
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
@@ -1145,14 +1131,8 @@ impl Render for ModelSelector {
             })
             // search field — grouped above the list with a divider
             .child(
-                picker_search_frame(div(), &theme)
-                    .debug_selector(|| "picker-search".to_string())
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
+                search_field(self.filter.clone(), &theme)
+                    .debug_selector(|| "picker-search".to_string()),
             )
             // The model picker's modes — quiet tabs, not a provider rail; a
             // fresh install with no recents or favorites has nothing to switch
@@ -1163,7 +1143,7 @@ impl Render for ModelSelector {
                     .flatten(),
             )
             .child(if rows.is_empty() {
-                empty_state(self.kind, theme).into_any_element()
+                picker_empty_state(self.kind, theme).into_any_element()
             } else {
                 list.into_any_element()
             })
@@ -1208,6 +1188,10 @@ pub(crate) fn thinking_icon(level: &str, theme: &Theme) -> (&'static str, gpui::
 /// user-defined providers (custom `models.json` entries) fall back to a
 /// neutral cloud glyph.
 pub(crate) fn provider_icon(provider: &str) -> SharedString {
+    // An extra account wears its provider's mark.
+    let provider = crate::provider_accounts::split_alias(provider)
+        .map(|(base, _)| base)
+        .unwrap_or(provider);
     // Provider id → the id whose mark it shares. The leading dot on
     // `.manifest` is pi's catalog-index filename, not a real provider id.
     const ALIASES: &[(&str, &str)] = &[("ollama-cloud", "ollama"), (".manifest", "manifest")];
@@ -1327,7 +1311,7 @@ pub(crate) fn leading_tile(theme: Theme, glyph: AnyElement) -> impl IntoElement 
         .rounded(Radius::Large.px(&theme))
         .bg(theme.surface_elevated)
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .flex()
         .items_center()
         .justify_center()
@@ -1346,7 +1330,7 @@ fn thinking_chip(level: &str, theme: Theme) -> impl IntoElement + use<> {
 /// Recents/Favorites sections. Coloured brands keep their hue; monochrome
 /// wordmarks fall back to the muted ink. It uses the same mark scale as the
 /// rail's chips, so the provider is recognisable in both places.
-fn provider_mark(provider: &str, theme: Theme) -> AnyElement {
+pub(crate) fn provider_mark(provider: &str, theme: Theme) -> AnyElement {
     div()
         .flex_none()
         .child(icon_dyn(
@@ -1365,30 +1349,24 @@ fn favorite_button(
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    icon_button_frame(div(), &theme, ButtonSize::Default)
+    IconButton::new("model-favorite", "icons/star.svg")
+        .ink(if favorited {
+            theme.accent_text
+        } else {
+            theme.text_muted
+        })
         .tip(if favorited {
             tr!("model_selector.unfavorite")
         } else {
             tr!("model_selector.favorite")
         })
-        .cursor_pointer()
-        .group_hover("picker-row", |s| s.opacity(1.))
-        .when(!favorited, |button| button.opacity(0.))
-        .hover_state(&theme)
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+        .on_mouse_down(&theme, move |_, window, cx| {
             // Keep the row's own click (model selection) from also firing.
             cx.stop_propagation();
             on_click(window, cx);
         })
-        .child(icon(
-            "icons/star.svg",
-            ButtonSize::Default.icon_size().px(&theme),
-            if favorited {
-                theme.accent_text
-            } else {
-                theme.text_muted
-            },
-        ))
+        .group_hover("picker-row", |s| s.opacity(1.))
+        .when(!favorited, |button| button.opacity(0.))
         .into_any_element()
 }
 
@@ -1397,7 +1375,7 @@ fn favorite_button(
 /// Favorites section, so the two read as the same register.
 ///
 /// Laid out on Zed's inset `ListSubHeader` metrics like
-/// [`crate::app::menu_header`], which has no glyph or trailing-count slot;
+/// [`crate::ui::prelude::menu_header`], which has no glyph or trailing-count slot;
 /// its height is [`ListMetrics::header_h`].
 fn group_header(label: &str, lead: Option<AnyElement>, theme: Theme) -> impl IntoElement + use<> {
     div()
@@ -1423,7 +1401,7 @@ fn group_header(label: &str, lead: Option<AnyElement>, theme: Theme) -> impl Int
         )
 }
 
-fn empty_state(kind: PickerKind, theme: Theme) -> impl IntoElement + use<> {
+fn picker_empty_state(kind: PickerKind, theme: Theme) -> impl IntoElement + use<> {
     let (title, hint) = match kind {
         PickerKind::Model => (
             tr!("model_selector.no_matching_models"),
@@ -1493,7 +1471,7 @@ fn footer_shell(count_label: String, theme: Theme) -> gpui::Div {
         .px(picker::search_padding_x(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
         .border_t_1()
-        .border_color(theme.border)
+        .border_color(theme.hairline())
         .text_size(TextSize::XSmall.px(&theme))
         .text_color(theme.text_muted)
         .flex()
@@ -1510,7 +1488,9 @@ fn manage_models_button(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     theme: Theme,
 ) -> AnyElement {
-    let button = crate::app::press(
+    // Bespoke: the label carries its keyboard chord (e.g. ⌘,) after it in
+    // muted ink; `Button`'s label slot is a single run.
+    let button = crate::ui::prelude::press(
         button_frame(
             div()
                 .id("picker-manage-models")
@@ -1702,9 +1682,9 @@ fn render_row(
         })
         // Keyboard/hover cursor and the chosen option are separate
         // states: the cursor is a wash, the choice keeps the fill.
-        .when(highlighted, |row| row.bg(theme.surface_selected))
+        .when(highlighted, |row| row.bg(theme.selected_wash()))
         .when(!highlighted && selected, |row| {
-            row.bg(theme.surface_selected)
+            row.bg(theme.selected_wash())
         })
         .when(!highlighted && !selected, |row| row.hover_state(&theme))
     };

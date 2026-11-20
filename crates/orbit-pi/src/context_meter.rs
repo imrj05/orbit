@@ -9,15 +9,16 @@ use std::rc::Rc;
 
 use gpui::{
     canvas, deferred, div, point, prelude::*, px, relative, svg, AnyElement, App, Background,
-    Bounds, ClickEvent, Context, Entity, FontWeight, Hsla, IntoElement, MouseDownEvent,
+    Bounds, ClickEvent, Context, Entity, Hsla, IntoElement, MouseDownEvent,
     PathBuilder, Pixels, SharedString, Window,
 };
 use orbit_rpc::{ContextUsage, SessionUsage};
 
-use crate::app::{button_frame, icon_button_frame, ControlExt, TipExt};
-use crate::theme::tokens::RaisedExt;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
+use crate::ui::button::IconButton;
+use crate::ui::popover::PopoverExt;
 
 const RING: f32 = 16.;
 const RING_BOX: f32 = 22.;
@@ -61,39 +62,52 @@ pub struct ContextSlice {
 /// (0..=1) so the color always matches the drawn ring even when pi reports
 /// `tokens` without an explicit `percent`.
 ///
-/// Below the warning threshold the fill is the current accent — the same hue
-/// the details card's slices use — so fill, track and percent label all read
-/// as one meter. Warning and error still escalate, which is what makes "you
-/// are running out of context" visible without opening the card.
+/// Below the warning threshold the fill is neutral secondary ink: a meter with
+/// room to spare is not news, and an accent ring in the status row competed
+/// with the composer for the eye on every frame. Warning and error escalate,
+/// so colour appearing *is* the signal that context is running out — visible
+/// without opening the card.
 pub fn fill_color(fraction: Option<f32>, theme: &Theme) -> Hsla {
     match fraction {
-        Some(f) if f >= 0.90 => theme.error,
-        Some(f) if f >= 0.70 => theme.warning,
-        Some(_) => theme.accent,
+        Some(f) if f >= CRITICAL_FRACTION => theme.error,
+        Some(f) if f >= WARN_FRACTION => theme.warning,
+        Some(_) => theme.text_secondary,
         None => theme.text_muted,
     }
 }
 
-/// The ring's unfilled track: a low-opacity accent tint once real usage
-/// exists, and neutral while the agent has not supplied a measurement. An
-/// unknown value is not zero percent, so a fresh session must not paint an
-/// active accent meter before its first snapshot arrives.
+/// The used fraction at which the meter turns `warning`.
+const WARN_FRACTION: f32 = 0.70;
+/// The used fraction at which the meter turns `error`.
+const CRITICAL_FRACTION: f32 = 0.90;
+
+/// Ink for the percent label beside the ring: muted while there is room, and
+/// the fill's own status colour once the meter escalates, so the number and
+/// the ring always agree on whether anything needs attention.
+pub fn label_color(fraction: Option<f32>, theme: &Theme) -> Hsla {
+    match fraction {
+        Some(f) if f >= WARN_FRACTION => fill_color(fraction, theme),
+        _ => theme.text_muted,
+    }
+}
+
+/// The ring's unfilled track: muted ink at low opacity, measured or not. The
+/// fill carries the state (neutral, warning, error); the track only has to
+/// show the denominator, so it never takes a hue of its own.
 ///
 /// Kept as a function rather than inlined so the ring, and any other meter
 /// that borrows [`context_ring`], agree on one track treatment.
-pub fn ring_track(fraction: Option<f32>, theme: &Theme) -> Hsla {
-    if fraction.is_some() {
-        theme.accent
-    } else {
-        theme.text_muted
-    }
-    .opacity(RING_TRACK_ALPHA)
+pub fn ring_track(_fraction: Option<f32>, theme: &Theme) -> Hsla {
+    theme.text_muted.opacity(RING_TRACK_ALPHA)
 }
 
 pub fn format_percent(usage: &ContextUsage) -> Option<String> {
     let percent = usage.percent?;
     let rounded = percent.round().clamp(0.0, 100.0);
-    if usage.tokens.unwrap_or(0) > 0 && rounded < 1.0 {
+    // A real snapshot that rounds to zero still used the window; tokens
+    // may be `None` (post-compaction) while the percentage survives, so
+    // decide on the percentage, not the token count.
+    if percent > 0.0 && rounded < 1.0 {
         Some("<1%".into())
     } else {
         Some(format!("{rounded:.0}%"))
@@ -294,6 +308,7 @@ pub fn compact_card(
     session: Option<&SessionUsage>,
     theme: Theme,
 ) -> impl IntoElement {
+    let theme = theme.for_floating();
     let (title, subtitle) = match usage {
         Some(usage) => {
             let title = format_percent(usage)
@@ -376,6 +391,7 @@ pub fn details_card(
     on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_outside: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let theme = theme.for_floating();
     let percent = usage.and_then(format_percent);
     let totals = usage.map(|u| match u.tokens {
         Some(used) => tr!(
@@ -393,8 +409,12 @@ pub fn details_card(
     div()
         .w(px(PANEL_W))
         .elevation_2(&theme)
-        .occlude()
-        .on_mouse_down_out(on_outside)
+        // Clicks inside the card (the compact button, the close glyph)
+        // must not bubble to the meter under it — that same mouse-up is
+        // the meter's open/close toggle (see the quota popover comment).
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .dismiss_on_outside(on_outside)
         .flex()
         .flex_col()
         .px(px(14.))
@@ -413,16 +433,17 @@ pub fn details_card(
                         .child(tr!("context_meter.context_usage")),
                 )
                 .child(
-                    icon_button_frame(div().id("context-close"), &theme, ButtonSize::Compact)
-                        .tip(tr!("common.close"))
-                        .cursor_pointer()
-                        .hover_state(&theme)
-                        .on_click(on_close)
-                        .child(glyph(
+                    IconButton::glyph(
+                        "context-close",
+                        glyph(
                             "icons/x.svg",
                             ButtonSize::Compact.icon_size().px(&theme),
                             theme.text_muted,
-                        )),
+                        ),
+                    )
+                    .size(ButtonSize::Compact)
+                    .tip(tr!("common.close"))
+                    .on_click(&theme, on_close),
                 ),
         )
         .child(
@@ -457,27 +478,16 @@ pub fn details_card(
 /// label names the in-flight state while pi works, so the control is never
 /// a second click on a run that is already compacting.
 fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme) -> AnyElement {
-    let button = button_frame(div().id("context-compact-now"), &theme, ButtonSize::Medium)
+    Button::new("context-compact-now", ButtonVariant::Secondary)
+        .label(if is_compacting {
+            tr!("context_meter.compacting")
+        } else {
+            tr!("context_meter.compact_now")
+        })
+        .loading(is_compacting)
+        .on_click(&theme, move |event, window, cx| on_compact(event, window, cx))
         .w_full()
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, &theme)
-        .font_weight(FontWeight::MEDIUM);
-    if is_compacting {
-        button
-            .text_color(theme.text_muted)
-            .cursor_default()
-            .child(tr!("context_meter.compacting"))
-            .into_any_element()
-    } else {
-        button
-            .text_color(theme.text_secondary)
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_click(move |event, window, cx| on_compact(event, window, cx))
-            .child(tr!("context_meter.compact_now"))
-            .into_any_element()
-    }
+        .into_any_element()
 }
 
 fn segmented_bar(slices: &[ContextSlice], window: u64, theme: Theme) -> impl IntoElement + use<> {
@@ -552,7 +562,7 @@ pub fn session_usage_section(usage: &SessionUsage, theme: Theme) -> AnyElement {
         .flex()
         .flex_col()
         .gap(DynamicSpacing::Base06.px(&theme))
-        .child(div().w_full().h(px(1.)).bg(theme.border))
+        .child(div().w_full().h(px(1.)).bg(theme.hairline()))
         .child(
             div()
                 .text_size(TextSize::Small.px(&theme))
@@ -700,6 +710,7 @@ pub fn context_control<V: 'static>(
     let measured_fraction = usage.and_then(ContextUsage::fraction);
     let fraction = measured_fraction.unwrap_or(0.0);
     let fill = fill_color(measured_fraction, &theme);
+    let label_ink = label_color(measured_fraction, &theme);
     let slices = usage
         .map(|u| usage_slices(u, data.conversation_est, &theme))
         .unwrap_or_default();
@@ -773,7 +784,7 @@ pub fn context_control<V: 'static>(
         .children(percent.map(|label| {
             div()
                 .text_size(TextSize::Small.px(&theme))
-                .text_color(fill)
+                .text_color(label_ink)
                 .whitespace_nowrap()
                 .child(label)
         }))
@@ -828,10 +839,22 @@ mod tests {
     #[test]
     fn fill_color_tracks_fraction() {
         let theme = Theme::dark();
-        assert_eq!(fill_color(Some(0.5), &theme), theme.accent);
+        assert_eq!(fill_color(Some(0.5), &theme), theme.text_secondary);
         assert_eq!(fill_color(Some(0.75), &theme), theme.warning);
         assert_eq!(fill_color(Some(0.95), &theme), theme.error);
         assert_eq!(fill_color(None, &theme), theme.text_muted);
+    }
+
+    /// The percent label stays quiet with room to spare and takes the ring's
+    /// status colour once it escalates, so number and ring never disagree.
+    #[test]
+    fn label_color_is_neutral_until_the_meter_escalates() {
+        let theme = Theme::dark();
+        assert_eq!(label_color(None, &theme), theme.text_muted);
+        assert_eq!(label_color(Some(0.2), &theme), theme.text_muted);
+        assert_eq!(label_color(Some(0.69), &theme), theme.text_muted);
+        assert_eq!(label_color(Some(0.75), &theme), theme.warning);
+        assert_eq!(label_color(Some(0.95), &theme), theme.error);
     }
 
     /// A window-only snapshot is not usage: the new-task footer must wait for
@@ -847,15 +870,15 @@ mod tests {
     }
 
     #[test]
-    fn ring_track_is_accent_only_for_a_real_measurement() {
+    fn ring_track_is_neutral_with_or_without_a_measurement() {
         let theme = Theme::dark();
         let track = ring_track(Some(0.5), &theme);
-        assert_eq!(track.h, theme.accent.h);
-        assert_eq!(track.s, theme.accent.s);
-        assert_eq!(track.l, theme.accent.l);
+        assert_eq!(track.h, theme.text_muted.h);
+        assert_eq!(track.s, theme.text_muted.s);
+        assert_eq!(track.l, theme.text_muted.l);
         assert!(track.a > 0.2, "track must stay visible on a dim display");
         assert!(
-            track.a < theme.accent.a,
+            track.a < fill_color(Some(0.5), &theme).a,
             "track must stay under the fill so the used fraction reads first"
         );
 
@@ -870,6 +893,20 @@ mod tests {
     fn percent_sub_one() {
         let u = usage(Some(400), 200_000, Some(0.2));
         assert_eq!(format_percent(&u), Some("<1%".into()));
+    }
+
+    /// Round-to-zero still used the window: decide on the percentage, not
+    /// the token count, which can be `None` after compaction.
+    #[test]
+    fn percent_sub_one_without_tokens() {
+        assert_eq!(
+            format_percent(&usage(None, 200_000, Some(0.4))),
+            Some("<1%".into())
+        );
+        assert_eq!(
+            format_percent(&usage(None, 200_000, Some(0.0))),
+            Some("0%".into())
+        );
     }
 
     #[test]

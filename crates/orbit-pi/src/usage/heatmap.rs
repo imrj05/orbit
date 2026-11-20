@@ -382,7 +382,7 @@ fn day_cell(
         .border_color(if is_hover || is_selected {
             theme.text_primary
         } else {
-            theme.border
+            theme.hairline()
         })
         .bg(shade)
         .cursor_pointer()
@@ -457,6 +457,7 @@ fn day_readout(
     geometry: &Geometry,
     theme: Theme,
 ) -> AnyElement {
+    let theme = theme.for_floating();
     let week = ix / 7;
     let row = ix % 7;
     let totals = &day.totals;
@@ -560,7 +561,7 @@ fn legend(theme: Theme) -> AnyElement {
                 .size(px(10.))
                 .rounded(Radius::Small.px(&theme))
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .bg(level_color(shade, theme)),
         );
     }

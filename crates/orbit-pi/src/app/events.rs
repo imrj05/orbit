@@ -56,6 +56,7 @@ impl OrbitApp {
         // Session retention: once per launch, archive or delete sessions the
         // user's policy marks idle. A no-op until enabled in Settings.
         self.run_session_retention_once(cx);
+        self.tick_wallpaper_library(cx);
         self.tick_background(cx);
         // MCP: external-change detection, the debounced `pi mcp list` probe,
         // and a deferred restart that applies new server configuration while
@@ -343,6 +344,14 @@ impl OrbitApp {
                     self.title_generating = false;
                 }
                 Event::AgentSettled { aborted } => {
+                    // A remote session joins its server's sidebar list once
+                    // it has a message; refetch that server.
+                    self.refresh_active_remote_sessions(cx);
+                    // The turn may have switched branches or committed: the
+                    // header's remote branch chip reads the host again.
+                    if self.remote.is_some() {
+                        self.refresh_remote_git(cx);
+                    }
                     self.abort_requested = false;
                     self.abort_sent_at = None;
                     self.busy = false;
@@ -539,14 +548,30 @@ impl OrbitApp {
         self.is_active()
     }
 
+    /// Step the new-task field on its own clock, and repaint when it reaches a
+    /// new frame. Returns whether the field is moving, so the clock can idle
+    /// while no page shows it.
+    ///
+    /// [`Self::tick`] calls [`Self::advance_backdrop`] too, on the RPC beat: two
+    /// callers, one owner of the phase. Whichever arrives first consumes the
+    /// frame change and repaints; the other finds nothing changed, so the page
+    /// still paints once per field frame.
+    pub fn tick_backdrop(&mut self, cx: &mut Context<Self>) -> bool {
+        let moving = self.backdrop_live && !theme::reduce_motion(cx);
+        if moving && self.advance_backdrop(false) {
+            cx.notify();
+        }
+        moving
+    }
+
     /// Step the new-task backdrop's field. Returns whether the field moved on to
     /// a new frame and the window should repaint.
     ///
-    /// The field is rastered at [`crate::backdrop::frame`]'s cadence, well
-    /// below the heartbeat's. Repainting on every beat rebuilt the whole window
-    /// two times in three for a frame that had not changed, on the one page a
-    /// fresh install opens on, which is wasted work on every machine and
-    /// competes with typing on a slow one.
+    /// The field is rastered at [`crate::backdrop::frame`]'s cadence, which sits
+    /// just under the idle heartbeat's own. Repainting on every beat rebuilt the
+    /// whole window two times in three for a frame that had not changed, on the
+    /// one page a fresh install opens on, which is wasted work on every machine
+    /// and competes with typing on a slow one.
     ///
     /// The phase is wall-clock seconds, not a tick counter: the heartbeat's
     /// cadence changes with the run state, and the field must not speed up
@@ -821,7 +846,13 @@ impl OrbitApp {
                     success,
                     data,
                     ..
-                } if path.is_none() && *success => {
+                } if path.is_none() => {
+                    if !*success {
+                        if matches!(command.as_str(), "clone" | "new_session") {
+                            let _ = parked.client.send(CommandBody::GetState);
+                        }
+                        continue;
+                    }
                     let file = data
                         .as_ref()
                         .and_then(|data| data.get("sessionFile"))
@@ -1128,6 +1159,7 @@ impl OrbitApp {
             // `clone` duplicates the session and moves the process onto the
             // copy. Adopt the new file/id when pi reports them, then reload.
             "clone" => {
+                self.account_clone_pending = false;
                 self.execution = SessionExecution::default();
                 self.transcript.clear();
                 self.current_title = None;
@@ -1413,6 +1445,9 @@ impl OrbitApp {
                 // is pushed once `get_state` reports the new id (see
                 // `apply_default_model`).
                 self.default_model_armed = true;
+                if let Some(file) = data.get("sessionFile").and_then(Value::as_str) {
+                    self.adopt_session_file(PathBuf::from(file));
+                }
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
             }

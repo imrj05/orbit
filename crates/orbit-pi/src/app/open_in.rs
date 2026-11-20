@@ -1,8 +1,9 @@
-use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{
-    context_menu, input, picker, popover, ButtonSize, IconSize, BASE_REM_PX,
-};
+use crate::theme::tokens::{context_menu, picker, popover, ButtonSize, IconSize, BASE_REM_PX};
+use crate::ui::field::search_field;
+use crate::ui::popover::{dropdown_below, DropdownAlign};
+use crate::ui::popover::{popover_picker, PopoverExt};
+use crate::ui::prelude::*;
 
 /// The slot an "open in" app icon draws in: 18px at the default UI scale.
 ///
@@ -12,6 +13,9 @@ use crate::theme::tokens::{
 /// visible mark. `platform` rasterizes each icon at 2× this slot so a Retina
 /// window blits it 1:1.
 const APP_ICON: IconSize = IconSize::Custom(18. / BASE_REM_PX);
+
+/// Hover group of the header's open-in split, so its seam can follow the lift.
+const OPEN_IN_SPLIT: &str = "open-in-split";
 
 impl OrbitApp {
     /// Resolve installed folder-capable apps once, off-thread.
@@ -101,11 +105,8 @@ impl OrbitApp {
     ) {
         // The open menu dismisses on this same click's mouse-down; without
         // this guard the mouse-up would toggle it straight back open.
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         if self.open_in_apps.is_empty() || self.current_workspace.is_none() {
             return;
@@ -137,6 +138,8 @@ impl OrbitApp {
         let this = cx.entity().clone();
         let path = Rc::from(path.as_path());
 
+        // Bespoke: the two halves of the header's open-in split button, which
+        // share one chip's frame and round only its outer corners.
         let primary = icon_button_frame(div().id("header-open-in"), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
             .tip(tr!("open_in.open_in_app", app = preferred_label))
@@ -153,6 +156,7 @@ impl OrbitApp {
             )
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_primary));
 
+        // Bespoke: the split button's caret half (see the primary above).
         let caret = icon_button_frame(
             div().id("header-open-in-caret"),
             &theme,
@@ -167,7 +171,7 @@ impl OrbitApp {
         .rounded_br(header_ctrl_radius(&theme))
         .cursor_pointer()
         .when(self.open_in_menu_open, |s| {
-            s.bg(theme.surface_active).text_color(theme.text_primary)
+            s.bg(theme.pressed_wash()).text_color(theme.text_primary)
         })
         .child(icon(
             "icons/chevron-down.svg",
@@ -180,20 +184,33 @@ impl OrbitApp {
         .children(self.open_in_menu_popup(&this, path, preferred_id, theme, cx))
         .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_caret));
 
+        // The seam between the halves belongs to the chip's frame: header chips
+        // rest ghost, so it shows only while the split is lifted (hovered or
+        // its menu open) and never floats as a stray rule in the bar.
+        let menu_open = self.open_in_menu_open;
+        let seam = div()
+            .w(px(1.))
+            .h_full()
+            .flex_none()
+            .when(menu_open, |seam| seam.bg(theme.hairline()))
+            .group_hover(OPEN_IN_SPLIT, |seam| seam.bg(theme.hairline()));
+        let split = header_chip(
+            div()
+                .group(OPEN_IN_SPLIT)
+                .h(px(HEADER_CTRL_H))
+                .rounded(header_ctrl_radius(&theme))
+                .flex_none()
+                .flex()
+                .items_center(),
+            &theme,
+        );
         Some(
-            header_chip(
-                div()
-                    .h(px(HEADER_CTRL_H))
-                    .rounded(header_ctrl_radius(&theme))
-                    .flex_none()
-                    .flex()
-                    .items_center(),
-                &theme,
-            )
-            .child(primary)
-            .child(div().w(px(1.)).h_full().flex_none().bg(theme.border))
-            .child(caret)
-            .into_any_element(),
+            split
+                .when(menu_open, |split| header_lift(split, &theme))
+                .child(primary)
+                .child(seam)
+                .child(caret)
+                .into_any_element(),
         )
     }
 
@@ -205,6 +222,7 @@ impl OrbitApp {
         theme: Theme,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if !self.open_in_menu_open {
             return None;
         }
@@ -239,7 +257,7 @@ impl OrbitApp {
                 )
                 .flex_none()
                 .cursor_pointer()
-                .when(selected, |row| row.bg(theme.surface_selected))
+                .when(selected, |row| row.bg(theme.selected_wash()))
                 .hover_state(&theme)
                 .child(
                     img(ImageSource::Image(app_icon))
@@ -280,13 +298,9 @@ impl OrbitApp {
             );
         }
 
-        let popup = picker_surface(div(), &theme)
+        let popup = popover_picker(div(), &theme)
             .w(px(200.))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out({
+            .dismiss_on_outside({
                 let this = this.clone();
                 move |_: &MouseDownEvent, _, cx: &mut App| {
                     this.update(cx, |app, cx| {
@@ -294,7 +308,7 @@ impl OrbitApp {
                             // Arm the click-through guard so this same click's
                             // mouse-up on the caret cannot reopen the menu it
                             // just dismissed.
-                            app.menu_dismissed_at = Some(Instant::now());
+                            app.menu_dismissed_at.arm();
                             app.open_in_menu_open = false;
                             cx.notify();
                         }
@@ -302,31 +316,18 @@ impl OrbitApp {
                 }
             })
             // Search field — filters the apps below.
-            .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.open_in_filter.clone())),
-            )
+            .child(search_field(self.open_in_filter.clone(), &theme))
             .child(list);
 
         Some(
-            div()
-                .absolute()
-                .bottom_0()
-                .right_0()
-                .size(px(0.))
-                .child(anchored_popover(
-                    Corner::TopRight,
-                    point(px(0.), popover::MENU_OFFSET),
-                    popup,
-                    "anchored_popover-in-10",
-                    &theme,
-                ))
-                .into_any_element(),
+            dropdown_below(
+                DropdownAlign::End,
+                popover::MENU_OFFSET,
+                popup,
+                "anchored_popover-in-10",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 }

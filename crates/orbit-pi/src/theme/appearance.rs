@@ -5,7 +5,7 @@ use std::{io, path::Path};
 use gpui::{App, Global, Window, WindowAppearance};
 use serde_json::{json, Value};
 
-use super::{get, persist_path, DesignSystem, Theme, ThemeId, ThemeMode};
+use super::{get, persist_path, Theme, ThemeId, ThemeMode};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AppearanceMode {
@@ -221,12 +221,9 @@ fn contrast(a: gpui::Hsla, b: gpui::Hsla) -> f32 {
 pub struct AppearancePrefs {
     pub mode: AppearanceMode,
     pub accent_color: AccentColor,
-    /// Which visual language is active. Existing palettes keep
-    /// [`DesignSystem::Classic`], the default.
-    pub design_system: DesignSystem,
-    /// The remembered Classic palette for each appearance. Operational
-    /// palettes are fixed by the design system and do not overwrite these, so
-    /// switching back restores the user's previous Classic choice.
+    /// The remembered palette for each appearance. Any palette of the
+    /// matching appearance may fill a slot — Orbit, Flexoki and Operational
+    /// are one catalog — and each slot is kept while the other changes.
     light_theme: ThemeId,
     dark_theme: ThemeId,
 }
@@ -238,7 +235,6 @@ impl Default for AppearancePrefs {
         Self {
             mode: AppearanceMode::System,
             accent_color: AccentColor::Default,
-            design_system: DesignSystem::Classic,
             light_theme: ThemeId::OrbitAzureLight,
             dark_theme: ThemeId::OrbitAzure,
         }
@@ -256,7 +252,6 @@ impl AppearancePrefs {
                 ThemeMode::Light => AppearanceMode::Light,
                 ThemeMode::Dark => AppearanceMode::Dark,
             };
-            prefs.design_system = id.design_system();
             prefs.store_theme(id.appearance(), id);
             return prefs;
         }
@@ -272,32 +267,29 @@ impl AppearancePrefs {
             .into_iter()
             .find(|color| Some(color.as_str()) == value["accent_color"].as_str())
             .unwrap_or_default();
-        let design_system_field = value["design_system"].as_str();
-        if let Some(system) = design_system_field.and_then(DesignSystem::parse) {
-            prefs.design_system = system;
-        }
         for (key, mode) in [
             ("light_theme", ThemeMode::Light),
             ("dark_theme", ThemeMode::Dark),
         ] {
             if let Some(id) = value[key].as_str().and_then(ThemeId::parse) {
-                // Without an explicit system field, an Operational palette in
-                // the legacy theme slot means the user chose that system.
-                if design_system_field.is_none() && id.design_system() != DesignSystem::Classic {
-                    prefs.design_system = id.design_system();
-                }
-                if id.design_system() == DesignSystem::Classic {
-                    prefs.store_theme(mode, id);
-                }
+                prefs.store_theme(mode, id);
             }
+        }
+        // Preferences written while Classic and Operational were separate
+        // design systems kept the Operational choice in its own field and the
+        // Classic palettes underneath. The window was painting Operational, so
+        // that is what both slots become now that there is one catalog.
+        if value["design_system"]
+            .as_str()
+            .is_some_and(|system| system.trim().eq_ignore_ascii_case("operational"))
+        {
+            prefs.light_theme = ThemeId::OperationalLight;
+            prefs.dark_theme = ThemeId::Operational;
         }
         prefs
     }
 
     pub fn theme(self, mode: ThemeMode) -> ThemeId {
-        if self.design_system == DesignSystem::Operational {
-            return self.design_system.theme_id(mode);
-        }
         match mode {
             ThemeMode::Light => self.light_theme,
             ThemeMode::Dark => self.dark_theme,
@@ -305,7 +297,7 @@ impl AppearancePrefs {
     }
 
     fn store_theme(&mut self, mode: ThemeMode, id: ThemeId) {
-        if id.appearance() != mode || id.design_system() != DesignSystem::Classic {
+        if id.appearance() != mode {
             return;
         }
         match mode {
@@ -314,32 +306,26 @@ impl AppearancePrefs {
         }
     }
 
-    /// Select a palette. A Classic palette also selects the Classic design
-    /// system; an Operational palette selects the Operational system. The
-    /// design-system control is the normal way to switch systems; this keeps
-    /// direct palette choices coherent too.
+    /// Select the palette remembered for `mode`. A palette of the other
+    /// appearance is ignored, so a light palette never lands in the dark slot.
     pub fn set_theme(&mut self, mode: ThemeMode, id: ThemeId) {
-        if id.appearance() != mode {
-            return;
-        }
-        self.design_system = id.design_system();
         self.store_theme(mode, id);
     }
 
-    pub fn set_design_system(&mut self, design_system: DesignSystem) {
-        self.design_system = design_system;
-    }
-
-    pub fn resolve(self, system: WindowAppearance) -> ThemeId {
-        let mode = match self.mode {
+    /// The appearance [`Self::resolve`] paints for `system`.
+    pub fn resolved_mode(self, system: WindowAppearance) -> ThemeMode {
+        match self.mode {
             AppearanceMode::Light => ThemeMode::Light,
             AppearanceMode::Dark => ThemeMode::Dark,
             AppearanceMode::System => match system {
                 WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
                 WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
             },
-        };
-        self.theme(mode)
+        }
+    }
+
+    pub fn resolve(self, system: WindowAppearance) -> ThemeId {
+        self.theme(self.resolved_mode(system))
     }
 
     pub fn apply(self, theme: Theme) -> Theme {
@@ -367,7 +353,6 @@ impl AppearancePrefs {
             json!({
                 "mode": self.mode.as_str(),
                 "accent_color": self.accent_color.as_str(),
-                "design_system": self.design_system.as_str(),
                 "light_theme": self.light_theme.as_str(),
                 "dark_theme": self.dark_theme.as_str(),
             })
@@ -376,21 +361,12 @@ impl AppearancePrefs {
     }
 }
 
-/// Every palette of `mode` in [`ThemeId::ALL`] order, across every design
-/// system. The settings dropdown filters this by the active system.
+/// Every palette of `mode` in [`ThemeId::ALL`] order: the set the settings
+/// gallery offers for that appearance.
 pub fn themes_for(mode: ThemeMode) -> impl Iterator<Item = ThemeId> {
     ThemeId::ALL
         .into_iter()
         .filter(move |id| id.appearance() == mode)
-}
-
-/// Every palette of `mode` that belongs to `design_system`, in [`ThemeId::ALL`]
-/// order: the set the Theme dropdown offers for that appearance.
-pub fn themes_for_system(
-    mode: ThemeMode,
-    design_system: DesignSystem,
-) -> impl Iterator<Item = ThemeId> {
-    themes_for(mode).filter(move |id| id.design_system() == design_system)
 }
 
 pub fn appearance_prefs(cx: &App) -> AppearancePrefs {
@@ -456,61 +432,96 @@ mod tests {
     fn new_preferences_follow_system() {
         let prefs = AppearancePrefs::default();
         assert_eq!(prefs.mode, AppearanceMode::System);
-        assert_eq!(prefs.design_system, DesignSystem::Classic);
+        assert_eq!(prefs.theme(ThemeMode::Dark), ThemeId::OrbitAzure);
+        assert_eq!(prefs.theme(ThemeMode::Light), ThemeId::OrbitAzureLight);
     }
 
     #[test]
-    fn operational_is_opt_in_and_preserves_the_classic_choice() {
+    fn operational_is_an_ordinary_palette_in_one_catalog() {
         let mut prefs = AppearancePrefs {
             mode: AppearanceMode::Dark,
-            dark_theme: ThemeId::Flexoki,
+            light_theme: ThemeId::OrbitPaper,
             ..AppearancePrefs::default()
         };
-        assert_eq!(prefs.resolve(WindowAppearance::Dark), ThemeId::Flexoki);
-        prefs.set_design_system(DesignSystem::Operational);
-        assert_eq!(
-            prefs.theme(ThemeMode::Dark),
-            ThemeId::Operational,
-            "Operational uses its own dark palette"
-        );
+        prefs.set_theme(ThemeMode::Dark, ThemeId::Operational);
+        assert_eq!(prefs.resolve(WindowAppearance::Light), ThemeId::Operational);
         assert_eq!(
             prefs.theme(ThemeMode::Light),
-            ThemeId::OperationalLight,
-            "Operational uses its own light palette"
+            ThemeId::OrbitPaper,
+            "choosing the dark slot leaves the light choice alone"
         );
-        prefs.set_design_system(DesignSystem::Classic);
+        prefs.set_theme(ThemeMode::Light, ThemeId::OperationalLight);
+        prefs.set_theme(ThemeMode::Dark, ThemeId::Flexoki);
+        assert_eq!(prefs.theme(ThemeMode::Light), ThemeId::OperationalLight);
+        assert_eq!(prefs.theme(ThemeMode::Dark), ThemeId::Flexoki);
+        // A palette of the wrong appearance never fills a slot.
+        prefs.set_theme(ThemeMode::Dark, ThemeId::OperationalLight);
+        assert_eq!(prefs.theme(ThemeMode::Dark), ThemeId::Flexoki);
+    }
+
+    #[test]
+    fn operational_palettes_round_trip_on_disk() {
+        let raw =
+            r#"{"mode":"light","light_theme":"operational-light","dark_theme":"operational"}"#;
+        let prefs = AppearancePrefs::parse(raw);
+        assert_eq!(prefs.theme(ThemeMode::Light), ThemeId::OperationalLight);
+        assert_eq!(prefs.theme(ThemeMode::Dark), ThemeId::Operational);
         assert_eq!(
-            prefs.theme(ThemeMode::Dark),
-            ThemeId::Flexoki,
-            "switching back restores the remembered Classic palette"
+            prefs.resolve(WindowAppearance::Dark),
+            ThemeId::OperationalLight
         );
     }
 
     #[test]
-    fn design_system_is_persisted_and_parsed() {
+    fn legacy_operational_design_system_migrates_to_its_palettes() {
+        // Written while Operational was a separate design system: the Classic
+        // slots held other palettes, and the window painted Operational.
         let json = r#"{"mode":"light","design_system":"operational","light_theme":"orbit-paper","dark_theme":"orbit-cobalt"}"#;
         let prefs = AppearancePrefs::parse(json);
         assert_eq!(prefs.mode, AppearanceMode::Light);
-        assert_eq!(prefs.design_system, DesignSystem::Operational);
+        assert_eq!(
+            prefs.resolve(WindowAppearance::Light),
+            ThemeId::OperationalLight,
+            "what was on screen stays on screen"
+        );
+        assert_eq!(prefs.theme(ThemeMode::Dark), ThemeId::Operational);
+        // A legacy Classic system keeps its stored palettes.
+        let classic = AppearancePrefs::parse(
+            r#"{"design_system":"classic","light_theme":"orbit-paper","dark_theme":"orbit-cobalt"}"#,
+        );
+        assert_eq!(classic.theme(ThemeMode::Light), ThemeId::OrbitPaper);
+        assert_eq!(classic.theme(ThemeMode::Dark), ThemeId::OrbitCobalt);
+    }
+
+    #[test]
+    fn legacy_operational_theme_key_selects_the_palette() {
+        let prefs = AppearancePrefs::parse("operational-light");
+        assert_eq!(prefs.mode, AppearanceMode::Light);
         assert_eq!(
             prefs.resolve(WindowAppearance::Light),
             ThemeId::OperationalLight
         );
-        // The remembered Classic choice is not discarded by the system change.
-        let mut prefs = prefs;
-        prefs.set_design_system(DesignSystem::Classic);
-        assert_eq!(prefs.theme(ThemeMode::Light), ThemeId::OrbitPaper);
-        assert_eq!(prefs.theme(ThemeMode::Dark), ThemeId::OrbitCobalt);
+        assert_eq!(prefs.theme(ThemeMode::Dark), ThemeId::OrbitAzure);
     }
 
     #[test]
-    fn legacy_operational_theme_key_selects_the_system() {
-        let prefs = AppearancePrefs::parse("operational-light");
-        assert_eq!(prefs.mode, AppearanceMode::Light);
-        assert_eq!(prefs.design_system, DesignSystem::Operational);
+    fn resolved_mode_follows_the_preference_then_the_system() {
+        let system = AppearancePrefs::default();
         assert_eq!(
-            prefs.resolve(WindowAppearance::Light),
-            ThemeId::OperationalLight
+            system.resolved_mode(WindowAppearance::VibrantDark),
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            system.resolved_mode(WindowAppearance::Light),
+            ThemeMode::Light
+        );
+        let light = AppearancePrefs {
+            mode: AppearanceMode::Light,
+            ..AppearancePrefs::default()
+        };
+        assert_eq!(
+            light.resolved_mode(WindowAppearance::Dark),
+            ThemeMode::Light
         );
     }
 
@@ -725,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_choices_partition_the_catalog() {
+    fn gallery_choices_partition_the_catalog() {
         let light: Vec<_> = themes_for(ThemeMode::Light).collect();
         let dark: Vec<_> = themes_for(ThemeMode::Dark).collect();
         assert_eq!(
@@ -753,29 +764,6 @@ mod tests {
         );
         assert_eq!(light.len() + dark.len(), ThemeId::ALL.len());
         assert!(dark.iter().all(|id| id.appearance() == ThemeMode::Dark));
-    }
-
-    #[test]
-    fn dropdown_choices_are_filtered_by_design_system() {
-        let classic_dark: Vec<_> =
-            themes_for_system(ThemeMode::Dark, DesignSystem::Classic).collect();
-        assert_eq!(
-            classic_dark,
-            vec![
-                ThemeId::Orbit,
-                ThemeId::OrbitDarker,
-                ThemeId::OrbitCobalt,
-                ThemeId::OrbitAzure,
-                ThemeId::Flexoki,
-                ThemeId::OrbitOnyx,
-            ]
-        );
-        let operational_dark: Vec<_> =
-            themes_for_system(ThemeMode::Dark, DesignSystem::Operational).collect();
-        assert_eq!(operational_dark, vec![ThemeId::Operational]);
-        let operational_light: Vec<_> =
-            themes_for_system(ThemeMode::Light, DesignSystem::Operational).collect();
-        assert_eq!(operational_light, vec![ThemeId::OperationalLight]);
     }
 
     #[test]

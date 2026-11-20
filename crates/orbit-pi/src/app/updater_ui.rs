@@ -7,14 +7,14 @@
 //! release is offered: it shows the search, the changelog, and the install
 //! decision, and the sidebar/settings controls only open it.
 
-use super::helpers::*;
 use super::*;
-use crate::motion::Hover;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{
     button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
+use crate::ui::prelude::*;
+use crate::ui::tooltip::Tooltip;
 use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
-use crate::usage::tooltip::Tooltip;
 
 /// The sidebar updater pill: a `ButtonSize::Compact` disc at rest (the
 /// download icon), expanding sideways to reveal the "Update" label while
@@ -427,12 +427,13 @@ impl OrbitApp {
             } else {
                 tr!("updater_ui.updating")
             };
+            // Bespoke: the updater pill (action fill, animated width).
             let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
                 .rounded_full()
                 .raised(theme.action, &theme)
                 .cursor_default()
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-                .child(crate::app::spinner(
+                .child(crate::ui::prelude::spinner(
                     ElementId::NamedInteger("update-spin".into(), 0),
                     ButtonSize::Compact.icon_size().px(&theme),
                     theme.action_fg,
@@ -448,6 +449,7 @@ impl OrbitApp {
         } else {
             (tr!("updater_ui.update"), "icons/arrow-down.svg")
         };
+        // Bespoke: the updater pill (action fill, animated width).
         let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
             .overflow_hidden()
             .rounded_full()
@@ -611,6 +613,7 @@ impl OrbitApp {
                 } else {
                     (tr!("updater_ui.update"), "icons/arrow-down.svg")
                 };
+                // Bespoke: an action-filled icon button (the primary update).
                 icon_button_frame(
                     div().id("settings-update-action"),
                     &theme,
@@ -632,44 +635,19 @@ impl OrbitApp {
                 ))
                 .into_any_element()
             }
-            UpdateStatus::Downloading => button_frame(
-                div().id("settings-update-action"),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_elevated)
-            .text_color(theme.text_muted)
-            .cursor_default()
-            .child(tr!("updater_ui.downloading"))
-            .into_any_element(),
-            UpdateStatus::Updating => button_frame(
-                div().id("settings-update-action"),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_elevated)
-            .text_color(theme.text_muted)
-            .cursor_default()
-            .child(tr!("updater_ui.updating"))
-            .into_any_element(),
-            UpdateStatus::Idle => button_frame(
-                div().id("settings-update-action"),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .font_weight(FontWeight::MEDIUM)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .cursor_pointer()
-            .hover_state(&theme)
+            UpdateStatus::Downloading => Button::new("settings-update-action", ButtonVariant::Secondary)
+                .label(tr!("updater_ui.downloading"))
+                .loading(true)
+                .render(&theme)
+                .into_any_element(),
+            UpdateStatus::Updating => Button::new("settings-update-action", ButtonVariant::Secondary)
+                .label(tr!("updater_ui.updating"))
+                .loading(true)
+                .render(&theme)
+                .into_any_element(),
+            UpdateStatus::Idle => Button::keyed("settings-update-action", ButtonVariant::Secondary)
+.size(ButtonSize::Medium)
+.render(&theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.begin_update_check(cx));
             })
@@ -699,37 +677,17 @@ impl OrbitApp {
         &self,
         version: &str,
         theme: Theme,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let url = crate::updater::changelog_url(version)?;
         Some(
-            crate::motion::hover(
-                div()
-                    .id("update-changelog-link")
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base04.px(&theme))
-                    .cursor_pointer()
-                    .text_size(TextSize::Small.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
-                            cx.open_url(&url);
-                        }),
-                    )
-                    .child(tr!("updater_ui.view_changelog"))
-                    .child(icon(
-                        "icons/arrow-up-right.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.accent_text,
-                    )),
+            crate::ui::button::LinkButton::new(
                 "update-changelog-link",
-                &theme,
-                Hover::ink(theme.accent_text, theme.accent),
+                tr!("updater_ui.view_changelog"),
             )
-            .into_any_element(),
+            .external()
+            .size(TextSize::Small)
+            .on_click(&theme, move |_, _, cx| cx.open_url(&url)),
         )
     }
 
@@ -741,7 +699,7 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let dialog = self.updater_dialog.as_ref()?;
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let can_install = self.updater_can_install(cx);
         let (card_width, card_max_height) = update_dialog_card_size(window.viewport_size());
 
@@ -761,17 +719,11 @@ impl OrbitApp {
             .id("update-dialog-card")
             .w(card_width)
             .max_h(card_max_height)
+            // The version and notes continue the headline: no hairline.
             .child(
-                div()
-                    .px(modal::header_padding_x(&theme))
-                    .pt(modal::header_padding_top(&theme))
-                    .pb(modal::header_padding_bottom(&theme))
-                    .flex_none()
-                    .text_size(modal::HEADLINE.px(&theme))
-                    .line_height(modal::HEADLINE.line_height(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(title),
+                crate::ui::dialog::ModalHeader::new(title)
+                    .divider(false)
+                    .render(&theme),
             );
 
         let mut body: AnyElement = match dialog {
@@ -1278,26 +1230,16 @@ fn dialog_button(
     label: String,
     on_mouse_up: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let button = button_frame(div().id(id), &theme, ButtonSize::Large)
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM)
-        .on_mouse_up(MouseButton::Left, on_mouse_up);
-    let button = if primary {
-        button
-            .raised(theme.action, &theme)
-            .text_color(theme.action_fg)
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
+    let variant = if primary {
+        ButtonVariant::Primary
     } else {
-        button
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .hover_state(&theme)
+        ButtonVariant::Secondary
     };
-    press(button).child(label).into_any_element()
+    Button::new(id, variant)
+        .size(ButtonSize::Large)
+        .label(label)
+        .on_mouse_up(&theme, on_mouse_up)
+        .into_any_element()
 }
 
 /// The sidebar pill's two layers: the action's glyph and its label,

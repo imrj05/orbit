@@ -20,16 +20,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight,
-    ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, ScrollHandle,
+    div, prelude::*, px, AnyElement, ClickEvent, Context, Entity, FontWeight, ListAlignment,
+    ListOffset, ListState, MouseDownEvent, Pixels, Render, ScrollHandle,
     StatefulInteractiveElement, Window,
 };
 
-use crate::app::{
-    button_frame, context_menu_separator, empty_state, file_glyph, icon, icon_button_frame,
-    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, AccentWash,
-    ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
-};
+use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::composer::ComposerInput;
 use crate::diff_view::{
     diff_gutter_width, render_code_row, render_file_header, render_hunk_header, render_meta,
@@ -37,13 +33,24 @@ use crate::diff_view::{
 };
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
-use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
-    TextSize,
+    context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
-use crate::usage::tooltip::Tooltip;
+use crate::ui::button::IconButton;
+use crate::ui::button::{quiet_icon_button, Button, ButtonVariant};
+use crate::ui::feedback::empty_state_with_action;
+use crate::ui::field::search_field;
+use crate::ui::list::virtual_list;
+use crate::ui::menu::menu_hint;
+use crate::ui::popover::PopoverExt;
+use crate::ui::prelude::{
+    context_menu_separator, empty_state, file_glyph, icon, nerd_font_family,
+    picker_entry, picker_surface, refresh_glyph, ControlExt, EmptyFill, TipExt, BUTTON_GROUP,
+};
+use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
+use crate::ui::style::surface::SurfaceExt;
+use crate::ui::tree::{TreeNode, TreeRow, TreeRowState};
 
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
@@ -158,7 +165,7 @@ pub struct SidePane {
     source_menu_open: bool,
     /// Guards against the outside-dismiss click's mouse-up re-opening the
     /// menu through the chip.
-    menu_dismissed_at: Option<Instant>,
+    menu_dismissed_at: crate::ui::popover::DismissGuard,
     /// Virtualized diff rows.
     diff_list: ListState,
     /// The unwrapped diff's horizontal scroller. The pane reads it while
@@ -249,7 +256,7 @@ impl SidePane {
             follow_latest_turn: true,
             load_generation: 0,
             source_menu_open: false,
-            menu_dismissed_at: None,
+            menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
             diff_list: ListState::new(0, ListAlignment::Top, px(400.)),
             h_scroll: ScrollHandle::new(),
             wrap: true,
@@ -365,7 +372,7 @@ impl SidePane {
     pub fn close_source_menu(&mut self, cx: &mut Context<Self>) {
         if self.source_menu_open {
             self.source_menu_open = false;
-            self.menu_dismissed_at = Some(Instant::now());
+            self.menu_dismissed_at.arm();
             cx.notify();
         }
     }
@@ -1120,11 +1127,8 @@ impl SidePane {
     // ── source filter ──────────────────────────────────────────────────
 
     fn toggle_source_menu(&mut self, cx: &mut Context<Self>) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(at) = self.menu_dismissed_at.take() {
-            if at.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.source_menu_open = !self.source_menu_open;
         cx.notify();
@@ -1136,7 +1140,7 @@ impl SidePane {
 
     fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
         self.source_menu_open = false;
-        self.menu_dismissed_at = Some(Instant::now());
+        self.menu_dismissed_at.arm();
         // Choosing Last Turn from the menu resumes following, even if it is
         // currently the same turn as an explicitly selected card.
         self.follow_latest_turn = true;
@@ -1426,7 +1430,7 @@ impl SidePane {
             // never shares their row.
             .pr(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .child(
                 div()
                     .flex_1()
@@ -1439,40 +1443,44 @@ impl SidePane {
                     .child(title.clone()),
             )
             .children(tree_available.then(|| {
-                icon_button_frame(div().id("review-tree-toggle"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("sidepane.toggle_tree"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
-                    .child(icon(
-                        "icons/folder.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        if self.tree_open {
-                            theme.text_primary
-                        } else {
-                            theme.text_muted
-                        },
-                    ))
+                quiet_icon_button(
+                    div()
+                        .id("review-tree-toggle")
+                        .group(BUTTON_GROUP)
+                        .tip(tr!("sidepane.toggle_tree")),
+                    &theme,
+                    ButtonSize::Default,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
+                .child(icon(
+                    "icons/folder.svg",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    if self.tree_open {
+                        theme.text_primary
+                    } else {
+                        theme.text_muted
+                    },
+                ))
             }))
             .child(
-                icon_button_frame(div().id("review-refresh"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("common.refresh"))
-                    .cursor_pointer()
-                    .hover_state(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.refresh_from_button(cx);
-                    }))
-                    .child(refresh_glyph(
-                        "review-spinner",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        self.review_loading || self.refresh_spin_until.is_some(),
-                        theme.text_muted,
-                        theme,
-                    )),
+                quiet_icon_button(
+                    div()
+                        .id("review-refresh")
+                        .group(BUTTON_GROUP)
+                        .tip(tr!("common.refresh")),
+                    &theme,
+                    ButtonSize::Default,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.refresh_from_button(cx);
+                }))
+                .child(refresh_glyph(
+                    "review-spinner",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    self.review_loading || self.refresh_spin_until.is_some(),
+                    theme.text_muted,
+                    theme,
+                )),
             );
 
         if !self.embedded {
@@ -1497,18 +1505,20 @@ impl SidePane {
                     cx,
                 ))
                 .child(
-                    icon_button_frame(div().id("pane-close"), &theme, ButtonSize::Default)
-                        .group(BUTTON_GROUP)
-                        .tip(tr!("common.close"))
-                        .cursor_pointer()
-                        .hover_state(&theme)
-                        .pressed_state(&theme, PressedRamp::Wash)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
-                        .child(icon(
-                            "icons/x.svg",
-                            ButtonSize::Default.icon_size().px(&theme),
-                            theme.text_muted,
-                        )),
+                    quiet_icon_button(
+                        div()
+                            .id("pane-close")
+                            .group(BUTTON_GROUP)
+                            .tip(tr!("common.close")),
+                        &theme,
+                        ButtonSize::Default,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_muted,
+                    )),
                 );
         }
 
@@ -1516,39 +1526,12 @@ impl SidePane {
         // embedded browser always shows the working tree split into Staged and
         // Changes sections, so its chip is dropped.
         let source_chip = (!self.embedded).then(|| {
-            button_frame(div().id("review-source"), &theme, ButtonSize::Medium)
-                .group(BUTTON_GROUP)
-                .border_1()
-                .border_color(if self.source_menu_open {
-                    theme.border_strong
-                } else {
-                    theme.border
-                })
-                .raised(theme.surface_elevated, &theme)
-                .cursor_pointer()
-                .hover_state(&theme)
-                .pressed_state(&theme, PressedRamp::Wash)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
-                .child(icon(
-                    "icons/file-diff.svg",
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    theme.text_muted,
-                ))
-                .child(
-                    div()
-                        .max_w(px(120.))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(self.source_label(self.source)),
-                )
-                .child(icon(
-                    "icons/chevron-down.svg",
-                    IconSize::XSmall.px(&theme),
-                    theme.text_muted,
-                ))
-                .into_any_element()
+            ChipButton::new("review-source", ChipStyle::Outlined { inset: false })
+                .icon("icons/file-diff.svg")
+                .label(self.source_label(self.source))
+                .label_max_w(px(120.))
+                .open(self.source_menu_open)
+                .on_click(&theme, cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
         });
 
         // Toolbar: the source filter chip, the diff view toggles, and the
@@ -1560,7 +1543,7 @@ impl SidePane {
             .gap_2()
             .px(px(10.))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .children(source_chip)
             .child(div().flex_1())
             .when(truncated, |row| {
@@ -1616,7 +1599,7 @@ impl SidePane {
                         .items_center()
                         .px(DynamicSpacing::Base12.px(&theme))
                         .border_b_1()
-                        .border_color(theme.border)
+                        .border_color(theme.hairline())
                         .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.warning)
                         .child(tr!("sidepane.partial")),
@@ -1651,18 +1634,15 @@ impl SidePane {
         } else {
             theme.text_muted
         };
-        let button = icon_button_frame(div().id(id), &theme, size)
-            .group(BUTTON_GROUP)
-            .child(icon(icon_path, size.icon_size().px(&theme), color));
-        if !enabled {
-            return button.into_any_element();
-        }
-        button
-            .cursor_pointer()
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
+        IconButton::new(id, icon_path)
+            .size(size)
+            .ink(color)
+            .disabled(!enabled)
+            .tip(tooltip)
+            .on_click(
+                &theme,
+                cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)),
+            )
             .into_any_element()
     }
 
@@ -1781,7 +1761,7 @@ impl SidePane {
                     .min_w(px(40.))
                     .flex()
                     .justify_center()
-                    .font(crate::usage::view::num_font())
+                    .font(crate::ui::style::text::num_font())
                     .whitespace_nowrap()
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_muted)
@@ -1812,36 +1792,29 @@ impl SidePane {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let button = icon_button_frame(
-            div().id(gpui::ElementId::Name(id.clone().into())),
-            &theme,
-            ButtonSize::Default,
+        // A small glyph in a Default frame: the file-step arrows sit quieter
+        // than the toolbar's toggles.
+        let selector = id.clone();
+        IconButton::glyph(
+            gpui::ElementId::Name(id.into()),
+            icon(
+                icon_path,
+                IconSize::XSmall.px(&theme),
+                if enabled {
+                    theme.text_muted
+                } else {
+                    theme.text_disabled
+                },
+            ),
         )
-        .group(BUTTON_GROUP)
-        .debug_selector(move || id.clone())
-        .child(icon(
-            icon_path,
-            IconSize::XSmall.px(&theme),
-            if enabled {
-                theme.text_muted
-            } else {
-                theme.text_disabled
-            },
-        ));
-        if !enabled {
-            return button.into_any_element();
-        }
-        button
-            .cursor_pointer()
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .tip(tooltip)
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.review_move_file(direction, cx)
-                }),
-            )
-            .into_any_element()
+        .disabled(!enabled)
+        .tip(tooltip)
+        .on_click(
+            &theme,
+            cx.listener(move |this, _: &ClickEvent, _, cx| this.review_move_file(direction, cx)),
+        )
+        .debug_selector(move || selector.clone())
+        .into_any_element()
     }
 
     fn render_content(
@@ -1863,12 +1836,23 @@ impl SidePane {
                 EmptyFill::Grow,
             )
         } else if let Some(error) = self.review_error.as_deref() {
-            empty_state(
+            // A failed diff is usually transient (a lock, a moved ref): offer
+            // the same reload the header's refresh runs.
+            let retry = Button::new("sidepane-review-retry", ButtonVariant::Secondary)
+                .label(tr!("common.retry"))
+                .icon("icons/refresh.svg")
+                .on_click(
+                    &theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.refresh_from_button(cx)),
+                )
+                .into_any_element();
+            empty_state_with_action(
                 theme,
                 "icons/stop.svg",
                 &tr!("sidepane.changes_unavailable"),
                 Some(error),
                 EmptyFill::Grow,
+                Some(retry),
             )
         } else if let Some(snapshot) = self.review.clone() {
             if snapshot.files.is_empty() {
@@ -1933,7 +1917,7 @@ impl SidePane {
         // List row renderers run while the list state is borrowed. Capture the
         // visible file before layout so their navigation controls never borrow it again.
         let current_file = self.current_file(&snapshot);
-        let list_el = gpui::list(self.diff_list.clone(), move |index, _window, cx| {
+        let list_el = virtual_list(self.diff_list.clone(), move |index, _window, cx| {
             entity
                 .upgrade()
                 .map(|entity| {
@@ -1943,7 +1927,6 @@ impl SidePane {
                 })
                 .unwrap_or_else(|| div().into_any_element())
         })
-        .h_full()
         .w_full()
         .min_w(min_w);
         let rows = if self.wrap {
@@ -2059,6 +2042,9 @@ impl SidePane {
                                 .top(section_height + push)
                                 .left_0()
                                 .w_full()
+                                // Over a page's glass the header is
+                                // translucent: frost the code sliding under it.
+                                .page_sticky_frost(&theme)
                                 .child(self.file_header_row(line.file_index, true, theme, cx)),
                         );
                         has_layer = true;
@@ -2084,12 +2070,17 @@ impl SidePane {
                         theme,
                         cx,
                     );
-                    layers =
-                        layers.child(div().absolute().top(section_push).left_0().w_full().child(
-                            render_section_header(
+                    layers = layers.child(
+                        div()
+                            .absolute()
+                            .top(section_push)
+                            .left_0()
+                            .w_full()
+                            .page_sticky_frost(&theme)
+                            .child(render_section_header(
                                 label, *icon, *count, *additions, *deletions, actions, theme,
-                            ),
-                        ));
+                            )),
+                    );
                     has_layer = true;
                 }
             }
@@ -2313,7 +2304,7 @@ impl SidePane {
             .flex()
             .when(two, |gutter| gutter.flex_col())
             .border_r_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .bg(theme.overlay);
         if expandable {
             for (button_index, direction) in directions.iter().copied().enumerate() {
@@ -2332,7 +2323,7 @@ impl SidePane {
                                 .h(px(16.))
                                 .flex_none()
                                 .border_b_1()
-                                .border_color(theme.border)
+                                .border_color(theme.hairline())
                         })
                         .cursor_pointer()
                         .hover_on_glass(&theme)
@@ -2415,23 +2406,17 @@ impl SidePane {
 
     fn render_tree(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
-        let tree_el = gpui::list(self.tree_list.clone(), move |index, _window, cx| {
+        let tree_el = virtual_list(self.tree_list.clone(), move |index, _window, cx| {
             entity
                 .upgrade()
                 .map(|entity| entity.update(cx, |this, cx| this.render_tree_row(index, cx)))
                 .unwrap_or_else(|| div().into_any_element())
         })
-        .size_full()
+        .w_full()
         .py(DynamicSpacing::Base04.px(&theme));
 
         let column_w = (f32::from(self.width) * 0.42).clamp(TREE_MIN_COL_W, TREE_MAX_COL_W);
-        let filter_row = picker_search_frame(div(), &theme)
-            .child(icon(
-                "icons/search.svg",
-                input::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(div().flex_1().min_w_0().child(self.tree_filter.clone()));
+        let filter_row = search_field(self.tree_filter.clone(), &theme);
 
         div()
             .w(px(column_w))
@@ -2439,7 +2424,7 @@ impl SidePane {
             .h_full()
             .min_h_0()
             .border_l_1()
-            .border_color(theme.border)
+            .border_color(theme.hairline())
             .flex()
             .flex_col()
             .child(filter_row)
@@ -2498,59 +2483,30 @@ impl SidePane {
                 name,
                 depth,
                 expanded,
-            } => div()
-                .w_full()
-                .h(px(30.))
-                .px(DynamicSpacing::Base06.px(&theme))
-                .flex()
-                .items_center()
-                .child(
-                    div()
-                        .id(gpui::ElementId::Name(format!("review-dir-{path}").into()))
-                        .h(px(26.))
-                        .flex_1()
-                        .min_w_0()
-                        .pl(px(7. + depth as f32 * 14.))
-                        .pr(px(7.))
-                        .rounded(Radius::Medium.px(&theme))
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .cursor_pointer()
-                        .when(cursor, |row| row.bg(theme.overlay_strong))
-                        .when(!cursor, |row| row.hover_state(&theme))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            window.focus(&this.tree_focus);
-                            this.tree_cursor = Some(index);
-                            this.toggle_dir(path.clone(), cx);
-                        }))
-                        .child(icon(
-                            if expanded {
-                                "icons/chevron-down.svg"
-                            } else {
-                                "icons/chevron-right.svg"
-                            },
-                            IconSize::Indicator.px(&theme),
-                            theme.text_muted,
-                        ))
-                        .child(icon(
-                            "icons/folder.svg",
-                            IconSize::Small.px(&theme),
-                            theme.text_muted,
-                        ))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(TextSize::Small.px(&theme))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_secondary)
-                                .child(name),
-                        ),
+            } => tree_row_slot(
+                TreeRow::new(
+                    format!("review-dir-{path}"),
+                    depth,
+                    TreeNode::Directory { expanded },
+                    name,
                 )
-                .into_any_element(),
+                .height(px(26.))
+                .state(if cursor {
+                    TreeRowState::Cursor
+                } else {
+                    TreeRowState::Rest
+                })
+                .render(&theme)
+                .flex_1()
+                .min_w_0()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    window.focus(&this.tree_focus);
+                    this.tree_cursor = Some(index);
+                    this.toggle_dir(path.clone(), cx);
+                })),
+                &theme,
+            )
+            .into_any_element(),
             review::TreeRow::File { file_index, depth } => {
                 let Some(file) = snapshot.files.get(file_index) else {
                     return div().h(px(30.)).into_any_element();
@@ -2583,74 +2539,53 @@ impl SidePane {
                     IconSize::Small.px(&theme),
                     fallback,
                 );
-                div()
-                    .w_full()
-                    .h(px(30.))
-                    .px(DynamicSpacing::Base06.px(&theme))
+                let badge = div()
+                    .w(px(18.))
+                    .h(px(18.))
+                    .flex_none()
+                    .rounded(Radius::Small.px(&theme))
+                    .border_1()
+                    .border_color(status_color.opacity(0.65))
                     .flex()
                     .items_center()
-                    .child(
-                        div()
-                            .id(gpui::ElementId::Name(
-                                format!("review-file-{file_index}").into(),
-                            ))
-                            .h(px(26.))
-                            .flex_1()
-                            .min_w_0()
-                            .pl(px(23. + depth as f32 * 14.))
-                            .pr(px(7.))
-                            .rounded(Radius::Medium.px(&theme))
-                            .flex()
-                            .items_center()
-                            .gap(DynamicSpacing::Base06.px(&theme))
-                            .cursor_pointer()
-                            .when(selected, |row| row.bg(theme.surface_selected))
-                            .when(!selected && cursor, |row| row.bg(theme.surface_hover))
-                            .when(!selected && !cursor, |row| row.hover_state(&theme))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                window.focus(&this.tree_focus);
-                                this.tree_cursor = Some(index);
-                                this.select_file(file_index, cx);
-                            }))
-                            .child(glyph)
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_size(TextSize::Small.px(&theme))
-                                    .text_color(if selected {
-                                        theme.text_primary
-                                    } else {
-                                        theme.text_secondary
-                                    })
-                                    .child(name),
-                            )
-                            .child(
-                                div()
-                                    .w(px(18.))
-                                    .h(px(18.))
-                                    .flex_none()
-                                    .rounded(Radius::Small.px(&theme))
-                                    .border_1()
-                                    .border_color(status_color.opacity(0.65))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(TextSize::Small.px(&theme))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(status_color)
-                                    .child(status),
-                            ),
+                    .justify_center()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(status_color)
+                    .child(status);
+                tree_row_slot(
+                    TreeRow::new(
+                        format!("review-file-{file_index}"),
+                        depth,
+                        TreeNode::File { glyph },
+                        name,
                     )
-                    .into_any_element()
+                    .height(px(26.))
+                    .state(if selected {
+                        TreeRowState::Selected
+                    } else if cursor {
+                        TreeRowState::Cursor
+                    } else {
+                        TreeRowState::Rest
+                    })
+                    .trailing(badge)
+                    .render(&theme)
+                    .flex_1()
+                    .min_w_0()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        window.focus(&this.tree_focus);
+                        this.tree_cursor = Some(index);
+                        this.select_file(file_index, cx);
+                    })),
+                    &theme,
+                )
             }
         }
     }
 
     /// The source filter dropdown, painted over the pane body.
     fn source_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = theme.for_floating();
         if !self.source_menu_open || self.embedded {
             return None;
         }
@@ -2671,8 +2606,7 @@ impl SidePane {
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base01.px(&theme))
-            .occlude()
-            .on_mouse_down_out(
+            .dismiss_on_outside(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_source_menu(cx)),
             );
 
@@ -2736,7 +2670,7 @@ fn source_row(
     .h(picker::entry_height(&theme))
     .flex_none()
     .when(enabled, |row| row.cursor_pointer())
-    .when(selected, |row| row.bg(theme.surface_selected))
+    .when(selected, |row| row.bg(theme.selected_wash()))
     .when(enabled && !selected, |row| row.hover_state(&theme))
     .when(enabled && choice.is_some(), |row| {
         row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -2762,14 +2696,7 @@ fn source_row(
     )
     .when(!enabled, |row| {
         // Zed's `ml_4` before a trailing hint, less the row gap already there.
-        row.child(
-            div()
-                .flex_none()
-                .ml(context_menu::keybinding_gap(&theme) - context_menu::icon_gap(&theme))
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_muted)
-                .child(tr!("sidepane.no_turns_yet")),
-        )
+        row.child(menu_hint(tr!("sidepane.no_turns_yet"), &theme))
     })
     .when(selected, |row| {
         row.child(icon(
@@ -2851,7 +2778,7 @@ impl Render for SidePane {
                 .min_h_0()
                 .min_w_0()
                 .w_full()
-                .bg(theme.background)
+                .bg(theme.page_canvas())
                 .flex()
                 .flex_col()
                 .child(body)
@@ -2876,36 +2803,36 @@ impl Render for SidePane {
             .flex_col()
             .min_h_0()
             .child(
-                div()
-                    .id("side-pane-resize-handle")
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    // Sit on the card's left border (the 12px gutter, minus
-                    // half the handle width), not the panel's outer edge, so
-                    // the edge users see is the edge they can grab.
-                    .left(px(9.))
-                    .w(px(6.))
-                    .cursor(CursorStyle::ResizeLeftRight)
-                    .hover_accent_wash(&theme, AccentWash::Strong)
-                    .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
+                resize_handle(
+                    "side-pane-resize-handle",
+                    &theme,
+                    ResizeAxis::Horizontal,
+                    ResizeLook::Wash,
+                )
+                .absolute()
+                .top_0()
+                .bottom_0()
+                // Sit on the card's left border (the 12px gutter, minus
+                // half the handle width), not the panel's outer edge, so
+                // the edge users see is the edge they can grab.
+                .left(px(9.))
+                .w(px(6.))
+                .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
             )
             // The dock reads as a rounded card, like the Git/Usage cards in
             // the main column. The menus stay outside this clipped shell so
-            // they are not cut off at its corners.
+            // they are not cut off at its corners. Over a full-window
+            // wallpaper the card is glass, like the pages.
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .bg(theme.background)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(panel::RADIUS.px(&theme))
+                    .bg(theme.page_canvas())
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .child(body),
+                    .page_card(&theme, body),
             )
             .children(self.source_menu(theme, cx))
             .on_action(cx.listener(Self::on_filter_cancel))
@@ -2936,6 +2863,19 @@ impl Render for DragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
     }
+}
+
+/// The Review tree's 30px list slot around a 26px [`TreeRow`]: the row sits
+/// inset so neighbouring hover fills never touch.
+fn tree_row_slot(row: impl IntoElement, theme: &Theme) -> AnyElement {
+    div()
+        .w_full()
+        .h(px(30.))
+        .px(DynamicSpacing::Base06.px(theme))
+        .flex()
+        .items_center()
+        .child(row)
+        .into_any_element()
 }
 
 #[cfg(test)]

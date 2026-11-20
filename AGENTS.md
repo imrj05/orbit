@@ -94,6 +94,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/pickers.rs    model, command-palette, branch, and new-task workspace pickers
   src/app/composer_ops.rs autocomplete, attachments, "+" add-menu, model/thinking chips
   src/app/sidebar.rs    sidebar rows + session/workspace row menus; project-list prefs
+                        and reordering (header and session-row drag, menu Move
+                        up/down, ⌥↑/⌥↓)
   src/app/settings.rs   Settings surface: General/Runtime/Agent/Skills/Subagents/Permissions/Plugins/Models/Appearance/Providers/About (+ provider CRUD, plugin install, model list)
   src/app/permissions_ui.rs  Settings → Permissions: baseline select, scope chips (every session /
                         main only / one subagent), one row per tool family with Inherit·Allow·Ask·Deny,
@@ -109,12 +111,31 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   docs/mcp.md           MCP architecture, configuration, secrets, lifecycle, troubleshooting
   src/app/updater_ui.rs signed-updater modal (check/version+changelog/Download with progress/Restart, Version History), rows, pill, event drain
   src/app/search.rs     in-transcript find (⌘F): matches, counts, prev/next, row wash
+  src/app/remote_ui.rs  remote (SSH) sessions: picker host rows, the `spawn_pi` seam every restart
+                        uses, the host-config action, and the unavailable state for local-disk surfaces
+  src/app/remote_hosts_ui.rs  Settings → Remote hosts: host rows (Test / Edit / Remove), the add/edit
+                        modal with `~/.ssh/config` alias suggestions, and the background Test connection
+  src/app/remote_providers_ui.rs  Providers & models per machine: the Machine selector, a host's
+                        signed-in providers from its own `pi --list-models`, Sign in / Refresh on the host
+  src/app/server_clone_ui.rs  "Add to a server": the dialog (server, folder, SSH/HTTPS, ignored files
+                        to copy) and the connect → clone → copy → save host → start session flow
+  src/app/remote_sessions_ui.rs  a sidebar group per remote host entry (its server's sessions in its
+                        folder), the quiet/interactive list fetches, and resume on the host
+  src/app/ssh_auth_ui.rs  SSH password logins: keys first, then the masked password dialog and the
+                        askpass retry; passwords in memory only, keyed by ssh account
+  src/server_clone.rs   the local half of "Add to a server": origin (credentials stripped) and
+                        ignored files via git, SSH↔HTTPS URLs, the copy payload, host-output parsing
+  src/remote_sessions.rs  a host's session list: parse the host script's lines, group by entry folder
+  src/remote_hosts.rs   `~/.orbit-pi/remote-hosts.json`: lenient host list, validated ssh targets,
+                        surgical upsert/remove, `~/.ssh/config` alias discovery, the read-only probe
+  docs/remote-sessions.md  agent-only SSH sessions: launch script, safety, what is off while remote
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
   src/app/view.rs       top-level chrome: sidebar, transcript, composer, status bar, onboarding, image lightbox
   src/app/open_in.rs    installed-editor/terminal detection and the "open in" menu
   src/app/worktrees.rs  Worktrees page + controller: list/create/open/rename/move/lock/remove, setup progress, settings rows
   src/app/pi_update_ui.rs launch-time pi self-update: background check, install, toasts
-  src/app/helpers.rs    shared UI primitives (icon/file glyphs, the loading spinner, the floating-surface chrome, the empty/error state) + small formatting helpers
+  src/app/format.rs     formatting and small domain helpers (command labels, queue row identity
+                        and previews, session titles, uptime); no UI — elements live in `src/ui/`
   src/auth.rs           non-sensitive provider-auth state machine for the auth.* RPC namespace (login/cancel/timeout/restart recovery)
   src/transcript.rs     virtualized messages (snapshot + stream)
   src/transcript_view.rs Waku-style transcript paint (rail, activity cards, copy); plain-GPUI message rows (no component library)
@@ -130,6 +151,12 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/pi_update.rs      pi self-update check + delegated install: latest-version fetch (pi.dev), version ordering, `pi update self`, failure extraction
   src/command_palette.rs  ⌘P / ⌘K command palette (sections, fuzzy match, modal scrim layer)
   src/workspace_picker.rs new-task folder selector (recent folders + native browse)
+  src/wallpaper_builtin.rs built-in backgrounds: generated gradients + bundled images (assets/wallpapers/,
+                        credits in its CREDITS.md), written into the managed wallpaper folder and imported
+                        like a picked file
+  src/wallpaper_library.rs "Your backgrounds": lists the user's own pictures in
+                        ~/.orbit-pi/wallpapers/library/ (read-only, never bundled), cached
+                        240×150 thumbnails, and the debounced folder watch
   src/workspace_logo.rs workspace logo lookup for the new-task folder field (conventional paths, `.orbit-pi/icon.*` override, folder glyph fallback)
   src/workspace_mark.rs per-workspace sidebar mark: curated HugeIcons + semantic tints, persisted in workspaces.json
   src/worktree.rs       Git worktree lifecycle: `WorktreeManager` (list/create/remove/move/lock/unlock/prune/repair), porcelain parsing, name validation, worktree root + `.orbit/worktree.json`
@@ -154,8 +181,32 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/terminal.rs       bottom terminal panel (⌘J): tabbed shells (one PTY per tab, background tabs keep
                         running) with each tab's login-shell profile mark; alacritty_terminal VT grid,
                         GPUI canvas render, keys/selection/paste
-  src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_1/2/3, component metrics) resolved through the Theme; see INTENT.md D11
+  src/ui/               the component layer (INTENT.md D22): every UI element has one owner
+                        here. `ui/prelude.rs` is the everyday import (`use crate::ui::prelude::*`);
+                        named components come from their module. `ui/style/` control states,
+                        press, material (`card_surface`) and text (`num_font`, `text_width`);
+                        `ui/button.rs` `Button`/`IconButton`/`ButtonGroup`/`LinkButton`;
+                        `ui/chip.rs` `ChipButton`/`Badge`/`Pill`; `ui/banner.rs` `Banner`;
+                        `ui/feedback.rs` empty/error/spinner/progress/skeleton; `ui/field.rs`
+                        `TextField`/`FormRow`/`search_field`; `ui/menu.rs` `MenuState`/`MenuCursor`;
+                        `ui/popover.rs` `dropdown_below/above`, `column_menu`, dismissal;
+                        `ui/dialog.rs` `ModalHeader`/footer/`modal_button`/`ModalFocus`;
+                        `ui/row.rs` picker/nav/setting rows + `RowState`/`list_row`;
+                        `ui/table.rs`, `ui/tree.rs`, `ui/tab.rs`, `ui/list.rs` (`virtual_list`),
+                        `ui/diff.rs`, `ui/status_bar.rs`, `ui/rail.rs`, `ui/toast.rs`,
+                        `ui/avatar.rs`, `ui/lightbox.rs`, `ui/kbd.rs`, `ui/switch.rs`,
+                        `ui/resize.rs`, `ui/chrome.rs`, `ui/glyph.rs`, `ui/icon.rs`, `ui/tooltip.rs`.
+                        `ui/*` may use theme/motion/i18n/gpui and must NOT import a surface
+                        (`scripts/check_ui_layers.py`); no element gets a second owner
+                        (`scripts/check_ui_owners.py`). See docs/plans/ui-component-layer.md
+  src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_2/3, component metrics) resolved through the Theme; see INTENT.md D11
   src/providers.rs      provider catalog + models.json / auth.json read/write for Settings → Providers (provider metadata introspected from pi-ai; curated table is the fallback)
+  src/provider_accounts.rs  extra provider accounts: ~/.orbit-pi/accounts.json (name, provider,
+                        `<provider>~<slug>` alias), v1 migration, the alias label registry
+  src/app/provider_accounts.rs  Accounts panel (add/rename/remove, sign-in state), account rows,
+                        Add/Rename modal, restart pi on change
+  src/app/auth_prompt.rs  transient OAuth text/authorization-code field and profile API-key save
+  docs/provider-accounts.md  accounts as alias providers: storage, extension, migration, limits
   src/quota.rs          account quota/balance/spend reducer over the `quota.*` RPC and the bridge's session entries (no secrets, no I/O)
   src/access.rs         access mode (Supervised / Auto-accept edits / Full access): persistence to `~/.orbit-pi/access.json`, which the guard extension reads
   src/permissions.rs    per-command / per-agent permission rules: tool families, scope, glob matching,
@@ -170,11 +221,16 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/commit_message.rs one-shot, tool-free `pi -p` conventional-commit generation
   assets/icons/         HugeIcons SVGs (MIT) + provider brand marks
   assets/fonts/         SymbolsNerdFont-Regular.ttf
+  assets/wallpapers/    bundled built-in backgrounds (2560 px JPEGs) + thumbs/ (240 px) + CREDITS.md
   assets/app-icon.png   512px app mark (from assets/icons/logo-icon.png)
   dev-assets/alpha-app-icon.png  512px Alpha mark; macOS debug-only asset overlay (scripts/make-alpha-icon.sh)
 crates/orbit-rpc/       pi CLI process + JSONL protocol
   src/client.rs         spawn, writer/reader/stderr threads, kill-on-drop
   src/types.rs          CommandBody / Event (permissive serde) + auth.* / quota.* wire types
+  src/remote.rs         ssh target validation, ssh argv, the guarded remote launch script (guard +
+                        workflow extension), and the short host scripts (probe, install, key, mode, clone, copy,
+                        session list)
+  tests/remote_fake_ssh.rs  fake-ssh round trip: guard installed, mode pinned, RPC over ssh stdio
   docs/auth-rpc.md      provider-auth RPC server contract (secrets never cross it)
   docs/quota-rpc.md     provider-quota RPC server contract (normalized, non-secret)
   tests/live_pi.rs      live get_state / prompt / process-alive (skip if no pi)
@@ -182,7 +238,11 @@ crates/orbit-rpc/       pi CLI process + JSONL protocol
   tests/auth_fake_pi.rs scripted-server coverage of the auth.* round trip
   tests/quota_fake_pi.rs scripted-server coverage of the quota.list round trip + `--extension` forwarding
 contrib/pi-auth-rpc/    apply.mjs: inject auth.* into an installed pi build
-                        (browser OAuth until pi ships the server upstream)
+                        (browser OAuth until pi ships the server upstream; also auth.respond
+                        for pasted codes and auth.set_api_key through pi's locked writer)
+contrib/pi-auth-profiles/  apply.mjs + routing.js: marker-delimited pi 1.5.2 patch routing
+                        AuthStorage per provider to a canonical profile auth.json
+                        (ORBIT_AUTH_PROFILE_ROUTES); --check is read-only
 contrib/pi-quota-rpc/    apply.mjs + quota-handler.js: inject quota.list into an
                         installed pi build (per-provider usage adapters)
                         quota-handler.test.mjs: node --test coverage of the
@@ -209,7 +269,7 @@ contrib/orbit-title-extension/  Orbit's bundled pi extension (loaded with
                         and sets it with `pi.setSessionName`. Any session
                         without a name is titled (a resumed untitled one
                         included); an existing name is only replaced by the
-                        details popover's explicit `/generate-title`, and a
+                        details panel's explicit `/generate-title`, and a
                         transient failure is retried on a later settle, up to
                         three times.
                         Reads `~/.orbit-pi/auto-title.json` (the model is the
@@ -224,6 +284,12 @@ contrib/orbit-workflow-extension/  Orbit's bundled pi extension (loaded with
                         Reads the per-session mode from `~/.orbit-pi/workflow.json`
                         fresh on every hook; policy.js is the pure decision
                         table and both files are `node --test` covered
+contrib/orbit-accounts-extension/  Orbit's bundled pi extension (loaded with
+                        `pi --extension`): registers every extra account in
+                        `~/.orbit-pi/accounts.json` as a copy of its built-in
+                        provider under `<provider>~<slug>`, so all accounts
+                        sign in separately and are live in one session.
+                        aliases.js is the pure helper; `node --test` covered
 contrib/orbit-subagents-extension/  Orbit's bundled pi extension (loaded with
                         `pi --extension`): registers the `subagent` tool, which
                         runs one child `pi --mode json -p --no-session` per
@@ -350,7 +416,7 @@ a second component library.
 - **Charts** — Usage is painted directly in `src/usage/`.
 - **Git** — the `git` CLI, not libgit2.
 - **State management / DI / component library / a second HTTP client / tokio /
-  an editor widget** — gpui entities, `app/helpers.rs`, `widgets.rs`,
+  an editor widget** — gpui entities, `src/ui/`, `widgets.rs`,
   `zed-reqwest`, gpui's smol runtime, and `ComposerInput` cover these.
 
 No new dependency without a stated reason (also in *Verification*). When one is
@@ -379,6 +445,8 @@ python3 scripts/check_i18n.py         # key + placeholder guard
 python3 scripts/check_states.py       # interaction states must come from the contract
 python3 scripts/check_motion.py       # animations must use a motion primitive
 python3 scripts/check_keyboard.py     # every key binding lands in a declared context
+python3 scripts/check_ui_layers.py    # ui/ imports no surface; material resolved once
+python3 scripts/check_ui_owners.py    # one owner per UI element; raw buttons/popovers only go down (--update)
 python3 scripts/read-perf.py          # frame-time captures from a debug build (⌘⌥P)
 ```
 
@@ -460,7 +528,8 @@ stack is gone; do not resurrect it.
   `DynamicSpacing` / `TextSize` / `IconSize` / `ButtonSize` / `Radius` and
   `elevation_2` / `elevation_3` instead of px literals. Context menus build on
   `context_menu_surface` / `context_menu_entry` / `context_menu_separator`
-  (`app/helpers.rs`).
+  (`ui/menu.rs`). A new element extends its `ui/` owner instead of starting a
+  second one; a true one-off says why with `// Bespoke:`.
 - Public releases cannot assume the author's providers, models, paths, or machine state.
 - Provider HTTP bodies have hard caps (measured: `ollama.com/v1` accepts ~7.5 MB and
   returns `413` at ~8 MB; much larger bodies surface as `400 failed to read request
@@ -520,7 +589,7 @@ These compiled and ran against the pinned version. When in doubt, check
 - **App icon:** source is `assets/icons/logo-icon.png`. `icon.icns` is for bundled `.app`s (`package.metadata.bundle`); `scripts/make-dmg.sh` ships it under `dev.orbit.pi`. `cargo run` has no bundle, so `app_icon::set_dock_icon()` calls AppKit `setApplicationIconImage` with the embedded 512 PNG, and Settings → About paints the same PNG via `img(app_icon::ASSET)`. **macOS debug builds swap in the Alpha mark** (`assets/icons/alpha-logo.png` → derived `alpha-logo.icns` + `crates/orbit-pi/dev-assets/alpha-app-icon.png`, regenerated by `scripts/make-alpha-icon.sh`; a debug-only asset overlay, so release binaries do not embed it): `debug_assertions` selects `alpha-app-icon.png` for the Dock and About, and `scripts/run-bundled.sh` builds the separate `Orbit Pi Alpha` / `dev.orbit.pi.alpha` bundle from the Alpha icns. Release builds, DMG, and CI still take the production branches (Windows/Linux debug builds keep the production mark).
 - **DMG background:** `assets/icons/background_660x400.tiff` is the checked-in DMG window art (660x400 at 72 dpi, RGB, no alpha), copied into the image as `.background/background.tiff` by `scripts/make-dmg.sh`. Finder draws icon-view labels in **black** whenever the window has a background picture or colour (only the default background adapts to Dark Mode; no `.DS_Store`/AppleScript field controls label colour), so the art must stay light where the labels print — roughly y 267..278 under the icons at `DMG_APP_X`/`DMG_DROP_X`/`DMG_ICON_Y` in `scripts/make-dmg.sh`.
 - **DMG header icon:** `scripts/make-dmg.sh` copies `assets/icons/icon.icns` to `.VolumeIcon.icns` on the image root and sets the volume's custom-icon bit with `SetFile -a C`. Both must run **after** the Finder layout AppleScript: Finder rewrites the volume's icon state while laying out the window and deletes `.VolumeIcon.icns` if it is already there, which leaves the generic disk in the title bar.
-- **macOS chrome:** `appears_transparent` + `traffic_light_position` — no objc2. Drag regions: `.window_control_area(WindowControlArea::Drag)` on the sidebar strip and the top-bar spacer. When the sidebar is hidden, pad the top bar so controls clear the traffic lights (`pl` ≈ 76 px).
+- **macOS chrome:** `appears_transparent` + `traffic_light_position` — no objc2. Drag regions: `.window_control_area(WindowControlArea::Drag)` on the sidebar strip and the top-bar spacer. When the sidebar is hidden, pad the top bar so controls clear the traffic lights (`pl` ≈ 76 px). **`WindowControlArea` is inert on macOS in 0.2.2** — `on_hit_test_window_control` is a no-op there and only the Windows backend reads the registered hitboxes, so the drag itself is AppKit's titlebar; anything the system normally does with a titlebar press has to be asked for. Double-click-to-zoom is the case that matters: the second `on_mouse_down` (`click_count == 2`) on a drag strip calls `window.titlebar_double_click()`, which reads `AppleActionOnDoubleClick` and runs the user's own Zoom / Minimize / Fill / Do-nothing choice — do not hardcode `zoom_window()` there, and do not add the same call on platforms where AppKit already handles it.
 - **Virtualized lists** (transcript **and** sidebar):
   - Transcript uses `message_scroller.rs` (`ListAlignment::Bottom`, 400px overdraw) — 0.2.2 has no `FollowMode::Tail`, so a past-the-end `scroll_to` is the equivalent. Append while following sticks to the live edge; `remeasure_items` grows the streaming row; scroll away shows **Jump to latest**.
   - Rows are plain GPUI flex trees in `transcript_view.rs` (the `Message` component port was removed — no component library anywhere): Start/End alignment, avatar disc, content column, footer. The footer sits outside the avatar row so the 32px disc stays flush with content; the footer is indented `avatar + row gap` to line up with the content column.
@@ -536,7 +605,7 @@ These compiled and ran against the pinned version. When in doubt, check
 - **Any-elements:** `.into_any()` is on `Element` (concrete types); on an opaque `impl IntoElement` return use `.into_any_element()`.
 - **Custom text input:** there is no multi-line editor widget we use. `ComposerInput` is an `EntityInputHandler` adapted from gpui's `input` example (grapheme-aware caret, clipboard, IME stubbed). Keep it single-line until a deliberate composer upgrade (INTENT.md risk #3).
 - **Key-binding precedence:** bindings are ordered by dispatch-tree depth (deepest/focused node first); ties at the same depth break by **registration order (later wins)**. Bindings with no context count as the deepest depth. The picker filter uses `.with_key_context("Composer Picker")` so backspace still edits, and picker `enter`/`escape`/`arrows` are registered **after** composer bindings in `main.rs` so they win over `Submit` / `AbortRun`.
-- **Popovers:** `anchored().position_mode(AnchoredPositionMode::Local).anchor(Corner::BottomLeft).offset(…).snap_to_window()` + `deferred(entity)` paints a floating popup. `on_mouse_down_out` dismisses. **Click-through:** the same click's mouse-up would re-open the chip — `OrbitApp` swallows toggles for ~200 ms after an outside mouse-down dismiss (`menu_dismissed_at`). Layered `BoxShadow`es (`vec![contact, ambient]`) read as a real modal surface.
+- **Popovers:** `anchored().position_mode(AnchoredPositionMode::Local).anchor(Corner::BottomLeft).offset(…).snap_to_window()` + `deferred(entity)` paints a floating popup (`ui::popover::anchored_popover`). Dismiss with `PopoverExt::dismiss_on_outside` (occlude + `on_mouse_down_out`; never call `on_mouse_down_out` directly). **Click-through:** the same click's mouse-up would re-open the chip — the owner's `DismissGuard` is `arm()`ed on dismiss and the trigger returns early when `swallows()`. Layered `BoxShadow`es (`vec![contact, ambient]`) read as a real modal surface.
 - **Picker lists:** **do not use `uniform_list` inside a `deferred` + `anchored` popover** — measured layout can collapse to height 0. Use `max_h` + `overflow_y_scroll` + `ScrollHandle` (Zed `ContextMenu` shape). Keyboard nav must `set_offset` to keep the highlighted row in view. `.on_hover` / `.on_click` live on *stateful* elements (`.id(...)` required).
 - **Assets:** implement `gpui::AssetSource` over `include_dir!` so packaged builds don't depend on cwd. SVG icons: `img("icons/….svg")` via helpers in `app.rs`. Provider marks live under `assets/icons/providers/`.
 - **Fonts:** `cx.text_system().add_fonts` for embedded `Symbols Nerd Font` (devicons) and the curated catalog under `assets/fonts/bundled/`. `assets::register_zed_fonts` loads IBM Plex Sans / Lilex; `assets::register_bundled_fonts` recursively loads the bundled faces so `theme::UI_FONTS` / `CODE_FONTS` resolve without an OS dependency. Each family is a statically instanced, subset 400/500/600/700 TTF with a normalized name table (one typographic family, unique PostScript names) so font-kit weight selection works.
@@ -563,19 +632,23 @@ These compiled and ran against the pinned version. When in doubt, check
 | `enter` / `escape` / `up` / `down` | Confirm / cancel / move | `Picker` (registered after Composer) |
 | `enter` / `escape` / `up` / `down` | Run / close / move | `AddMenu` (composer "+" menu; registered after Picker) |
 | `enter` / `escape` / `up` / `down` | Select / close / move | `AccessMenu` (composer access-mode picker) |
+| `enter` / `escape` / `up` / `down` / `home` / `end` | Open / close / move / first / last | `WorkInMenu` (worktree "Work in" picker) |
+| `enter` / `escape` / `up` / `down` / `home` / `end` | Confirm / cancel / move / first / last | `DialogSelect` (extension select dialog) |
 | `enter` / `escape` / `up` / `down` | Confirm / deny / move | `Approval` (inline access-guard bar) |
+| `alt-up` / `alt-down` | Move the row under the cursor in the sidebar — a project group, or a session inside its project (the pointer twin is dragging a header or a session row) | `Sidebar` |
 
 ## Pi CLI RPC protocol (official spec)
 
 - Start: `pi --mode rpc [--provider …] [--model …] [--name …]` — see `packages/coding-agent/docs/rpc.md` in the pi repo.
 - **Framing is strict JSONL, LF only.** Split on `\n`; strip a trailing `\r`; never use a reader that splits on `U+2028/U+2029`. `PiClient` uses `read_until(b'\n')`.
-- **Typed in `CommandBody` today:** `prompt` (with `images` + `streamingBehavior`), `abort`, `clear_queue`, `steer`/`follow_up` (with `images`), `set_steering_mode`/`set_follow_up_mode`, `compact`, `set_auto_compaction`/`set_auto_retry`/`abort_retry`, `set_session_name`, `new_session`, `switch_session`, `get_state`, `get_messages`, `get_available_models`, `set_model`, `cycle_model`, `get_available_thinking_levels`, `set_thinking_level`, `cycle_thinking_level`, `get_commands`, `get_session_stats`, `get_fork_messages`, `fork`, `clone`, `auth.list`, `auth.status`, `auth.login`, `auth.logout`, `auth.cancel`, plus `Raw(Value)` for anything else.
+- **Typed in `CommandBody` today:** `prompt` (with `images` + `streamingBehavior`), `abort`, `clear_queue`, `steer`/`follow_up` (with `images`), `set_steering_mode`/`set_follow_up_mode`, `compact`, `set_auto_compaction`/`set_auto_retry`/`abort_retry`, `set_session_name`, `new_session`, `switch_session`, `get_state`, `get_messages`, `get_available_models`, `set_model`, `cycle_model`, `get_available_thinking_levels`, `set_thinking_level`, `cycle_thinking_level`, `get_commands`, `get_session_stats`, `get_fork_messages`, `fork`, `clone`, `auth.list`, `auth.status`, `auth.login`, `auth.logout`, `auth.cancel`, `auth.respond`, `auth.set_api_key`, plus `Raw(Value)` for anything else.
 D
-- **Used by the UI today:** `prompt`/`follow_up` (text + images), `abort`, `clear_queue`, `set_follow_up_mode`, `compact`, `set_auto_compaction`/`set_auto_retry`/`abort_retry`, `set_session_name`, `new_session`, `switch_session`, `get_state`, `get_messages`, `get_entries` (bridge quota snapshots, incremental `since` cursor), `get_available_models`, `set_model`, `get_available_thinking_levels`, `set_thinking_level`, `get_session_stats`, and the `auth.*` family when the running pi advertises it (falls back to file/Terminal login otherwise). `SessionState` reads `steeringMode`/`followUpMode`/`autoCompactionEnabled`/`sessionName`/`isCompacting`/`pendingMessageCount` from `get_state`; `PendingQueue` mirrors `queue_update`. `steer` is sent by the composer's steer controls; `clone` by ⌘P, and `get_fork_messages` + `fork` by the rewind picker (`rewind.rs` pairs pi's entry ids with transcript rows). `set_steering_mode`, `cycle_model`, and `cycle_thinking_level` remain typed but unwired.
+- **Used by the UI today:** `prompt`/`follow_up` (text + images), `abort`, `clear_queue`, `set_follow_up_mode`, `compact`, `set_auto_compaction`/`set_auto_retry`/`abort_retry`, `set_session_name`, `new_session`, `switch_session`, `get_state`, `get_messages`, `get_entries` (bridge quota snapshots, incremental `since` cursor), `get_available_models`, `set_model`, `get_available_thinking_levels`, `set_thinking_level`, `get_session_stats`, and the `auth.*` family when the running pi advertises it (falls back to file/Terminal login otherwise; a selected account profile never uses that fallback because Terminal login writes Default). `SessionState` reads `steeringMode`/`followUpMode`/`autoCompactionEnabled`/`sessionName`/`isCompacting`/`pendingMessageCount` from `get_state`; `PendingQueue` mirrors `queue_update`. `steer` is sent by the composer's steer controls; `clone` by ⌘P, and `get_fork_messages` + `fork` by the rewind picker (`rewind.rs` pairs pi's entry ids with transcript rows). `set_steering_mode`, `cycle_model`, and `cycle_thinking_level` remain typed but unwired.
 - **Not typed / not wired yet:** `get_tree`, `bash`/`abort_bash`, `export_html`, `get_last_assistant_text`, and `new_session.parentSession`.
 - **Error handling:** a `response` with `success: false` carries an `error` string. The app never swallows it: `on_command_failure` surfaces it in a dismissible error banner (chat and settings) and re-reads `get_state` to reconcile optimistic UI after `set_model`/thinking/rename failures. A `parse` command, `extension_error` events, failed compaction (`compaction_end.errorMessage`), exhausted `auto_retry_end`, and `send` write failures all route to the same banner. A successful retry of the same command clears its banner (`clear_error_from`): the banner records the source that raised it — the wire command, `parse`, or `agent_error` for a failed assistant message — and a success retires it by comparing that source, never the banner's translated text, so the clear survives a language change and works for send failures whose text carries no command label. A `prompt` is not always a turn: when pi hands it to an extension command it answers `disposition: "handled"` and starts no run, so the composer unwinds the optimistic live row on that answer alone (`started`/`queued` keep it). A *cancel* is never routed to the banner: `request_abort` (Esc) records `abort_requested`, so the `auto_retry_end { success: false, finalError: "Retry cancelled" }` pi answers a stopped retry with is read as the user's own choice, not as a failed retry. **Provider/LLM failures are not responses at all**: pi sets `stopReason: "error"` + `errorMessage` on the final assistant message and emits it via `message_start`/`message_end` (see pi-agent-core `agent-loop.js`). `transcript::message_error` extracts it; the app raises `Agent error: …` and `transcript_view` renders the same text as a red card inline, so a failed turn is never an empty row.
 - Events → stdout JSON lines: `agent_start/end/settled`, `turn_start/end`, `message_start/update/end` (`assistantMessageEvent`: `text_delta`, `thinking_delta`, `toolcall_start/delta/end`), `tool_execution_*`, `bash_execution_update`, `queue_update`, `compaction_*`, `auto_retry_*`, `extension_ui_request`, `extension_error`, typed `auth.*` (`Event::Auth`), plus `Unknown` for forward-compat.
 - **Provider authentication:** `auth.*` is a first-class RPC namespace. The client reducer is `orbit-pi/src/auth.rs`; the wire types are in `orbit-rpc/src/types.rs`; the server contract (which pi must implement by reusing its provider OAuth + `auth.json`) is `crates/orbit-rpc/docs/auth-rpc.md`. Tokens never cross RPC or GPUI state. **Stock pi 0.85.1 has no server side** — without it Orbit falls back to `pi /login` in Terminal. To get browser OAuth on an installed pi now, run `node contrib/pi-auth-rpc/apply.mjs` (idempotent; `--revert` restores the backup) and restart the agent. `auth_fake_pi.rs` covers the round trip against a scripted server.
+- **Provider accounts:** more than one credential per provider, all usable at once. Each extra account is an alias provider (`<provider>~<slug>`) registered by the bundled `contrib/orbit-accounts-extension/` from `~/.orbit-pi/accounts.json`; pi keys credentials by provider id, so each alias signs in through the ordinary `auth.*` flow and is stored in pi's own `auth.json`. Nothing is selected per session; the old per-session routing (`ORBIT_AUTH_PROFILE_ROUTES`, `contrib/pi-auth-profiles/`) always carries an empty selection now. See `crates/orbit-pi/docs/provider-accounts.md` (D21).
 - **Provider quota:** `quota.list` is the account-usage sibling of `auth.*`. The client reducer is `orbit-pi/src/quota.rs`; the wire types (`QuotaReport`/`QuotaWindow`/`QuotaBalance`/`QuotaKind`) are in `orbit-rpc/src/types.rs`; the server contract is `crates/orbit-rpc/docs/quota-rpc.md`. pi resolves the credential, verifies the provider origin, rejects redirects, and returns only normalized percentages/counts/resets/amounts — no token, key, or account id. Coverage follows `@narumitw/pi-usage`'s verified reference: Anthropic, ChatGPT Codex, GitHub Copilot, Kimi, MiniMax, Z.AI, OpenCode Go, OpenRouter, Vercel AI Gateway, DeepSeek, Moonshot, xAI, Fireworks, Baseten. Google/Gemini is registered explicitly as `unsupported` (no account-quota API — AI Studio-only). **Ollama Cloud** has a real adapter for both billing generations: the current monthly-credit model via `GET https://ollama.com/api/usage` plus `GET https://ollama.com/api/balance` (included and purchased balances, the latter additive so a balance outage never blanks the meters) with a user-supplied cloud API key, and the legacy 5-hour/weekly model via the authenticated `ollama.com/settings` page parsed behind an isolated `OllamaCloudParser`; that page needs a session cookie, which Orbit no longer collects in the app (a hand-written `ollama_cloud_session` entry in `auth.json` is still read). Credentials are explicit (`auth.json`, 0600; type `api_key`), entered in Settings → Providers → Ollama; the local `models.json` placeholder is never sent to ollama.com and browser cookies are never auto-extracted. Every other provider reports `unsupported`. Reports are per-provider cached 60 s (these endpoints rate-limit). **The default path needs no patch:** `bundled_extensions.rs` materializes the bundled `contrib/orbit-quota-extension/` under `~/.orbit-pi/quota-extension/` and every session process is spawned with `pi --extension <index.js>`; the extension fetches through pi's `ctx.modelRegistry`, appends one `orbit:quota` custom entry **only when the snapshot changes** (never in LLM context), and the app polls `get_entries` with a per-session `since` cursor (60 s, plus `agent_settled`, throttled by `QUOTA_ENTRY_POLL_INTERVAL`). Entry ids are per-session: the cursor resets on a `sessionId` change, a dead cursor is dropped and re-read, and bridge data never flips `QuotaSupport` (so a patched pi is still probed). `node contrib/pi-quota-rpc/apply.mjs` remains available for the `quota.list` server side; `quota_fake_pi.rs` covers the round trip and `--extension` forwarding, and `contrib/orbit-quota-extension/*.test.mjs` (run `node --test`) covers the bridge end to end offline, and `contrib/pi-quota-rpc/quota-handler.test.mjs` covers the patch adapters.
 - **User interaction:** `extension_ui_request` (`select`/`confirm`/`input`/`editor`; also fire-and-forget `notify`/`setStatus`/`setWidget`/`setTitle`) on stdout; answer with `extension_ui_response` on stdin. `dialog.rs` + `app/dialogs.rs` render the dialog methods as a blocking modal card and reply (`cancelled` on Escape/scrim). `notify` renders as an in-app toast, `setStatus` surfaces on the status bar, and `set_editor_text` seeds the composer; `setWidget`/`setTitle` are terminal chrome and ignored. `ask_user_question`'s multi-select arrives as an `input` of comma-separated option numbers (pi's RPC fallback), so it is selectable too.
 - Envelopes parse **loosely**; unknown shapes flow through as raw JSON so protocol additions don't crash the client.
@@ -691,7 +764,11 @@ tests; a successful run with zero selected tests is not coverage.
   stable. Do not routinely run `cargo clean`, change `RUSTFLAGS`, or create a
   fresh `CARGO_TARGET_DIR`: these can invalidate cached work.
 - `Cargo.toml` deliberately sets `[profile.dev] incremental = false` after
-  arm64 linker failures. Do not flip it as a speed shortcut. GPUI's
+  arm64 linker failures. Do not flip it as a speed shortcut. The app crate
+  itself builds at `opt-level = 0` with `debug = "line-tables-only"`
+  (`[profile.dev.package.orbit-pi]`); dependencies stay at `opt-level = 1`.
+  That cut an app rebuild from ~113 s to ~17 s — keep it unless a debugger
+  session needs full variable info, and then change it locally only. GPUI's
   `test-support` dev feature also makes test builds differ from normal app
   builds; a filtered test reduces execution, not compilation of the app crate.
 - If a check is slow, report its command and whether it is waiting on a lock,

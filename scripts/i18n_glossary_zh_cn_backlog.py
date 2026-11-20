@@ -62,7 +62,7 @@ GLOSSARY = {
         'Dim overlay': '暗化遮罩',
         'A black overlay that settles a bright image behind the interface.': '一层黑色遮罩，让界面后方的明亮图片显得更沉稳。',
         'Card opacity': '卡片不透明度',
-        'Requested translucency for cards, panels, and dialogs. Contrast checks may raise it.': '卡片、面板和对话框的期望透明度。对比度检查可能会调高它。',
+        "How much surface paint sits over the image, for cards and for the page itself (sidebar, chat column, settings nav). At 0% the image is shown exactly as processed; cards may still be raised for text contrast.": "覆盖在图像上的表面填充有多浓，同时作用于卡片和页面本身（侧边栏、聊天栏、设置导航）。0% 时图像按处理后的样子原样显示；卡片仍可能为文字对比度而调高。",
         'Glass panes': '玻璃面板',
         'Blur the wallpaper behind the sidebar, the composer, and floating surfaces. Text keeps its contrast; the picture goes soft where a pane sits over it.': '模糊侧边栏、输入框和浮动界面后方的壁纸。文字保持对比度；面板覆盖的位置图片会变得柔和。',
         'Use wallpaper accent': '使用壁纸强调色',

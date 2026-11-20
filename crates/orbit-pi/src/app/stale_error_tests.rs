@@ -32,7 +32,7 @@ fn a_send_failure_is_cleared_by_a_later_success_on_the_same_command(cx: &mut gpu
             );
             let banner = app.error.clone().expect("the failed send raised one");
             assert!(
-                !banner.starts_with(&helpers::humanize_command("get_state")),
+                !banner.starts_with(&super::format::humanize_command("get_state")),
                 "precondition: this is exactly the text shape the old prefix \
                  match could never recognize, got {banner:?}"
             );

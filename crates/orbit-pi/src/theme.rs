@@ -2,11 +2,11 @@
 //!
 //! Colors are semantic roles (backgrounds, text, borders, transcript
 //! surfaces) rather than raw steps, so every paint site reads from one
-//! place. A [`ThemeId`] names a palette; [`DesignSystem`] names a visual
-//! language; [`AppearancePrefs`] chooses the system, which light or dark
-//! palette to use, and optionally follows the system appearance. Classic is
-//! the existing catalog; Operational is the opt-in Restrained Operational
-//! Minimalism layer. The UI face is Zed's bundled IBM Plex Sans
+//! place. A [`ThemeId`] names a palette; [`AppearancePrefs`] chooses which
+//! light and which dark palette to use, and optionally follows the system
+//! appearance. Every palette — the Orbit family, Flexoki and the near-black
+//! Operational pair — belongs to one design system: they differ in colour,
+//! never in geometry. The UI face is Zed's bundled IBM Plex Sans
 //! (`.ZedSans`); code surfaces use Zed's Lilex (`.ZedMono`).
 
 use std::path::PathBuf;
@@ -29,52 +29,6 @@ pub mod tokens;
 pub enum ThemeMode {
     Dark,
     Light,
-}
-
-/// A palette family, independent of light/dark appearance. Existing palettes
-/// are [`DesignSystem::Classic`]; [`DesignSystem::Operational`] is the
-/// Restrained Operational Minimalism colorway. The family selects which
-/// `ThemeId`s the appearance picker offers and which accent/surface colors they
-/// carry — **not** their geometry: every palette resolves the same radii,
-/// control heights, caption size and elevation (see [`crate::theme::tokens`]).
-/// The choice is persisted with the appearance preferences, so switching
-/// families restores the previous palette choice within each.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum DesignSystem {
-    /// Orbit's existing palette family: ember, blue, graphite and paper.
-    #[default]
-    Classic,
-    /// Near-black neutral surfaces with a lime interaction accent.
-    Operational,
-}
-
-impl DesignSystem {
-    pub const ALL: [Self; 2] = [Self::Classic, Self::Operational];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Classic => "classic",
-            Self::Operational => "operational",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "classic" | "legacy" | "orbit" => Some(Self::Classic),
-            "operational" | "restrained" | "operational-minimalism" => Some(Self::Operational),
-            _ => None,
-        }
-    }
-
-    /// The palette this system uses for `mode`.
-    pub fn theme_id(self, mode: ThemeMode) -> ThemeId {
-        match (self, mode) {
-            (Self::Classic, ThemeMode::Dark) => ThemeId::OrbitAzure,
-            (Self::Classic, ThemeMode::Light) => ThemeId::OrbitAzureLight,
-            (Self::Operational, ThemeMode::Dark) => ThemeId::Operational,
-            (Self::Operational, ThemeMode::Light) => ThemeId::OperationalLight,
-        }
-    }
 }
 
 /// One of the selectable Orbit palettes.
@@ -109,9 +63,8 @@ pub enum ThemeId {
 
 impl ThemeId {
     /// Every palette the app ships, dark first, in the order the settings
-    /// dropdown paints them. The settings dropdown filters this list to the
-    /// active [`DesignSystem`]; this catalog stays complete so palette
-    /// invariants cover every shipped color set.
+    /// gallery paints them. There is one catalog for the one design system,
+    /// so palette invariants cover every shipped color set.
     pub const ALL: [ThemeId; 13] = [
         Self::Orbit,
         Self::OrbitDarker,
@@ -144,14 +97,6 @@ impl ThemeId {
             Self::Operational => "operational",
             Self::OperationalLight => "operational-light",
             Self::OrbitOnyx => "orbit-onyx",
-        }
-    }
-
-    /// The design system this palette belongs to.
-    pub fn design_system(self) -> DesignSystem {
-        match self {
-            Self::Operational | Self::OperationalLight => DesignSystem::Operational,
-            _ => DesignSystem::Classic,
         }
     }
 
@@ -300,6 +245,25 @@ impl ThemeId {
 /// arm's length without turning the wallpaper into a flat wash.
 pub const GLASS_BLUR: f32 = 12.;
 
+/// How far a floating layer (menu, popover, tooltip, toast, modal) frosts the
+/// workbench behind it when no wallpaper is set, in logical points. The
+/// backdrop is the app's own text, not a photograph, and twelve points still
+/// leaves letterforms legible through the glass; twenty-four turns them into
+/// colour.
+pub const FLOATING_GLASS_BLUR: f32 = 24.;
+
+/// The floor for a floating layer's own fill alpha over that frost. Each
+/// palette's actual tint is the lowest alpha at or above this at which its
+/// text keeps the card targets over both a black and a white backdrop
+/// ([`Theme::floating_glass_alpha`]), so a palette whose ink allows it shows
+/// more of the blurred workbench and one whose ink does not stays readable.
+pub const FLOATING_GLASS_MIN_ALPHA: f32 = 0.55;
+
+/// WCAG targets a frosted floating layer keeps for its text, whatever is
+/// behind it: the same body / secondary targets wallpaper cards use.
+const FLOATING_GLASS_PRIMARY_CONTRAST: f32 = 4.5;
+const FLOATING_GLASS_SECONDARY_CONTRAST: f32 = 3.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceTreatment {
     /// A processed wallpaper is behind the UI.
@@ -308,7 +272,7 @@ pub struct SurfaceTreatment {
     pub full_window: bool,
     /// Requested image-layer opacity, 0..=1.
     pub image_opacity: f32,
-    /// Effective alpha of the black overlay between the image and the UI, 0..=1.
+    /// Legacy overlay alpha; always zero for wallpaper treatments.
     pub dim: f32,
     /// Effective alpha for cards, menus, and dialogs.
     pub card_alpha: f32,
@@ -323,6 +287,10 @@ pub struct SurfaceTreatment {
     /// land on the page instead of on the bare palette canvas behind it.
     /// `None` means the palette canvas is the page (no wallpaper).
     pub page: Option<Hsla>,
+    /// Scoped by [`Theme::for_floating`]: the content of a floating layer
+    /// that frosts the workbench with no wallpaper behind it (dark palettes).
+    /// Only the control washes read it; every fill and edge keeps its rule.
+    pub floating: bool,
 }
 
 impl SurfaceTreatment {
@@ -337,6 +305,7 @@ impl SurfaceTreatment {
         panel_alpha: 1.0,
         glass: false,
         page: None,
+        floating: false,
     };
 }
 
@@ -344,6 +313,20 @@ impl Default for SurfaceTreatment {
     fn default() -> Self {
         Self::OPAQUE
     }
+}
+
+/// `ink` at `alpha` painted over an opaque `base`, flattened to one opaque
+/// colour (sRGB source-over).
+fn composite(base: Hsla, ink: Hsla, alpha: f32) -> Hsla {
+    let (base, ink) = (gpui::Rgba::from(base), gpui::Rgba::from(ink));
+    let mix = |b: f32, i: f32| b + (i - b) * alpha;
+    gpui::Rgba {
+        r: mix(base.r, ink.r),
+        g: mix(base.g, ink.g),
+        b: mix(base.b, ink.b),
+        a: base.a,
+    }
+    .into()
 }
 
 /// Semantic palette. Copy so list closures and hover styles can capture it
@@ -1533,7 +1516,8 @@ impl Theme {
     /// The fill of a card-like surface (settings board, transcript card, menu,
     /// dialog). With no active wallpaper this is exactly `base`.
     ///
-    /// The reader's own message bubble remains opaque. The composer uses this
+    /// The reader's own message bubble uses it only while wallpaper glass
+    /// frosts behind it, and stays opaque otherwise. The composer uses this
     /// treatment only when the wallpaper backdrop can actually be frosted.
     pub fn card_fill(self, base: Hsla) -> Hsla {
         if self.wallpaper.active {
@@ -1550,28 +1534,132 @@ impl Theme {
         self
     }
 
+    /// Scope the wallpaper material to a full page (Git, Usage, Files,
+    /// Worktrees, Review, Settings) and the docks beside the chat: hero
+    /// wallpaper sits only behind the new-task page, so a page has the picture
+    /// behind it in full-window mode alone. Elsewhere every surface resolves
+    /// to the palette's own opaque fill, exactly as it did before.
+    pub fn for_page(mut self) -> Self {
+        self.wallpaper.active &= self.wallpaper.full_window;
+        self
+    }
+
+    /// Whether a page is laid over the wallpaper as a glass card.
+    pub fn page_glass(self) -> bool {
+        self.wallpaper.active && self.wallpaper.full_window
+    }
+
+    /// The canvas of a page's own root (and of the flat rows on it). Over the
+    /// wallpaper the page's glass card already paints the tint and the frost,
+    /// so the page is clear; painting `background` here was what hid the
+    /// glass behind every page. Without a wallpaper it is `background`.
+    pub fn page_canvas(self) -> Hsla {
+        if self.page_glass() {
+            gpui::transparent_black()
+        } else {
+            self.background
+        }
+    }
+
+    /// A raised surface inside a page (a file header, a board, the commit
+    /// box): `base` at the contrast-floored card alpha over the page's glass,
+    /// and exactly `base` everywhere else.
+    pub fn page_fill(self, base: Hsla) -> Hsla {
+        self.for_page().card_fill(base)
+    }
+
+    /// A lifted top-bar chip's gradient stops (top, bottom) — hovered, or its
+    /// surface open; chips rest ghost: `overlay_strong`, denser at the top
+    /// edge and eased off at the bottom, so it catches light like a meter.
+    pub fn header_chip_lift(self) -> (Hsla, Hsla) {
+        (
+            self.overlay_strong.opacity(self.overlay_strong.a * 1.15),
+            self.overlay_strong.opacity(self.overlay_strong.a * 0.85),
+        )
+    }
+
     /// The chat composer uses the contrast-adjusted card treatment only with
     /// a supported, enabled wallpaper frost; otherwise retain its opaque fill.
     pub fn composer_fill(self) -> Hsla {
+        self.glass_fill(self.surface_secondary)
+    }
+
+    /// `base` as the card tint only while wallpaper glass actually frosts
+    /// behind it, and exactly `base` otherwise — for a surface whose text must
+    /// never sit over a sharp picture (the composer, the reader's bubble, a
+    /// code plane inside a frosted card).
+    pub fn glass_fill(self, base: Hsla) -> Hsla {
         if self.glass_sigma().is_some() {
-            self.card_fill(self.surface_secondary)
+            self.card_fill(base)
         } else {
-            self.surface_secondary
+            base
         }
+    }
+
+    /// Scope a theme to the content of a floating layer (a menu, popover,
+    /// picker, modal, tooltip or toast). Where that layer frosts the workbench
+    /// with no wallpaper behind it — dark palettes, see
+    /// [`Self::floating_glass_sigma`] — its controls take the ink washes, so a
+    /// hovered or selected row is a state of the glass instead of an opaque
+    /// slab on it. Fills, edges and the frost itself are unchanged; over a
+    /// wallpaper, or where the layer stays opaque, this changes nothing.
+    pub fn for_floating(self) -> Self {
+        self.for_floating_with(os_reduce_transparency())
+    }
+
+    /// [`Self::for_floating`] with the OS preference passed in.
+    pub fn for_floating_with(mut self, reduce_transparency: bool) -> Self {
+        self.wallpaper.floating = self
+            .floating_glass_sigma_with(reduce_transparency)
+            .is_some();
+        self
+    }
+
+    /// Whether a control here sits on something that shows through: the
+    /// wallpaper, or a frosted floating layer ([`Self::for_floating`]).
+    fn controls_on_glass(self) -> bool {
+        self.wallpaper.active || self.wallpaper.floating
     }
 
     /// The hover wash for a control.
     ///
     /// On an opaque surface this is the palette's own `surface_hover` step.
-    /// Once that surface shows the wallpaper through it the step has to be ink
-    /// at alpha instead: an opaque wash on a frosted card or pane reads as a
-    /// slab cut into the glass rather than a state of it. With no wallpaper
-    /// this resolves to exactly the same colour as before.
+    /// Once that surface shows the wallpaper (or a frosted floating layer)
+    /// through it the step has to be ink at alpha instead: an opaque wash on a
+    /// frosted card or pane reads as a slab cut into the glass rather than a
+    /// state of it. On an opaque surface this resolves to exactly the same
+    /// colour as before.
     pub fn hover_wash(self) -> Hsla {
-        if self.wallpaper.active {
+        if self.controls_on_glass() {
             self.overlay_strong
         } else {
             self.surface_hover
+        }
+    }
+
+    /// The region seam (`border`) for an edge that may sit over the wallpaper.
+    ///
+    /// [`Self::hover_wash`]'s rule, for edges: `border` is an opaque palette
+    /// step, so on a translucent chip, pane or frosted popover it prints as a
+    /// near-black outline over a light picture. Over the wallpaper the seam is
+    /// ink at alpha instead — `overlay_strong`, which on the dark canvas reads
+    /// as the same weight `border` does — so it takes the colour of whatever
+    /// is behind it. With no wallpaper this is exactly `border`.
+    pub fn hairline(self) -> Hsla {
+        if self.wallpaper.active {
+            self.overlay_strong
+        } else {
+            self.border
+        }
+    }
+
+    /// [`Self::hairline`] for the quiet internal rule (`border_subtle`):
+    /// `overlay` over the wallpaper, `border_subtle` without one.
+    pub fn hairline_subtle(self) -> Hsla {
+        if self.wallpaper.active {
+            self.overlay
+        } else {
+            self.border_subtle
         }
     }
 
@@ -1580,10 +1668,13 @@ impl Theme {
     /// Deepened from `overlay_strong`'s own alpha rather than from a new
     /// palette value, so each palette still decides how strong its ink states
     /// are. The clamp keeps a heavy wash from burying the surface it sits on.
+    ///
+    /// It is also the *open / active* fill — an open chip or icon button, the
+    /// active tab — which on an opaque surface is the same `surface_active`
+    /// step.
     pub fn pressed_wash(self) -> Hsla {
-        if self.wallpaper.active {
-            self.text_primary
-                .opacity((self.overlay_strong.a * 1.5).min(0.30))
+        if self.controls_on_glass() {
+            self.glass_held_wash()
         } else {
             self.surface_active
         }
@@ -1593,12 +1684,123 @@ impl Theme {
     /// backdrop with. `None` when there is no wallpaper, the Glass panes setting
     /// is off, or this renderer has no backdrop pass — the pane then keeps its
     /// plain translucent fill, which is the whole difference between the two.
+    /// The selected fill: the open row, the chosen option, a selected chip or
+    /// segment. On an opaque surface it is the palette's `surface_selected`
+    /// step; on glass it is ink between the hover and pressed washes, so a
+    /// selected row reads one clear step above a hovered one, stays distinct
+    /// from a pressed one, and stays translucent.
+    pub fn selected_wash(self) -> Hsla {
+        if self.controls_on_glass() {
+            self.text_primary
+                .opacity((self.overlay_strong.a * 1.25).min(0.25))
+        } else {
+            self.surface_selected
+        }
+    }
+
+    /// Hover on a control with its own opaque face (an Outlined chip, a
+    /// Secondary or Outline button). On an opaque surface it is the palette's
+    /// `surface_hover` step, as before. On glass the faceless wash would
+    /// replace the face with ink at alpha and the control would turn
+    /// see-through under the pointer; instead the face itself is lifted by
+    /// that same ink layer, composited, so it stays opaque and the change is
+    /// one subtle step.
+    pub fn face_hover(self, face: Hsla) -> Hsla {
+        if self.controls_on_glass() {
+            composite(face, self.text_primary, self.overlay_strong.a)
+        } else {
+            self.surface_hover
+        }
+    }
+
+    /// The held (pressed, open) wash on glass: `overlay_strong`'s
+    /// own alpha deepened, clamped so it never buries the surface.
+    fn glass_held_wash(self) -> Hsla {
+        self.text_primary
+            .opacity((self.overlay_strong.a * 1.5).min(0.30))
+    }
+
     pub fn glass_sigma(self) -> Option<f32> {
         (self.wallpaper.active && self.wallpaper.glass).then_some(GLASS_BLUR)
     }
 
+    /// The blur a *floating* layer (menu, popover, tooltip, toast, modal)
+    /// frosts its backdrop with. Structural panes and the composer keep
+    /// [`Self::glass_sigma`]'s wallpaper-only rule.
+    ///
+    /// Over a wallpaper the wallpaper contract decides, so the Glass panes
+    /// setting still turns every frost off. With no wallpaper, floating layers
+    /// frost the workbench beneath them in dark palettes on a renderer with a
+    /// backdrop pass, unless the OS asks for reduced transparency or increased
+    /// contrast. Light palettes keep their opaque card: a pale tint over a
+    /// blurred workbench cannot hold contrast the way a dark one does.
+    pub fn floating_glass_sigma(self) -> Option<f32> {
+        self.floating_glass_sigma_with(os_reduce_transparency())
+    }
+
+    /// [`Self::floating_glass_sigma`] with the OS preference passed in, so the
+    /// rule is testable without the process-wide cache.
+    pub fn floating_glass_sigma_with(self, reduce_transparency: bool) -> Option<f32> {
+        if self.wallpaper.active {
+            return self.glass_sigma();
+        }
+        (self.mode == ThemeMode::Dark && gpui::backdrop_blur_supported() && !reduce_transparency)
+            .then_some(FLOATING_GLASS_BLUR)
+    }
+
+    /// The alpha a frosted floating layer paints `base` at over the workbench:
+    /// the lowest value from [`FLOATING_GLASS_MIN_ALPHA`] up at which
+    /// `text_primary` and `text_secondary` keep their targets over both a
+    /// black and a white backdrop, so no blurred content behind the glass can
+    /// make its text unreadable. Computed from the live colours rather than
+    /// stored, so an accent or palette override can never leave it stale.
+    pub fn floating_glass_alpha(self, base: Hsla) -> f32 {
+        use crate::wallpaper::contrast_ratio;
+        let rgb = |color: Hsla| {
+            let color = gpui::Rgba::from(color);
+            [color.r, color.g, color.b]
+        };
+        let (surface, primary, secondary) =
+            (rgb(base), rgb(self.text_primary), rgb(self.text_secondary));
+        let holds = |alpha: f32| {
+            [[0.0_f32; 3], [1.0_f32; 3]].iter().all(|backdrop| {
+                let composite: [f32; 3] =
+                    std::array::from_fn(|i| backdrop[i] + (surface[i] - backdrop[i]) * alpha);
+                contrast_ratio(primary, composite) >= FLOATING_GLASS_PRIMARY_CONTRAST
+                    && contrast_ratio(secondary, composite) >= FLOATING_GLASS_SECONDARY_CONTRAST
+            })
+        };
+        // Whole hundredths: the result is stable and cheap (at most 45 steps).
+        let floor = (FLOATING_GLASS_MIN_ALPHA * 100.).round() as u32;
+        (floor..=100)
+            .map(|step| step as f32 / 100.)
+            .find(|alpha| holds(*alpha))
+            .unwrap_or(1.)
+    }
+
+    /// The fill of a floating layer. Over a wallpaper this is the
+    /// contrast-adjusted [`Self::card_fill`]; frosting the workbench it is
+    /// `base` at [`Self::floating_glass_alpha`]; otherwise exactly `base`.
+    pub fn floating_fill(self, base: Hsla) -> Hsla {
+        self.floating_fill_with(base, os_reduce_transparency())
+    }
+
+    /// [`Self::floating_fill`] with the OS preference passed in.
+    pub fn floating_fill_with(self, base: Hsla, reduce_transparency: bool) -> Hsla {
+        if self.wallpaper.active {
+            self.card_fill(base)
+        } else if self
+            .floating_glass_sigma_with(reduce_transparency)
+            .is_some()
+        {
+            base.opacity(self.floating_glass_alpha(base))
+        } else {
+            base
+        }
+    }
+
     /// What the page behind the transcript reads as: the palette canvas, or —
-    /// over a wallpaper — that canvas composited with the dimmed picture.
+    /// over a wallpaper — that canvas composited with the picture.
     ///
     /// Edge fades end here. A fade has to hide the content it covers, so it
     /// cannot be translucent; ending it on `background` printed a band of bare
@@ -1815,7 +2017,7 @@ fn persist_path() -> PathBuf {
 
 /// Install the persisted appearance (System by default) and font preferences.
 pub fn init(cx: &mut App) {
-    refresh_os_reduce_motion();
+    refresh_os_display_prefs();
     crate::wallpaper::init();
     let prefs = AppearancePrefs::load();
     cx.set_global(prefs);
@@ -1879,6 +2081,25 @@ pub fn refresh_os_reduce_motion() {
 
 pub fn os_reduce_motion() -> bool {
     OS_REDUCE_MOTION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The OS Reduce Transparency / Increase Contrast preference, cached like
+/// [`OS_REDUCE_MOTION`] and refreshed with it.
+static OS_REDUCE_TRANSPARENCY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Re-read both OS display preferences that change how surfaces paint.
+/// Called at launch and whenever a window becomes active.
+pub fn refresh_os_display_prefs() {
+    refresh_os_reduce_motion();
+    OS_REDUCE_TRANSPARENCY.store(
+        crate::platform::os_reduce_transparency(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn os_reduce_transparency() -> bool {
+    OS_REDUCE_TRANSPARENCY.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Set the cached OS preference directly. Tests only: the real value comes
@@ -2004,15 +2225,6 @@ mod tests {
         assert_eq!(p.accent, 0x828FFF);
         assert_eq!(p.focus_ring, 0x5E69D1);
         assert_eq!(p.success, 0x27A644);
-    }
-
-    #[test]
-    fn design_system_keys_round_trip() {
-        for system in DesignSystem::ALL {
-            assert_eq!(DesignSystem::parse(system.as_str()), Some(system));
-            assert_eq!(system.theme_id(ThemeMode::Dark).design_system(), system);
-            assert_eq!(system.theme_id(ThemeMode::Light).design_system(), system);
-        }
     }
 
     #[test]
@@ -2593,7 +2805,7 @@ mod tests {
                         "{id:?}: active must sit above hover"
                     );
                 }
-                ThemeMode::Light if id.design_system() == DesignSystem::Operational => {
+                ThemeMode::Light if id == ThemeId::OperationalLight => {
                     // Operational light is paper-canvas + white panels: the
                     // raised step is the brightest plane, so it lifts off the
                     // warm canvas instead of recessing into it. The interaction
@@ -2745,11 +2957,6 @@ mod tests {
         assert_eq!(ThemeId::OrbitAzureLight.label(), "Orbit Azure Light");
         assert_eq!(ThemeId::Operational.label(), "Operational");
         assert_eq!(ThemeId::OperationalLight.label(), "Operational Light");
-        assert_eq!(
-            ThemeId::Operational.design_system(),
-            DesignSystem::Operational
-        );
-        assert_eq!(ThemeId::Orbit.design_system(), DesignSystem::Classic);
         // The reverted default is the ember identity; Azure is the blue design.
         assert_eq!(
             Theme::for_id(ThemeId::Orbit).accent,
@@ -2950,6 +3157,162 @@ mod tests {
     }
 
     #[test]
+    fn pages_are_glass_only_over_a_full_window_wallpaper() {
+        let theme = Theme::dark();
+        let base = theme.surface_elevated;
+        // No wallpaper: every page surface is the palette's own opaque fill.
+        assert!(!theme.page_glass());
+        assert_eq!(theme.page_canvas(), theme.background);
+        assert_eq!(theme.page_fill(base), base);
+        assert_eq!(theme.for_page().glass_sigma(), None);
+
+        let full = theme.with_wallpaper(SurfaceTreatment {
+            active: true,
+            full_window: true,
+            glass: true,
+            card_alpha: 0.7,
+            ..SurfaceTreatment::OPAQUE
+        });
+        assert!(full.page_glass());
+        assert_eq!(full.page_canvas(), gpui::transparent_black());
+        assert_eq!(full.page_fill(base), base.opacity(0.7));
+        assert_eq!(full.for_page().glass_sigma(), Some(GLASS_BLUR));
+
+        // Hero wallpaper is only behind the new-task page: a page stays opaque
+        // and never asks for a blur over a flat canvas.
+        let hero = theme.with_wallpaper(SurfaceTreatment {
+            full_window: false,
+            ..full.wallpaper
+        });
+        assert!(!hero.page_glass());
+        assert_eq!(hero.page_canvas(), hero.background);
+        assert_eq!(hero.page_fill(base), base);
+        assert_eq!(hero.for_page().glass_sigma(), None);
+    }
+
+    #[test]
+    fn floating_glass_frosts_dark_palettes_without_a_wallpaper() {
+        let supported = gpui::backdrop_blur_supported();
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let base = theme.surface_elevated;
+            let expect =
+                (theme.mode == ThemeMode::Dark && supported).then_some(FLOATING_GLASS_BLUR);
+            assert_eq!(theme.floating_glass_sigma_with(false), expect, "{id:?}");
+            assert_eq!(
+                theme.glass_sigma(),
+                None,
+                "{id:?}: panes stay wallpaper-only"
+            );
+            let fill = theme.floating_fill_with(base, false);
+            if expect.is_some() {
+                assert_eq!(
+                    fill,
+                    base.opacity(theme.floating_glass_alpha(base)),
+                    "{id:?}"
+                );
+            } else {
+                assert_eq!(fill, base, "{id:?}: light palettes keep the opaque card");
+            }
+
+            // Reduce Transparency / Increase Contrast restores the solid card.
+            assert_eq!(theme.floating_glass_sigma_with(true), None, "{id:?}");
+            assert_eq!(theme.floating_fill_with(base, true), base, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn hairlines_are_the_palette_edge_until_a_wallpaper_shows_through() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            // No wallpaper: exactly the palette's own opaque steps.
+            assert_eq!(theme.hairline(), theme.border, "{id:?}");
+            assert_eq!(theme.hairline_subtle(), theme.border_subtle, "{id:?}");
+            // Over the wallpaper: ink at alpha, so the edge takes the colour of
+            // the picture behind it instead of printing an opaque outline.
+            let glass = theme.with_wallpaper(SurfaceTreatment {
+                active: true,
+                ..SurfaceTreatment::OPAQUE
+            });
+            assert_eq!(glass.hairline(), theme.overlay_strong, "{id:?}");
+            assert_eq!(glass.hairline_subtle(), theme.overlay, "{id:?}");
+            assert!(glass.hairline().a < 1. && glass.hairline_subtle().a < 1., "{id:?}");
+            // The quiet rule stays quieter than the seam.
+            assert!(glass.hairline_subtle().a < glass.hairline().a, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn floating_glass_over_a_wallpaper_follows_the_wallpaper_contract() {
+        let theme = Theme::dark();
+        let base = theme.surface_elevated;
+        let glass = SurfaceTreatment {
+            active: true,
+            glass: true,
+            card_alpha: 0.6,
+            ..SurfaceTreatment::OPAQUE
+        };
+        let frosted = theme.with_wallpaper(glass);
+        assert_eq!(frosted.floating_glass_sigma_with(false), Some(GLASS_BLUR));
+        assert_eq!(frosted.floating_fill_with(base, false), base.opacity(0.6));
+
+        // The Glass panes setting still turns floating frost off.
+        let off = theme.with_wallpaper(SurfaceTreatment {
+            glass: false,
+            ..glass
+        });
+        assert_eq!(off.floating_glass_sigma_with(false), None);
+        assert_eq!(off.floating_fill_with(base, false), base.opacity(0.6));
+    }
+
+    #[test]
+    fn floating_glass_keeps_text_contrast_over_any_backdrop() {
+        use crate::wallpaper::contrast_ratio;
+        let rgb = |c: Hsla| {
+            let c = gpui::Rgba::from(c);
+            [c.r, c.g, c.b]
+        };
+        // The blurred workbench can be anything from black to a white image;
+        // the tint alone has to hold the card's text targets over both, and it
+        // must be the lowest such tint (one step lower fails, unless floored).
+        let passes = |theme: Theme, surface: [f32; 3], a: f32| {
+            [[0., 0., 0.], [1., 1., 1.]]
+                .iter()
+                .all(|backdrop: &[f32; 3]| {
+                    let composite: [f32; 3] =
+                        std::array::from_fn(|i| backdrop[i] + (surface[i] - backdrop[i]) * a);
+                    contrast_ratio(rgb(theme.text_primary), composite) >= 4.5
+                        && contrast_ratio(rgb(theme.text_secondary), composite) >= 3.0
+                })
+        };
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            if theme.mode != ThemeMode::Dark {
+                continue;
+            }
+            let surface = rgb(theme.surface_elevated);
+            let alpha = theme.floating_glass_alpha(theme.surface_elevated);
+            assert!(
+                (FLOATING_GLASS_MIN_ALPHA..=1.).contains(&alpha),
+                "{id:?}: {alpha}"
+            );
+            assert!(
+                passes(theme, surface, alpha),
+                "{id:?}: {alpha} loses contrast"
+            );
+            if alpha > FLOATING_GLASS_MIN_ALPHA + 0.005 {
+                assert!(
+                    !passes(theme, surface, alpha - 0.01),
+                    "{id:?}: {alpha} is not the lowest passing tint"
+                );
+            }
+        }
+        // Onyx's ink allows real glass; the measured minimum is 0.62.
+        let onyx = Theme::for_id(ThemeId::OrbitOnyx);
+        assert!(onyx.floating_glass_alpha(onyx.surface_elevated) < 0.7);
+    }
+
+    #[test]
     fn composer_glass_requires_supported_enabled_wallpaper() {
         let base = Theme::dark();
         let glass = SurfaceTreatment {
@@ -3021,6 +3384,96 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// A control with its own face hovers one subtle, opaque step: the
+    /// palette's hover on an opaque surface, and on glass the face lifted by
+    /// the ink layer — never a see-through wash that drops the face.
+    #[test]
+    fn a_faced_hover_stays_opaque_and_subtle_on_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            assert_eq!(base.face_hover(base.surface_elevated), base.surface_hover);
+            for floating in [false, true] {
+                let glass = if floating {
+                    base.for_floating_with(false)
+                } else {
+                    base.with_wallpaper(SurfaceTreatment {
+                        active: true,
+                        ..SurfaceTreatment::OPAQUE
+                    })
+                };
+                if !floating || glass.floating_glass_sigma_with(false).is_some() {
+                    let face = glass.surface_elevated;
+                    let hover = glass.face_hover(face);
+                    assert!((hover.a - face.a).abs() < 1e-4, "stays as opaque as the face");
+                    assert_ne!(hover, face, "a visible step");
+                    let step = (gpui::Rgba::from(hover).r - gpui::Rgba::from(face).r).abs();
+                    assert!(step < 0.2, "a subtle step, not a jump: {step}");
+                }
+            }
+        }
+    }
+
+    /// Selected rows, chips and segments follow the same rule as hover and
+    /// pressed: the palette's own step on an opaque surface, a translucent
+    /// ink wash one clear step above hover on glass.
+    #[test]
+    fn the_selected_wash_follows_the_surface_under_it() {
+        for base in [Theme::dark(), Theme::light()] {
+            assert_eq!(base.selected_wash(), base.surface_selected);
+            let glass = base.with_wallpaper(SurfaceTreatment {
+                active: true,
+                ..SurfaceTreatment::OPAQUE
+            });
+            let selected = glass.selected_wash();
+            assert_eq!(selected.h, glass.text_primary.h, "an ink wash");
+            assert!(
+                selected.a > glass.hover_wash().a,
+                "selected reads above hover"
+            );
+            assert!(selected.a < 0.31, "and stays translucent");
+        }
+    }
+
+    /// Inside a floating layer that frosts the workbench (dark palettes, no
+    /// wallpaper) the washes go translucent; where that layer stays opaque —
+    /// light palettes, reduced transparency, no backdrop pass — nothing moves.
+    #[test]
+    fn floating_scope_switches_washes_only_where_the_layer_frosts() {
+        for base in [Theme::dark(), Theme::light()] {
+            let frosts = base.floating_glass_sigma_with(false).is_some();
+            let floating = base.for_floating_with(false);
+            if frosts {
+                assert_eq!(floating.hover_wash(), base.overlay_strong);
+                assert!(floating.pressed_wash().a < 0.31);
+                assert!(floating.selected_wash().a < 0.31);
+            } else {
+                assert_eq!(floating.hover_wash(), base.surface_hover);
+                assert_eq!(floating.pressed_wash(), base.surface_active);
+                assert_eq!(floating.selected_wash(), base.surface_selected);
+            }
+            // Fills, edges and the frost keep their own rules.
+            assert_eq!(
+                floating.card_fill(base.surface_elevated),
+                base.card_fill(base.surface_elevated)
+            );
+            assert_eq!(floating.hairline(), base.hairline());
+            assert_eq!(floating.glass_sigma(), base.glass_sigma());
+
+            let reduced = base.for_floating_with(true);
+            assert_eq!(
+                reduced.hover_wash(),
+                base.surface_hover,
+                "reduce transparency keeps it opaque"
+            );
+            assert_eq!(reduced.selected_wash(), base.surface_selected);
+        }
+        let light = Theme::light().for_floating_with(false);
+        assert_eq!(
+            light.hover_wash(),
+            Theme::light().surface_hover,
+            "light layers never frost"
+        );
     }
 
     /// A control's wash follows the surface under it: the palette's own step

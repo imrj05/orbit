@@ -5,8 +5,10 @@
 //! document-wide render pass.
 
 use super::*;
-use crate::app::{icon_button_frame, picker_search_frame, press, BUTTON_GROUP};
 use crate::theme::tokens::{input, ButtonSize, StyledExt, TextSize};
+use crate::ui::button::IconButton;
+use crate::ui::prelude::picker_search_frame;
+use crate::ui::prelude::*;
 
 /// State for the open find bar. Dropping this closes the surface.
 pub(super) struct TranscriptSearch {
@@ -185,7 +187,7 @@ impl OrbitApp {
     /// `None` while find is closed.
     pub(super) fn transcript_search_bar(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let search = self.transcript_search.as_ref()?;
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let count = search.matches.len();
         let label = if search.query.is_empty() {
             tr!("search.type_to_find")
@@ -246,22 +248,16 @@ impl OrbitApp {
                 cx.listener(|this, _, _, cx| this.step_search(true, cx)),
             ))
             .child(
-                icon_button_frame(div().id("search-close-btn"), &theme, ButtonSize::Compact)
+                IconButton::new("search-close-btn", "icons/x.svg")
+                    .size(ButtonSize::Compact)
+                    .ink(theme.text_secondary)
                     .tip(tr!("common.close"))
-                    .cursor_pointer()
-                    .text_color(theme.text_secondary)
-                    .hover_state(&theme)
                     .on_mouse_up(
-                        MouseButton::Left,
+                        &theme,
                         cx.listener(|this, _, window, cx| {
                             this.on_search_close(&crate::SearchClose, window, cx)
                         }),
-                    )
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::Compact.icon_size().px(&theme),
-                        theme.text_secondary,
-                    )),
+                    ),
             )
             .into_any_element(),
         )
@@ -276,23 +272,11 @@ fn search_nav_button(
     theme: Theme,
     listener: impl Fn(&gpui::MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    icon_button_frame(div().id(id), &theme, ButtonSize::Compact)
-        .group(BUTTON_GROUP)
+    IconButton::new(id, glyph)
+        .size(ButtonSize::Compact)
+        .ink(theme.text_secondary)
+        .disabled(disabled)
         .tip(label)
-        .when(!disabled, |button| {
-            press(button)
-                .cursor_pointer()
-                .hover_state(&theme)
-                .on_mouse_up(MouseButton::Left, listener)
-        })
-        .child(icon(
-            glyph,
-            ButtonSize::Compact.icon_size().px(&theme),
-            if disabled {
-                theme.text_disabled
-            } else {
-                theme.text_secondary
-            },
-        ))
+        .on_mouse_up(&theme, listener)
         .into_any_element()
 }

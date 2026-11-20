@@ -11,10 +11,11 @@ use gpui::{
     SharedString, StyledText, TextRun, Window,
 };
 
-use crate::app::{file_glyph, icon};
 use crate::review::{self, LineKind};
 use crate::theme::tokens::{DynamicSpacing, IconSize, TextSize};
-use crate::theme::{self, Theme, ThemeMode};
+use crate::theme::{self, Theme};
+use crate::ui::diff::{DiffGutter, DiffRow, DiffTone};
+use crate::ui::prelude::{file_glyph, icon};
 
 /// Review diff row metrics, shared by every surface that paints rows.
 pub const DIFF_TEXT_SIZE: f32 = 12.5;
@@ -53,8 +54,8 @@ pub fn render_file_header(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .border_b_1()
-        .border_color(theme.border)
-        .bg(theme.surface_elevated)
+        .border_color(theme.hairline())
+        .bg(theme.page_fill(theme.surface_elevated))
         .child(icon(
             if collapsed {
                 "icons/chevron-right.svg"
@@ -129,10 +130,11 @@ pub fn render_section_header(
         .items_center()
         .gap(px(10.))
         .border_b_1()
-        .border_color(theme.border)
-        // The section head sits on the page's own black canvas — the raised
-        // surface is reserved for the file rows below it.
-        .bg(theme.background)
+        .border_color(theme.hairline())
+        // The section head sits on the page's own canvas (clear over a
+        // page's glass) — the raised surface is reserved for the file rows
+        // below it.
+        .bg(theme.page_canvas())
         .when_some(icon_path, |row, icon_path| {
             row.child(icon(
                 icon_path,
@@ -164,7 +166,7 @@ pub fn render_section_header(
         )
         .child(div().flex_1())
         .when_some(actions, |row, actions| row.child(actions))
-        .child(div().w(px(1.)).h(px(14.)).flex_none().bg(theme.border))
+        .child(div().w(px(1.)).h(px(14.)).flex_none().bg(theme.hairline()))
         .child(
             div()
                 .min_w(px(42.))
@@ -210,7 +212,7 @@ pub fn render_hunk_header(content: &str, theme: Theme, wrap: bool) -> AnyElement
                 .min_h(px(REVIEW_HUNK_HEIGHT))
                 .flex_none()
                 .border_r_1()
-                .border_color(theme.border)
+                .border_color(theme.hairline())
                 .bg(theme.overlay),
         )
         .child(
@@ -287,62 +289,31 @@ fn diff_row_height() -> f32 {
 /// false lets the row run its natural width; the surface that owns the list
 /// then pans horizontally.
 pub fn render_code_row(line: &review::Line, theme: Theme, wrap: bool) -> AnyElement {
-    let row_height = diff_row_height();
-    let (body_bg, gutter_bg, edge, number_color) = match line.kind {
-        LineKind::Addition => (
-            Some(theme.success.opacity(body_wash(theme))),
-            Some(theme.success.opacity(gutter_wash(theme))),
-            Some(theme.success),
-            theme.success,
-        ),
-        LineKind::Deletion => (
-            Some(theme.error.opacity(body_wash(theme))),
-            Some(theme.error.opacity(gutter_wash(theme))),
-            Some(theme.error),
-            theme.error,
-        ),
-        _ => (None, None, None, theme.text_muted),
-    };
+    let row_height = px(diff_row_height());
     let shown_line = line.new_line.or(line.old_line);
     let number = shown_line.map(|n| n.to_string()).unwrap_or_default();
-    let content = code_text(line, theme);
-    div()
+    DiffRow::new(tone_of(&line.kind), number, code_text(line, theme))
+        .gutter(DiffGutter::Number {
+            width: px(diff_gutter_width()),
+            divider: true,
+        })
+        .min_h(row_height)
+        .wrap(wrap)
+        .render(&theme)
         .w_full()
-        .min_w_0()
-        .min_h(px(row_height))
-        .flex()
         .font_family(theme::code_font_family())
         .text_size(theme.code_px(DIFF_TEXT_SIZE))
         .line_height(theme.code_px(16.))
-        .when_some(edge, |row, edge| row.border_l_2().border_color(edge))
-        .child(
-            div()
-                .w(px(diff_gutter_width()))
-                .min_h(px(row_height))
-                .flex_none()
-                .pr(px(9.))
-                .flex()
-                .justify_end()
-                .border_r_1()
-                .border_color(theme.border)
-                .text_color(number_color)
-                .when_some(gutter_bg, |gutter, bg| gutter.bg(bg))
-                .child(number),
-        )
-        .child(
-            div()
-                .min_h(px(row_height))
-                .min_w_0()
-                .flex_1()
-                .pl(DynamicSpacing::Base12.px(&theme))
-                .pr(px(10.))
-                .overflow_hidden()
-                .when(wrap, |body| body.whitespace_normal())
-                .when(!wrap, |body| body.whitespace_nowrap())
-                .when_some(body_bg, |body, bg| body.bg(bg))
-                .child(content),
-        )
         .into_any_element()
+}
+
+/// A review line's diff tone.
+fn tone_of(kind: &LineKind) -> DiffTone {
+    match kind {
+        LineKind::Addition => DiffTone::Addition,
+        LineKind::Deletion => DiffTone::Deletion,
+        _ => DiffTone::Context,
+    }
 }
 
 /// How unified rows map onto a side-by-side view.
@@ -404,7 +375,7 @@ pub fn render_split_row(
         .text_size(theme.code_px(DIFF_TEXT_SIZE))
         .line_height(theme.code_px(16.))
         .child(split_half(left, true, theme, wrap, row_height))
-        .child(div().w(px(1.)).flex_none().bg(theme.border))
+        .child(div().w(px(1.)).flex_none().bg(theme.hairline()))
         .child(split_half(right, false, theme, wrap, row_height))
         .into_any_element()
 }
@@ -424,71 +395,24 @@ fn split_half(
             .bg(theme.overlay)
             .into_any_element();
     };
-    let (body_bg, gutter_bg, number_color) = match line.kind {
-        LineKind::Addition => (
-            Some(theme.success.opacity(body_wash(theme))),
-            Some(theme.success.opacity(gutter_wash(theme))),
-            theme.success,
-        ),
-        LineKind::Deletion => (
-            Some(theme.error.opacity(body_wash(theme))),
-            Some(theme.error.opacity(gutter_wash(theme))),
-            theme.error,
-        ),
-        _ => (None, None, theme.text_muted),
-    };
     let shown_line = if old_side {
         line.old_line
     } else {
         line.new_line
     };
     let number = shown_line.map(|n| n.to_string()).unwrap_or_default();
-    div()
-        .flex_1()
-        .min_w_0()
+    // The split row draws the edge and the divider; a half is gutter + code.
+    DiffRow::new(tone_of(&line.kind), number, code_text(line, theme))
+        .gutter(DiffGutter::Number {
+            width: px(diff_gutter_width()),
+            divider: false,
+        })
+        .edge(false)
         .min_h(px(row_height))
-        .flex()
-        .child(
-            div()
-                .w(px(diff_gutter_width()))
-                .min_h(px(row_height))
-                .flex_none()
-                .pr(px(9.))
-                .flex()
-                .justify_end()
-                .text_color(number_color)
-                .when_some(gutter_bg, |gutter, bg| gutter.bg(bg))
-                .child(number),
-        )
-        .child(
-            div()
-                .min_h(px(row_height))
-                .min_w_0()
-                .flex_1()
-                .px(DynamicSpacing::Base12.px(&theme))
-                .overflow_hidden()
-                .when(wrap, |body| body.whitespace_normal())
-                .when(!wrap, |body| body.whitespace_nowrap())
-                .when_some(body_bg, |body, bg| body.bg(bg))
-                .child(code_text(line, theme)),
-        )
+        .wrap(wrap)
+        .render(&theme)
+        .flex_1()
         .into_any_element()
-}
-
-fn body_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.20
-    } else {
-        0.12
-    }
-}
-
-fn gutter_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.15
-    } else {
-        0.09
-    }
 }
 
 /// Build syntax-colored text for one diff line.

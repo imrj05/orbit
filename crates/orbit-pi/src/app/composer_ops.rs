@@ -1,8 +1,11 @@
-use super::helpers::*;
 use super::*;
+use crate::ui::chip::FileChip;
+use crate::ui::button::{Button, ButtonVariant};
 use crate::theme::tokens::{
-    context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+    context_menu, picker, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
+use crate::ui::popover::{popover_list, PopoverExt};
+use crate::ui::prelude::*;
 
 /// Why the completion gate was invoked. The gate behaves the same either way
 /// for a completion that changes the text; they differ only when accepting
@@ -100,7 +103,9 @@ impl OrbitApp {
     /// memo is what keeps a redraw from re-ranking the whole workspace.
     pub(super) fn at_paths(&mut self, query: &str, cx: &mut Context<Self>) -> Vec<String> {
         // `@` stays gated on a workspace: without one there is nothing to rank.
-        if self.current_workspace.is_none() {
+        // A remote session's files are on the host, so local paths would
+        // point the agent at files that are not there.
+        if self.current_workspace.is_none() || self.remote.is_some() {
             return Vec::new();
         }
         self.ensure_mention_index(false, cx);
@@ -458,7 +463,7 @@ impl OrbitApp {
             return None;
         }
         let highlighted = highlighted.min(entries.len() - 1);
-        let theme = *theme::get(cx);
+        let theme = theme::get(cx).for_floating();
         let this = cx.weak_entity();
         // Rows are one fixed height, so the list is exactly tall enough for
         // the `AUTOCOMPLETE_LIMIT` entries it ever shows.
@@ -518,7 +523,7 @@ impl OrbitApp {
                 )
                 .h(row_h)
                 .cursor_pointer()
-                .when(selected, |row| row.bg(theme.surface_selected))
+                .when(selected, |row| row.bg(theme.selected_wash()))
                 .hover_state(&theme)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |app, cx| app.commit_entry(entry.clone(), cx))
@@ -578,27 +583,17 @@ impl OrbitApp {
             );
         }
         // Full width of the chat box, so long paths are never cut.
-        let popup = picker_surface(div(), &theme)
+        let popup = popover_list(div(), &theme)
             .w(px(CONTENT_MAX_W))
-            .py(picker::list_padding_y(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme))
             .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out(cx.listener(Self::on_autocomplete_outside_down))
+            .dismiss_on_outside(cx.listener(Self::on_autocomplete_outside_down))
             .child(list);
 
-        Some(
-            anchored_popover(
-                Corner::BottomLeft,
-                point(px(0.), -popover::MENU_OFFSET),
-                popup,
-                "anchored_popover-in-4",
-                &theme,
-            )
-            .into_any_element(),
-        )
+        Some(crate::ui::popover::column_menu(
+            popup,
+            "anchored_popover-in-4",
+            &theme,
+        ))
     }
 
     /// The attachment tray above the input: every queued image, file, and
@@ -635,10 +630,10 @@ impl OrbitApp {
                             .child(tr!("composer.attachments", count = total)),
                     )
                     .child(
-                        button_frame(div().id("attachments-clear"), &theme, ButtonSize::Compact)
+                        Button::keyed("attachments-clear", ButtonVariant::Ghost)
+.size(ButtonSize::Compact)
+.render(&theme)
                             .debug_selector(|| "attachments-clear".to_string())
-                            .cursor_pointer()
-                            .hover_state(&theme)
                             .tip(tr!("composer.clear_attachments"))
                             .child(icon(
                                 "icons/x.svg",
@@ -807,58 +802,16 @@ impl OrbitApp {
         remove: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
         open: Option<ChipOpener>,
     ) -> AnyElement {
-        let remove_debug = format!("remove-{debug}");
-        let chip = button_frame(
-            div().id(id).debug_selector(move || debug),
-            theme,
-            ButtonSize::Medium,
-        )
-        .border_1()
-        .border_color(theme.border)
-        .raised(theme.surface_elevated, theme)
-        .hover_border(theme)
-        .child(visual)
-        .child(
-            div()
-                .min_w_0()
-                .max_w(px(180.))
-                .truncate()
-                .text_color(theme.text_secondary)
-                .tip(content.tip)
-                .child(content.name),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_size(TextSize::XSmall.px(theme))
-                .text_color(theme.text_muted)
-                .child(content.meta),
-        )
-        .child(
-            button_frame(div(), theme, ButtonSize::Compact)
-                .debug_selector(move || remove_debug)
-                .cursor_pointer()
-                .hover_on_glass(theme)
-                .tip(tr!("composer.remove_attachment"))
-                .child(icon(
-                    "icons/x.svg",
-                    IconSize::XSmall.px(theme),
-                    theme.text_muted,
-                ))
-                .on_mouse_up(MouseButton::Left, move |event, window, cx| {
-                    // A nested button, so the chip's own `open` never fires
-                    // for a click that meant to delete.
-                    cx.stop_propagation();
-                    remove(event, window, cx);
-                }),
-        );
+        let chip = FileChip::new(id, visual, content.name)
+            .name_tip(content.tip)
+            .meta(content.meta)
+            .selector(debug)
+            .on_remove(tr!("composer.remove_attachment"), remove);
         match open {
-            Some(open) => chip
-                .cursor_pointer()
-                .on_click(move |event, window, cx| open(event, window, cx)),
+            Some(open) => chip.on_open(move |event, window, cx| open(event, window, cx)),
             None => chip,
         }
-        .into_any_element()
+        .render(theme)
     }
 
     /// Queue one classified path, focusing the composer when the caller has a
@@ -1032,11 +985,8 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_add_menu(window, cx);
     }
@@ -1055,7 +1005,7 @@ impl OrbitApp {
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.add_menu_open = true;
-        self.add_menu_highlight = 0;
+        self.add_menu_highlight.highlight(0);
         // Focus the menu so ↑/↓/Enter/Escape dispatch to it.
         window.focus(&self.add_menu_focus);
         cx.notify();
@@ -1065,7 +1015,7 @@ impl OrbitApp {
     pub(super) fn close_add_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.add_menu_open {
             self.add_menu_open = false;
-            self.add_menu_highlight = 0;
+            self.add_menu_highlight.highlight(0);
             self.input.read(cx).focus(window);
             cx.notify();
         }
@@ -1077,7 +1027,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_menu_highlight = (self.add_menu_highlight + 1) % ADD_MENU_ITEMS.len();
+        self.add_menu_highlight.next(ADD_MENU_ITEMS.len());
         cx.notify();
     }
 
@@ -1087,8 +1037,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_menu_highlight =
-            (self.add_menu_highlight + ADD_MENU_ITEMS.len() - 1) % ADD_MENU_ITEMS.len();
+        self.add_menu_highlight.prev(ADD_MENU_ITEMS.len());
         cx.notify();
     }
 
@@ -1098,7 +1047,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_add_menu_item(self.add_menu_highlight, window, cx);
+        if let Some(ix) = self.add_menu_highlight.selected(ADD_MENU_ITEMS.len()) {
+            self.run_add_menu_item(ix, window, cx);
+        }
     }
 
     pub(super) fn on_add_menu_close(
@@ -1118,7 +1069,7 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         self.add_menu_open = false;
-        self.add_menu_highlight = 0;
+        self.add_menu_highlight.highlight(0);
         match ix {
             0 => self.attach_image(window, cx),
             1 => self.attach_file(window, cx),
@@ -1141,11 +1092,8 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_picker(kind, window, cx);
     }
@@ -1210,11 +1158,8 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_access_menu(window, cx);
     }
@@ -1222,6 +1167,13 @@ impl OrbitApp {
     pub(super) fn toggle_access_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.access_menu_open {
             self.close_access_menu(window, cx);
+            return;
+        }
+        // A remote host is pinned to Supervised by its launch script; the
+        // modes here describe this Mac, so the menu stays shut.
+        if let Some(host) = self.remote_host_name().map(str::to_owned) {
+            self.toast_info(tr!("remote.access_locked", host = host));
+            cx.notify();
             return;
         }
         // Mutually exclusive with the other composer popovers.
@@ -1233,10 +1185,12 @@ impl OrbitApp {
         self.autocomplete.borrow_mut().open = false;
         self.access_menu_open = true;
         self.workflow_menu_open = false;
-        self.access_menu_highlight = AccessMode::ALL
-            .iter()
-            .position(|mode| *mode == self.access_mode)
-            .unwrap_or(0);
+        self.access_menu_highlight.highlight(
+            AccessMode::ALL
+                .iter()
+                .position(|mode| *mode == self.access_mode)
+                .unwrap_or(0),
+        );
         // Focus the menu so ↑/↓/Enter/Escape dispatch to it.
         window.focus(&self.access_menu_focus);
         cx.notify();
@@ -1257,7 +1211,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.access_menu_highlight = (self.access_menu_highlight + 1) % AccessMode::ALL.len();
+        self.access_menu_highlight.next(AccessMode::ALL.len());
         cx.notify();
     }
 
@@ -1267,8 +1221,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.access_menu_highlight =
-            (self.access_menu_highlight + AccessMode::ALL.len() - 1) % AccessMode::ALL.len();
+        self.access_menu_highlight.prev(AccessMode::ALL.len());
         cx.notify();
     }
 
@@ -1278,7 +1231,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_access_menu_item(self.access_menu_highlight, window, cx);
+        if let Some(ix) = self.access_menu_highlight.selected(AccessMode::ALL.len()) {
+            self.run_access_menu_item(ix, window, cx);
+        }
     }
 
     pub(super) fn on_access_menu_close(
@@ -1332,11 +1287,8 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
+        if self.menu_dismissed_at.swallows() {
+            return;
         }
         self.toggle_workflow_menu(window, cx);
     }
@@ -1355,10 +1307,12 @@ impl OrbitApp {
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.workflow_menu_open = true;
-        self.workflow_menu_highlight = WorkflowMode::ALL
-            .iter()
-            .position(|mode| *mode == self.workflow_mode)
-            .unwrap_or(0);
+        self.workflow_menu_highlight.highlight(
+            WorkflowMode::ALL
+                .iter()
+                .position(|mode| *mode == self.workflow_mode)
+                .unwrap_or(0),
+        );
         window.focus(&self.workflow_menu_focus);
         cx.notify();
     }
@@ -1378,7 +1332,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.workflow_menu_highlight = (self.workflow_menu_highlight + 1) % WorkflowMode::ALL.len();
+        self.workflow_menu_highlight.next(WorkflowMode::ALL.len());
         cx.notify();
     }
 
@@ -1388,8 +1342,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.workflow_menu_highlight =
-            (self.workflow_menu_highlight + WorkflowMode::ALL.len() - 1) % WorkflowMode::ALL.len();
+        self.workflow_menu_highlight.prev(WorkflowMode::ALL.len());
         cx.notify();
     }
 
@@ -1399,7 +1352,7 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_workflow_menu_item(self.workflow_menu_highlight, window, cx);
+        self.run_workflow_menu_item(self.workflow_menu_highlight.highlighted(), window, cx);
     }
 
     pub(super) fn on_workflow_menu_close(
@@ -1432,7 +1385,10 @@ impl OrbitApp {
         self.workflow_mode = mode;
         self.clear_follow_up_suggestions();
         match self.session_id.clone() {
-            Some(id) => crate::workflow::persist_for(&id, mode),
+            Some(id) => {
+                crate::workflow::persist_for(&id, mode);
+                self.sync_remote_workflow(id, mode, cx);
+            }
             None => self.workflow_pending = Some(mode),
         }
         if self.extensions.workflow().is_none() {

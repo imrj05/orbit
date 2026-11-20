@@ -662,6 +662,13 @@ fn compact_skill_prompt(name: &str, trailing: &str) -> String {
     }
 }
 
+/// A stored prompt as a person reads it: an injected skill document reduced
+/// to [`compact_skill_prompt`], or `None` when the text is not one. Shared with
+/// the sidebar's session preview so both surfaces name the skill the same way.
+pub(crate) fn readable_skill_prompt(text: &str) -> Option<String> {
+    injected_skill(text).map(|(name, trailing)| compact_skill_prompt(&name, &trailing))
+}
+
 /// Whether a pi message value is that injected skill document.
 fn injected_skill_message(value: &Value) -> bool {
     let value = value.get("message").unwrap_or(value);
@@ -885,6 +892,26 @@ fn merge_step(slot: &mut ChatMessage, step: ChatMessage) {
     // A turn that really ended on the error keeps the card (issue #96).
     slot.error = error;
     slot.aborted = aborted;
+}
+
+/// One message's share of the chars/4 context estimate: the answer text,
+/// thinking, and each tool call's name plus its args-derived summary.
+fn message_est_chars(message: &ChatMessage) -> u64 {
+    message
+        .steps
+        .iter()
+        .map(|step| {
+            step.text.chars().count() as u64
+                + step.thinking.chars().count() as u64
+                + step
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        tool.name.chars().count() as u64 + tool.summary.chars().count() as u64
+                    })
+                    .sum::<u64>()
+        })
+        .sum()
 }
 
 impl ChatMessage {
@@ -1262,6 +1289,13 @@ pub struct Transcript {
     /// renders every frame; this keeps that O(message-count) pass off the
     /// hot path.
     user_turns: Rc<RefCell<(usize, Rc<Vec<usize>>)>>,
+    /// Memoized chars/4 estimate, per message (`None` = recount). The
+    /// context meter reads the total every render; streaming mutates one
+    /// row at a time, so each in-place mutation retokenizes only its own
+    /// index. Appends are covered by the resize; `load_from`/`clear` reset
+    /// the whole cache (messages only append or are rebuilt wholesale,
+    /// as the user-turn cache documents).
+    est_tokens: Rc<RefCell<Vec<Option<u64>>>>,
 }
 
 impl Transcript {
@@ -1313,6 +1347,7 @@ impl Transcript {
             review_checkpoints: HashMap::new(),
             awaiting_reply: Rc::new(Cell::new(false)),
             user_turns: Rc::new(RefCell::new((0, Rc::new(Vec::new())))),
+            est_tokens: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -1343,6 +1378,22 @@ impl Transcript {
     /// is not proof the cached indices are still valid).
     fn invalidate_user_turns(&self) {
         self.user_turns.borrow_mut().0 = usize::MAX;
+        self.reset_est_tokens();
+    }
+
+    /// Drop one message's memoized estimate after mutating it in place
+    /// (streaming deltas, a settled replacement, a merged or upserted step).
+    /// Mutations that never change text or tool call identity — usage,
+    /// output, error/abort state — count as no tokens and skip this.
+    fn retokenize(&self, ix: usize) {
+        if let Some(slot) = self.est_tokens.borrow_mut().get_mut(ix) {
+            *slot = None;
+        }
+    }
+
+    /// Reset the estimate cache on a wholesale message-list replacement.
+    fn reset_est_tokens(&self) {
+        self.est_tokens.borrow_mut().clear();
     }
 
     /// Message indices of real user prompts, in order. Summary rows are not turns.
@@ -1833,6 +1884,7 @@ impl Transcript {
                 tools: 0,
             }));
             merge_step(slot, message);
+            self.retokenize(ix);
             self.streaming.set(Some(ix));
             self.mark_stream_start();
             drop(messages);
@@ -2236,6 +2288,7 @@ impl Transcript {
                 if slot.finished_at.is_none() {
                     slot.finished_at = Some(now_millis());
                 }
+                self.retokenize(ix);
             }
             self.streaming.set(None);
             self.step_mark.set(None);
@@ -2248,6 +2301,7 @@ impl Transcript {
         if continues_run {
             let ix = messages.len() - 1;
             merge_step(&mut messages[ix], final_message);
+            self.retokenize(ix);
             drop(messages);
             self.remeasure_row(ix);
             return true;
@@ -2466,6 +2520,9 @@ impl Transcript {
                 .borrow_mut()
                 .insert(id.clone(), (mix, step_ix, position));
         }
+        // The call's name and args-derived summary carry tokens; the result
+        // payload (`tool_execution_end`) does not and does not retokenize.
+        self.retokenize(mix);
         drop(messages);
         if created {
             self.insert_row();
@@ -2570,6 +2627,9 @@ impl Transcript {
                 true
             })
             .unwrap_or(false);
+        if changed {
+            self.retokenize(ix);
+        }
         (changed, created)
     }
 
@@ -3136,31 +3196,25 @@ impl Transcript {
     }
 
     /// chars/4 heuristic over loaded messages — same estimate pi's /context
-    /// view uses when the provider-serialized payload isn't available.
+    /// view uses when the provider-serialized payload isn't available. The
+    /// meter reads this every render, so per-message counts are memoized
+    /// and only mutated rows re-scan (see `retokenize`); a frame with no
+    /// new deltas costs one pass over `u64`s.
     pub fn estimated_tokens(&self) -> u64 {
-        let chars: usize = self
-            .messages
-            .borrow()
-            .iter()
-            .map(|message| {
-                message
-                    .steps
-                    .iter()
-                    .map(|step| {
-                        step.text.chars().count()
-                            + step.thinking.chars().count()
-                            + step
-                                .tools
-                                .iter()
-                                .map(|tool| {
-                                    tool.name.chars().count() + tool.summary.chars().count()
-                                })
-                                .sum::<usize>()
-                    })
-                    .sum::<usize>()
+        let messages = self.messages.borrow();
+        let mut cache = self.est_tokens.borrow_mut();
+        cache.resize(messages.len(), None);
+        cache
+            .iter_mut()
+            .zip(messages.iter())
+            .map(|(slot, message)| {
+                let chars = slot.get_or_insert_with(|| {
+                    message_est_chars(message)
+                });
+                *chars
             })
-            .sum();
-        chars.div_ceil(4) as u64
+            .sum::<u64>()
+            .div_ceil(4)
     }
 
     /// Drop stale Copy feedback. Returns true while any entry still needs a tick.
@@ -6157,6 +6211,38 @@ mod tests {
         *transcript.messages.borrow_mut() = vec![ChatMessage::empty_assistant()];
         transcript.resync_list();
         assert_eq!(transcript.scroller.item_count(), 1);
+    }
+
+    /// The context meter reads the estimate every render: settled rows stay
+    /// memoized, only the row mutated in place re-scans, and a wholesale
+    /// reload starts from zero.
+    #[test]
+    fn estimated_tokens_memoizes_per_message() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageEnd {
+            value: json!({"role": "assistant", "content": "hello", "timestamp": 1u64}),
+        });
+        let settled = transcript.estimated_tokens();
+        assert_eq!(settled, 2, "6 chars / 4, ceiling");
+
+        // A read with no mutation is a pure cache hit, not a re-measure.
+        assert_eq!(transcript.estimated_tokens(), settled);
+
+        // Mutating the settled row's untouched state costs no tokens and no
+        // recomputation of its neighbours.
+        transcript.retokenize(0);
+        assert_eq!(transcript.estimated_tokens(), settled);
+
+        // Streaming into a new row raises the total; the settled row does
+        // not re-scan (its cache entry survives the append).
+        transcript.streaming.set(Some(0));
+        transcript.with_streaming(|m| m.current_step_mut().text.push_str("abcdefgh"));
+        assert_eq!(transcript.estimated_tokens(), settled + 2, "8 more chars/4");
+
+        // A wholesale reload restarts the estimate from the new rows.
+        *transcript.messages.borrow_mut() = vec![ChatMessage::empty_assistant()];
+        transcript.reset_est_tokens();
+        assert_eq!(transcript.estimated_tokens(), 0);
     }
 }
 

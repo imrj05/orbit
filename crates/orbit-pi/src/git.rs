@@ -54,6 +54,15 @@ pub fn is_repo(cwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Make `cwd` a Git repository (`git init`). The initial branch name is the
+/// user's own `init.defaultBranch`, so Orbit never picks one for them. An
+/// existing repository is left as it is (`git init` there only reinitializes,
+/// which changes nothing the user made), but the caller only offers this
+/// outside one.
+pub fn init_repository(cwd: &Path) -> Result<(), String> {
+    run_git(cwd, &["init", "--quiet"]).map(|_| ())
+}
+
 /// Current branch name, if any.
 pub fn current_branch(cwd: &Path) -> Option<String> {
     run_git(cwd, &["branch", "--show-current"])
@@ -102,7 +111,7 @@ pub fn list_branch_entries(cwd: &Path) -> Result<Vec<BranchEntry>, String> {
         .collect())
 }
 
-fn parse_branch_entry(line: &str) -> BranchEntry {
+pub(crate) fn parse_branch_entry(line: &str) -> BranchEntry {
     let (name, date) = match line.split_once('\t') {
         Some((name, date)) => (name, Some(date.trim())),
         None => (line, None),
@@ -967,9 +976,12 @@ pub struct CommitDetail {
 /// Full metadata plus the changed-file list for one commit.
 pub fn commit_detail(cwd: &Path, rev: &str) -> Result<CommitDetail, String> {
     let format =
-        "%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ae\u{1f}%aI\u{1f}%cn\u{1f}%ce\u{1f}%cI\u{1f}%P\u{1f}%D\u{1f}%b";
+        // One field per `CommitDetail` value, in read order: an extra field
+        // (the committer's email used to sit here) shifts every value after
+        // it — the committer's date into `parents`, the refs into `body`.
+        "%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ae\u{1f}%aI\u{1f}%cn\u{1f}%cI\u{1f}%P\u{1f}%D\u{1f}%b";
     let out = run_git(cwd, &["show", "-s", &format!("--format={format}"), rev])?;
-    let mut fields = out.splitn(12, '\u{1f}');
+    let mut fields = out.splitn(11, '\u{1f}');
     let hash = fields.next().unwrap_or_default().to_string();
     if hash.is_empty() {
         return Err(tr!("git_panel.commit_unavailable"));
@@ -2109,6 +2121,24 @@ mod tests {
     }
 
     #[test]
+    fn init_makes_a_plain_folder_a_repository() {
+        let root = std::env::temp_dir().join(format!(
+            "orbit-git-init-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(!is_repo(&root), "a fresh temp folder is not a repository");
+        init_repository(&root).expect("git init");
+        assert!(is_repo(&root));
+        assert!(root.join(".git").is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn off_repo_reports_not_a_repository() {
         let error = collect_review_diff(
             Path::new("/definitely/not/a/repo/orbit"),
@@ -2219,6 +2249,18 @@ mod tests {
         assert_eq!(detail.subject, "baseline");
         assert_eq!(detail.author, "Orbit Test");
         assert!(detail.short.len() >= 7);
+        // Every field lands in its own slot: the root commit has no parents,
+        // the dates are ISO-8601, the body carries no ref decoration.
+        assert!(detail.parents.is_empty(), "{:?}", detail.parents);
+        assert!(detail.committer_date.contains('T'), "{}", detail.committer_date);
+        assert!(detail.author_date.contains('T'), "{}", detail.author_date);
+        assert!(detail.body.is_empty(), "{:?}", detail.body);
+        fs::write(root.join("second.txt"), "x\n").unwrap();
+        run_git(&root, &["add", "second.txt"]).unwrap();
+        run_git(&root, &["commit", "--quiet", "-m", "second", "-m", "why it changed"]).unwrap();
+        let child = commit_detail(&root, "HEAD").unwrap();
+        assert_eq!(child.parents, vec![head.clone()]);
+        assert_eq!(child.body, "why it changed");
         let file = detail
             .files
             .iter()
