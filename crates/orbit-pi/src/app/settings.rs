@@ -1,5 +1,4 @@
 use super::format::*;
-use super::sidebar::star_project_banner;
 use super::*;
 use crate::ui::button::{Button, ButtonVariant};
 use crate::git_panel::widgets::check_box;
@@ -20,6 +19,9 @@ use crate::ui::prelude::*;
 use crate::ui::banner::{Banner, BannerTone};
 use crate::ui::style::surface::SurfaceExt;
 use gpui::{canvas, Bounds, DispatchPhase, Div, Hitbox, HitboxBehavior, MouseMoveEvent, Stateful};
+
+/// The pinned GPUI release (`crates/orbit-pi/Cargo.toml`), shown on About.
+const GPUI_VERSION: &str = "0.2.2";
 
 // Font registration completes at startup, before settings can render. Cache the
 // snapshot for this process rather than enumerating platform fonts each frame.
@@ -1112,7 +1114,7 @@ impl OrbitApp {
         .into_any_element()
     }
 
-    pub(super) fn settings_header(&self, theme: Theme) -> impl IntoElement + use<> {
+    pub(super) fn settings_header(&self, theme: Theme) -> AnyElement {
         let (title, subtitle): (String, String) = match self.settings_section {
             SettingsSection::General => {
                 (tr!("settings.general"), tr!("settings.general_description"))
@@ -1160,22 +1162,22 @@ impl OrbitApp {
             SettingsSection::Privacy => {
                 (tr!("settings.privacy"), tr!("settings.privacy_description"))
             }
-            SettingsSection::About => (tr!("settings.about"), tr!("settings.about_description")),
+            // About names the product itself: the nav already says "About".
+            SettingsSection::About => (
+                tr!("settings.orbit_pi"),
+                tr!("settings.native_workbench_for_the_pi_coding_agent"),
+            ),
             SettingsSection::ReportBug => (
                 tr!("settings.report_bug"),
                 tr!("settings.report_bug_description"),
             ),
         };
-        div()
+        let about = self.settings_section == SettingsSection::About;
+        let text = div()
             .flex()
             .flex_col()
+            .min_w_0()
             .gap(DynamicSpacing::Base04.px(&theme))
-            .when(self.settings_section == SettingsSection::About, |header| {
-                header.child(embedded_image(
-                    crate::app_icon::ASSET,
-                    f32::from(IconSize::XLarge.px(&theme)),
-                ))
-            })
             .child(
                 div()
                     .flex()
@@ -1210,6 +1212,40 @@ impl OrbitApp {
                         .child(tr!("remote_hosts.experimental_note")),
                 )
             })
+            // The build facts in one quiet line, in place of a board row each.
+            .when(about, |header| {
+                header.child(
+                    div()
+                        .debug_selector(|| "about-version".to_string())
+                        .text_size(TextSize::Small.px(&theme))
+                        .font(crate::ui::style::text::num_font())
+                        .text_color(theme.text_muted)
+                        .child(tr!(
+                            "settings.about_meta",
+                            version = env!("CARGO_PKG_VERSION"),
+                            gpui = GPUI_VERSION
+                        )),
+                )
+            });
+        if !about {
+            return text.into_any_element();
+        }
+        // The app mark beside its name: an identity block, not a page title
+        // stacked under an icon.
+        div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base16.px(&theme))
+            .child(
+                div()
+                    .flex_none()
+                    .child(embedded_image(
+                        crate::app_icon::ASSET,
+                        f32::from(IconSize::XLarge.px(&theme)),
+                    )),
+            )
+            .child(text)
+            .into_any_element()
     }
 
     /// The rows for the active section, as card elements. `this` rides
@@ -1321,39 +1357,13 @@ impl OrbitApp {
             SettingsSection::Shortcuts => self.shortcut_rows(theme),
             SettingsSection::Privacy => self.privacy_rows(theme, this.clone(), cx),
             SettingsSection::About => {
-                let mut about = vec![self.setting_row(
-                    theme,
-                    &tr!("settings.orbit_pi"),
-                    Some(&tr!("settings.native_workbench_for_the_pi_coding_agent")),
-                    None,
-                    Some(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(format!("v{}", env!("CARGO_PKG_VERSION")))
-                            .into_any_element(),
-                    ),
-                )];
+                // The header carries the identity (mark, name, version), so
+                // the board holds only what the user can act on or check:
+                // updates, the agent runtime, and the project links.
+                let mut about = Vec::new();
                 if let Some(update) = self.about_update_row(theme, this.clone(), cx) {
                     about.push(update);
                 }
-                about.push(
-                    self.setting_row(
-                        theme,
-                        &tr!("settings.gpui"),
-                        Some(&tr!(
-                            "settings.gpu_accelerated_ui_framework_pinned_runtime_shad"
-                        )),
-                        None,
-                        Some(
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_secondary)
-                                .child("0.2.2")
-                                .into_any_element(),
-                        ),
-                    ),
-                );
                 about.push(self.setting_row(
                     theme,
                     &tr!("settings.pi_cli"),
@@ -1370,19 +1380,17 @@ impl OrbitApp {
                         "settings.open_source_under_apache_2_0_code_issues_and_rel"
                     )),
                     None,
-                    Some(self.about_github_button(theme)),
-                ));
-                // The page header already reads "About"; a board header of
-                // the same name would just repeat it, so the group is
-                // headerless.
-                vec![
-                    star_project_banner(
-                        theme,
-                        "about-star-banner",
-                        self.repo_star_button(theme, cx),
+                    Some(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base06.px(&theme))
+                            .child(self.repo_star_button(theme, cx))
+                            .child(self.about_github_button(theme))
+                            .into_any_element(),
                     ),
-                    self.settings_group(theme, about),
-                ]
+                ));
+                vec![self.settings_group(theme, about)]
             }
             SettingsSection::ReportBug => self.bug_report_rows(theme, cx),
         }
@@ -4595,6 +4603,7 @@ impl OrbitApp {
             .on_mouse_up(MouseButton::Left, |_, _, cx| {
                 cx.open_url(env!("CARGO_PKG_REPOSITORY"));
             })
+            .debug_selector(|| "about-github".to_string())
             .into_any_element()
     }
 
@@ -10023,11 +10032,11 @@ mod model_filter_tests {
 mod about_banner_tests {
     use super::*;
 
-    /// Settings → About mounts the star banner permanently: it is the same
-    /// card as the sidebar's, but carries no dismiss button. (The sidebar's
-    /// dismiss id is absent from the About tree.)
+    /// Settings → About no longer stacks a star card over the board: the
+    /// Star control lives on the Source row beside the GitHub link
+    /// (`repo_star::tests::about_shows_identity_and_star_beside_github`).
     #[gpui::test]
-    fn about_page_mounts_the_star_banner_without_a_dismiss(cx: &mut gpui::TestAppContext) {
+    fn about_page_has_no_star_banner(cx: &mut gpui::TestAppContext) {
         use crate::theme::{Theme, ThemeId};
 
         cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
@@ -10042,17 +10051,8 @@ mod about_banner_tests {
         let viewport = cx.update(|window, _| window.viewport_size());
         let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
 
-        let banner = cx
-            .debug_bounds("about-star-banner")
-            .expect("Settings → About must show the star banner");
-        assert!(
-            f32::from(banner.size.width) > 300.,
-            "the About banner spans the content column: {banner:?}"
-        );
-        assert!(
-            cx.debug_bounds("sidebar-star-dismiss").is_none(),
-            "the About banner is permanent — it carries no dismiss button"
-        );
+        assert!(cx.debug_bounds("about-star-banner").is_none());
+        assert!(cx.debug_bounds("about-star-toggle").is_some());
     }
 }
 

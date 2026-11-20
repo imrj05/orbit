@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Star Orbit from Settings → About.** When the GitHub CLI is installed and signed in, the
-  About card shows a **Star** / **Starred** button that stars or unstars the repository with
-  your `gh` account (`gh api /user/starred/…`), on click only. Orbit checks the current star
-  once per launch, the first time About opens. Without a usable `gh` (missing, signed out, or a
-  token without the scope) the button is not shown and the card keeps opening the repository
-  in the browser.
+- **Star Orbit from Settings → About.** A **Star** button sits beside the GitHub link. When
+  the GitHub CLI is installed and signed in, it stars or unstars the repository with your
+  `gh` account (`gh api /user/starred/…`), on click only, and reads **Starred** once you have.
+  Orbit checks the current star once per launch, the first time About opens. Without a usable
+  `gh` (missing, signed out, or a token without the scope) the same button opens the
+  repository in the browser.
 - **The server's branch on remote sessions.** The header and status bar show the branch (and
   ahead/behind) of the session's folder **on the server** — never this Mac's — in the same
   branch selector as local sessions: search, the server's branches newest first, and
@@ -238,6 +238,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A quieter About page.** Settings → About opens on the app's identity — its mark beside
+  the name, the one-line description and a single "Version · GPUI" line — over one board:
+  Updates, the pi agent's connection, and Source with **Star** beside **GitHub**. The star
+  card and the separate Orbit Pi and GPUI rows are gone; their facts moved into the header.
 - **Quieter chrome.** Top-bar controls (quota, details, open-in, review,
   terminal, explorer) no longer sit in framed chips. They rest as plain icons
   and text and pick up their glass only on hover or while their panel is

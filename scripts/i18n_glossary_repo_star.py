@@ -2,6 +2,8 @@
 
 GLOSSARY = {
     "zh-CN": {
+        "Version %{version} · GPUI %{gpui}": "版本 %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "在浏览器中打开 GitHub 上的 Orbit",
         "Star": "加星",
         "Starred": "已加星",
         "Star Orbit with your GitHub account (via gh)": "用你的 GitHub 账号给 Orbit 加星（通过 gh）",
@@ -11,6 +13,8 @@ GLOSSARY = {
         "Could not remove the star: %{error}": "无法取消加星：%{error}",
     },
     "ja": {
+        "Version %{version} · GPUI %{gpui}": "バージョン %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "ブラウザで GitHub の Orbit を開きます",
         "Star": "スター",
         "Starred": "スター済み",
         "Star Orbit with your GitHub account (via gh)": "GitHub アカウントで Orbit にスターを付ける（gh 経由）",
@@ -20,6 +24,8 @@ GLOSSARY = {
         "Could not remove the star: %{error}": "スターを外せませんでした：%{error}",
     },
     "ko": {
+        "Version %{version} · GPUI %{gpui}": "버전 %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "브라우저에서 GitHub의 Orbit을 엽니다",
         "Star": "별표",
         "Starred": "별표함",
         "Star Orbit with your GitHub account (via gh)": "GitHub 계정으로 Orbit에 별표하기 (gh 사용)",
@@ -29,6 +35,8 @@ GLOSSARY = {
         "Could not remove the star: %{error}": "별표를 취소하지 못했습니다: %{error}",
     },
     "es": {
+        "Version %{version} · GPUI %{gpui}": "Versión %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "Abre Orbit en GitHub en tu navegador",
         "Star": "Destacar",
         "Starred": "Destacado",
         "Star Orbit with your GitHub account (via gh)": "Dale una estrella a Orbit con tu cuenta de GitHub (con gh)",
@@ -38,6 +46,8 @@ GLOSSARY = {
         "Could not remove the star: %{error}": "No se pudo quitar la estrella: %{error}",
     },
     "fr": {
+        "Version %{version} · GPUI %{gpui}": "Version %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "Ouvre Orbit sur GitHub dans votre navigateur",
         "Star": "Étoile",
         "Starred": "Étoilé",
         "Star Orbit with your GitHub account (via gh)": "Ajouter une étoile à Orbit avec votre compte GitHub (via gh)",
@@ -47,6 +57,8 @@ GLOSSARY = {
         "Could not remove the star: %{error}": "Impossible de retirer l’étoile : %{error}",
     },
     "de": {
+        "Version %{version} · GPUI %{gpui}": "Version %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "Öffnet Orbit auf GitHub in deinem Browser",
         "Star": "Stern",
         "Starred": "Mit Stern",
         "Star Orbit with your GitHub account (via gh)": "Orbit mit deinem GitHub-Konto einen Stern geben (über gh)",
@@ -56,6 +68,8 @@ GLOSSARY = {
         "Could not remove the star: %{error}": "Der Stern konnte nicht entfernt werden: %{error}",
     },
     "pt-BR": {
+        "Version %{version} · GPUI %{gpui}": "Versão %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "Abre o Orbit no GitHub no seu navegador",
         "Star": "Estrela",
         "Starred": "Com estrela",
         "Star Orbit with your GitHub account (via gh)": "Dar uma estrela ao Orbit com sua conta do GitHub (via gh)",
@@ -65,6 +79,8 @@ GLOSSARY = {
         "Could not remove the star: %{error}": "Não foi possível remover a estrela: %{error}",
     },
     "ru": {
+        "Version %{version} · GPUI %{gpui}": "Версия %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "Открывает Orbit на GitHub в браузере",
         "Star": "Звезда",
         "Starred": "Со звездой",
         "Star Orbit with your GitHub account (via gh)": "Поставить звезду Orbit от вашего аккаунта GitHub (через gh)",
@@ -74,6 +90,8 @@ GLOSSARY = {
         "Could not remove the star: %{error}": "Не удалось убрать звезду: %{error}",
     },
     "it": {
+        "Version %{version} · GPUI %{gpui}": "Versione %{version} · GPUI %{gpui}",
+        "Opens Orbit on GitHub in your browser": "Apre Orbit su GitHub nel browser",
         "Star": "Stella",
         "Starred": "Con stella",
         "Star Orbit with your GitHub account (via gh)": "Metti una stella a Orbit con il tuo account GitHub (tramite gh)",

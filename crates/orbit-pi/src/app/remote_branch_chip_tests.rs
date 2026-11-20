@@ -116,13 +116,24 @@ fn the_remote_chip_looks_like_the_local_selector(cx: &mut gpui::TestAppContext) 
     });
     let mut local_cx = draw(cx, &local);
     let local_chip = local_cx.debug_bounds("branch-chip").expect("local chip");
-    // The app may have read this checkout's own branch by now; the remote
-    // chip gets whatever name the local one painted.
-    let name = cx.update(|cx| local.read(cx).branch.as_ref().map(|b| b.name.clone()));
+    // The app may have read this checkout's own branch by now, with its real
+    // ahead/behind counts (a branch with unpushed commits draws an extra
+    // badge). The remote chip gets exactly what the local one painted, so the
+    // comparison is about the chip, not about this checkout's state.
+    let (name, ahead_behind) = cx.update(|cx| {
+        let branch = local.read(cx).branch.as_ref();
+        (
+            branch.map(|b| b.name.clone()),
+            branch
+                .and_then(|b| b.ahead_behind)
+                .map(|(ahead, behind)| (ahead as u32, behind as u32)),
+        )
+    });
     let remote = remote_app(
         cx,
         RemoteGit::Repository(RemoteGitRepo {
             branch: name,
+            ahead_behind,
             ..RemoteGitRepo::default()
         }),
     );

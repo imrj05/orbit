@@ -3,11 +3,14 @@
 //! Starring acts on the user's GitHub account, so it goes through the `gh`
 //! CLI the user already signed in to (no token is collected here) and only on
 //! an explicit click. The state is read once per launch, the first time About
-//! is shown; when `gh` is missing, signed out or lacks the scope, the card
-//! keeps its original behavior — opening the repository in the browser.
+//! is shown; when `gh` is missing, signed out or lacks the scope, the Star
+//! button opens the repository in the browser instead.
 
 use super::*;
 use crate::gh;
+use crate::theme::tokens::ButtonSize;
+use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::prelude::icon;
 
 /// What the About card knows about the user's star on Orbit's repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -112,47 +115,53 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// The trailing control on the About star card, or `None` when the card
-    /// should keep opening the browser (unknown, unavailable).
-    pub(super) fn repo_star_button(&self, theme: Theme, cx: &Context<Self>) -> Option<AnyElement> {
+    /// About's Star control, beside the GitHub link. With a usable `gh` it
+    /// stars or unstars in place (Starred carries the accent star); without
+    /// one — unknown, missing, signed out — it opens the repository in the
+    /// browser, so the button never promises an action it cannot take.
+    pub(super) fn repo_star_button(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
+        let in_app = matches!(
+            self.repo_star,
+            RepoStar::Checking
+                | RepoStar::NotStarred
+                | RepoStar::Starred
+                | RepoStar::Updating(_)
+        );
         let (starred, loading) = match self.repo_star {
-            RepoStar::Unknown | RepoStar::Unavailable => return None,
+            RepoStar::Unknown | RepoStar::Unavailable | RepoStar::NotStarred => (false, false),
             RepoStar::Checking => (false, true),
-            RepoStar::NotStarred => (false, false),
             RepoStar::Starred => (true, false),
             // Show where the click is heading while GitHub answers.
             RepoStar::Updating(target) => (target, true),
         };
-        let label = if starred {
-            tr!("settings.starred")
-        } else {
-            tr!("settings.star")
+        let (label, tip) = match (in_app, starred) {
+            (false, _) => (tr!("settings.star"), tr!("settings.star_tip_browser")),
+            (true, false) => (tr!("settings.star"), tr!("settings.star_tip")),
+            (true, true) => (tr!("settings.starred"), tr!("settings.unstar_tip")),
         };
-        let tip = if starred {
-            tr!("settings.unstar_tip")
+        let icon_px = ButtonSize::Medium.icon_size().px(&theme);
+        let mut button = Button::keyed("about-star-toggle", ButtonVariant::Secondary)
+            .size(ButtonSize::Medium)
+            .label(label)
+            .loading(loading)
+            .tip(tip);
+        // The one accent on the page: a star you have given.
+        button = if starred && !loading {
+            button.leading(icon("icons/star.svg", icon_px, theme.accent_text))
         } else {
-            tr!("settings.star_tip")
+            button.icon("icons/star.svg")
         };
         let app = cx.entity();
-        Some(
-            Button::keyed("about-star-toggle", ButtonVariant::Secondary)
-                .size(ButtonSize::Compact)
-                .icon(if starred {
-                    "icons/check.svg"
-                } else {
-                    "icons/star.svg"
-                })
-                .label(label)
-                .loading(loading)
-                .tip(tip)
-                .on_mouse_up(&theme, move |_, _, cx| {
-                    // The card under the button opens the browser on release;
-                    // this click is the star itself.
-                    cx.stop_propagation();
+        button
+            .on_mouse_up(&theme, move |_, _, cx| {
+                if in_app {
                     app.update(cx, |app, cx| app.toggle_repo_star(cx));
-                })
-                .into_any_element(),
-        )
+                } else {
+                    cx.open_url(env!("CARGO_PKG_REPOSITORY"));
+                }
+            })
+            .debug_selector(|| "about-star-toggle".to_string())
+            .into_any_element()
     }
 }
 
@@ -182,5 +191,38 @@ mod tests {
             RepoStar::after_update(false, &Err("HTTP 403".into())),
             RepoStar::Starred
         );
+    }
+
+    /// About is one identity header (mark, name, version line) over one
+    /// board; Star sits beside the GitHub link on the Source row, and with no
+    /// `gh` answer yet it is still offered (it opens the browser).
+    #[gpui::test]
+    fn about_shows_identity_and_star_beside_github(cx: &mut gpui::TestAppContext) {
+        use super::super::*;
+        use crate::theme::{Theme, ThemeId};
+        use gpui::{point, px};
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        let viewport = gpui::size(px(1200.), px(820.));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings_open = true;
+                app.settings_section = SettingsSection::About;
+                app.repo_star = RepoStar::Unavailable;
+                cx.notify();
+            });
+        });
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+        let title = cx.debug_bounds("settings-page-title").expect("identity name");
+        let version = cx.debug_bounds("about-version").expect("version line");
+        assert!(version.origin.y > title.origin.y, "version sits under the name");
+        let star = cx.debug_bounds("about-star-toggle").expect("star offered");
+        let github = cx.debug_bounds("about-github").expect("github link");
+        assert_eq!(star.size.height, github.size.height, "one control height");
+        assert_eq!(star.origin.y, github.origin.y, "star and GitHub share a row");
+        assert!(star.origin.x < github.origin.x, "star leads the link");
     }
 }
