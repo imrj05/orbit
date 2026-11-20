@@ -130,6 +130,10 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         surgical upsert/remove, `~/.ssh/config` alias discovery, the read-only probe
   docs/remote-sessions.md  agent-only SSH sessions: launch script, safety, what is off while remote
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
+  src/app/right_dock_ui.rs  the right pane's tabs: Review + delegated subagents opened from a card
+                        (strip, controller, the subagent view in the shared `dock_shell` frame)
+  src/app/repo_star.rs  Settings → About's Star / Starred button: reads and toggles the user's
+                        star on Orbit's repo through their signed-in `gh` (browser fallback)
   src/app/view.rs       top-level chrome: sidebar, transcript, composer, status bar, onboarding, image lightbox
   src/app/open_in.rs    installed-editor/terminal detection and the "open in" menu
   src/app/worktrees.rs  Worktrees page + controller: list/create/open/rename/move/lock/remove, setup progress, settings rows
@@ -161,6 +165,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/workspace_mark.rs per-workspace sidebar mark: curated HugeIcons + semantic tints, persisted in workspaces.json
   src/worktree.rs       Git worktree lifecycle: `WorktreeManager` (list/create/remove/move/lock/unlock/prune/repair), porcelain parsing, name validation, worktree root + `.orbit/worktree.json`
   src/worktree_setup.rs optional worktree setup script: resolution, `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, captured stdout/stderr/exit code (async host in app/worktrees.rs)
+  src/right_dock.rs     the right pane's tab model (Review + subagent tabs), per session on the
+                        transcript; never decides whether the pane is shown
   src/sessions.rs       reads ~/.pi/agent/sessions (+ debounced session-store watcher)
   src/watch.rs          shared debounced fs watching (workspace tree for Review/Git)
   src/explorer/         workspace file tree + file editor

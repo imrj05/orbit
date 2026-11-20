@@ -23,7 +23,7 @@ use crate::ui::field::TextField;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::text_width;
 use crate::ui::prelude::{
-    icon, menu_header, picker_entry, ControlExt, PressedRamp, StatefulControlExt,
+    icon, picker_entry, picker_header, ControlExt, PressedRamp, StatefulControlExt,
 };
 
 const POPOVER_W: f32 = 320.;
@@ -496,8 +496,7 @@ impl Render for BranchPicker {
             .on_action(cx.listener(Self::on_prev))
             .child(search_field(self.filter.clone(), &theme))
             .child(
-                menu_header(tr!("branch_picker.branches"), &theme)
-                    .pt(picker::list_padding_y(&theme))
+                picker_header(tr!("branch_picker.branches"), &theme)
                     // Branch count in the header's trailing slot, on the
                     // sub-header's own metrics — same as the workspace
                     // picker.

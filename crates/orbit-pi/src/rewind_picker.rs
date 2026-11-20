@@ -22,7 +22,7 @@ use crate::theme::{self, Theme};
 use crate::ui::field::search_field;
 use crate::ui::popover::PopoverExt;
 use crate::ui::prelude::{
-    menu_header, picker_entry, picker_surface, working_folder_keyboard_hints, ControlExt,
+    picker_entry, picker_header, picker_surface, working_folder_keyboard_hints, ControlExt,
     PressedRamp, StatefulControlExt,
 };
 
@@ -369,21 +369,19 @@ impl Render for RewindPicker {
             .on_action(cx.listener(Self::on_prev))
             .child(search_field(self.filter.clone(), &theme))
             .child(
-                menu_header(tr!("rewind.title"), &theme)
-                    .pt(picker::list_padding_y(&theme))
-                    .when(!rows.is_empty(), |header| {
-                        header.child(
-                            div()
-                                .flex_none()
-                                .h(list::sub_header_height(&theme))
-                                .px(list::sub_header_inset_x(&theme))
-                                .flex()
-                                .items_center()
-                                .text_size(list::SUB_HEADER_TEXT.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(rows.len().to_string()),
-                        )
-                    }),
+                picker_header(tr!("rewind.title"), &theme).when(!rows.is_empty(), |header| {
+                    header.child(
+                        div()
+                            .flex_none()
+                            .h(list::sub_header_height(&theme))
+                            .px(list::sub_header_inset_x(&theme))
+                            .flex()
+                            .items_center()
+                            .text_size(list::SUB_HEADER_TEXT.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(rows.len().to_string()),
+                    )
+                }),
             )
             .when(
                 !self.loading && self.highlighted == usize::MAX && !rows.is_empty(),

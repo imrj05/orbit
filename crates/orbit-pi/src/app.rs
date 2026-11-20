@@ -634,6 +634,9 @@ pub struct OrbitApp {
     settings_open: bool,
     /// Active section within the settings surface.
     settings_section: SettingsSection,
+    /// Settings → About: the user's star on Orbit's repository, via `gh`.
+    repo_star: repo_star::RepoStar,
+    repo_star_task: Option<gpui::Task<()>>,
     settings_back_focus: FocusHandle,
     settings_nav_focus: FocusHandle,
     settings_nav_cursor: usize,
@@ -1137,6 +1140,8 @@ pub struct OrbitApp {
     file_viewer: Entity<crate::explorer::FileViewer>,
     /// Bottom panel — an integrated shell (cmd-j).
     terminal_panel: Entity<TerminalPanel>,
+    /// The right pane's tab strip scroller (Review + subagent tabs).
+    right_dock_scroll: ScrollHandle,
     /// Whether the Git page replaces the chat area.
     git_open: bool,
     /// The full-page Git panel (tabs + commit bar).
@@ -2143,6 +2148,17 @@ impl OrbitApp {
 
         // Right side pane: Review (git diff).
         let sidepane = cx.new(SidePane::new);
+        // The Review pane draws the session's dock tabs above itself. It asks
+        // on every paint, so a session switch or reload never leaves it stale.
+        {
+            let dock_app = cx.weak_entity();
+            sidepane.update(cx, |pane, _| {
+                pane.set_dock_header(Rc::new(move |theme, cx| {
+                    let app = dock_app.upgrade()?;
+                    app.read(cx).dock_tab_strip(&app, theme, cx)
+                }));
+            });
+        }
         let sidepane_sub = cx.observe(&sidepane, |this, pane, cx| {
             // Review and the Explorer are mutually exclusive right docks.
             // Catch every path that opens Review, not just the top-bar toggle.
@@ -2464,6 +2480,8 @@ impl OrbitApp {
             session_menu: None,
             settings_open: false,
             settings_section: SettingsSection::General,
+            repo_star: repo_star::RepoStar::Unknown,
+            repo_star_task: None,
             settings_back_focus: cx.focus_handle().tab_stop(true),
             settings_nav_focus: cx.focus_handle().tab_stop(true),
             settings_nav_cursor: 0,
@@ -2669,6 +2687,7 @@ impl OrbitApp {
             file_viewer,
             _file_viewer_sub: file_viewer_sub,
             terminal_panel,
+            right_dock_scroll: ScrollHandle::new(),
             git_open: false,
             git_panel: git_panel.clone(),
             usage_open: false,
@@ -4548,6 +4567,8 @@ mod pickers;
 mod plugin_update_ui;
 mod provider_accounts;
 mod remote_hosts_ui;
+mod repo_star;
+mod right_dock_ui;
 mod remote_providers_ui;
 mod remote_git_ui;
 mod remote_sessions_ui;

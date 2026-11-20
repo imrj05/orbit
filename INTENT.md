@@ -526,6 +526,63 @@ legacy app today:
 
 ### Implementation status (living)
 
+Settings → Appearance → Background offers **Desktop** (`WallpaperMode::Desktop`):
+the window's background appearance becomes `Blurred`, so the OS compositor
+frosts the desktop behind it (macOS `NSVisualEffectView`, Windows Acrylic), the
+root paints no canvas, and panes take the full-window wallpaper's translucent
+fills. With no picture to sample, `wallpaper::desktop_surfaces` floors every
+text-bearing alpha at `Theme::floating_glass_alpha` (contrast held over both a
+black and a white backdrop); Card opacity can only raise it. The window follows
+the theme from `rebuild_theme_for` (deferred, so it never re-enters a window's
+own update) and opens see-through when Desktop is on. Light palettes, Reduce
+Transparency and Linux keep `SurfaceTreatment::OPAQUE` and an opaque window.
+Modelled on monocode's window glass, but on Orbit's contrast floors instead of
+fixed alphas. Unit tests cover the mode, the floors and the opaque fallbacks; the
+see-through window itself has not been looked at in the running app.
+
+The right pane is tabbed: **Review** first, then one tab per delegated child
+the reader opens from its card ("Open in side pane"). The tabs (`right_dock.rs`)
+ride on the session's `Transcript`, so parking a session parks them; whether
+the pane is *shown* stays the app-wide `SidePane` flag, and only that click sets
+it. Returning to a session therefore restores its tabs without popping a hidden
+pane open — the rule upstream needed `aafd644f` to patch in. Review paints its
+own strip through a `DockHeader` callback it asks on every paint; a subagent
+tab paints in the same `dock_shell` frame (width, resize handle, card) with
+`transcript_view::render_subagent_panel`: a header (state mark, name, status
+badge, elapsed · tools · tokens · cost, a live "now" line), error and blocked
+banners, then the full task, setup and tool badges, steps and report in inset
+wells filled with `page_fill`, so they stay on the pane's glass. The steps and
+report builders are shared with the card's inline log. The panel also streams
+the child's reasoning (`thinkingText`, a tail ≤ 4,000 chars) and each step's
+result (`output`, a head ≤ 1,200 chars, live from `tool_execution_update`):
+optional `subagent/1` fields the bundled extension adds (additive per D-L),
+display only, never sent to the parent model. This is
+Orbit's own `subagent/1` delegation data, not upstream's dock, which reads the
+third-party `pi-subagents` async protocol. Covered by model tests, controller
+tests (open, hide-then-return, reload, close-last) and GPUI tests for the strip,
+the subagent view and the card's button; not yet tried by hand in the app.
+
+Transcript text selection counts its own clicks (Pi TUI's `getClickCount`:
+same block, visual line and word within 500 ms, cycling 1 → 2 → 3 → 1)
+instead of trusting GPUI's `click_count`. Two selects the word — UAX #29
+segments merged across Pi's joiners `/ - + \ ~ _ .` — and three the wrapped
+row from the text layout; drags after either snap to words or rows, and those
+presses never resolve a link on release. Unit tests cover word segmentation,
+the click cycle, drag snapping and past-the-end hits, and GPUI tests drive real
+double- and triple-clicks; not yet tried by hand in the running app.
+
+Settings → About stars Orbit's repository through the user's signed-in `gh`
+(`gh api /user/starred/OWNER/REPO`; GET to read, PUT/DELETE on click). The
+state is read once per launch when About is first shown; a missing or
+signed-out `gh`, or a token without the scope, turns the same Star button into
+a link that opens the repository in the browser. No token is collected by Orbit.
+About itself is an identity header (mark, name, description, one
+"Version · GPUI" line) over one board — Updates, the pi agent, and Source with
+Star beside GitHub. Covered by unit tests for the slug, the 404 classification
+and the state machine, plus a GPUI layout test for the header and the
+Star/GitHub row; the live `gh` round trip and the page in the running app are
+not yet manually verified.
+
 The main window restores its frame and display from `~/.orbit-pi/window.json`,
 with windowed, maximized, and native fullscreen as distinct states. Fullscreen
 keeps the ordinary restore frame, so leaving it recovers the previous size;

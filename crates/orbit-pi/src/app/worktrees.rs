@@ -3458,7 +3458,7 @@ impl OrbitApp {
                 app.menu_dismissed_at.arm();
                 app.close_work_in_menu(window, cx);
             }))
-            .child(menu_header(tr!("working_folder.title"), &theme))
+            .child(picker_header(tr!("working_folder.title"), &theme))
             .child(list);
         // One honest line: choosing another place starts a task there, and the
         // conversation on screen belongs to the place being left.

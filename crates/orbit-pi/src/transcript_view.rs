@@ -60,7 +60,7 @@ use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, HistoryCard, Step, SummaryRow, ToolCall, ToolFacts};
 use crate::turn_review::{ChangedFile, TurnFiles};
 use crate::ui::button::{IconButton, IconButtonVariant};
-use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::chip::{Badge, BadgeFill, ChipButton, ChipStyle};
 use crate::ui::popover::{popover_list, PopoverExt};
 use crate::ui::prelude::{
     anchored_popover_at, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
@@ -90,6 +90,10 @@ pub(crate) type ReviewOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// Opens one attachment image in the app's full-window lightbox. Handed down
 /// from the app so an image tile can open a surface it doesn't own.
 pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
+
+/// Opens a delegated child's log as a tab in the right pane. Handed down from
+/// the app like [`ImageOpener`]; `None` (tests, previews) hides the button.
+pub(crate) type DockOpener = Rc<dyn Fn(crate::right_dock::SubagentTab, &mut Window, &mut App)>;
 
 /// Opens the rewind picker on the `usize`-th user turn. Handed down from the
 /// app so a message footer can offer a fork without owning session state.
@@ -347,6 +351,8 @@ pub(crate) struct TranscriptView {
     /// Opens an attachment image in the full-window lightbox; `None` leaves
     /// the tiles non-interactive.
     pub image_opener: Option<ImageOpener>,
+    /// Opens a delegated child in the right pane; `None` hides the button.
+    pub dock_opener: Option<DockOpener>,
     /// Opens the rewind picker from a user message's footer. The app always
     /// supplies it; `None` (tests, previews) simply draws no rewind action.
     pub rewind: Option<RewindOpener>,
@@ -399,12 +405,34 @@ struct SelectPoint {
     offset: usize,
 }
 
+/// How far a press-and-drag grows. Character is a plain click; word and line
+/// are the double- and triple-click grains, and stay in force until mouse-up
+/// so a twitch does not collapse the span back to a caret.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelectGranularity {
+    Character,
+    Word,
+    Line,
+}
+
+/// The span a word or line press started on. Drags snap against this instead
+/// of the raw caret, matching Pi's `selectionInitialRange`.
+#[derive(Clone, Copy)]
+struct SelectionOrigin {
+    block: usize,
+    start: usize,
+    end: usize,
+}
+
 /// An active cross-block selection. Intermediate blocks are fully selected;
 /// only the anchor and focus blocks carry partial ranges.
 struct Selection {
     blocks: Vec<SelectedBlock>,
     anchor: SelectPoint,
     focus: SelectPoint,
+    granularity: SelectGranularity,
+    /// Set for word and line presses; character drags leave it empty.
+    initial: Option<SelectionOrigin>,
 }
 
 impl Selection {
@@ -553,9 +581,24 @@ pub(crate) struct TextSelection {
     /// The drag moved away from the anchor — mouse-up is not a link click.
     moved: bool,
     /// The press that started the drag, for link resolution on release.
+    /// Word and line presses leave this empty so mouse-up does not open a link.
     down: Option<(ElementId, usize)>,
+    /// Previous text press, for the 1-2-3 click cycle. GPUI's `click_count`
+    /// ignores word identity and never wraps back to a single click.
+    last_click: Option<LastClick>,
     menu: Option<TextMenu>,
     stream_fades: HashMap<ElementId, StreamFade>,
+}
+
+/// One text press remembered long enough to recognize a double- or triple-click.
+struct LastClick {
+    at: Instant,
+    count: usize,
+    block: ElementId,
+    line_start: usize,
+    line_end: usize,
+    word_start: usize,
+    word_end: usize,
 }
 
 pub(crate) type TextSelectionState = Rc<RefCell<TextSelection>>;
@@ -571,6 +614,7 @@ impl TextSelection {
             dragging: false,
             moved: false,
             down: None,
+            last_click: None,
             menu: None,
             stream_fades: HashMap::new(),
         }
@@ -599,7 +643,11 @@ impl TextSelection {
 
     /// Index and byte offset of the text under `position`: the containing
     /// block, or the nearest one when the pointer sits in a gutter.
-    fn hit(&self, position: gpui::Point<Pixels>) -> Option<(usize, usize)> {
+    ///
+    /// The bool is set when the pointer is past that row's last glyph.
+    /// `index_for_position` then returns the next row's first byte, which
+    /// word and line hits must step back from. Character drags keep it.
+    fn hit(&self, position: gpui::Point<Pixels>) -> Option<(usize, usize, bool)> {
         let index = self
             .blocks
             .iter()
@@ -610,10 +658,19 @@ impl TextSelection {
             position.x.clamp(block.bounds.left(), block.bounds.right()),
             position.y.clamp(block.bounds.top(), block.bounds.bottom()),
         );
-        let offset = match block.layout.index_for_position(local) {
-            Ok(offset) | Err(offset) => offset,
+        let (offset, past_end) = match block.layout.index_for_position(local) {
+            Ok(offset) => (offset, false),
+            Err(offset) => {
+                // Err is either shy of the row or past its glyphs. The caret
+                // for a past-the-end hit sits at or left of the pointer.
+                let past_end = match block.layout.position_for_index(offset) {
+                    Some(caret) => local.x >= caret.x,
+                    None => true,
+                };
+                (offset, past_end)
+            }
         };
-        Some((index, offset.min(block.text.len())))
+        Some((index, offset.min(block.text.len()), past_end))
     }
 
     fn nearest_block(&self, position: gpui::Point<Pixels>) -> Option<usize> {
@@ -629,23 +686,81 @@ impl TextSelection {
     }
 
     fn begin_selection(&mut self, position: gpui::Point<Pixels>) {
+        self.begin_selection_at(position, Instant::now());
+    }
+
+    /// Press at `position`. A hit inside a text block cycles the click count
+    /// the way Pi's `getClickCount` does (1 caret, 2 word, 3 visual line); a
+    /// press in the gutter clears that count and keeps the character drag on
+    /// the nearest block, without starting a word.
+    fn begin_selection_at(&mut self, position: gpui::Point<Pixels>, now: Instant) {
         self.menu = None;
         self.moved = false;
         self.down = None;
-        let Some((index, offset)) = self.hit(position) else {
+        let inside = self
+            .blocks
+            .iter()
+            .position(|block| block.bounds.contains(&position));
+        let Some((hit_index, offset, past_end)) = self.hit(position) else {
+            self.last_click = None;
             self.selection = None;
             self.dragging = false;
             return;
         };
+        let Some(index) = inside else {
+            self.last_click = None;
+            self.place_character(hit_index, offset, position);
+            return;
+        };
+        let text = self.blocks[index].text.clone();
+        let probe = unit_probe(&text, offset, past_end);
+        let word = word_range_at(&text, probe);
+        if word.is_empty() {
+            self.last_click = None;
+            self.place_character(index, offset, position);
+            return;
+        }
+        let line = visual_line_range(&text, &self.blocks[index].layout, probe);
+        match self.note_click(index, &word, &line, now) {
+            2 => self.place_unit(index, word, SelectGranularity::Word),
+            3 => self.place_unit(index, line, SelectGranularity::Line),
+            _ => self.place_character(index, offset, position),
+        }
+    }
+
+    fn note_click(
+        &mut self,
+        index: usize,
+        word: &Range<usize>,
+        line: &Range<usize>,
+        now: Instant,
+    ) -> usize {
         let key = self.blocks[index].key.clone();
-        let blocks = self
-            .blocks
+        let count = next_click_count(self.last_click.as_ref(), now, &key, line, word);
+        self.last_click = Some(LastClick {
+            at: now,
+            count,
+            block: key,
+            line_start: line.start,
+            line_end: line.end,
+            word_start: word.start,
+            word_end: word.end,
+        });
+        count
+    }
+
+    fn snapshot_blocks(&self) -> Vec<SelectedBlock> {
+        self.blocks
             .iter()
             .map(|block| SelectedBlock {
                 key: block.key.clone(),
                 text: block.text.clone(),
             })
-            .collect();
+            .collect()
+    }
+
+    /// A plain press: a caret that a drag grows character by character.
+    fn place_character(&mut self, index: usize, offset: usize, position: gpui::Point<Pixels>) {
         let point = SelectPoint {
             block: index,
             offset,
@@ -655,68 +770,124 @@ impl TextSelection {
         let block = &self.blocks[index];
         if block.bounds.contains(&position) {
             if let Ok(actual_offset) = block.layout.index_for_position(position) {
-                self.down = Some((key, actual_offset));
+                self.down = Some((block.key.clone(), actual_offset));
             }
         }
         self.selection = Some(Selection {
-            blocks,
+            blocks: self.snapshot_blocks(),
             anchor: point,
             focus: point,
+            granularity: SelectGranularity::Character,
+            initial: None,
         });
         self.dragging = true;
     }
 
-    fn select_word(&mut self, position: gpui::Point<Pixels>) {
-        let Some(index) = self
-            .blocks
-            .iter()
-            .position(|block| block.bounds.contains(&position))
-        else {
-            return;
-        };
-        let Ok(offset) = self.blocks[index].layout.index_for_position(position) else {
-            return;
-        };
-        let text = &self.blocks[index].text;
-        let range = crate::composer::word_range_at(text, byte_boundary(text, offset));
-        self.begin_selection(position);
-        if let Some(selection) = self.selection.as_mut() {
-            selection.anchor = SelectPoint {
+    /// Word or line press. `down` stays empty: the release must not open a link.
+    fn place_unit(&mut self, index: usize, range: Range<usize>, granularity: SelectGranularity) {
+        self.down = None;
+        self.selection = Some(Selection {
+            blocks: self.snapshot_blocks(),
+            anchor: SelectPoint {
                 block: index,
                 offset: range.start,
-            };
-            selection.focus = SelectPoint {
+            },
+            focus: SelectPoint {
                 block: index,
                 offset: range.end,
-            };
-        }
-        self.dragging = false;
-        self.moved = true;
-        self.down = None;
+            },
+            granularity,
+            initial: Some(SelectionOrigin {
+                block: index,
+                start: range.start,
+                end: range.end,
+            }),
+        });
+        self.dragging = true;
     }
 
     fn extend_selection(&mut self, position: gpui::Point<Pixels>) {
         if !self.dragging {
             return;
         }
-        let Some((index, offset)) = self.hit(position) else {
+        let Some((index, offset, past_end)) = self.hit(position) else {
             return;
         };
         let key = self.blocks[index].key.clone();
+        let Some(granularity) = self.selection.as_ref().map(|selection| selection.granularity)
+        else {
+            return;
+        };
+        let Some(target) = self
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.blocks.iter().position(|block| block.key == key))
+        else {
+            return;
+        };
+        if granularity == SelectGranularity::Character {
+            let Some(selection) = self.selection.as_mut() else {
+                return;
+            };
+            let next = SelectPoint {
+                block: target,
+                offset,
+            };
+            if next != selection.anchor {
+                self.moved = true;
+            }
+            selection.focus = next;
+            return;
+        }
+        let Some(text) = self
+            .selection
+            .as_ref()
+            .map(|selection| selection.blocks[target].text.clone())
+        else {
+            return;
+        };
+        let probe = unit_probe(&text, offset, past_end);
+        let unit = if granularity == SelectGranularity::Word {
+            word_range_at(&text, probe)
+        } else {
+            let live = &self.blocks[index];
+            if live.text.as_ref() == text.as_ref() {
+                visual_line_range(&text, &live.layout, probe)
+            } else {
+                logical_line_range(&text, probe)
+            }
+        };
+        self.retarget_unit(target, unit);
+    }
+
+    /// Move the word or line selection so `unit` is the end under the pointer.
+    fn retarget_unit(&mut self, target_block: usize, unit: Range<usize>) {
+        if unit.is_empty() {
+            return;
+        }
         let Some(selection) = self.selection.as_mut() else {
             return;
         };
-        let Some(target) = selection.blocks.iter().position(|block| block.key == key) else {
+        if target_block >= selection.blocks.len() {
+            return;
+        }
+        let Some(origin) = selection.initial else {
+            let next = SelectPoint {
+                block: target_block,
+                offset: unit.start,
+            };
+            if next != selection.anchor {
+                self.moved = true;
+            }
+            selection.focus = next;
             return;
         };
-        let next = SelectPoint {
-            block: target,
-            offset,
-        };
-        if next != selection.anchor {
+        let (anchor, focus) = snap_to_unit(origin, target_block, unit);
+        if anchor != selection.anchor || focus != selection.focus {
             self.moved = true;
         }
-        selection.focus = next;
+        selection.anchor = anchor;
+        selection.focus = focus;
     }
 
     /// End a drag; a press that never moved resolves to the link under it.
@@ -744,6 +915,7 @@ impl TextSelection {
         self.dragging = false;
         self.down = None;
         self.moved = false;
+        self.last_click = None;
         had
     }
 
@@ -849,6 +1021,217 @@ fn byte_boundary(text: &str, mut offset: usize) -> usize {
         offset -= 1;
     }
     offset
+}
+
+/// Pi fullscreen selection waits this long between presses (`DOUBLE_CLICK_INTERVAL_MS`).
+const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+
+/// iTerm2's default "characters considered part of a word", which Pi copies
+/// for fullscreen mouse selection.
+fn is_word_joiner(c: char) -> bool {
+    matches!(c, '/' | '-' | '+' | '\\' | '~' | '_' | '.')
+}
+
+/// One UAX #29 word-break segment, plus whether Pi would treat it as part of
+/// a selectable run.
+struct WordSegment {
+    start: usize,
+    end: usize,
+    selectable: bool,
+    joiner: bool,
+}
+
+/// Word span under `offset`, matching Pi TUI `getWordSelection`: split on
+/// UAX #29, then merge a segment into its neighbors when both sides are
+/// selectable and at least one is a joiner. A click on whitespace or other
+/// punctuation stays on that segment.
+fn word_range_at(text: &str, offset: usize) -> Range<usize> {
+    if text.is_empty() {
+        return 0..0;
+    }
+    let segments = word_segments(text);
+    let probe = probe_offset(text, offset);
+    let Some(index) = segments
+        .iter()
+        .position(|segment| probe >= segment.start && probe < segment.end)
+    else {
+        return probe..probe;
+    };
+    let mut start = segments[index].start;
+    let mut end = segments[index].end;
+    let mut cursor = index;
+    while cursor > 0 && can_join_words(&segments[cursor - 1], &segments[cursor]) {
+        cursor -= 1;
+        start = segments[cursor].start;
+    }
+    cursor = index;
+    while cursor + 1 < segments.len() && can_join_words(&segments[cursor], &segments[cursor + 1]) {
+        cursor += 1;
+        end = segments[cursor].end;
+    }
+    start..end
+}
+
+fn word_segments(text: &str) -> Vec<WordSegment> {
+    text.split_word_bound_indices()
+        .map(|(start, piece)| {
+            let joiner = is_joiner_segment(piece);
+            WordSegment {
+                start,
+                end: start + piece.len(),
+                // Letters and digits, or a run of joiners. A segmenter that
+                // glues `--` into one piece still joins `a--b`.
+                selectable: joiner || piece.chars().any(|c| c.is_alphanumeric()),
+                joiner,
+            }
+        })
+        .collect()
+}
+
+/// True when every character is a word joiner. Pi asks this of a one-character
+/// segment; a run of the same joiners is the same answer when the segmenter
+/// does not split them.
+fn is_joiner_segment(piece: &str) -> bool {
+    let mut chars = piece.chars();
+    match chars.next() {
+        Some(first) if is_word_joiner(first) => chars.all(is_word_joiner),
+        _ => false,
+    }
+}
+
+fn can_join_words(left: &WordSegment, right: &WordSegment) -> bool {
+    left.selectable && right.selectable && (left.joiner || right.joiner)
+}
+
+/// Offset used for a word or line hit. A pointer past the row's glyphs is
+/// reported as the next row's first byte; step back one character so the
+/// unit stays on the row under the pointer. Character drags do not use this.
+fn unit_probe(text: &str, offset: usize, past_end: bool) -> usize {
+    let offset = offset.min(text.len());
+    if !past_end || offset == 0 {
+        return offset;
+    }
+    let offset = byte_boundary(text, offset);
+    text[..offset]
+        .char_indices()
+        .next_back()
+        .map(|(index, _)| index)
+        .unwrap_or(offset)
+}
+
+/// Caret at the end of the text belongs to the last character, so a click
+/// past the final glyph still selects that word.
+fn probe_offset(text: &str, offset: usize) -> usize {
+    let offset = byte_boundary(text, offset);
+    if offset < text.len() {
+        return offset;
+    }
+    text.char_indices().next_back().map(|(index, _)| index).unwrap_or(0)
+}
+
+/// The logical line around `offset`, excluding its trailing newline.
+fn logical_line_range(text: &str, offset: usize) -> Range<usize> {
+    let offset = byte_boundary(text, offset);
+    let start = text[..offset].rfind('\n').map(|index| index + 1).unwrap_or(0);
+    let end = text[offset..]
+        .find('\n')
+        .map(|index| offset + index)
+        .unwrap_or(text.len());
+    start..end
+}
+
+/// The wrapped row containing `offset`. Boundaries come from the laid-out
+/// line; a layout that is not ready falls back to the logical line.
+fn visual_line_range(text: &str, layout: &TextLayout, offset: usize) -> Range<usize> {
+    let logical = logical_line_range(text, offset);
+    if logical.is_empty() {
+        return logical;
+    }
+    let Some(wrapped) = layout.line_layout_for_index(offset.min(text.len())) else {
+        return logical;
+    };
+    let local = offset.min(text.len()).saturating_sub(logical.start);
+    let mut start = 0usize;
+    let mut end = wrapped.len().min(logical.len());
+    for boundary in wrapped.wrap_boundaries() {
+        let Some(run) = wrapped.unwrapped_layout.runs.get(boundary.run_ix) else {
+            continue;
+        };
+        let Some(glyph) = run.glyphs.get(boundary.glyph_ix) else {
+            continue;
+        };
+        if local < glyph.index {
+            end = glyph.index;
+            break;
+        }
+        start = glyph.index;
+    }
+    let abs_start = logical.start + start;
+    let abs_end = (logical.start + end).min(logical.end);
+    if abs_start < abs_end {
+        abs_start..abs_end
+    } else {
+        logical
+    }
+}
+
+/// Pi's `getClickCount`: same block, same visual line, same word, within
+/// [`DOUBLE_CLICK_INTERVAL`]. The count cycles 1 → 2 → 3 → 1.
+fn next_click_count(
+    previous: Option<&LastClick>,
+    now: Instant,
+    block: &ElementId,
+    line: &Range<usize>,
+    word: &Range<usize>,
+) -> usize {
+    match previous {
+        Some(previous)
+            if now.saturating_duration_since(previous.at) <= DOUBLE_CLICK_INTERVAL
+                && &previous.block == block
+                && previous.line_start == line.start
+                && previous.line_end == line.end
+                && previous.word_start == word.start
+                && previous.word_end == word.end =>
+        {
+            (previous.count % 3) + 1
+        }
+        _ => 1,
+    }
+}
+
+/// Anchor and focus after a word- or line-granularity drag. Staying inside
+/// the original span keeps it whole; moving past either end takes that end
+/// of the unit under the pointer.
+fn snap_to_unit(
+    origin: SelectionOrigin,
+    target_block: usize,
+    target: Range<usize>,
+) -> (SelectPoint, SelectPoint) {
+    let before = target_block < origin.block
+        || (target_block == origin.block && target.start < origin.start);
+    if before {
+        (
+            SelectPoint {
+                block: origin.block,
+                offset: origin.end,
+            },
+            SelectPoint {
+                block: target_block,
+                offset: target.start,
+            },
+        )
+    } else {
+        (
+            SelectPoint {
+                block: origin.block,
+                offset: origin.start,
+            },
+            SelectPoint {
+                block: target_block,
+                offset: target.end,
+            },
+        )
+    }
 }
 
 /// Split `runs` so the selected byte range carries the selection wash as a
@@ -1129,11 +1512,10 @@ fn register_text_selection(
                     if menu_open {
                         return;
                     }
-                    if event.click_count >= 2 {
-                        state.borrow_mut().select_word(event.position);
-                    } else {
-                        state.borrow_mut().begin_selection(event.position);
-                    }
+                    // The selection counts clicks itself (1 caret, 2 word,
+                    // 3 line, then back to 1): GPUI's `click_count` neither
+                    // checks the word nor wraps.
+                    state.borrow_mut().begin_selection(event.position);
                     window.refresh();
                 }
                 MouseButton::Right => {
@@ -1350,6 +1732,7 @@ struct RowPaint {
     thinking_detached: ThinkingDetached,
     hovered_usage: Rc<Cell<Option<usize>>>,
     image_opener: Option<ImageOpener>,
+    dock_opener: Option<DockOpener>,
     /// The rewind action, present only on user rows.
     rewind: Option<RewindOpener>,
     /// The regenerate action, present only on assistant rows.
@@ -1420,6 +1803,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let summary_usage = view.summary_usage.clone();
     let review_changes = view.review_changes.clone();
     let image_opener = view.image_opener.clone();
+    let dock_opener = view.dock_opener.clone();
     let rewind = view.rewind.clone();
     let regenerate = view.regenerate.clone();
     let export_response = view.export_response.clone();
@@ -1677,6 +2061,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                     thinking_detached: thinking_detached.clone(),
                     hovered_usage: hovered_usage.clone(),
                     image_opener: image_opener.clone(),
+                    dock_opener: dock_opener.clone(),
                     rewind: rewind.clone(),
                     regenerate: regenerate.clone(),
                     export_response: export_response.clone(),
@@ -2609,6 +2994,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         paint.collapsed_thoughts.clone(),
                         paint.thinking_detached.clone(),
                         paint.image_opener.clone(),
+                        paint.dock_opener.clone(),
                     ));
                 }
             }
@@ -2691,6 +3077,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 paint.collapsed_thoughts.clone(),
                 paint.thinking_detached.clone(),
                 paint.image_opener.clone(),
+                paint.dock_opener.clone(),
             ));
         }
     }
@@ -2940,6 +3327,7 @@ fn render_activity_group(
     collapsed_thoughts: CollapsedThoughts,
     thinking_detached: ThinkingDetached,
     image_opener: Option<ImageOpener>,
+    dock_opener: Option<DockOpener>,
 ) -> impl IntoElement {
     let steps = &all_steps[range.clone()];
     let title = activity_title(steps, live);
@@ -3079,6 +3467,7 @@ fn render_activity_group(
                     expanded_sections.clone(),
                     scroller.clone(),
                     image_opener.clone(),
+                    dock_opener.clone(),
                 )
             }));
             tool_base += step.tools.len();
@@ -3723,13 +4112,19 @@ impl RenderOnce for SubagentRowKeys {
 /// The collapsed header's middle slot for one child: what it is doing now, or
 /// the terminal state. Data (a tool preview) passes through untranslated; the
 /// status words are keys.
-fn subagent_status_label(child: &crate::subagent::SubagentChild) -> String {
+pub(crate) fn subagent_status_label(child: &crate::subagent::SubagentChild) -> String {
     use crate::subagent::{Phase, Status};
     match child.phase {
         Phase::Queued => tr!("transcript_view.subagent_waiting_slot"),
         Phase::Spawning => tr!("transcript_view.subagent_starting"),
         Phase::Refused => tr!("transcript_view.subagent_refused"),
         Phase::Killed if child.timed_out => tr!("transcript_view.subagent_timed_out"),
+        Phase::Tool if matches!(child.status, Status::Running) => {
+            tr!("transcript_view.subagent_running_tool")
+        }
+        Phase::Blocked if matches!(child.status, Status::Running) => {
+            tr!("transcript_view.subagent_blocked")
+        }
         _ => match child.status {
             Status::Running => tr!("transcript_view.subagent_thinking"),
             Status::Done => tr!("transcript_view.subagent_done"),
@@ -3756,6 +4151,7 @@ fn render_subagent_card(
     open_child_logs: OpenChildLogs,
     copied_sections: CopiedSections,
     scroller: MessageScrollerState,
+    dock_opener: Option<DockOpener>,
 ) -> AnyElement {
     use crate::subagent::Status;
 
@@ -3896,10 +4292,12 @@ fn render_subagent_card(
                 },
             )
             .into_any_element(),
+            // A finished child wears the success tone here as in its log,
+            // so the card and the pane never disagree about one outcome.
             Status::Done => glyph(
                 "icons/check.svg",
                 IconSize::Small.px(&theme),
-                theme.text_muted,
+                theme.success,
             )
             .into_any_element(),
             Status::Failed => {
@@ -3931,8 +4329,14 @@ fn render_subagent_card(
                 )
             })
             .child(
+                // The name gives way before the counts and the disclosure
+                // chevron do: at most 40% of the row, truncated, with the full
+                // name in the child's log one click down.
                 div()
-                    .flex_none()
+                    .flex_shrink()
+                    .min_w_0()
+                    .max_w(relative(0.4))
+                    .truncate()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text_primary)
                     .child(SharedString::from(child.label().to_string())),
@@ -4126,7 +4530,14 @@ fn render_subagent_card(
 
     if open {
         if let Some(ix) = open_child {
-            card = card.child(render_subagent_detail(run, ix, key, copied_sections, theme));
+            card = card.child(render_subagent_detail(
+                run,
+                ix,
+                key,
+                copied_sections,
+                theme,
+                dock_opener,
+            ));
         }
     }
 
@@ -4330,12 +4741,426 @@ const SUBAGENT_TASK_PREVIEW_CHARS: usize = 280;
 /// The expanded body for one child, top to bottom: what it was asked, what
 /// it ran under, what it did, and what it returned (§9.3). Every line is a fact
 /// from the payload; a fact the payload lacks is left out rather than guessed.
+/// A delegated child as the right pane's body: who it is and how it is doing
+/// up top, anything that went wrong next, then what it was asked, what it ran
+/// under, what it did and what it returned — each in its own inset well.
+///
+/// Every line is a fact from the `subagent/1` payload; a fact the payload
+/// lacks is left out, never guessed. The wells use the page's own fill, so
+/// over a wallpaper or the Desktop background they sit on the dock's frosted
+/// glass instead of punching opaque holes in it.
+pub(crate) fn render_subagent_panel(
+    run: &crate::subagent::SubagentRun,
+    child_ix: usize,
+    key: (usize, usize),
+    copied_sections: CopiedSections,
+    theme: Theme,
+) -> AnyElement {
+    use crate::subagent::{Phase, Status};
+    let Some(child) = run.children.get(child_ix) else {
+        return div().into_any_element();
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    let gap = DynamicSpacing::Base16.px(&theme);
+    let well = |child_el: AnyElement| {
+        div()
+            .w_full()
+            .min_w_0()
+            .rounded(panel::RADIUS.px(&theme))
+            .border_1()
+            .border_color(theme.hairline())
+            .bg(theme.page_fill(theme.surface_secondary))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
+            .child(child_el)
+    };
+    let section = |label: String, content: AnyElement| {
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(subagent_section_label(label, theme))
+            .child(content)
+    };
+    let tag = |label: String| {
+        Badge::new(
+            label,
+            theme.text_secondary,
+            BadgeFill::Framed {
+                face: theme.page_fill(theme.surface_secondary),
+                edge: theme.hairline(),
+            },
+        )
+        .render(&theme)
+    };
+
+    // ── Header: the state mark, the name, the state in words. ──
+    let live = child.is_live() && !matches!(child.phase, Phase::Queued);
+    let (mark, tone): (AnyElement, Hsla) = match child.status {
+        Status::Running if live => (
+            crate::ui::prelude::spinner(
+                ElementId::NamedInteger(
+                    "subagent-panel-spin".into(),
+                    ((key.0 as u64) << 16 | key.1 as u64) << 8 | child_ix as u64,
+                ),
+                IconSize::Medium.px(&theme),
+                theme.accent_text,
+                theme,
+            ),
+            theme.accent_text,
+        ),
+        Status::Running => (
+            glyph("icons/task.svg", IconSize::Medium.px(&theme), theme.text_muted)
+                .into_any_element(),
+            theme.text_secondary,
+        ),
+        Status::Done => (
+            glyph("icons/check.svg", IconSize::Medium.px(&theme), theme.success)
+                .into_any_element(),
+            theme.success,
+        ),
+        Status::Failed => (
+            glyph("icons/stop.svg", IconSize::Medium.px(&theme), theme.error).into_any_element(),
+            theme.error,
+        ),
+        Status::Aborted => (
+            glyph("icons/circle-x.svg", IconSize::Medium.px(&theme), theme.text_muted)
+                .into_any_element(),
+            theme.text_muted,
+        ),
+    };
+    let mut facts: Vec<String> = Vec::new();
+    if let Some(elapsed) =
+        crate::subagent::format_elapsed(child.started_at, child.ended_at, now_ms)
+    {
+        facts.push(elapsed);
+    }
+    if child.tools > 0 {
+        facts.push(if child.tools == 1 {
+            tr!("transcript_view.subagent_tools_one", count = child.tools)
+        } else {
+            tr!("transcript_view.subagent_tools_other", count = child.tools)
+        });
+    }
+    let usage = &child.usage;
+    if usage.input > 0 || usage.output > 0 {
+        facts.push(format!(
+            "↑{} ↓{}",
+            crate::context_meter::format_tokens(usage.input),
+            crate::context_meter::format_tokens(usage.output)
+        ));
+    }
+    if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
+        facts.push(crate::context_meter::format_cost(cost));
+    }
+    // The fact lines start under the name, not under the mark.
+    let indent = IconSize::Medium.px(&theme) + DynamicSpacing::Base08.px(&theme);
+    let mut header = div()
+        .debug_selector(|| "subagent-panel-header".to_string())
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base04.px(&theme))
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(div().flex_none().child(mark))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(TextSize::Large.px(&theme))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text_primary)
+                        .child(SharedString::from(child.label().to_string())),
+                )
+                .child(
+                    div().flex_none().child(
+                        Badge::new(
+                            subagent_status_label(child),
+                            tone,
+                            BadgeFill::Outline(tone),
+                        )
+                        .render(&theme),
+                    ),
+                ),
+        );
+    if !facts.is_empty() {
+        // One cell per fact, wrapping onto a second line in a narrow pane
+        // rather than clipping: the child's own cost is said nowhere else, so
+        // it must never fall off the edge. (`truncate()` is not an option
+        // here; see the step output lines.)
+        header = header.child(
+            div()
+                .debug_selector(|| "subagent-panel-facts".to_string())
+                .w_full()
+                .min_w_0()
+                .pl(indent)
+                .flex()
+                .flex_wrap()
+                .gap_x(DynamicSpacing::Base12.px(&theme))
+                .gap_y(DynamicSpacing::Base02.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .font(crate::ui::style::text::num_font())
+                .text_color(theme.text_muted)
+                .children(facts.into_iter().map(|fact| {
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(SharedString::from(fact))
+                })),
+        );
+    }
+    // What it is doing this moment, while it is doing it.
+    if live {
+        if let Some(current) = child.current.as_deref().filter(|now| !now.trim().is_empty()) {
+            header = header.child(
+                div()
+                    .debug_selector(|| "subagent-panel-now".to_string())
+                    .pl(indent)
+                    .flex()
+                    .items_start()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex_none()
+                            // On the first line's centre, now that it wraps.
+                            .mt(theme.ui_px(5.5))
+                            .size(px(6.))
+                            .rounded_full()
+                            .bg(theme.accent_text),
+                    )
+                    .child(
+                        // Wraps rather than clipping at the pane's edge, so a
+                        // long command reads in full; capped so one runaway
+                        // line cannot push the log below the fold.
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .font_family(theme::code_font_family())
+                            .text_size(theme.code_px(12.))
+                            .line_height(theme.ui_px(17.))
+                            .text_color(theme.text_secondary)
+                            .child(SharedString::from(cap_chars(current, SUBAGENT_NOW_CHARS))),
+                    ),
+            );
+        }
+    }
+
+    let mut panel_body = div()
+        .debug_selector(|| "subagent-panel".to_string())
+        .w_full()
+        .min_w_0()
+        .p(gap)
+        .flex()
+        .flex_col()
+        .gap(gap)
+        .child(header);
+
+    // ── What went wrong, said before anything else. ──
+    if let Some(error) = child.error.as_deref().filter(|error| !error.trim().is_empty()) {
+        let mut banner = Banner::new(BannerTone::Error)
+            .id(format!("subagent-panel-error-{}-{}-{child_ix}", key.0, key.1))
+            .title(error.to_string());
+        if let Some(stderr) = child.stderr_tail.as_deref().filter(|tail| !tail.trim().is_empty()) {
+            banner = banner.line(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .font_family(theme::code_font_family())
+                    .text_size(theme.code_px(11.))
+                    .text_color(theme.text_secondary)
+                    .child(SharedString::from(cap_chars(stderr, DETAIL_TEXT_CAP))),
+            );
+        }
+        panel_body = panel_body.child(banner.render(&theme));
+    }
+    if let Some(call) = child.blocked.last() {
+        let target = match &call.target {
+            Some(target) if !target.is_empty() => format!("{} {target}", call.tool),
+            _ => call.tool.clone(),
+        };
+        let more = child.blocked.len().saturating_sub(1);
+        let mut banner = Banner::new(BannerTone::Warning)
+            .id(format!("subagent-panel-blocked-{}-{}-{child_ix}", key.0, key.1))
+            .title(call.reason.clone())
+            .detail(target);
+        if more > 0 {
+            banner = banner.hint(tr!("transcript_view.subagent_more_blocked", count = more));
+        }
+        panel_body = panel_body.child(banner.render(&theme));
+    }
+
+    // ── What it was asked. ──
+    let task = child.task.trim();
+    if !task.is_empty() {
+        panel_body = panel_body.child(section(
+            tr!("right_dock.task"),
+            well(
+                div()
+                    .debug_selector(|| "subagent-panel-task".to_string())
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .text_size(TextSize::Default.px(&theme))
+                    .line_height(theme.ui_px(20.))
+                    .text_color(theme.text_primary)
+                    .child(SharedString::from(cap_chars(task, DETAIL_TEXT_CAP)))
+                    .into_any_element(),
+            )
+            .into_any_element(),
+        ));
+    }
+
+    // ── What it ran under. ──
+    let setup: Vec<String> = [
+        subagent_capability_label(child),
+        child.workflow_mode.clone(),
+        child.model_label(),
+        child
+            .thinking
+            .as_deref()
+            .map(|level| tr!("transcript_view.subagent_thinking_level", level = level)),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|fact| !fact.trim().is_empty())
+    .collect();
+    if !setup.is_empty() {
+        panel_body = panel_body.child(section(
+            tr!("right_dock.setup"),
+            div()
+                .debug_selector(|| "subagent-panel-setup".to_string())
+                .flex()
+                .flex_wrap()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .children(setup.into_iter().map(tag))
+                .into_any_element(),
+        ));
+    }
+
+    // ── Which tools, how often. ──
+    if !child.tool_counts.is_empty() {
+        panel_body = panel_body.child(section(
+            tr!("right_dock.tools"),
+            div()
+                .debug_selector(|| "subagent-panel-tools".to_string())
+                .flex()
+                .flex_wrap()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .children(
+                    child
+                        .tool_counts
+                        .iter()
+                        .map(|(tool, count)| tag(format!("{tool} {count}"))),
+                )
+                .into_any_element(),
+        ));
+    }
+
+    // ── What it is thinking (live while it thinks). ──
+    if let Some(reasoning) = child.reasoning.as_deref() {
+        let thinking_now = live && matches!(child.phase, Phase::Thinking);
+        let label = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(subagent_section_label(tr!("transcript.thinking"), theme))
+            .when(thinking_now, |label| {
+                label.child(
+                    Badge::new(
+                        tr!("right_dock.live"),
+                        theme.accent_text,
+                        BadgeFill::Outline(theme.accent_text),
+                    )
+                    .render(&theme),
+                )
+            });
+        panel_body = panel_body.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(label)
+                .child(well(
+                    div()
+                        .debug_selector(|| "subagent-panel-thinking".to_string())
+                        .w_full()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .text_size(TextSize::Small.px(&theme))
+                        .line_height(theme.ui_px(18.))
+                        .text_color(theme.text_secondary)
+                        .child(SharedString::from(subagent_reasoning_tail(
+                            reasoning,
+                            SUBAGENT_REASONING_CHARS,
+                        )))
+                        .into_any_element(),
+                )),
+        );
+    }
+
+    // ── What it did, then what it returned. ──
+    if let Some(steps) = subagent_steps_section(child, theme, true) {
+        panel_body = panel_body.child(well(steps.into_any_element()));
+    }
+    if let Some(report) = subagent_report_section(child, child_ix, key, copied_sections, theme) {
+        panel_body = panel_body.child(well(report.into_any_element()));
+    } else if !child.is_live() && !matches!(child.phase, Phase::Refused) {
+        panel_body = panel_body.child(subagent_quiet_line(
+            tr!("transcript_view.subagent_no_closing_message"),
+            theme,
+        ));
+    }
+    panel_body.into_any_element()
+}
+
+/// A small muted section heading inside a child's log.
+fn subagent_section_label(label: String, theme: Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .text_size(TextSize::XSmall.px(&theme))
+        .line_height(theme.ui_px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_muted)
+        .child(label)
+}
+
+/// One muted, truncating fact line inside a child's log.
+fn subagent_quiet_line(text: String, theme: Theme) -> gpui::Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .truncate()
+        .text_size(TextSize::XSmall.px(&theme))
+        .line_height(theme.ui_px(15.))
+        .text_color(theme.text_muted)
+        .child(SharedString::from(text))
+}
+
 fn render_subagent_detail(
     run: &crate::subagent::SubagentRun,
     child_ix: usize,
     key: (usize, usize),
     copied_sections: CopiedSections,
     theme: Theme,
+    dock_opener: Option<DockOpener>,
 ) -> impl IntoElement {
     let mut body = div()
         .w_full()
@@ -4351,15 +5176,31 @@ fn render_subagent_detail(
     let Some(child) = run.children.get(child_ix) else {
         return body;
     };
-    let section_label = |label: String| {
-        div()
-            .flex_none()
-            .text_size(TextSize::XSmall.px(&theme))
-            .line_height(theme.ui_px(14.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .child(label)
-    };
+    // On the card, the log can move to the right pane: roomier to read
+    // while the conversation keeps going on the left.
+    if let Some(opener) = dock_opener {
+        let tab = crate::right_dock::SubagentTab {
+            message_ix: key.0,
+            tool_ix: key.1,
+            child_ix,
+        };
+        body = body.child(
+            div().w_full().flex().justify_end().child(
+                Button::keyed(
+                    ElementId::NamedInteger(
+                        "subagent-open-in-pane".into(),
+                        ((key.0 as u64) << 32) | ((key.1 as u64) << 16) | child_ix as u64,
+                    ),
+                    ButtonVariant::Ghost,
+                )
+                .size(ButtonSize::Compact)
+                .icon("icons/sidebar-toggle-right.svg")
+                .label(tr!("transcript_view.subagent_open_in_pane"))
+                .on_click(&theme, move |_, window, cx| opener(tab, window, cx))
+                .debug_selector(move || format!("subagent-open-in-pane-{}", child_ix)),
+            ),
+        );
+    }
     let quiet_line = |text: String| {
         div()
             .w_full()
@@ -4431,7 +5272,36 @@ fn render_subagent_detail(
     // What it did: the parent's own activity language, so a child reads the
     // way the parent reads — glyph, verb, argument, and a mark when a call
     // did not go through.
-    if !child.steps.is_empty() {
+    if let Some(steps) = subagent_steps_section(child, theme, false) {
+        body = body.child(steps);
+    }
+
+    // What it returned.
+    if let Some(section_el) =
+        subagent_report_section(child, child_ix, key, copied_sections.clone(), theme)
+    {
+        body = body.child(section_el);
+    } else if !child.is_live() && !matches!(child.phase, crate::subagent::Phase::Refused) {
+        body = body.child(quiet_line(tr!(
+            "transcript_view.subagent_no_closing_message"
+        )));
+    }
+    body
+}
+
+/// A child's step log: the label, an "+N earlier" note when the log was
+/// trimmed, and one row per step in the parent's activity language. Shared by
+/// the card's log and the right pane, so the two never read differently.
+fn subagent_steps_section(
+    child: &crate::subagent::SubagentChild,
+    theme: Theme,
+    with_output: bool,
+) -> Option<gpui::Div> {
+    if child.steps.is_empty() {
+        return None;
+    }
+    let section_label = |label: String| subagent_section_label(label, theme);
+    let quiet_line = |text: String| subagent_quiet_line(text, theme);
         let mut steps = div()
             .w_full()
             .min_w_0()
@@ -4494,12 +5364,108 @@ fn render_subagent_detail(
                 line = line.child(glyph(icon, IconSize::XSmall.px(&theme), tone));
             }
             steps = steps.child(line);
+            // In the right pane, what the call returned sits under its row,
+            // lined up with the arguments: a few lines, enough to see what it
+            // found without turning the log into a terminal.
+            if let Some(output) = step.output.as_deref().filter(|_| with_output) {
+                let gap = DynamicSpacing::Base06.px(&theme);
+                steps = steps.child(
+                    div()
+                        .debug_selector(|| "subagent-step-output".to_string())
+                        .w_full()
+                        .min_w_0()
+                        .pl(IconSize::XSmall.px(&theme) + gap + verb_w + gap)
+                        .flex()
+                        .flex_col()
+                        .font_family(theme::code_font_family())
+                        .text_size(theme.code_px(11.))
+                        .line_height(theme.ui_px(15.))
+                        .text_color(theme.text_muted)
+                        .children(
+                            subagent_output_lines(output)
+                                .into_iter()
+                                .map(|line| {
+                                    // Clipped at the pane's edge, never
+                                    // `truncate()`d: GPUI 0.2.2 bakes the
+                                    // ellipsis into a nowrap line on its first
+                                    // measure and its cache ignores the width,
+                                    // so inside the pane's scroller (measured
+                                    // at min-content first) every line painted
+                                    // as a lone "…".
+                                    div()
+                                        .debug_selector(|| "subagent-step-output-line".to_string())
+                                        .w_full()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .child(SharedString::from(line))
+                                }),
+                        ),
+                );
+            }
         }
-        body = body.child(steps);
-    }
+    Some(steps)
+}
 
-    // What it returned.
-    if let Some(report) = child.report.as_deref() {
+/// How much of a child's reasoning the right pane shows: the newest part,
+/// enough to follow a live think without a wall of text.
+const SUBAGENT_REASONING_CHARS: usize = 1200;
+/// The longest "what it is doing now" line the side pane shows in full.
+const SUBAGENT_NOW_CHARS: usize = 240;
+
+/// How many lines of a step's output the right pane shows under its row.
+const SUBAGENT_OUTPUT_LINES: usize = 6;
+
+/// A step's output as display lines: the first [`SUBAGENT_OUTPUT_LINES`]
+/// non-blank lines, with a final `…` line when there is more.
+fn subagent_output_lines(output: &str) -> Vec<String> {
+    let mut lines: Vec<String> = output
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    if lines.len() > SUBAGENT_OUTPUT_LINES {
+        lines.truncate(SUBAGENT_OUTPUT_LINES);
+        lines.push("…".to_string());
+    }
+    lines
+}
+
+/// The newest part of a child's reasoning the right pane shows: at most
+/// `max` characters, cut at a line or word boundary so it never opens
+/// mid-word, with a leading `…` when anything was dropped.
+fn subagent_reasoning_tail(text: &str, max: usize) -> String {
+    let text = text.trim();
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    let start = text
+        .char_indices()
+        .nth(count - max)
+        .map(|(ix, _)| ix)
+        .unwrap_or(0);
+    let cut = &text[start..];
+    let cut = match cut.find(['\n', ' ']) {
+        Some(ix) => cut[ix..].trim_start(),
+        None => cut,
+    };
+    format!("…{cut}")
+}
+
+/// A child's report with its Copy control and, when the parent only got a
+/// prefix, the note that says so. Shared by the card's log and the right pane.
+fn subagent_report_section(
+    child: &crate::subagent::SubagentChild,
+    child_ix: usize,
+    key: (usize, usize),
+    copied_sections: CopiedSections,
+    theme: Theme,
+) -> Option<gpui::Div> {
+    let report = child.report.as_deref()?;
+    let section_label = |label: String| subagent_section_label(label, theme);
+    let quiet_line = |text: String| subagent_quiet_line(text, theme);
         let section = SUBAGENT_REPORT_COPY_SECTION.saturating_add(child_ix.min(200) as u8);
         let copy_key = (key.0, key.1, section);
         let copied = copied_sections
@@ -4592,13 +5558,7 @@ fn render_subagent_detail(
                 .debug_selector(|| "subagent-report-capped".to_string()),
             );
         }
-        body = body.child(section_el);
-    } else if !child.is_live() && !matches!(child.phase, crate::subagent::Phase::Refused) {
-        body = body.child(quiet_line(tr!(
-            "transcript_view.subagent_no_closing_message"
-        )));
-    }
-    body
+    Some(section_el)
 }
 
 /// `4 KiB`, rounded up so a report a byte over the cap never reads as equal.
@@ -4622,6 +5582,7 @@ fn render_activity_card(
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     image_opener: Option<ImageOpener>,
+    dock_opener: Option<DockOpener>,
 ) -> AnyElement {
     // A structured questionnaire gets its own card — the raw arguments JSON
     // and the generic "Command/Arguments" detail would bury the question.
@@ -4643,6 +5604,7 @@ fn render_activity_card(
             open_child_logs.clone(),
             copied_sections.clone(),
             scroller.clone(),
+            dock_opener,
         );
     }
     let mcp = mcp_tool_parts(&tool.name);
@@ -8344,22 +9306,30 @@ fn render_list_item(
     } else {
         theme.assistant_text
     };
+    // Bespoke: a block with a hanging indent and an absolutely placed marker,
+    // not a flex row. gpui 0.2.2's text element paints the wrap from its last
+    // measurement, and a `flex_1` text column is re-measured at a near-zero
+    // width after the row's height is settled — the item kept its height but
+    // painted one glyph per line. As a block child the text measures exactly
+    // like a paragraph.
+    let indent = 20. + 20. * item.depth as f32;
     div()
         .w_full()
         .min_w_0()
-        .flex()
-        .items_start()
-        .pl(px(20. + 20. * item.depth as f32))
+        .relative()
+        .pl(px(indent + 20.))
         .child(
             div()
-                .flex_none()
+                .absolute()
+                .top_0()
+                .left(px(indent))
                 .w(px(20.))
                 .flex()
                 .items_center()
                 .justify_start()
                 .child(marker),
         )
-        .child(div().min_w_0().flex_1().child(render_container_line(
+        .child(div().w_full().min_w_0().child(render_container_line(
             &item.text,
             ix,
             id_namespace,
@@ -9541,6 +10511,21 @@ fn starts_followup_turn(messages: &[ChatMessage], ix: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A running child names what it is actually doing: a tool call or a
+    /// guard's refusal is not "thinking", whatever the run status says.
+    #[test]
+    fn a_running_childs_status_word_follows_its_phase() {
+        let label = |phase: &str| {
+            subagent_status_label(&crate::subagent::SubagentChild::from_value(
+                &serde_json::json!({"agent": "scout", "status": "running", "phase": phase}),
+            ))
+        };
+        assert_eq!(label("thinking"), tr!("transcript_view.subagent_thinking"));
+        assert_eq!(label("tool"), tr!("transcript_view.subagent_running_tool"));
+        assert_eq!(label("blocked"), tr!("transcript_view.subagent_blocked"));
+        assert_eq!(label("queued"), tr!("transcript_view.subagent_waiting_slot"));
+    }
     use super::*;
 
     /// A thought card and a tool card are one material: both paint the shared
@@ -11562,6 +12547,8 @@ mod tests {
                 block: focus.0,
                 offset: focus.1,
             },
+            granularity: SelectGranularity::Character,
+            initial: None,
         });
         state
     }
@@ -11734,6 +12721,7 @@ mod tests {
             summary_usage: None,
             review_changes: None,
             image_opener: None,
+            dock_opener: None,
             rewind: None,
             regenerate: None,
             export_response: None,
@@ -11784,8 +12772,202 @@ mod tests {
                 self.sections.clone(),
                 self.scroller.clone(),
                 self.image_opener.clone(),
+                None,
             )
         }
+    }
+
+    #[test]
+    fn step_output_shows_its_first_lines_and_marks_the_rest() {
+        assert_eq!(subagent_output_lines("a\n\nb\n"), vec!["a", "b"]);
+        let long: String = (0..10).map(|ix| format!("line {ix}\n")).collect();
+        let lines = subagent_output_lines(&long);
+        assert_eq!(lines.len(), SUBAGENT_OUTPUT_LINES + 1);
+        assert_eq!(lines.last().map(String::as_str), Some("…"));
+    }
+
+    #[test]
+    fn reasoning_keeps_its_newest_part_cut_at_a_word() {
+        assert_eq!(subagent_reasoning_tail("short thought", 100), "short thought");
+        let tail = subagent_reasoning_tail("alpha beta gamma delta", 12);
+        assert!(tail.starts_with('…'), "{tail}");
+        assert!(tail.ends_with("delta"), "{tail}");
+        assert!(!tail.contains("alph"), "never opens mid-word: {tail}");
+    }
+
+    /// The right pane's subagent panel shows what each state needs: a failed
+    /// child leads with its error and blocked call; a running one says what it
+    /// is doing now and lists its setup and tools — and no fact is invented.
+    #[gpui::test]
+    fn the_subagent_panel_shows_each_states_facts(cx: &mut gpui::TestAppContext) {
+        struct PanelView {
+            failed: bool,
+        }
+        impl gpui::Render for PanelView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let child = if self.failed {
+                    serde_json::json!({
+                        "agent": "worker", "status": "failed", "phase": "settled",
+                        "task": "fix the auth flow", "error": "the edit was refused",
+                        "stderrTail": "permission denied",
+                        "blocked": [{"tool": "edit", "target": "src/auth.rs", "reason": "Blocked: Plan mode"}]
+                    })
+                } else {
+                    serde_json::json!({
+                        "agent": "scout", "status": "running", "phase": "tool",
+                        "task": "find where auth lives", "current": "grep /auth/ in src/",
+                        "capability": "read", "model": "anthropic/claude-haiku-4-5",
+                        "tools": 3, "toolCounts": {"grep": 2, "read": 1},
+                        "thinkingText": "The router mounts auth first.",
+                        "steps": [{"name": "grep", "preview": "auth in src/", "status": "ok",
+                                   "output": "src/auth.rs:12: pub fn login"}],
+                        "startedAt": 1_000
+                    })
+                };
+                let tool = ToolCall {
+                    name: "subagent".into(),
+                    summary: String::new(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: None,
+                    args: None,
+                    output: None,
+                    failed: false,
+                    facts: ToolFacts::default(),
+                    details: Some(serde_json::json!({
+                        "orbit": "subagent/1", "mode": "single", "children": [child]
+                    })),
+                };
+                let run = crate::subagent::SubagentRun::from_tool(&tool).unwrap();
+                // Hosted the way the right pane hosts it: inside a vertical
+                // scroller, which measures its content at min-content width.
+                div()
+                    .w(px(420.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("panel-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .overflow_y_scroll()
+                            .child(render_subagent_panel(
+                                &run,
+                                0,
+                                (1, 0),
+                                Rc::new(RefCell::new(HashMap::new())),
+                                theme::Theme::for_id(theme::ThemeId::Orbit),
+                            )),
+                    )
+            }
+        }
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+
+        let (_view, cx_failed) = cx.add_window_view(|_, _| PanelView { failed: true });
+        cx_failed.run_until_parked();
+        assert!(cx_failed.debug_bounds("subagent-panel-header").is_some());
+        assert!(cx_failed.debug_bounds("subagent-panel-task").is_some());
+        assert!(
+            cx_failed.debug_bounds("subagent-panel-error-1-0-0").is_some(),
+            "a failure leads with its error"
+        );
+        assert!(cx_failed.debug_bounds("subagent-panel-blocked-1-0-0").is_some());
+        assert!(
+            cx_failed.debug_bounds("subagent-panel-thinking").is_none(),
+            "no reasoning was sent, so none is shown"
+        );
+        assert!(
+            cx_failed.debug_bounds("subagent-panel-now").is_none(),
+            "a settled child is not doing anything now"
+        );
+
+        let (_view, cx_live) = cx.add_window_view(|_, _| PanelView { failed: false });
+        cx_live.run_until_parked();
+        assert!(cx_live.debug_bounds("subagent-panel-now").is_some());
+        assert!(cx_live.debug_bounds("subagent-panel-setup").is_some());
+        assert!(cx_live.debug_bounds("subagent-panel-tools").is_some());
+        assert!(cx_live.debug_bounds("subagent-panel-facts").is_some());
+        assert!(cx_live.debug_bounds("subagent-panel-thinking").is_some(), "live reasoning");
+        assert!(cx_live.debug_bounds("subagent-step-output").is_some(), "the step's output");
+        // Each output line spans the column beside the verb, not just the
+        // width of its ellipsis (every line used to paint as a lone "…").
+        let line = cx_live
+            .debug_bounds("subagent-step-output-line")
+            .expect("an output line");
+        assert!(
+            line.size.width > px(150.),
+            "an output line has room for its text: {:?}",
+            line.size
+        );
+        assert!(
+            cx_live.debug_bounds("subagent-panel-error-1-0-0").is_none(),
+            "no error is invented for a healthy run"
+        );
+    }
+
+    /// A delegated child's log on its card offers "Open in side pane", and
+    /// the click hands the app exactly that child's tab key.
+    #[gpui::test]
+    fn a_childs_log_opens_in_the_side_pane(cx: &mut gpui::TestAppContext) {
+        struct DetailView {
+            opened: Rc<RefCell<Vec<crate::right_dock::SubagentTab>>>,
+        }
+        impl gpui::Render for DetailView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let tool = ToolCall {
+                    name: "subagent".into(),
+                    summary: String::new(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: None,
+                    args: None,
+                    output: None,
+                    failed: false,
+                    facts: ToolFacts::default(),
+                    details: Some(serde_json::json!({
+                        "orbit": "subagent/1",
+                        "mode": "parallel",
+                        "children": [
+                            {"agent": "scout", "status": "running", "task": "find auth"},
+                            {"agent": "worker", "status": "running", "task": "fix auth"}
+                        ]
+                    })),
+                };
+                let run = crate::subagent::SubagentRun::from_tool(&tool).unwrap();
+                let opened = self.opened.clone();
+                let opener: DockOpener = Rc::new(move |tab, _, _| opened.borrow_mut().push(tab));
+                div().w(px(600.)).child(render_subagent_detail(
+                    &run,
+                    1,
+                    (2, 3),
+                    Rc::new(RefCell::new(HashMap::new())),
+                    theme::Theme::for_id(theme::ThemeId::Orbit),
+                    Some(opener),
+                ))
+            }
+        }
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let (_view, cx) = cx.add_window_view(|_, _| DetailView {
+            opened: opened.clone(),
+        });
+        cx.run_until_parked();
+        let button = cx
+            .debug_bounds("subagent-open-in-pane-1")
+            .expect("the button is on the second child's log");
+        cx.simulate_click(button.center(), gpui::Modifiers::none());
+        assert_eq!(
+            opened.borrow().as_slice(),
+            &[crate::right_dock::SubagentTab {
+                message_ix: 2,
+                tool_ix: 3,
+                child_ix: 1,
+            }]
+        );
     }
 
     struct SubagentCardTestView {
@@ -11857,6 +13039,7 @@ mod tests {
                 self.open_children.clone(),
                 Rc::new(RefCell::new(HashMap::new())),
                 self.scroller.clone(),
+                None,
             )
         }
     }
@@ -11892,6 +13075,7 @@ mod tests {
                 Rc::new(RefCell::new(HashMap::new())),
                 Rc::new(RefCell::new(HashMap::new())),
                 MessageScrollerState::new(1),
+                None,
             )
         }
     }
@@ -11953,6 +13137,7 @@ mod tests {
                 Rc::new(RefCell::new(HashMap::new())),
                 self.copied.clone(),
                 MessageScrollerState::new(1),
+                None,
             )
         }
     }
@@ -12416,6 +13601,7 @@ mod tests {
                     Rc::new(RefCell::new(HashMap::new())),
                     Rc::new(RefCell::new(HashMap::new())),
                     MessageScrollerState::new(1),
+                    None,
                 )
             }
         }
@@ -13799,6 +14985,195 @@ mod tests {
         assert!(hoists_trailing_thought(&work_only, None));
     }
 
+    #[test]
+    fn double_click_word_follows_pi_joiners() {
+        let text = "行数。unity-codegraph pi";
+        let start = text.find("unity-codegraph").unwrap();
+        let end = start + "unity-codegraph".len();
+        // Any offset inside the token, including the hyphen, selects all of it.
+        for offset in start..end {
+            assert_eq!(word_range_at(text, offset), start..end, "{offset}");
+        }
+        // The ideographic stop and the following space stay their own segments.
+        let stop = text.find('。').unwrap();
+        assert_eq!(word_range_at(text, stop), stop..stop + '。'.len_utf8());
+        let space = text.find(' ').unwrap();
+        assert_eq!(word_range_at(text, space), space..space + 1);
+
+        for token in ["foo/bar", "a.b.c", "file_name.rs", "a--b", "a+b", "-x", "x-"] {
+            assert_eq!(word_range_at(token, 0), 0..token.len(), "{token}");
+            let last = token.char_indices().next_back().unwrap().0;
+            assert_eq!(word_range_at(token, last), 0..token.len(), "{token}");
+        }
+
+        assert_eq!(word_range_at("read,", 0), 0..4);
+        assert_eq!(word_range_at("read,", 4), 4..5);
+
+        let url = "https://x.com/a-b?q=1";
+        let domain = url.find("/x").unwrap() + 1;
+        assert_eq!(&url[word_range_at(url, domain)], "//x.com/a-b");
+
+        // A caret past the last glyph still belongs to that word.
+        assert_eq!(word_range_at("unity-codegraph", 15), 0..15);
+        assert_eq!(word_range_at("", 0), 0..0);
+    }
+
+    #[test]
+    fn margin_past_a_row_stays_on_that_row() {
+        // Past the glyphs, layout reports the next row's first byte: the
+        // newline, or the first character of the wrapped row. Word and line
+        // hits step back onto the row under the pointer.
+        let text = "unity-codegraph\npi";
+        let newline = text.find('\n').unwrap();
+        let probe = unit_probe(text, newline, true);
+        assert_eq!(&text[word_range_at(text, probe)], "unity-codegraph");
+        assert_eq!(logical_line_range(text, probe), 0..newline);
+
+        let wrapped = "alpha beta";
+        let beta = wrapped.find('b').unwrap();
+        assert_eq!(unit_probe(wrapped, beta, false), beta);
+        let probe = unit_probe(wrapped, beta, true);
+        assert!(probe < beta);
+        assert_eq!(logical_line_range(wrapped, probe), 0..wrapped.len());
+
+        let han = "行数";
+        assert_eq!(
+            unit_probe(han, han.len(), true),
+            han.find('数').unwrap()
+        );
+        assert_eq!(unit_probe(han, 0, true), 0);
+    }
+
+    #[test]
+    fn double_click_word_is_one_han_character() {
+        // UAX #29, not ICU's dictionary: each Han character is its own word.
+        let text = "互转不改变行数";
+        assert_eq!(word_range_at(text, 0), 0..'互'.len_utf8());
+        let change = text.find('改').unwrap();
+        assert_eq!(
+            word_range_at(text, change),
+            change..change + '改'.len_utf8()
+        );
+    }
+
+    #[test]
+    fn click_count_cycles_word_then_line_then_character() {
+        let block = ElementId::Name("block".into());
+        let line = 0..20;
+        let word = 0..15;
+        let start = Instant::now();
+        let mut previous = None;
+        let mut counts = Vec::new();
+        for step in 0..4 {
+            let now = start + Duration::from_millis(100 * step);
+            let count = next_click_count(previous.as_ref(), now, &block, &line, &word);
+            counts.push(count);
+            previous = Some(LastClick {
+                at: now,
+                count,
+                block: block.clone(),
+                line_start: line.start,
+                line_end: line.end,
+                word_start: word.start,
+                word_end: word.end,
+            });
+        }
+        assert_eq!(counts, vec![1, 2, 3, 1]);
+
+        let previous = previous.unwrap();
+        let soon = previous.at + Duration::from_millis(10);
+        assert_eq!(
+            next_click_count(Some(&previous), soon, &block, &line, &(16..18)),
+            1,
+            "a different word starts over"
+        );
+        assert_eq!(
+            next_click_count(Some(&previous), soon, &block, &(20..40), &word),
+            1,
+            "a different visual line starts over"
+        );
+        assert_eq!(
+            next_click_count(
+                Some(&previous),
+                soon,
+                &ElementId::Name("other".into()),
+                &line,
+                &word
+            ),
+            1,
+            "a different block starts over"
+        );
+        let later = previous.at + DOUBLE_CLICK_INTERVAL + Duration::from_millis(1);
+        assert_eq!(
+            next_click_count(Some(&previous), later, &block, &line, &word),
+            1,
+            "past 500ms starts over"
+        );
+    }
+
+    #[test]
+    fn word_drag_keeps_the_original_word_and_extends_by_words() {
+        let text = "unity-codegraph pi read";
+        let first = word_range_at(text, 0);
+        let pi = word_range_at(text, text.find("pi").unwrap());
+        let mut state = selection_over(&[text], (0, first.start), (0, first.end));
+        {
+            let selection = state.selection.as_mut().unwrap();
+            selection.granularity = SelectGranularity::Word;
+            selection.initial = Some(SelectionOrigin {
+                block: 0,
+                start: first.start,
+                end: first.end,
+            });
+        }
+        // A twitch inside the word does not shrink it to the caret.
+        state.retarget_unit(0, word_range_at(text, 4));
+        assert_eq!(state.selected_text().as_deref(), Some("unity-codegraph"));
+        state.retarget_unit(0, pi.clone());
+        assert_eq!(
+            state.selected_text().as_deref(),
+            Some("unity-codegraph pi")
+        );
+
+        // Dragging back from `pi` takes the start of the earlier word.
+        let mut state = selection_over(&[text], (0, pi.start), (0, pi.end));
+        {
+            let selection = state.selection.as_mut().unwrap();
+            selection.granularity = SelectGranularity::Word;
+            selection.initial = Some(SelectionOrigin {
+                block: 0,
+                start: pi.start,
+                end: pi.end,
+            });
+        }
+        state.retarget_unit(0, first);
+        assert_eq!(
+            state.selected_text().as_deref(),
+            Some("unity-codegraph pi")
+        );
+
+        // Across blocks the middle block is copied whole.
+        let mut state = selection_over(
+            &["alpha-beta", "mid", "gamma"],
+            (0, 0),
+            (0, "alpha-beta".len()),
+        );
+        {
+            let selection = state.selection.as_mut().unwrap();
+            selection.granularity = SelectGranularity::Word;
+            selection.initial = Some(SelectionOrigin {
+                block: 0,
+                start: 0,
+                end: "alpha-beta".len(),
+            });
+        }
+        state.retarget_unit(2, 0.."gamma".len());
+        assert_eq!(
+            state.selected_text().as_deref(),
+            Some("alpha-beta\nmid\ngamma")
+        );
+    }
+
     #[gpui::test]
     fn transcript_double_click_selects_a_word(cx: &mut gpui::TestAppContext) {
         let cx = cx.add_empty_window();
@@ -13832,15 +15207,124 @@ mod tests {
             let a = block.layout.position_for_index(start + 1).unwrap();
             point(a.x, a.y + block.layout.line_height() * 0.5)
         };
+        // The panel counts clicks itself, so this is two real presses on the
+        // same word. The standalone window re-registers listeners only when
+        // painted, so draw between events.
+        let paint = |cx: &mut gpui::VisualTestContext| {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(600.)),
+                |_, _| view.clone(),
+            );
+        };
+        for click_count in 1..=2 {
+            cx.simulate_event(MouseDownEvent {
+                position,
+                button: MouseButton::Left,
+                click_count,
+                modifiers: gpui::Modifiers::none(),
+                first_mouse: false,
+            });
+            paint(cx);
+            cx.simulate_event(MouseUpEvent {
+                position,
+                button: MouseButton::Left,
+                click_count,
+                modifiers: gpui::Modifiers::none(),
+            });
+            paint(cx);
+        }
+        assert_eq!(state.borrow().selected_text().as_deref(), Some("bravo"));
+        assert!(!state.borrow().dragging);
+    }
+
+
+    #[gpui::test]
+    fn transcript_triple_click_selects_the_line_then_a_fourth_clears(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller: scroller.clone(),
+                main_width: px(900.),
+                open_work: false,
+                live: false,
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            |_, _| view.clone(),
+        );
+        let position = {
+            let state = state.borrow();
+            let block = state
+                .blocks
+                .iter()
+                .find(|block| block.text.contains("Alpha bravo"))
+                .unwrap();
+            let start = block.text.find("bravo").unwrap();
+            let a = block.layout.position_for_index(start + 1).unwrap();
+            point(a.x, a.y + block.layout.line_height() * 0.5)
+        };
+        // The panel counts clicks itself, so this is two real presses on the
+        // same word. The standalone window re-registers listeners only when
+        // painted, so draw between events.
+        let paint = |cx: &mut gpui::VisualTestContext| {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(600.)),
+                |_, _| view.clone(),
+            );
+        };
+        let line = {
+            let state = state.borrow();
+            let block = state
+                .blocks
+                .iter()
+                .find(|block| block.text.contains("Alpha bravo"))
+                .unwrap();
+            let probe = block.text.find("bravo").unwrap() + 1;
+            block.text[visual_line_range(&block.text, &block.layout, probe)].to_string()
+        };
+        for click_count in 1..=3 {
+            cx.simulate_event(MouseDownEvent {
+                position,
+                button: MouseButton::Left,
+                click_count,
+                modifiers: gpui::Modifiers::none(),
+                first_mouse: false,
+            });
+            paint(cx);
+            cx.simulate_event(MouseUpEvent {
+                position,
+                button: MouseButton::Left,
+                click_count,
+                modifiers: gpui::Modifiers::none(),
+            });
+            paint(cx);
+        }
+        assert!(line.contains("Alpha bravo"));
+        assert_eq!(
+            state.borrow().selected_text().as_deref(),
+            Some(line.as_str()),
+            "the third press selects the whole visual line"
+        );
+        // The fourth press in the cycle is a plain click again: a caret.
         cx.simulate_event(MouseDownEvent {
             position,
             button: MouseButton::Left,
-            click_count: 2,
+            click_count: 4,
             modifiers: gpui::Modifiers::none(),
             first_mouse: false,
         });
-        assert_eq!(state.borrow().selected_text().as_deref(), Some("bravo"));
-        assert!(!state.borrow().dragging);
+        paint(cx);
+        assert_eq!(state.borrow().selected_text(), None);
     }
 
     /// The panel's selection plumbing end-to-end: a simulated drag from the
@@ -13960,6 +15444,53 @@ mod tests {
                     .expect("build the fixture response"))
             })
         }
+    }
+
+    /// A wrapping list item in a document rendered outside the transcript
+    /// (the Git panel's issue body) must wrap at the column width, not paint
+    /// one glyph per line.
+    #[gpui::test]
+    fn document_list_items_wrap_at_column_width(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+
+        struct ListDocView;
+        impl gpui::Render for ListDocView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div()
+                    .id("list-doc")
+                    .w(px(600.))
+                    .debug_selector(|| "list-doc".to_string())
+                    .child(render_markdown_document(
+                        "- **edit / write** — the change as a diff (reuse `src/diff_view.rs` and the paint-only lexer in `highlight.rs`), with the file path and a one-line summary.\n- **todo** — the checklist with its state.",
+                        theme::Theme::for_id(theme::ThemeId::Orbit),
+                    ))
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| ListDocView));
+        let paint = |cx: &mut gpui::VisualTestContext| {
+            let view = view.clone();
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(800.), px(4000.)),
+                move |_, _| view.clone(),
+            );
+        };
+        paint(cx);
+        cx.run_until_parked();
+        paint(cx);
+
+        let host = cx
+            .debug_bounds("list-doc")
+            .expect("the document is visible");
+        // Two short-wrapped items fit in a handful of 26px lines at 600px;
+        // a glyph-per-line wrap would run to thousands of pixels.
+        assert!(
+            host.size.height < px(26. * 6.),
+            "list items must wrap at the column width, got {:?}",
+            host.size.height
+        );
     }
 
     /// A standalone markdown image (the `<img>` tag GitHub stores for a

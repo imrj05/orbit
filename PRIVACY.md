@@ -15,6 +15,9 @@ Orbit talks to the network only for things you asked for:
   a newer version exists, and to download it if you accept.
 * **GitHub metadata** — author avatars and repository data shown in the Git and
   GitHub panels.
+* **Starring Orbit** — the first time Settings → About opens in a launch, Orbit
+  asks GitHub through your signed-in `gh` whether you have starred its
+  repository; it stars or unstars only when you click the button.
 * **Model providers** — prompts, context, and tool output are sent to whichever
   provider your `pi` agent is configured to use, exactly as the `pi` CLI does on
   its own. That traffic is governed by the provider's policy, not Orbit's.

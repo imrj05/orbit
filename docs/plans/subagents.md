@@ -633,8 +633,10 @@ delegation for "find and fix" belongs to `worker`.
       "tools": 12,
       "toolCounts": { "read": 4, "grep": 7, "bash": 1 },
       "cwd": "/Users/me/project",
-      "steps": [{ "kind": "tool", "name": "grep", "preview": "auth in src/" }],
+      "steps": [{ "kind": "tool", "name": "grep", "preview": "auth in src/", "status": "ok",
+                  "output": "src/auth.rs:12: pub fn login" }],
       "stepsTotal": 12,
+      "thinkingText": "The router mounts auth before the session layer, so…",
       "report": null,
       "error": null,
       "stderrTail": "",
@@ -651,7 +653,12 @@ delegation for "find and fix" belongs to `worker`.
 
 Bounds, applied by the extension before anything crosses the pipe: `steps` last **8** (each
 `preview` ≤ 160 chars, `stepsTotal` keeps the honest count), `report` ≤ 64 KiB, `stderrTail` ≤ 2 KiB,
-`task` ≤ 2 KiB, `blocked` last **5**, `toolCounts` ≤ 12 entries.
+`task` ≤ 2 KiB, `blocked` last **5**, `toolCounts` ≤ 12 entries, each step's `output` ≤ 1,200
+chars (head kept — the first lines say what the call found; streamed from `tool_execution_update`
+while it runs), `thinkingText` ≤ 4,000 chars (tail kept — the newest thought; streamed from
+`thinking_delta`s, reset per reply, replaced by the finished message's thinking blocks; `null`
+when there is none). Both are display-only: the parent model receives the tool result's
+`content` (the report), never `details`.
 
 `status ∈ {running, done, failed, aborted}`; `phase ∈ {queued, spawning, thinking, tool, blocked,
 settled, killed, refused}` (§9.4); `stopReason` is pi's own value copied verbatim — never inferred from the

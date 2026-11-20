@@ -230,6 +230,22 @@ impl MenuCursor {
 /// Zed's inset `ListSubHeader`, the section label inside a menu or picker:
 /// a 20px row of Small, muted text, Base02 + `px_2` in from the edges, with
 /// Base04 below.
+/// A [`menu_header`] inside a `popover_picker`. That surface has no vertical
+/// inset of its own (a search row sits flush at its top), so a header that
+/// opens a picker, or follows its search row, carries the list's inset above
+/// it — otherwise the title sits on the popover's top edge.
+pub(crate) fn picker_header(label: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
+    menu_header(label, theme).pt(crate::theme::tokens::picker::list_padding_y(theme))
+}
+
+/// A [`menu_header`] that opens a later section, directly under the previous
+/// section's rows. Without the break the title reads as one more row of the
+/// group above it; a menu's *first* title takes [`menu_header`] (in a padded
+/// list) or [`picker_header`] (at a picker's top edge) instead.
+pub(crate) fn menu_section_header(label: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
+    menu_header(label, theme).pt(crate::theme::tokens::DynamicSpacing::Base08.px(theme))
+}
+
 pub(crate) fn menu_header(label: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
     div()
         .w_full()

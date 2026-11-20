@@ -3520,69 +3520,6 @@ where
         ))
 }
 
-/// The "star the project" call to action: a bordered card with the star glyph
-/// over the repo name and a quiet reason, opening the repository in the OS
-/// browser. Shared by the sidebar (which passes its close button) and
-/// Settings → About (which mounts it permanently, `dismiss = None`).
-///
-/// `element_id` is the card's element/debug id; each mount passes its own so
-/// the two instances never collide.
-pub(crate) fn star_project_banner(
-    theme: Theme,
-    element_id: &'static str,
-    dismiss: Option<AnyElement>,
-) -> AnyElement {
-    div()
-        .id(element_id)
-        .debug_selector(move || element_id.to_string())
-        .px(DynamicSpacing::Base08.px(&theme))
-        .py(DynamicSpacing::Base06.px(&theme))
-        .rounded(crate::theme::tokens::panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.hairline())
-        // Sits on the About page beside a frosted card: the same tint, so
-        // it is not an opaque slab over the wallpaper.
-        .bg(theme.card_fill(theme.surface_elevated))
-        .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base08.px(&theme))
-        .cursor_pointer()
-        .hover_bordered(&theme)
-        .pressed_state(&theme, PressedRamp::Wash)
-        .on_mouse_up(MouseButton::Left, |_, _, cx| {
-            cx.open_url(env!("CARGO_PKG_REPOSITORY"));
-        })
-        .child(icon(
-            "icons/star.svg",
-            ButtonSize::Medium.icon_size().px(&theme),
-            theme.accent_text,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .truncate()
-                        .text_size(TextSize::Small.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(tr!("sidebar.star_orbit")),
-                )
-                .child(
-                    div()
-                        .truncate()
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.text_muted)
-                        .child(tr!("sidebar.star_orbit_detail")),
-                ),
-        )
-        .children(dismiss)
-        .into_any_element()
-}
-
 #[cfg(test)]
 #[test]
 fn updated_visibility_never_hides_status_labels() {

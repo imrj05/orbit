@@ -21,8 +21,8 @@ use crate::theme::{self, Theme};
 use crate::ui::field::search_field;
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::{
-    icon, menu_header, picker_entry, picker_row_height, working_folder_keyboard_hints, ControlExt,
-    PickerRow, PressedRamp, StatefulControlExt,
+    icon, picker_entry, picker_header, picker_row_height, working_folder_keyboard_hints,
+    ControlExt, PickerRow, PressedRamp, StatefulControlExt,
 };
 
 /// The popover caps at this width — wide enough for a two-line row (name over
@@ -665,9 +665,9 @@ impl Render for WorkspacePicker {
             // section label — "This device" over the folder rows, with a
             // count on the right, like every other list header.
             .child(
-                menu_header(tr!("workspace_picker.this_device"), &theme)
-                    .pt(picker::list_padding_y(&theme))
-                    .when(!rows.is_empty(), |header| {
+                picker_header(tr!("workspace_picker.this_device"), &theme).when(
+                    !rows.is_empty(),
+                    |header| {
                         header.child(
                             div()
                                 .flex_none()
@@ -679,7 +679,8 @@ impl Render for WorkspacePicker {
                                 .text_color(theme.text_muted)
                                 .child(rows.len().to_string()),
                         )
-                    }),
+                    },
+                ),
             )
             .child(list)
             // browse row — the OS dialog, one step away, below a full-width

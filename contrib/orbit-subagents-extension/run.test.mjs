@@ -399,3 +399,84 @@ test("every guard's refusal reads as a denial, and a tool's own error does not",
     assert.equal(isDenial(text), false, text);
   }
 });
+
+test("reasoning streams as a bounded tail and restarts with each reply", () => {
+  const state = child();
+  applyEvent(state, { type: "message_start", message: { role: "assistant" } });
+  applyEvent(state, {
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_delta", delta: "Look in src/" },
+  });
+  applyEvent(state, {
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_delta", delta: "auth.rs first." },
+  });
+  assert.equal(childDetails(state).thinkingText, "Look in src/auth.rs first.");
+
+  // A long think keeps only its newest tail, marked at the cut.
+  applyEvent(state, {
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_delta", delta: "x".repeat(BOUNDS.thinkingTail * 2) },
+  });
+  const long = childDetails(state).thinkingText;
+  assert.equal(long.length, BOUNDS.thinkingTail);
+  assert.ok(long.startsWith("…"));
+
+  // Text deltas are the answer, not reasoning.
+  applyEvent(state, { type: "message_start", message: { role: "assistant" } });
+  applyEvent(state, {
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", delta: "Auth is in src/auth.rs." },
+  });
+  assert.equal(childDetails(state).thinkingText, null, "a new reply starts with no thought");
+
+  // The finished message's thinking blocks are authoritative.
+  applyEvent(state, {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Checked the router too." },
+        { type: "text", text: "Auth is in src/auth.rs." },
+      ],
+    },
+  });
+  assert.equal(childDetails(state).thinkingText, "Checked the router too.");
+  assert.equal(childDetails(state).report, "Auth is in src/auth.rs.");
+});
+
+test("a step carries its streamed and final output, capped", () => {
+  const state = child();
+  applyEvent(state, {
+    type: "tool_execution_start",
+    toolCallId: "t1",
+    toolName: "bash",
+    args: { command: "cargo test" },
+  });
+  applyEvent(state, {
+    type: "tool_execution_update",
+    toolCallId: "t1",
+    toolName: "bash",
+    partialResult: { content: [{ type: "text", text: "running 3 tests" }] },
+  });
+  assert.equal(childDetails(state).steps[0].output, "running 3 tests");
+
+  applyEvent(state, {
+    type: "tool_execution_end",
+    toolCallId: "t1",
+    toolName: "bash",
+    result: { content: [{ type: "text", text: "y".repeat(BOUNDS.output * 3) }] },
+  });
+  const step = childDetails(state).steps[0];
+  assert.equal(step.status, "ok");
+  assert.equal(step.output.length, BOUNDS.output);
+  assert.ok(step.output.endsWith("…"));
+  assert.equal(step.callId, undefined, "the call id never crosses the pipe");
+});
+
+test("a step with no output keeps the payload shape it always had", () => {
+  const state = child();
+  applyEvent(state, { type: "tool_execution_start", toolCallId: "t1", toolName: "read", args: {} });
+  applyEvent(state, { type: "tool_execution_end", toolCallId: "t1", toolName: "read", result: {} });
+  assert.equal("output" in childDetails(state).steps[0], false);
+});

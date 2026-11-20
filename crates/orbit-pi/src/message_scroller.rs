@@ -603,6 +603,79 @@ mod tests {
         space
     }
 
+    fn wheel(cx: &mut gpui::VisualTestContext, dy: f32) {
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(px(300.), px(200.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(dy))),
+            ..Default::default()
+        });
+    }
+
+    /// Guard: one small notch moves a tail-following reader off the live edge.
+    /// (`StateInner::scroll` clamps the past-the-end tail to the real maximum
+    /// first; this harness repaints between events, which normalizes the
+    /// anchor, so it does not reproduce the original overshoot by itself.)
+    #[gpui::test]
+    fn one_wheel_notch_leaves_the_tail(cx: &mut gpui::TestAppContext) {
+        let state = MessageScrollerState::new(40);
+        let heights: RowHeights =
+            Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        let cx = cx.add_empty_window();
+        let probe = cx.update(|_, cx| {
+            cx.new(|_| TranscriptProbe {
+                state: state.clone(),
+                heights: heights.clone(),
+            })
+        });
+        // Follow the tail the way the transcript does: a past-the-end anchor.
+        state.scroll_to_end();
+        draw_probe(cx, &probe);
+        assert!(state.is_following_tail());
+
+        wheel(cx, 20.);
+        draw_probe(cx, &probe);
+        assert!(
+            !state.is_following_tail(),
+            "a 20px notch moves the reader off the live edge"
+        );
+    }
+
+    /// Guard: after "Jump to latest", scrolling down keeps the reader on the
+    /// live edge. (The list's wheel listener now reads the live offset per
+    /// event instead of replaying the gesture onto the offset from its first
+    /// paint; the replay needs a frame that reuses the listener without a
+    /// repaint, which this harness cannot produce.)
+    #[gpui::test]
+    fn a_wheel_event_after_jumping_to_latest_does_not_replay_the_gesture(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = MessageScrollerState::new(40);
+        let heights: RowHeights =
+            Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        let cx = cx.add_empty_window();
+        let probe = cx.update(|_, cx| {
+            cx.new(|_| TranscriptProbe {
+                state: state.clone(),
+                heights: heights.clone(),
+            })
+        });
+        draw_probe(cx, &probe);
+
+        wheel(cx, 300.);
+        assert!(!state.is_following_tail());
+        // Jump to latest without a repaint in between: the same listener
+        // handles the next event.
+        state.scroll_to_end();
+        assert!(state.is_following_tail());
+
+        wheel(cx, -20.);
+        draw_probe(cx, &probe);
+        assert!(
+            state.is_following_tail(),
+            "scrolling down at the bottom keeps the reader on the live edge"
+        );
+    }
+
     /// Expanding a card while tail-following must not re-pin the list to the
     /// bottom: the row under the reader stays put and the card grows below it.
     #[gpui::test]

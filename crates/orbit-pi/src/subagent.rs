@@ -134,6 +134,9 @@ pub(crate) struct SubagentStep {
     pub name: String,
     pub preview: String,
     pub status: StepStatus,
+    /// The call's result text (streamed while it runs), capped by the
+    /// extension. Absent from older extensions and from calls with no text.
+    pub output: Option<String>,
 }
 
 /// How long a live child may go without a single event before the card says
@@ -172,6 +175,10 @@ pub(crate) struct SubagentChild {
     /// The thinking level the child ran at, as pi reported it.
     pub thinking: Option<String>,
     pub task: String,
+    /// The child's latest reasoning (its tail), streamed while it thinks.
+    /// Display only: the parent model never receives it. Absent from older
+    /// extensions.
+    pub reasoning: Option<String>,
     pub steps: Vec<SubagentStep>,
     pub steps_total: u64,
     pub report: Option<String>,
@@ -189,7 +196,7 @@ pub(crate) struct SubagentChild {
 }
 
 impl SubagentChild {
-    fn from_value(value: &Value) -> Self {
+    pub(crate) fn from_value(value: &Value) -> Self {
         let ended_at = value.get("endedAt").and_then(Value::as_i64);
         let status = Status::parse(value.get("status").and_then(Value::as_str)).unwrap_or(
             if ended_at.is_some() {
@@ -272,6 +279,12 @@ impl SubagentChild {
                             .unwrap_or("")
                             .to_string(),
                         status: StepStatus::parse(step.get("status").and_then(Value::as_str)),
+                        output: step
+                            .get("output")
+                            .and_then(Value::as_str)
+                            .map(str::trim_end)
+                            .filter(|output| !output.trim().is_empty())
+                            .map(str::to_string),
                     })
                     .collect()
             })
@@ -311,6 +324,12 @@ impl SubagentChild {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
+            reasoning: value
+                .get("thinkingText")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|thought| !thought.is_empty())
+                .map(str::to_string),
             steps,
             steps_total: value.get("stepsTotal").and_then(Value::as_u64).unwrap_or(0),
             report: value
@@ -555,6 +574,29 @@ mod tests {
 
     fn child(value: Value) -> SubagentChild {
         SubagentChild::from_value(&value)
+    }
+
+    #[test]
+    fn reasoning_and_step_output_are_read_when_present() {
+        let streamed = child(json!({
+            "agent": "scout",
+            "thinkingText": "  Look in src/auth.rs first.  ",
+            "steps": [
+                {"name": "grep", "preview": "auth", "status": "ok", "output": "src/auth.rs:12\n"},
+                {"name": "read", "preview": "src/auth.rs", "status": "running", "output": "   "}
+            ]
+        }));
+        assert_eq!(streamed.reasoning.as_deref(), Some("Look in src/auth.rs first."));
+        assert_eq!(streamed.steps[0].output.as_deref(), Some("src/auth.rs:12"));
+        assert_eq!(streamed.steps[1].output, None, "blank output is no output");
+
+        // An older extension sends neither field: nothing is invented.
+        let older = child(json!({
+            "agent": "scout",
+            "steps": [{"name": "grep", "preview": "auth", "status": "ok"}]
+        }));
+        assert_eq!(older.reasoning, None);
+        assert_eq!(older.steps[0].output, None);
     }
 
     #[test]

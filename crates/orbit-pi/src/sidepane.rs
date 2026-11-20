@@ -96,6 +96,11 @@ pub struct SidePaneResize;
 /// actions.
 pub type FileActions = std::rc::Rc<dyn Fn(&review::File, Theme) -> Option<AnyElement>>;
 
+/// The right pane's tab strip, asked for each time the pane paints so it is
+/// never stale: `None` while the session has no subagent tabs (plain Review,
+/// no strip). Installed once by the app, which owns the tabs.
+pub type DockHeader = std::rc::Rc<dyn Fn(Theme, &gpui::App) -> Option<AnyElement>>;
+
 /// Callback an embedded host installs so a grouped section's strip carries
 /// its own bulk action (the Git page's Stage all on Changes, Unstage all on
 /// Staged). It is called during render with the section's label and whether
@@ -121,6 +126,8 @@ const MAX_TURN_EXTRAS_BYTES: usize = 8 * 1024 * 1024;
 pub struct SidePane {
     /// Whether the pane is shown at all (toggled from the top bar).
     open: bool,
+    /// The app's tab strip for the docked pane (see [`DockHeader`]).
+    dock_header: Option<DockHeader>,
     /// Render as an embedded review browser instead of a docked pane: the
     /// chrome (width, resize handle, and the full-width/close controls) is
     /// dropped and width decisions use [`SidePane::available_width`], so the
@@ -232,6 +239,7 @@ impl SidePane {
             .max(PANE_MIN_W));
         Self {
             open: false,
+            dock_header: None,
             embedded: false,
             width,
             available_width: width,
@@ -294,6 +302,11 @@ impl SidePane {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Install the docked pane's tab strip (see [`DockHeader`]).
+    pub(crate) fn set_dock_header(&mut self, header: DockHeader) {
+        self.dock_header = Some(header);
     }
 
     /// Mark this instance as an embedded review browser rather than the docked
@@ -2791,53 +2804,81 @@ impl Render for SidePane {
         }
         let theme = *theme::get(cx);
         let body = self.body(window, theme, cx);
-        div()
-            .id("side-pane")
-            .debug_selector(|| "side-pane".to_string())
-            .relative()
-            .flex_none()
-            .w(self.width)
-            .h_full()
-            .pl(DynamicSpacing::Base12.px(&theme))
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .child(
-                resize_handle(
-                    "side-pane-resize-handle",
-                    &theme,
-                    ResizeAxis::Horizontal,
-                    ResizeLook::Wash,
-                )
-                .absolute()
-                .top_0()
-                .bottom_0()
-                // Sit on the card's left border (the 12px gutter, minus
-                // half the handle width), not the panel's outer edge, so
-                // the edge users see is the edge they can grab.
-                .left(px(9.))
-                .w(px(6.))
-                .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
-            )
-            // The dock reads as a rounded card, like the Git/Usage cards in
-            // the main column. The menus stay outside this clipped shell so
-            // they are not cut off at its corners. Over a full-window
-            // wallpaper the card is glass, like the pages.
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .bg(theme.page_canvas())
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .page_card(&theme, body),
-            )
+        let header = self
+            .dock_header
+            .as_ref()
+            .and_then(|header| header(theme, cx));
+        let body = match header {
+            Some(header) => div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(div().flex_1().min_h_0().w_full().flex().flex_col().child(body))
+                .into_any_element(),
+            None => body,
+        };
+        dock_shell("side-pane", self.width, theme, body)
             .children(self.source_menu(theme, cx))
             .on_action(cx.listener(Self::on_filter_cancel))
             .into_any_element()
     }
+}
+
+/// The docked right pane's frame: its width, the resize handle on its left
+/// edge, and the rounded card the content sits in. Review and a subagent tab
+/// share it, so switching tabs never moves an edge.
+pub(crate) fn dock_shell(
+    id: &'static str,
+    width: Pixels,
+    theme: Theme,
+    body: AnyElement,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_string())
+        .relative()
+        .flex_none()
+        .w(width)
+        .h_full()
+        .pl(DynamicSpacing::Base12.px(&theme))
+        .flex()
+        .flex_col()
+        .min_h_0()
+        .child(
+            resize_handle(
+                "side-pane-resize-handle",
+                &theme,
+                ResizeAxis::Horizontal,
+                ResizeLook::Wash,
+            )
+            .absolute()
+            .top_0()
+            .bottom_0()
+            // Sit on the card's left border (the 12px gutter, minus
+            // half the handle width), not the panel's outer edge, so
+            // the edge users see is the edge they can grab.
+            .left(px(9.))
+            .w(px(6.))
+            .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
+        )
+        // The dock reads as a rounded card, like the Git/Usage cards in
+        // the main column. The menus stay outside this clipped shell so
+        // they are not cut off at its corners. Over a full-window
+        // wallpaper the card is glass, like the pages.
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .bg(theme.page_canvas())
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .page_card(&theme, body),
+        )
 }
 
 /// An invisible drag ghost — resizing leaves no floating preview.

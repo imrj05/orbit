@@ -15,9 +15,12 @@ repository = "https://github.com/imrj05/orbit"
 # The backdrop-blur pass has no upstream equivalent in gpui 0.2.2: a quad that
 # carries `gpui::backdrop_blur_marker(sigma)` asks the Metal renderer to blur
 # what is already drawn behind it before painting, like CSS
-# `backdrop-filter: blur()`. The patch is confined to the macOS renderer, the
-# shader source and the marker in `scene.rs`; everything else is the published
-# crate.
+# `backdrop-filter: blur()`. That patch is confined to the macOS renderer, the
+# shader source and the marker in `scene.rs`. `elements/list.rs` also carries a
+# wheel-scroll fix: each event moves the live offset (the published listener
+# replays the whole gesture onto the offset from its first paint), and a
+# bottom-aligned tail is clamped to the real maximum so one notch can leave it.
+# Everything else is the published crate.
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 

@@ -35,6 +35,10 @@ export const BOUNDS = {
   task: 2 * 1024,
   blocked: 5,
   toolCounts: 12,
+  /** The child's latest reasoning, tail kept (the newest thought is what reads live). */
+  thinkingTail: 4000,
+  /** One step's result text, head kept (the first lines say what the call found). */
+  output: 1200,
 };
 
 /** Caps the extension enforces regardless of configuration (D-I). */
@@ -168,6 +172,12 @@ export function truncate(text, max) {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
 
+/** Keep the last `max` characters, marking the cut at the front. */
+export function tail(text, max) {
+  const value = String(text ?? "");
+  return value.length <= max ? value : `…${value.slice(value.length - (max - 1))}`;
+}
+
 /** Truncate to `max` bytes (UTF-8), with an explicit marker. */
 export function capBytes(text, max) {
   const value = String(text ?? "");
@@ -229,6 +239,9 @@ export function newChildState({ id, agent, task, cwd, workflowMode, now = Date.n
     toolCounts: {},
     steps: [],
     stepsTotal: 0,
+    // The current reply's reasoning, streamed; display only, never sent to
+    // the parent model (the tool result's `content` carries the report alone).
+    thinkingText: "",
     report: null,
     error: null,
     stderrTail: "",
@@ -247,6 +260,17 @@ export function newChildState({ id, agent, task, cwd, workflowMode, now = Date.n
     timedOut: false,
     sawAssistant: false,
   };
+}
+
+/** Text of an assistant message's thinking blocks. */
+function assistantThinking(message) {
+  const content = message?.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block) => block?.type === "thinking" && typeof block.thinking === "string")
+    .map((block) => block.thinking)
+    .join("\n\n")
+    .trim();
 }
 
 /** Text of an assistant message's text blocks. */
@@ -274,9 +298,29 @@ export function applyEvent(state, event, now = Date.now()) {
     if (message?.role === "assistant") {
       state.phase = "thinking";
       state.current = null;
+      // A new reply thinks afresh: the panel shows this turn's reasoning.
+      state.thinkingText = "";
       if (typeof message.model === "string") state.model = message.model;
       if (typeof message.thinkingLevel === "string") state.thinking = message.thinkingLevel;
     }
+    return state;
+  }
+
+  if (type === "message_update") {
+    // Reasoning streams as `thinking_delta`s; only the tail is kept, so a long
+    // think costs a bounded payload however long it runs.
+    const delta = event.assistantMessageEvent;
+    if (delta?.type === "thinking_delta" && typeof delta.delta === "string") {
+      state.thinkingText = tail(state.thinkingText + delta.delta, BOUNDS.thinkingTail);
+    }
+    return state;
+  }
+
+  if (type === "tool_execution_update") {
+    // A long call (a build, a test run) streams partial output; show it live.
+    const step = findOpenStep(state.steps, event.toolCallId, String(event.toolName ?? "tool"));
+    const text = resultText(event.partialResult);
+    if (step && text !== "") step.output = truncate(text, BOUNDS.output);
     return state;
   }
 
@@ -284,6 +328,9 @@ export function applyEvent(state, event, now = Date.now()) {
     const message = event.message;
     if (message?.role !== "assistant") return state;
     state.sawAssistant = true;
+    // The finished message is authoritative over the streamed deltas.
+    const thought = assistantThinking(message);
+    if (thought !== "") state.thinkingText = tail(thought, BOUNDS.thinkingTail);
     state.usage = addUsage(state.usage, message.usage);
     if (typeof message.stopReason === "string") state.stopReason = message.stopReason;
     const text = assistantText(message);
@@ -315,6 +362,8 @@ export function applyEvent(state, event, now = Date.now()) {
     state.current = null;
     const name = String(event.toolName ?? "tool");
     const step = findOpenStep(state.steps, event.toolCallId, name);
+    const output = resultText(event.result);
+    if (step && output !== "") step.output = truncate(output, BOUNDS.output);
     if (event.isError !== true) {
       if (step) step.status = "ok";
       return state;
@@ -323,7 +372,7 @@ export function applyEvent(state, event, now = Date.now()) {
     // first is the mode's decision, the second is the work's outcome (a grep
     // with no match, a red test). Only a guard's own sentence makes a call
     // blocked; anything else is an ordinary failed step.
-    const text = resultText(event.result);
+    const text = output;
     const denied = isDenial(text);
     if (step) step.status = denied ? "blocked" : "error";
     if (denied) {
@@ -454,8 +503,13 @@ export function childDetails(state) {
     steps: state.steps.map(({ callId: _callId, ...step }) => ({
       ...step,
       preview: truncate(step.preview, BOUNDS.preview),
+      ...(typeof step.output === "string" ? { output: truncate(step.output, BOUNDS.output) } : {}),
     })),
     stepsTotal: state.stepsTotal,
+    thinkingText:
+      typeof state.thinkingText === "string" && state.thinkingText !== ""
+        ? tail(state.thinkingText, BOUNDS.thinkingTail)
+        : null,
     report,
     error: state.error,
     stderrTail: state.stderrTail === "" ? "" : capBytes(state.stderrTail, BOUNDS.stderr).text,

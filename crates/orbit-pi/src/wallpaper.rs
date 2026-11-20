@@ -98,16 +98,21 @@ pub enum WallpaperMode {
     Hero,
     /// Behind the whole window, including the sessions sidebar.
     FullWindow,
+    /// No image: the desktop itself, frosted by the OS compositor behind a
+    /// see-through window (macOS vibrancy, Windows Acrylic). Dark palettes on
+    /// those platforms only; see [`desktop_frost_available`].
+    Desktop,
 }
 
 impl WallpaperMode {
-    pub const ALL: [Self; 3] = [Self::Disabled, Self::Hero, Self::FullWindow];
+    pub const ALL: [Self; 4] = [Self::Disabled, Self::Hero, Self::FullWindow, Self::Desktop];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
             Self::Hero => "hero",
             Self::FullWindow => "full",
+            Self::Desktop => "desktop",
         }
     }
 
@@ -116,6 +121,7 @@ impl WallpaperMode {
             "disabled" | "off" | "none" => Some(Self::Disabled),
             "hero" | "hero-only" | "main" => Some(Self::Hero),
             "full" | "full-window" | "window" => Some(Self::FullWindow),
+            "desktop" | "frosted" | "vibrancy" => Some(Self::Desktop),
             _ => None,
         }
     }
@@ -199,7 +205,13 @@ impl WallpaperSettings {
     /// preference in place (the disk may come back), but it cannot make
     /// surfaces translucent without an image beneath them.
     pub fn enabled(&self) -> bool {
-        self.mode != WallpaperMode::Disabled && self.path.is_some()
+        matches!(self.mode, WallpaperMode::Hero | WallpaperMode::FullWindow) && self.path.is_some()
+    }
+
+    /// The Desktop background is chosen. It needs no image; whether it can
+    /// actually frost is [`desktop_frost_available`]'s call.
+    pub fn desktop(&self) -> bool {
+        self.mode == WallpaperMode::Desktop
     }
 
     pub fn display_label(&self) -> Option<&str> {
@@ -427,8 +439,11 @@ pub fn import_and_prepare(
     next.label = Some(label);
     // Picking an image is an explicit request to see it. A disabled mode would
     // otherwise make the new import look like nothing happened.
-    if next.mode == WallpaperMode::Disabled {
-        next.mode = WallpaperMode::Hero;
+    // An image also replaces the Desktop background, which has no picture.
+    match next.mode {
+        WallpaperMode::Disabled => next.mode = WallpaperMode::Hero,
+        WallpaperMode::Desktop => next.mode = WallpaperMode::FullWindow,
+        WallpaperMode::Hero | WallpaperMode::FullWindow => {}
     }
     Ok((next, prepared))
 }
@@ -1090,6 +1105,9 @@ pub fn surfaces(
     settings: &WallpaperSettings,
     brightness: Option<&Brightness>,
 ) -> SurfaceTreatment {
+    if settings.desktop() {
+        return desktop_surfaces(theme, settings, crate::theme::os_reduce_transparency());
+    }
     if !settings.enabled() || brightness.is_none() {
         return SurfaceTreatment::OPAQUE;
     }
@@ -1109,6 +1127,7 @@ pub fn surfaces(
         glass: settings.glass && gpui::backdrop_blur_supported(),
         page: None,
         floating: false,
+        desktop: false,
     };
     let decorated = theme.with_wallpaper(treatment);
     let mut alpha = treatment.card_alpha;
@@ -1132,6 +1151,70 @@ pub fn surfaces(
     };
     treatment.page = page_appearance(theme, &treatment, brightness);
     treatment
+}
+
+/// Whether the OS can frost the desktop behind a see-through Orbit window:
+/// macOS vibrancy or Windows Acrylic (Linux blur depends on the compositor,
+/// so it would expose the raw desktop), a dark palette (a pale tint over an
+/// unknown desktop cannot hold contrast), and no Reduce Transparency.
+pub fn desktop_frost_available(theme: &Theme, reduce_transparency: bool) -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+        && theme.mode == crate::theme::ThemeMode::Dark
+        && !reduce_transparency
+}
+
+/// The Desktop background's surfaces. There is no picture to sample, so every
+/// text-bearing surface keeps its contrast against the worst desktop there
+/// is — black and white both ([`Theme::floating_glass_alpha`]); the Card
+/// opacity setting can raise that floor, never lower it. Where the frost is
+/// not available the window stays opaque, exactly as with no background.
+fn desktop_surfaces(
+    theme: Theme,
+    settings: &WallpaperSettings,
+    reduce_transparency: bool,
+) -> SurfaceTreatment {
+    if !desktop_frost_available(&theme, reduce_transparency) {
+        return SurfaceTreatment::OPAQUE;
+    }
+    let requested = clamp(settings.card_opacity, CARD_OPACITY_RANGE);
+    let floor = |bases: &[Hsla]| {
+        bases
+            .iter()
+            .map(|base| theme.floating_glass_alpha(*base))
+            .fold(requested, f32::max)
+    };
+    let card_alpha = clamp(
+        floor(&[
+            theme.surface_elevated,
+            theme.surface_secondary,
+            theme.surface,
+            theme.background,
+        ]),
+        (MIN_CARD_ALPHA, MAX_CARD_ALPHA),
+    );
+    // The sidebar and the chat column hold text too, so they take the same
+    // floor (an image page may go clearer: it is the picture itself).
+    let panel_alpha = clamp(
+        floor(&[theme.surface, theme.background]),
+        (MIN_CARD_ALPHA, MAX_CARD_ALPHA),
+    );
+    SurfaceTreatment {
+        active: true,
+        full_window: true,
+        image_opacity: 0.0,
+        dim: 0.0,
+        card_alpha,
+        panel_alpha,
+        // The OS already frosts the desktop. The in-app pass still frosts the
+        // workbench under floating layers and the composer, under the same
+        // Glass panes switch as an image.
+        glass: settings.glass && gpui::backdrop_blur_supported(),
+        // An edge fade has to end on something opaque; the palette canvas is
+        // the nearest honest stand-in for an unknown desktop.
+        page: Some(theme.background),
+        floating: false,
+        desktop: true,
+    }
 }
 
 /// The page's appearance as one opaque colour: the page fill composited over
@@ -1274,6 +1357,97 @@ mod tests {
     use super::*;
     use crate::theme::ThemeId;
 
+    fn desktop_settings(card_opacity: f32) -> WallpaperSettings {
+        WallpaperSettings {
+            mode: WallpaperMode::Desktop,
+            card_opacity,
+            ..WallpaperSettings::default()
+        }
+    }
+
+    fn dark_and_light() -> (Theme, Theme) {
+        let dark = ThemeId::ALL
+            .into_iter()
+            .map(Theme::for_id)
+            .find(|theme| theme.mode == crate::theme::ThemeMode::Dark)
+            .expect("a dark palette");
+        let light = ThemeId::ALL
+            .into_iter()
+            .map(Theme::for_id)
+            .find(|theme| theme.mode == crate::theme::ThemeMode::Light)
+            .expect("a light palette");
+        (dark, light)
+    }
+
+    #[test]
+    fn desktop_is_its_own_mode_and_never_paints_an_old_image() {
+        let mut settings = desktop_settings(0.82);
+        settings.path = Some(PathBuf::from("/tmp/earlier.png"));
+        assert!(settings.desktop());
+        assert!(
+            !settings.enabled(),
+            "a picture chosen earlier stays saved but does not paint"
+        );
+        assert!(!settings.shows_bottom_fade());
+        assert_eq!(WallpaperMode::parse("frosted"), Some(WallpaperMode::Desktop));
+    }
+
+    #[test]
+    fn desktop_frosts_dark_palettes_with_contrast_floors() {
+        let (dark, _) = dark_and_light();
+        let treatment = desktop_surfaces(dark, &desktop_settings(0.0), false);
+        if !cfg!(any(target_os = "macos", target_os = "windows")) {
+            assert_eq!(treatment, SurfaceTreatment::OPAQUE, "no compositor blur here");
+            return;
+        }
+        assert!(treatment.active && treatment.full_window && treatment.desktop);
+        assert_eq!(treatment.image_opacity, 0.0, "there is no picture to paint");
+        // Asking for 0% cannot make text-bearing surfaces unreadable: each one
+        // keeps its black-and-white-backdrop floor.
+        for base in [dark.surface_elevated, dark.surface, dark.background] {
+            assert!(treatment.card_alpha >= dark.floating_glass_alpha(base));
+        }
+        for base in [dark.surface, dark.background] {
+            assert!(treatment.panel_alpha >= dark.floating_glass_alpha(base));
+        }
+        // The setting can raise the floor all the way to solid.
+        let solid = desktop_surfaces(dark, &desktop_settings(1.0), false);
+        assert_eq!((solid.card_alpha, solid.panel_alpha), (1.0, 1.0));
+    }
+
+    #[test]
+    fn desktop_stays_opaque_for_light_palettes_and_reduced_transparency() {
+        let (dark, light) = dark_and_light();
+        assert_eq!(
+            desktop_surfaces(light, &desktop_settings(0.82), false),
+            SurfaceTreatment::OPAQUE,
+            "a pale tint over an unknown desktop cannot hold contrast"
+        );
+        assert_eq!(
+            desktop_surfaces(dark, &desktop_settings(0.82), true),
+            SurfaceTreatment::OPAQUE,
+            "Reduce Transparency wins"
+        );
+        assert!(!desktop_frost_available(&light, false));
+        assert!(!desktop_frost_available(&dark, true));
+    }
+
+    #[test]
+    fn the_window_is_see_through_only_while_the_desktop_frosts() {
+        let (dark, light) = dark_and_light();
+        let frosted = dark.with_wallpaper(desktop_surfaces(dark, &desktop_settings(0.82), false));
+        let expected = if cfg!(any(target_os = "macos", target_os = "windows")) {
+            gpui::WindowBackgroundAppearance::Blurred
+        } else {
+            gpui::WindowBackgroundAppearance::Opaque
+        };
+        assert_eq!(crate::theme::window_background(frosted), expected);
+        assert_eq!(
+            crate::theme::window_background(light),
+            gpui::WindowBackgroundAppearance::Opaque
+        );
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1351,9 +1525,10 @@ mod tests {
             };
             assert!(!settings.shows_bottom_fade());
             settings.bottom_fade = true;
+            // The fade softens a picture; Desktop has none to fade.
             assert_eq!(
                 settings.shows_bottom_fade(),
-                mode != WallpaperMode::Disabled
+                matches!(mode, WallpaperMode::Hero | WallpaperMode::FullWindow)
             );
             settings.path = None;
             assert!(!settings.shows_bottom_fade());

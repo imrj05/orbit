@@ -135,6 +135,9 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
 
     /// Hover for a control that is defined by its outline: the wash plus the
     /// strong hairline, no ink change.
+    // Part of the documented hover contract (DESIGN.md › State Contract);
+    // kept for the next bordered surface though no caller uses it today.
+    #[allow(dead_code)]
     fn hover_bordered(self, theme: &Theme) -> Self {
         let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
         let edge = theme.border_strong;

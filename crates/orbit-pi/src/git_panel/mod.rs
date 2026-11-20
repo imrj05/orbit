@@ -55,8 +55,9 @@ use crate::ui::popover::{dropdown_above, dropdown_below, DropdownAlign};
 use crate::ui::popover::{popover_list, popover_picker, PopoverExt};
 use crate::ui::prelude::{
     button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn, menu_header,
-    nerd_font_family, picker_entry, picker_surface, press, provider_mark_color, refresh_glyph,
-    spinner, ControlExt, ModalWidthExt, PressedRamp, StatefulControlExt, BUTTON_GROUP,
+    menu_section_header, nerd_font_family, picker_entry, picker_header, picker_surface, press,
+    provider_mark_color, refresh_glyph, spinner, ControlExt, ModalWidthExt, PressedRamp,
+    StatefulControlExt, BUTTON_GROUP,
 };
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
 use crate::ui::row::{list_row, RowState};
@@ -1901,7 +1902,7 @@ impl GitPanel {
                 this.template_menu = None;
                 cx.notify();
             }))
-            .child(menu_header(tr!("git_panel.template"), &theme))
+            .child(picker_header(tr!("git_panel.template"), &theme))
             .child(list);
         // Anchor to the chip: the issue form's chip sits near the top, so the
         // menu opens downward; the PR form's chip sits at the bottom, so it
@@ -1996,6 +1997,7 @@ impl GitPanel {
         } else {
             list = list.child(branch_section_label(
                 &tr!("git_panel.local_branches"),
+                true,
                 theme,
             ));
             for name in locals {
@@ -6541,29 +6543,57 @@ impl GitPanel {
                             }
                         }),
                     )
-                    .child(issue_label_chip(label, theme))
-                    .child(div().flex_1())
-                    .when(selected, |row| {
-                        row.child(icon(
-                            "icons/check.svg",
-                            context_menu::ICON.px(&theme),
-                            theme.accent_text,
-                        ))
-                    }),
+                    // A plain row, not a chip: the label's own colour lives
+                    // only in the dot, the name reads as menu text, and the
+                    // check holds a fixed slot so names never shift.
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(label_color(&label.color)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(if selected {
+                                theme.text_primary
+                            } else {
+                                theme.text_secondary
+                            })
+                            .child(label.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(context_menu::ICON.px(&theme))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(selected, |slot| {
+                                slot.child(icon(
+                                    "icons/check.svg",
+                                    context_menu::ICON.px(&theme),
+                                    theme.text_primary,
+                                ))
+                            }),
+                    ),
                 hover_name,
                 &theme,
                 Hover::row(&theme),
             ));
         }
         let menu = popover_picker(div().id("git-label-menu"), &theme)
-            .w(px(260.))
+            .w(px(224.))
             .dismiss_on_outside(cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                 this.label_menu = None;
                 // Suppress only the dismissed trigger's subsequent mouse-up.
                 this.label_menu_dismissed = Some((target, Instant::now()));
                 cx.notify();
             }))
-            .child(menu_header(tr!("git_panel.labels"), &theme))
+            .child(picker_header(tr!("git_panel.labels"), &theme))
             .child(list);
         Some(dropdown_below(
             if align_right {
@@ -7686,9 +7716,11 @@ impl GitPanel {
             Vec::new()
         };
 
+        let mut first_section = true;
         if !recent.is_empty() {
             list = list.child(branch_section_label(
                 &tr!("git_panel.recent_branches"),
+                std::mem::take(&mut first_section),
                 theme,
             ));
             for (branch, date) in &recent {
@@ -7705,6 +7737,7 @@ impl GitPanel {
         if !locals.is_empty() {
             list = list.child(branch_section_label(
                 &tr!("git_panel.local_branches"),
+                std::mem::take(&mut first_section),
                 theme,
             ));
             for entry in &locals {
@@ -7721,6 +7754,7 @@ impl GitPanel {
         if !remotes.is_empty() {
             list = list.child(branch_section_label(
                 &tr!("git_panel.remote_branches"),
+                std::mem::take(&mut first_section),
                 theme,
             ));
             for entry in &remotes {
@@ -8727,8 +8761,14 @@ fn menu_separator(theme: Theme) -> AnyElement {
 
 /// A section header in the branch picker ("Recent branches", …): Zed's
 /// `ListSubHeader`.
-fn branch_section_label(label: &str, theme: Theme) -> AnyElement {
-    menu_header(label.to_string(), &theme).into_any_element()
+/// `first` is the list's opening section; every later one sits under the rows
+/// of the section above and takes the section break.
+fn branch_section_label(label: &str, first: bool, theme: Theme) -> AnyElement {
+    if first {
+        menu_header(label.to_string(), &theme).into_any_element()
+    } else {
+        menu_section_header(label.to_string(), &theme).into_any_element()
+    }
 }
 
 /// The glyph for a ref kind in the picker.

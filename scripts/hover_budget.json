@@ -6,7 +6,7 @@
   "app/provider_accounts.rs": 1,
   "app/session.rs": 1,
   "app/settings.rs": 3,
-  "app/sidebar.rs": 2,
+  "app/sidebar.rs": 1,
   "app/skills_ui.rs": 1,
   "app/subagents_ui.rs": 3,
   "app/updater_ui.rs": 2,

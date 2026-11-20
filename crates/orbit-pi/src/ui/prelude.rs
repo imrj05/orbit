@@ -26,6 +26,7 @@ pub(crate) use crate::ui::icon::{
 pub(crate) use crate::ui::kbd::{kbd_shortcut, working_folder_keyboard_hints};
 pub(crate) use crate::ui::menu::{
     context_menu_entry, context_menu_separator, context_menu_surface, menu_header,
+    menu_section_header, picker_header,
 };
 pub(crate) use crate::ui::popover::{
     anchored_popover_at, anchored_popover_in_window, picker_surface, popover_enter,
