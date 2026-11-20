@@ -56,8 +56,9 @@ python3 scripts/check_i18n.py
 ```
 
 `cargo build` with zero warnings is a stated project invariant. CI runs build
-and clippy on macOS, and the design guards above in a `design guards` job
-(`.github/workflows/ci.yml`); tests are run locally, not in CI.
+and clippy on macOS, plus `check_i18n.py` and the extension tests in a `checks`
+job (`.github/workflows/ci.yml`). The design guards are local-only — run them
+before a UI change lands; CI does not gate on them. Other tests run locally.
 
 For UI changes, read `DESIGN.md` first — it is the design system, and the state,
 motion and modal contracts in it are enforced by the guards above. Then launch the
