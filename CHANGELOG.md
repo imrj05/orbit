@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-11-20
+
 ### Added
 
 - **Live subagent thinking and tool output in the right pane.** The subagent tab now streams
@@ -2545,7 +2547,7 @@ not asked on every turn.
 - In-transcript find (⌘F) and a full-window image lightbox.
 - Native macOS app bundle, Developer-ID signed and notarizable.
 
-[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.19...HEAD
+[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.20...HEAD
 [0.0.1]: https://github.com/imrj05/orbit/releases/tag/v0.0.1
 [0.0.2]: https://github.com/imrj05/orbit/releases/tag/v0.0.2
 [0.0.3]: https://github.com/imrj05/orbit/releases/tag/v0.0.3
@@ -2585,3 +2587,4 @@ not asked on every turn.
 [0.2.17]: https://github.com/imrj05/orbit/releases/tag/v0.2.17
 [0.2.18]: https://github.com/imrj05/orbit/releases/tag/v0.2.18
 [0.2.19]: https://github.com/imrj05/orbit/releases/tag/v0.2.19
+[0.2.20]: https://github.com/imrj05/orbit/releases/tag/v0.2.20
