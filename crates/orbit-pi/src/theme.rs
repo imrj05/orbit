@@ -291,6 +291,10 @@ pub struct SurfaceTreatment {
     /// that frosts the workbench with no wallpaper behind it (dark palettes).
     /// Only the control washes read it; every fill and edge keeps its rule.
     pub floating: bool,
+    /// The "picture" is the desktop: the window is see-through and the OS
+    /// compositor frosts what is behind it (macOS vibrancy, Windows
+    /// Acrylic). The root paints no opaque canvas, so panes sit on that frost.
+    pub desktop: bool,
 }
 
 impl SurfaceTreatment {
@@ -306,6 +310,7 @@ impl SurfaceTreatment {
         glass: false,
         page: None,
         floating: false,
+        desktop: false,
     };
 }
 
@@ -2050,7 +2055,29 @@ fn rebuild_theme_for(cx: &mut App, ui: UiPrefs, system: gpui::WindowAppearance) 
     let prefs = appearance_prefs(cx);
     let id = prefs.resolve(system);
     let theme = prefs.apply(Theme::for_id(id).with_ui(ui));
-    cx.set_global(crate::wallpaper::decorate(theme));
+    let theme = crate::wallpaper::decorate(theme);
+    cx.set_global(theme);
+    // The window follows the theme: see-through for the Desktop background,
+    // opaque otherwise. Deferred, because a rebuild can run inside a window's
+    // own update, where that window cannot be updated again.
+    let appearance = window_background(theme);
+    cx.defer(move |cx| {
+        for window in cx.windows() {
+            window
+                .update(cx, |_, window, _| window.set_background_appearance(appearance))
+                .ok();
+        }
+    });
+}
+
+/// What the compositor puts behind the window for `theme`: the frosted
+/// desktop while the Desktop background is in effect, opaque otherwise.
+pub fn window_background(theme: Theme) -> gpui::WindowBackgroundAppearance {
+    if theme.wallpaper.desktop {
+        gpui::WindowBackgroundAppearance::Blurred
+    } else {
+        gpui::WindowBackgroundAppearance::Opaque
+    }
 }
 
 /// Current theme. Panics if [`init`] has not run.

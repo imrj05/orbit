@@ -95,6 +95,9 @@ pub fn open(cx: &mut App) {
             titlebar: Some(platform::titlebar_options()),
             app_id: Some("dev.orbit.pi".into()),
             focus: true,
+            // Open already see-through when the Desktop background is on, so
+            // the first frame does not flash an opaque window.
+            window_background: crate::theme::window_background(*crate::theme::get(cx)),
             ..Default::default()
         },
         |window, cx| {

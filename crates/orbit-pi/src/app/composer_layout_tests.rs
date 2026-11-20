@@ -837,8 +837,8 @@ fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppC
     });
 }
 
-/// The send control is a labelled pill at rest and a circle mid-run, and both
-/// states must wear the shared button metrics. The labelled pill used to
+/// The send control is a labelled pill at rest and mid-run, and both states
+/// must wear the shared button metrics. The labelled pill used to
 /// reserve a fixed width for its label — no gap, and side padding that shrank
 /// as the UI font grew — while the folded state kept the hidden label's space,
 /// pushing the glyph off the circle's centre.
@@ -900,8 +900,9 @@ fn the_send_control_keeps_the_button_padding_gap_and_centre(cx: &mut gpui::TestA
         );
     }
 
-    // Mid-run the label folds to zero width: the glyph owns the square and
-    // stays on its centre.
+    // Mid-run the primary keeps its label (Queue or Steer) beside the
+    // alternate lane, with the same padding and gap: two named choices, never
+    // two look-alike glyphs.
     window.update(|_, cx| {
         app.update(cx, |app, _| app.transcript.expect_reply());
     });
@@ -912,25 +913,27 @@ fn the_send_control_keeps_the_button_padding_gap_and_centre(cx: &mut gpui::TestA
     );
     let send = window
         .debug_bounds("send-btn")
-        .expect("folded send laid out");
+        .expect("mid-run send laid out");
     let icon = window
         .debug_bounds("send-btn-icon")
-        .expect("folded glyph laid out");
-    let square = ButtonSize::Medium.height(&theme);
+        .expect("mid-run glyph laid out");
+    let label = window
+        .debug_bounds("send-btn-label")
+        .expect("mid-run label laid out");
     assert!(
-        (send.size.width - square).abs() < px(1.) && (send.size.height - square).abs() < px(1.),
-        "the folded control is the square its height defines: {send:?} vs {square:?}"
+        label.size.width > px(0.),
+        "the mid-run send names its lane: {label:?}"
     );
-    let glyph_centre = icon.origin.x + icon.size.width / 2.;
-    let button_centre = send.origin.x + send.size.width / 2.;
-    assert!(
-        (glyph_centre - button_centre).abs() < px(0.5),
-        "the folded glyph sits on the circle's centre: glyph {icon:?}, button {send:?}"
-    );
-    if let Some(label) = window.debug_bounds("send-btn-label") {
+    let left_pad = icon.origin.x - send.origin.x;
+    let right_pad = (send.origin.x + send.size.width) - (label.origin.x + label.size.width);
+    for (name, actual) in [("left padding", left_pad), ("right padding", right_pad)] {
         assert!(
-            label.size.width < px(0.5),
-            "the folded label holds no space: {label:?}"
+            (actual - pad).abs() < px(1.),
+            "mid-run {name} should be {pad:?}, got {actual:?}"
         );
     }
+    let alternate = window
+        .debug_bounds("send-alternate-label")
+        .expect("the alternate lane is labelled too");
+    assert!(alternate.size.width > px(0.));
 }

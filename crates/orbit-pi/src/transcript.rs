@@ -1204,6 +1204,10 @@ pub struct Transcript {
     expanded_tools: ExpandedTools,
     /// Which child's log a delegation card shows, keyed `(message_ix, tool_ix)`.
     open_child_logs: OpenChildLogs,
+    /// The right pane's subagent tabs for this session. They ride on the
+    /// transcript, so parking a session parks them and restoring it brings
+    /// them back — without touching whether the pane is shown.
+    dock: crate::right_dock::DockTabs,
     /// Per detail-section copy feedback, keyed `(message_ix, tool_ix, section)`.
     copied_sections: CopiedSections,
     /// Per detail-section hover transition, keyed `(message_ix, tool_ix, section)`.
@@ -1316,6 +1320,7 @@ impl Transcript {
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
             expanded_tools: Rc::new(RefCell::new(HashSet::new())),
             open_child_logs: Rc::new(RefCell::new(HashMap::new())),
+            dock: crate::right_dock::DockTabs::default(),
             copied: Rc::new(RefCell::new(HashMap::new())),
             copied_sections: Rc::new(RefCell::new(HashMap::new())),
             hovered_sections: Rc::new(RefCell::new(HashMap::new())),
@@ -1649,9 +1654,25 @@ impl Transcript {
             }
         }
         let count = parsed.len();
+        // Drop the pending-reply or changed-files slot while the old message
+        // list is still in place, so the list length below is a message count.
+        // Comparing against the slot still attached mismatches by one and
+        // either rebuilds the list or keeps a stale row.
+        self.retire_pending_row();
+        self.set_tail_row(false);
         *self.messages.borrow_mut() = parsed;
         self.invalidate_user_turns();
-        self.scroller.reset(count);
+        // A second snapshot of the same rows (the disk preview, then pi's
+        // `get_messages`) must not rebuild the list: `reset` drops every
+        // measured height, so the next frame paints a collapsed column and
+        // then jumps back to the tail. Matching counts remeasure in place.
+        if self.scroller.item_count() == count {
+            if count > 0 {
+                self.scroller.remeasure_items(0..count);
+            }
+        } else {
+            self.scroller.reset(count);
+        }
         self.streaming.set(None);
         self.seed_text.set(false);
         self.seed_thinking.set(false);
@@ -1689,12 +1710,49 @@ impl Transcript {
         self.review_history.clear();
         self.review_turn_numbers.clear();
         self.review_checkpoints.clear();
-        self.awaiting_reply.set(false);
-        self.set_tail_row(false);
+        // A reload of the same rows keeps the reader's subagent tabs; a tab
+        // whose delegation is no longer there (different history) goes.
+        let messages = self.messages.clone();
+        self.dock
+            .retain(|tab| subagent_child_exists(&messages.borrow(), *tab));
+    }
+
+    /// The copy feedback state shared with the cards, so a log in the right
+    /// pane acknowledges Copy the same way the card does.
+    pub(crate) fn copied_sections(&self) -> CopiedSections {
+        self.copied_sections.clone()
+    }
+
+    /// The right pane's subagent tabs for this session.
+    pub(crate) fn dock_tabs(&self) -> &crate::right_dock::DockTabs {
+        &self.dock
+    }
+
+    pub(crate) fn dock_tabs_mut(&mut self) -> &mut crate::right_dock::DockTabs {
+        &mut self.dock
+    }
+
+    /// The delegation a dock tab points at, parsed fresh from the live row so
+    /// the pane follows the run as it streams. `None` once it no longer
+    /// parses (the row changed shape) — the pane then says so.
+    pub(crate) fn subagent_run_at(
+        &self,
+        message_ix: usize,
+        tool_ix: usize,
+    ) -> Option<crate::subagent::SubagentRun> {
+        let messages = self.messages.borrow();
+        let tool = messages
+            .get(message_ix)?
+            .steps
+            .iter()
+            .flat_map(|step| step.tools.iter())
+            .nth(tool_ix)?;
+        crate::subagent::SubagentRun::from_tool(tool)
     }
 
     /// Clear for a fresh session.
     pub fn clear(&mut self) {
+        self.dock = crate::right_dock::DockTabs::default();
         *self.messages.borrow_mut() = Vec::new();
         self.invalidate_user_turns();
         self.text_selection.borrow_mut().clear();
@@ -3243,6 +3301,7 @@ impl Transcript {
         agent_calls: crate::agent_call_display::AgentCallDisplay,
         review_changes: Option<crate::transcript_view::ReviewOpener>,
         image_opener: Option<crate::transcript_view::ImageOpener>,
+        dock_opener: Option<crate::transcript_view::DockOpener>,
         rewind: Option<crate::transcript_view::RewindOpener>,
         regenerate: Option<crate::transcript_view::RegenerateOpener>,
         export_response: Option<crate::transcript_view::ResponseExporter>,
@@ -3315,6 +3374,7 @@ impl Transcript {
                 summary_usage,
                 review_changes,
                 image_opener,
+                dock_opener,
                 rewind,
                 regenerate,
                 export_response,
@@ -3326,10 +3386,72 @@ impl Transcript {
     }
 }
 
+/// Whether `tab` still names a delegated child in `messages`.
+fn subagent_child_exists(messages: &[ChatMessage], tab: crate::right_dock::SubagentTab) -> bool {
+    messages
+        .get(tab.message_ix)
+        .and_then(|message| {
+            message
+                .steps
+                .iter()
+                .flat_map(|step| step.tools.iter())
+                .nth(tab.tool_ix)
+        })
+        .and_then(crate::subagent::SubagentRun::from_tool)
+        .is_some_and(|run| tab.child_ix < run.children.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Opening a session paints pi's on-disk preview, then `get_messages`
+    /// delivers the same rows again. That second snapshot must remeasure in
+    /// place, not rebuild the list: a rebuild drops every measured height and
+    /// snaps a reader who had scrolled up back to the tail.
+    #[test]
+    fn a_repeated_snapshot_keeps_the_reader_where_they_are() {
+        let mut t = Transcript::new();
+        let snapshot = json!({"messages": [
+            {"role":"user", "content":"first"},
+            {"role":"assistant", "content":"reply"},
+            {"role":"user", "content":"second"}
+        ]});
+        t.load_from(&snapshot);
+        assert!(t.scroller.scroll_to_item(0));
+        assert!(!t.scroller.is_following_tail());
+
+        t.load_from(&snapshot);
+        assert_eq!(t.scroller.item_count(), 3);
+        assert!(
+            !t.scroller.is_following_tail(),
+            "the same rows again must not jump back to the tail"
+        );
+
+        // A different row count is a different list: rebuild and follow.
+        t.load_from(&json!({"messages": [{"role":"user", "content":"only"}]}));
+        assert_eq!(t.scroller.item_count(), 1);
+        assert!(t.scroller.is_following_tail());
+    }
+
+    /// A pending-reply slot must come off before the counts are compared, or
+    /// the list keeps one row more than there are messages.
+    #[test]
+    fn a_snapshot_drops_the_pending_slot_before_counting_rows() {
+        let mut t = Transcript::new();
+        let snapshot = json!({"messages": [
+            {"role":"user", "content":"first"},
+            {"role":"assistant", "content":"reply"}
+        ]});
+        t.load_from(&snapshot);
+        t.expect_reply();
+        assert_eq!(t.scroller.item_count(), 3, "messages + the pending row");
+
+        t.load_from(&snapshot);
+        assert_eq!(t.scroller.item_count(), 2, "only the message rows remain");
+        assert!(!t.awaiting_reply.get());
+    }
 
     #[test]
     fn per_turn_cards_use_scoped_calls_and_live_checkpoints() {

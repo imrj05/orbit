@@ -6165,7 +6165,13 @@ impl OrbitApp {
         // The tuning sliders only mean something once there is an image, so
         // the board appears with it instead of sitting inert under an empty
         // preview.
-        if settings.path.is_some() {
+        if settings.desktop() {
+            sections.push(self.settings_section(
+                theme,
+                &tr!("wallpaper.adjustments"),
+                self.desktop_background_rows(theme, this.clone(), &settings),
+            ));
+        } else if settings.path.is_some() {
             sections.push(self.settings_section(
                 theme,
                 &tr!("wallpaper.adjustments"),
@@ -6956,6 +6962,55 @@ impl OrbitApp {
             .into_any_element()
     }
 
+    /// The Desktop background's board: what still applies with no picture —
+    /// how much paint sits over the frost, and the in-app glass. Where the OS
+    /// cannot frost (a light palette, Reduce Transparency, Linux) it says so
+    /// instead of offering knobs that would change nothing.
+    fn desktop_background_rows(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        settings: &crate::wallpaper::WallpaperSettings,
+    ) -> Vec<AnyElement> {
+        if !crate::wallpaper::desktop_frost_available(&theme, crate::theme::os_reduce_transparency()) {
+            return vec![self.setting_row(
+                theme,
+                &tr!("wallpaper.desktop_unavailable"),
+                Some(&tr!("wallpaper.desktop_unavailable_description")),
+                None,
+                None,
+            )];
+        }
+        let mut rows = vec![self.setting_row(
+            theme,
+            &tr!("wallpaper.card_opacity"),
+            Some(&tr!("wallpaper.desktop_card_opacity_description")),
+            None,
+            Some(self.wallpaper_slider(
+                WallpaperSlider::CardOpacity,
+                theme,
+                this.clone(),
+                settings,
+            )),
+        )];
+        if gpui::backdrop_blur_supported() {
+            rows.push(self.setting_row(
+                theme,
+                &tr!("wallpaper.glass"),
+                Some(&tr!("wallpaper.desktop_glass_description")),
+                None,
+                Some(self.settings_toggle(
+                    "wallpaper-glass",
+                    settings.glass,
+                    theme,
+                    this,
+                    Self::toggle_wallpaper_glass,
+                )),
+            ));
+        }
+        rows
+    }
+
     fn set_wallpaper_mode(
         &mut self,
         mode: crate::wallpaper::WallpaperMode,
@@ -7462,8 +7517,16 @@ impl OrbitApp {
                             Some(background) => Some(background.label()),
                             None => imported.label,
                         };
-                        if next.mode == crate::wallpaper::WallpaperMode::Disabled {
-                            next.mode = crate::wallpaper::WallpaperMode::Hero;
+                        // Picking an image means seeing it: off goes to Hero,
+                        // and the image replaces the Desktop background.
+                        match next.mode {
+                            crate::wallpaper::WallpaperMode::Disabled => {
+                                next.mode = crate::wallpaper::WallpaperMode::Hero;
+                            }
+                            crate::wallpaper::WallpaperMode::Desktop => {
+                                next.mode = crate::wallpaper::WallpaperMode::FullWindow;
+                            }
+                            _ => {}
                         }
                         match crate::wallpaper::update(next.clone()) {
                             Ok(_) => {
@@ -9580,6 +9643,7 @@ fn wallpaper_mode_label(mode: crate::wallpaper::WallpaperMode) -> String {
         crate::wallpaper::WallpaperMode::Disabled => tr!("wallpaper.mode_disabled"),
         crate::wallpaper::WallpaperMode::Hero => tr!("wallpaper.mode_hero"),
         crate::wallpaper::WallpaperMode::FullWindow => tr!("wallpaper.mode_full"),
+        crate::wallpaper::WallpaperMode::Desktop => tr!("wallpaper.mode_desktop"),
     }
 }
 

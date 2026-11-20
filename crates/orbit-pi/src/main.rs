@@ -109,6 +109,7 @@ mod repository_clone;
 mod review;
 mod rewind;
 mod rewind_picker;
+mod right_dock;
 mod rpc_patches;
 mod server_clone;
 mod session_defaults;

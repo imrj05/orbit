@@ -41,6 +41,7 @@ TYPES = {
     "ChipButton": "ui/chip.rs",
     "Badge": "ui/chip.rs",
     "Pill": "ui/chip.rs",
+    "ChoiceRow": "ui/choice.rs",
     "FileChip": "ui/chip.rs",
     "Banner": "ui/banner.rs",
     "ToastCard": "ui/toast.rs",

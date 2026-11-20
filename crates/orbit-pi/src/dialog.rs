@@ -20,7 +20,12 @@ use gpui::{
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
-use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::button::{Button, ButtonVariant, IconButton, IconButtonVariant};
+use crate::ui::choice::{split_recommended, ChoiceMark, ChoiceRow};
+use crate::ui::icon::icon;
+use crate::ui::style::surface::SurfaceExt;
+use crate::theme::tokens::IconSize;
+use gpui::FontWeight;
 use crate::ui::dialog::{focus_ring, ModalHeader};
 use crate::ui::prelude::{modal_card, modal_scrim, ModalWidthExt, PressedRamp, StatefulControlExt};
 
@@ -223,6 +228,12 @@ impl Dialog {
         &self.request.id
     }
 
+    /// A `select` with options docks inline above the composer as a decision
+    /// card; the other kinds (and an empty select) stay the scrim modal.
+    pub fn is_inline(&self) -> bool {
+        matches!(&self.request.kind, DialogKind::Select { options } if !options.is_empty())
+    }
+
     /// The key context that decides which dialog bindings apply: text fields
     /// keep caret keys, the option list claims ↑/↓.
     fn key_context(&self) -> &'static str {
@@ -350,6 +361,9 @@ impl Focusable for Dialog {
 
 impl Render for Dialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.is_inline() {
+            return self.render_inline(cx);
+        }
         let theme = theme::get(cx).for_floating();
         let this = cx.entity();
 
@@ -453,10 +467,172 @@ impl Render for Dialog {
                 crate::theme::tokens::Motion::Layout,
                 None,
             ))
+            .into_any_element()
     }
 }
 
 impl Dialog {
+    /// The inline decision card for a `select`: the same glass card, header
+    /// and choice rows the questionnaire panel uses, docked in the composer
+    /// column. Every row is visible (the card grows rather than scrolls up to
+    /// [`LIST_MAX_H`]), the cursor fills its radio, ⏎ or a click answers, and
+    /// the close button or esc cancels.
+    fn render_inline(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = *theme::get(cx);
+        let this = cx.entity();
+        let DialogKind::Select { options } = &self.request.kind else {
+            return div().into_any_element();
+        };
+        let highlighted = self.highlighted.highlighted();
+
+        let header = div()
+            .px(px(14.))
+            .pt(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(icon(
+                "icons/task.svg",
+                IconSize::Small.px(&theme),
+                theme.accent_text,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_secondary)
+                    .child(tr!("ask.decision_needed")),
+            )
+            .child(
+                IconButton::new("dialog-close", "icons/x.svg")
+                    .size(ButtonSize::Compact)
+                    .variant(IconButtonVariant::Glass)
+                    .ink(theme.text_muted)
+                    .tip(tr!("common.close"))
+                    .on_click(
+                        &theme,
+                        cx.listener(|dialog, _, window, cx| {
+                            dialog.respond(DialogResponse::Cancelled, window, cx)
+                        }),
+                    ),
+            );
+
+        let mut card = div()
+            .id("dialog-card")
+            .debug_selector(|| "dialog-card".to_string())
+            .w_full()
+            .mb(DynamicSpacing::Base08.px(&theme))
+            .card_surface(
+                &theme,
+                theme.accent.opacity(0.3),
+                theme.card_fill(theme.surface_elevated),
+            )
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .key_context(self.key_context())
+            .track_focus(&self.focus)
+            .on_action(cx.listener(Self::on_cancel))
+            .on_action(cx.listener(Self::on_confirm))
+            .on_action(cx.listener(Self::on_next))
+            .on_action(cx.listener(Self::on_prev))
+            .on_action(cx.listener(Self::on_first))
+            .on_action(cx.listener(Self::on_last))
+            .child(header);
+
+        if !self.request.title.trim().is_empty() {
+            card = card.child(
+                div()
+                    .px(px(14.))
+                    .pt(DynamicSpacing::Base08.px(&theme))
+                    .pb(DynamicSpacing::Base08.px(&theme))
+                    .whitespace_normal()
+                    .text_size(TextSize::Large.px(&theme))
+                    .line_height(theme.ui_px(21.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_primary)
+                    .child(SharedString::from(self.request.title.clone())),
+            );
+        }
+
+        let mut rows = div()
+            .id("dialog-options")
+            .max_h(px(LIST_MAX_H))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .px(DynamicSpacing::Base06.px(&theme))
+            .pb(DynamicSpacing::Base08.px(&theme))
+            .flex()
+            .flex_col()
+            .gap(px(2.));
+        for (ix, option) in options.iter().enumerate() {
+            let (label, description) = split_option(option);
+            // The marker may trail the label or the description.
+            let (description, recommended) = split_recommended(description);
+            let on = ix == highlighted;
+            rows = rows.child(
+                ChoiceRow::new(
+                    ElementId::NamedInteger("dialog-option".into(), ix as u64),
+                    ChoiceMark::Radio(on),
+                    label,
+                )
+                .description(description)
+                .recommended(recommended)
+                .highlighted(on)
+                .render(&theme)
+                // Pointer movement moves the cursor; a scroll sliding a row
+                // under a stationary pointer must not hijack ↑/↓ nav.
+                .on_mouse_move({
+                    let this = this.clone();
+                    move |_, _, cx| {
+                        this.update(cx, |dialog, cx| {
+                            if dialog.highlighted.highlighted() != ix {
+                                dialog.highlighted.highlight(ix);
+                                cx.notify();
+                            }
+                        });
+                    }
+                })
+                .on_click({
+                    let this = this.clone();
+                    move |_, window, cx| {
+                        this.update(cx, |dialog, cx| {
+                            dialog.highlighted.highlight(ix);
+                            dialog.on_confirm(&crate::DialogConfirm, window, cx);
+                        });
+                    }
+                }),
+            );
+        }
+        card = card.child(rows).child(
+            div()
+                .h(px(34.))
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .border_t_1()
+                .border_color(theme.hairline())
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
+                .child(tr!("dialog.hint_select")),
+        );
+
+        if theme::reduce_motion(cx) {
+            card.into_any_element()
+        } else {
+            crate::motion::enter(
+                card,
+                "dialog-inline-in",
+                &theme,
+                crate::theme::tokens::Motion::Layout,
+                None,
+            )
+            .into_any_element()
+        }
+    }
+
     /// The select option list: a scrollable column of full-width rows; the
     /// keyboard highlight doubles as hover.
     fn render_options(
@@ -581,6 +757,28 @@ impl Dialog {
     }
 }
 
+/// Split an option string the way extensions format them —
+/// `"1. Label — description"` or `"Label - description"` — into a label and
+/// its description. The leading number is dropped (the radio marks the row),
+/// and a string with no separator is all label. The response still sends the
+/// original string, so the extension maps the answer back unchanged.
+fn split_option(option: &str) -> (&str, &str) {
+    let mut text = option.trim();
+    if let Some((number, rest)) = text.split_once(". ") {
+        if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) {
+            text = rest.trim_start();
+        }
+    }
+    for separator in [" — ", " – ", " - "] {
+        if let Some((label, description)) = text.split_once(separator) {
+            if !label.trim().is_empty() {
+                return (label.trim(), description.trim());
+            }
+        }
+    }
+    (text, "")
+}
+
 /// The dialog paints above the command palette and every popover.
 pub fn layer(dialog: Entity<Dialog>) -> impl IntoElement {
     deferred(dialog).with_priority(9)
@@ -609,6 +807,36 @@ mod tests {
                 options: vec!["1. Allow — run it".into(), "2. Block — stop".into()],
             }
         );
+    }
+
+    #[test]
+    fn option_strings_split_into_label_and_description() {
+        assert_eq!(split_option("1. Allow — run it"), ("Allow", "run it"));
+        assert_eq!(split_option("Leave it - stays as is"), ("Leave it", "stays as is"));
+        assert_eq!(split_option("Build it next"), ("Build it next", ""));
+        assert_eq!(split_option("v1. beta"), ("v1. beta", ""));
+        assert_eq!(split_option(" — orphan"), ("— orphan", ""));
+    }
+
+    #[gpui::test]
+    fn only_a_select_with_options_docks_inline(cx: &mut gpui::TestAppContext) {
+        for (kind, inline) in [
+            (DialogKind::Select { options: vec!["a".into()] }, true),
+            (DialogKind::Select { options: vec![] }, false),
+            (DialogKind::Confirm, false),
+            (DialogKind::Input { placeholder: String::new() }, false),
+        ] {
+            let request = DialogRequest {
+                id: "id".into(),
+                title: "Pick".into(),
+                body: None,
+                kind: kind.clone(),
+            };
+            let dialog = cx.update(|cx| {
+                cx.new(|cx| Dialog::new(request, Box::new(|_, _, _| {}), cx))
+            });
+            assert_eq!(dialog.read_with(cx, |d, _| d.is_inline()), inline, "{kind:?}");
+        }
     }
 
     #[test]
@@ -800,7 +1028,10 @@ mod tests {
             title: "Which approach?".into(),
             body: None,
             kind: DialogKind::Select {
-                options: vec!["1. Fast — simpler".into(), "2. Safe — slower".into()],
+                options: vec![
+                    "1. Fast — simpler".into(),
+                    "2. Safe — slower (Recommended)".into(),
+                ],
             },
         };
         let _ = cx.draw(point(px(0.), px(0.)), size(px(800.), px(600.)), |_, cx| {
@@ -811,8 +1042,11 @@ mod tests {
             .debug_bounds("dialog-card")
             .expect("dialog card laid out");
         assert!(card.size.width > px(0.), "card collapsed to zero width");
-        assert!(card.size.width <= px(CARD_W));
         assert!(card.size.height > px(0.), "card collapsed to zero height");
+        assert!(
+            cx.debug_bounds("choice-recommended").is_some(),
+            "the recommended option wears its badge"
+        );
     }
 
     /// Issue #100: Enter confirming an IME candidate must not answer the

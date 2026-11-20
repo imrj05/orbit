@@ -9,6 +9,7 @@ use crate::commands::{self, CommandId};
 use crate::motion::Hover;
 use crate::ui::button::{IconButton, IconButtonVariant};
 use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::choice::{ChoiceMark, ChoiceRow};
 use crate::ui::menu::menu_hint;
 use crate::ui::popover::{popover_list, PopoverExt};
 use crate::ui::resize::{resize_handle, ResizeAxis, ResizeLook};
@@ -721,7 +722,12 @@ impl Render for OrbitApp {
             .size_full()
             .flex()
             .relative()
-            .bg(if sidebar_shown {
+            // Over the Desktop background the root paints nothing: the OS
+            // frost behind the window is the canvas, and every pane above it
+            // takes its contrast-floored translucent fill.
+            .bg(if theme.wallpaper.desktop {
+                gpui::transparent_black()
+            } else if sidebar_shown {
                 theme.surface
             } else {
                 theme.background
@@ -1333,6 +1339,8 @@ impl Render for OrbitApp {
                                 self.agent_calls,
                                 Some(self.review_opener(cx)),
                                 Some(self.image_opener(cx)),
+                                // A remote session has no right pane to open into.
+                                self.remote.is_none().then(|| self.dock_opener(cx)),
                                 Some(self.rewind_opener(cx)),
                                 Some(self.regenerate_opener(cx)),
                                 Some(self.response_exporter(cx)),
@@ -1466,6 +1474,7 @@ impl Render for OrbitApp {
                                         // Access-guard approval — inline, above
                                         // the queue and composer (no scrim modal).
                                         .children(self.ask_panel(cx))
+                                        .children(self.inline_dialog(cx))
                                         .children(self.approval_bar(cx))
                                         // Queued follow-ups wait here (sticky above
                                         // the composer) until the task finishes.
@@ -1657,9 +1666,18 @@ impl Render for OrbitApp {
                                 explorer_visible
                                     .then(|| self.project_panel.clone().into_any_element()),
                             )
-                            .children(
-                                pane_visible.then(|| self.sidepane.clone().into_any_element()),
-                            )
+                            .children(pane_visible.then(|| {
+                                // A subagent tab paints in the same frame as
+                                // Review; Review paints itself (with the strip).
+                                match self.transcript.dock_tabs().active() {
+                                    crate::right_dock::DockTab::Subagent(_) => {
+                                        self.render_subagent_dock(theme, cx)
+                                    }
+                                    crate::right_dock::DockTab::Review => {
+                                        self.sidepane.clone().into_any_element()
+                                    }
+                                }
+                            }))
                             .children(
                                 details_visible.then(|| self.render_session_details_panel(cx)),
                             ),
@@ -1751,7 +1769,13 @@ impl Render for OrbitApp {
             // ── extension dialog (select / confirm / input / editor) — a
             // blocking modal above every other surface; pi holds the run until
             // the user answers. It cancels the incoming request otherwise.
-            .children(dialog_layer.map(|dialog| crate::dialog::layer(dialog).into_any_element()))
+            // A plain `select` docks inline above the composer instead (see
+            // `inline_dialog`), like the questionnaire panel.
+            .children(
+                dialog_layer
+                    .filter(|dialog| !dialog.read(cx).is_inline())
+                    .map(|dialog| crate::dialog::layer(dialog).into_any_element()),
+            )
             // ── extension custom UI (`ctx.ui.custom`) — the component's own
             // rendered frames, stacked with the newest on top.
             .children(
@@ -2766,6 +2790,13 @@ impl OrbitApp {
                     .children(crate::wallpaper::layer(theme, reduce_motion))
                     .into_any_element(),
             );
+        }
+        // Over the Desktop background the frost is the page's backdrop. The
+        // dither field paints the palette canvas as its plane, which would
+        // cover the desktop with an opaque slab.
+        if theme.wallpaper.desktop {
+            self.backdrop_live = false;
+            return None;
         }
         // The procedural field animates; a wallpaper is a still, so the
         // heartbeat only runs on the no-wallpaper path. `render` clears the
@@ -4610,10 +4641,10 @@ impl OrbitApp {
             &theme,
             crate::theme::tokens::Motion::Interaction,
             crate::theme::tokens::Motion::Travel,
-            // Idle with something to send: the button names the action. While a
-            // turn runs it folds back to a square, because the glyph (queue or
-            // steer) is the whole message then.
-            if running { 0.0 } else { 1.0 },
+            // With something to send the button always names its action —
+            // Send, Queue or Steer — so the two lanes on screen mid-run never
+            // have to be told apart by glyph alone.
+            1.0,
             move |control, hover, morphed| {
                 control
                     .bg(crate::motion::blend(
@@ -4647,23 +4678,26 @@ impl OrbitApp {
         )
     }
 
-    /// The lane the Enter preference does *not* pick, as a quiet round button
-    /// beside the primary send: steer when Enter queues, queue when Enter
-    /// steers. Same action as the alternate chord, which its tooltip names.
+    /// The lane the Enter preference does *not* pick, as a quiet labelled
+    /// pill beside the primary send: "Steer" when Enter queues, "Queue" when
+    /// Enter steers. Glyph plus word, so the pair reads as two named choices
+    /// rather than two look-alike arrows. Same action as the alternate chord,
+    /// which its tooltip names.
     fn alternate_send_button(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
         let mode = theme.ui.composer_send_mode.opposite();
-        let glyph = match mode {
-            SendMode::FollowUp => "icons/arrow-up.svg",
-            SendMode::Steer => "icons/arrow-up-right.svg",
+        let (glyph, label) = match mode {
+            SendMode::FollowUp => ("icons/arrow-up.svg", tr!("composer.queue")),
+            SendMode::Steer => ("icons/arrow-up-right.svg", tr!("composer.steer")),
         };
         let tooltip = tr!(
             "composer.shortcut_hint",
             keys = mode.shortcut_label(theme.ui.composer_send_mode),
             action = mode.label()
         );
-        // Bespoke: the composer's round send/stop controls morph, fill with
-        // the action role and own their press ramps.
-        let button = icon_button_frame(
+        // Bespoke: the composer's send lanes are round, labelled pills that
+        // sit on the glass composer beside the morphing primary; no `Button`
+        // variant is fully rounded with an overlay face.
+        let button = button_frame(
             div()
                 .id("send-alternate-btn")
                 .debug_selector(|| "send-alternate-btn".to_string()),
@@ -4674,7 +4708,7 @@ impl OrbitApp {
         .border_1()
         .border_color(theme.hairline())
         // `overlay`, not an opaque raised face: the composer is glass over a
-        // wallpaper, and this disc is a control floating on it.
+        // wallpaper, and this pill is a control floating on it.
         .bg(theme.overlay)
         .pressed_state(&theme, PressedRamp::Wash)
         .cursor_pointer()
@@ -4683,11 +4717,21 @@ impl OrbitApp {
             cx.listener(Self::on_send_alternate_click),
         )
         .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
+        .text_size(button::label_size(ButtonSize::Medium).px(&theme))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_secondary)
         .child(icon(
             glyph,
             ButtonSize::Medium.icon_size().px(&theme),
             theme.text_secondary,
-        ));
+        ))
+        .child(
+            div()
+                .debug_selector(|| "send-alternate-label".to_string())
+                .whitespace_nowrap()
+                .line_height(relative(1.))
+                .child(label),
+        );
         crate::motion::hover(
             button,
             "send-alternate-btn",
@@ -4886,21 +4930,23 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme));
-        header = header.child(
-            div()
-                .flex_none()
-                .size(px(24.))
-                .rounded(Radius::Medium.px(&theme))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(theme.accent.opacity(0.16))
-                .child(icon(
-                    "icons/task.svg",
-                    IconSize::Small.px(&theme),
-                    theme.accent_text,
-                )),
-        );
+        // "Decision needed" names what the card is before the question
+        // says what it is about, so it reads as a request from the agent and
+        // not as part of the transcript.
+        header = header
+            .child(icon(
+                "icons/task.svg",
+                IconSize::Small.px(&theme),
+                theme.accent_text,
+            ))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_secondary)
+                    .child(tr!("ask.decision_needed")),
+            );
         if !question.header.trim().is_empty() {
             header = header.child(
                 div()
@@ -4945,18 +4991,19 @@ impl OrbitApp {
             div()
                 .px(px(14.))
                 .pt(DynamicSpacing::Base08.px(&theme))
-                .pb(px(10.))
+                .pb(DynamicSpacing::Base08.px(&theme))
                 .whitespace_normal()
-                .text_size(TextSize::Default.px(&theme))
-                .line_height(theme.ui_px(19.))
-                .font_weight(FontWeight::MEDIUM)
+                .text_size(TextSize::Large.px(&theme))
+                .line_height(theme.ui_px(21.))
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_primary)
                 .child(SharedString::from(question.question.clone())),
         );
 
-        // ── body ──
+        // ── body: one choice row per option, every description visible so
+        // the options can be compared without walking the cursor over them ──
         let mut rows = div()
-            .px(DynamicSpacing::Base08.px(&theme))
+            .px(DynamicSpacing::Base06.px(&theme))
             .pb(DynamicSpacing::Base08.px(&theme))
             .flex()
             .flex_col()
@@ -4970,117 +5017,40 @@ impl OrbitApp {
                     .and_then(|row| row.get(ix))
                     .copied()
                     .unwrap_or(false);
-            let chosen = row_highlighted || checked;
-            // A number reads as a question rather than a menu; multi
-            // additionally marks its toggles with a trailing check.
-            let marker = div()
-                .flex_none()
-                .w(px(16.))
-                .text_size(TextSize::Small.px(&theme))
-                .line_height(theme.ui_px(17.))
-                .text_color(if chosen {
-                    theme.accent_text
-                } else {
-                    theme.text_muted
-                })
-                .child(format!("{}. ", ix + 1));
-            let mut copy = div().min_w_0().flex_1().flex().flex_col().gap(px(1.));
-            copy = copy.child(
-                div()
-                    .whitespace_normal()
-                    .text_size(TextSize::Small.px(&theme))
-                    .line_height(theme.ui_px(17.))
-                    .text_color(if chosen {
-                        theme.text_primary
-                    } else {
-                        theme.text_secondary
-                    })
-                    .child(SharedString::from(option.label.clone())),
-            );
-            // The description only under the focused row keeps the list
-            // compact so every choice stays visible at a glance.
-            if row_highlighted && !option.description.trim().is_empty() {
-                copy = copy.child(
-                    div()
-                        .whitespace_normal()
-                        .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(16.))
-                        .text_color(theme.text_muted)
-                        .child(SharedString::from(option.description.clone())),
-                );
-            }
-            let mut row = div()
-                .id(ElementId::NamedInteger("ask-option".into(), ix as u64))
-                .w_full()
-                .min_w_0()
-                .px(px(10.))
-                .py(DynamicSpacing::Base06.px(&theme))
-                .rounded(Radius::Medium.px(&theme))
-                .border_1()
-                .border_color(if row_highlighted {
-                    theme.border_strong
-                } else {
-                    gpui::transparent_black()
-                })
-                .when(row_highlighted, |row| row.bg(theme.selected_wash()))
-                .when(!submitted, |row| row.cursor_pointer())
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base04.px(&theme))
-                .hover_on_glass(&theme)
-                .child(marker)
-                .child(copy);
-            if multi && checked {
-                row = row.child(icon(
-                    "icons/check.svg",
-                    IconSize::XSmall.px(&theme),
-                    theme.accent_text,
-                ));
-            }
+            // Single choice: the cursor is the answer Enter commits, so it
+            // fills the radio. Multi: the toggles fill their checks.
+            let mark = if multi {
+                ChoiceMark::Check(checked)
+            } else {
+                ChoiceMark::Radio(row_highlighted)
+            };
+            let mut row = ChoiceRow::new(
+                ElementId::NamedInteger("ask-option".into(), ix as u64),
+                mark,
+                &option.label,
+            )
+            .description(&option.description)
+            .highlighted(row_highlighted)
+            .interactive(!submitted)
+            .render(&theme);
             if !submitted {
                 row = row.on_click(cx.listener(move |this, _, _, cx| this.ask_choose(ix, cx)));
             }
             rows = rows.child(row);
         }
-        // Single-select questions carry a trailing "Type something." row.
+        // Single-select questions carry a trailing "Something else…" row
+        // that opens the free-text answer.
         if !multi {
             let trailing = question.options.len();
             let row_highlighted = !submitted && trailing == highlighted;
-            let mut row = div()
-                .id("ask-trailing")
-                .w_full()
-                .min_w_0()
-                .px(px(10.))
-                .py(px(7.))
-                .rounded(Radius::Medium.px(&theme))
-                .border_1()
-                .border_color(if row_highlighted {
-                    theme.border_strong
-                } else {
-                    gpui::transparent_black()
-                })
-                .when(row_highlighted, |row| row.bg(theme.selected_wash()))
-                .when(!submitted, |row| row.cursor_pointer())
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .hover_on_glass(&theme)
-                .child(icon(
-                    "icons/compose.svg",
-                    IconSize::XSmall.px(&theme),
-                    theme.text_muted,
-                ))
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(17.))
-                        .text_color(if row_highlighted {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        })
-                        .child(tr!("view.type_something")),
-                );
+            let mut row = ChoiceRow::new(
+                "ask-trailing",
+                ChoiceMark::Radio(row_highlighted),
+                &tr!("ask.something_else"),
+            )
+            .highlighted(row_highlighted)
+            .interactive(!submitted)
+            .render(&theme);
             if !submitted {
                 row =
                     row.on_click(cx.listener(move |this, _, _, cx| this.ask_choose(trailing, cx)));
@@ -5218,6 +5188,18 @@ impl OrbitApp {
         );
 
         Some(card.into_any_element())
+    }
+
+    /// An extension `select` docked above the composer as a decision card
+    /// rather than a scrim modal, so the transcript that led to the question
+    /// stays readable. The [`crate::dialog::Dialog`] entity still owns the
+    /// answer, its keys and its focus; only where it paints changes.
+    pub(super) fn inline_dialog(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let dialog = self.dialog.as_ref()?;
+        if !dialog.read(cx).is_inline() {
+            return None;
+        }
+        Some(dialog.clone().into_any_element())
     }
 
     /// The inline access-guard approval: a compact bar directly above the
@@ -5511,18 +5493,26 @@ impl OrbitApp {
         let slot = queue_row_slot(&self.queue, target);
         let row_id = ElementId::NamedInteger("queue-row".into(), slot);
 
-        let label = div()
-            .flex_none()
-            .whitespace_nowrap()
-            .pt(px(1.))
-            .text_size(TextSize::XSmall.px(&theme))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(if steer {
-                theme.accent_text
-            } else {
-                theme.text_muted
-            })
-            .child(kind.to_uppercase());
+        // The lane as a badge with the same glyph its send button wears, so
+        // a queued row and the control that queued it match at a glance.
+        let (lane_ink, lane_face, lane_glyph) = if steer {
+            (
+                theme.accent_text,
+                theme.accent.opacity(0.14),
+                "icons/arrow-up-right.svg",
+            )
+        } else {
+            (theme.text_secondary, theme.overlay_strong, "icons/arrow-up.svg")
+        };
+        let label = div().flex_none().child(
+            crate::ui::chip::Badge::new(
+                kind.to_string(),
+                lane_ink,
+                crate::ui::chip::BadgeFill::Solid(lane_face),
+            )
+            .leading(icon(lane_glyph, IconSize::Indicator.px(&theme), lane_ink))
+            .render(&theme),
+        );
 
         let body: AnyElement = match edit {
             Some(edit) if edit.target == target => {

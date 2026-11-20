@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Live subagent thinking and tool output in the right pane.** The subagent tab now streams
+  the child's reasoning in a **Thinking** section (marked *live* while it thinks; the newest part
+  of it) and shows what each step returned — the first lines, live while a long call runs —
+  under the step. The bundled subagents extension sends both as bounded, optional fields of the
+  existing `subagent/1` payload (reasoning ≤ 4,000 characters, each output ≤ 1,200), so older
+  Orbit builds keep their card. Neither reaches the parent model.
+- **Desktop background: a frosted-glass window.** Settings → Appearance → Background has a
+  fourth placement, **Desktop**: the window turns see-through and the system frosts the desktop
+  behind it (macOS vibrancy, Windows Acrylic), with Orbit's panes translucent on top. **Card
+  opacity** sets how much paint sits over the frost, but text-bearing surfaces never go clearer
+  than keeps them readable over a black or a white desktop; **Glass panes** still frosts the
+  workbench behind menus and the composer. It needs a dark palette and Reduce Transparency off,
+  and says so when either is missing; light palettes and Linux keep a solid window.
+- **Subagents in the right pane.** A delegated child's log on its card has **Open in side
+  pane**, which opens that child as a tab in the right pane beside **Review**: its agent,
+  status, elapsed time, tool count, tokens and cost up top, a live "now" line while it works,
+  then its error and blocked calls as banners, the full task, its setup and tools as badges,
+  its steps and its report — each in an inset well that sits on the pane's frosted glass over
+  a wallpaper or the Desktop background. Tabs belong to their session — switching away and
+  back restores them, and never pops open a pane you hid. Closing the last subagent tab
+  leaves Review.
+- **Double- and triple-click selection in the transcript.** Clicks cycle the way Pi's TUI
+  does: a second click on the same word selects it, a third selects the visual (wrapped)
+  line, and a fourth goes back to a caret. Words follow Pi's rules — `/ - + \ ~ _ .` join
+  their neighbors, so `unity-codegraph`, `file_name.rs` and paths select whole, while each
+  Han character is its own word. Dragging after a double- or triple-click grows the
+  selection by words or lines, a click past the end of a wrapped row stays on that row, and
+  a word or line click on a link does not open it.
 - **Star Orbit from Settings → About.** A **Star** button sits beside the GitHub link. When
   the GitHub CLI is installed and signed in, it stars or unstars the repository with your
   `gh` account (`gh api /user/starred/…`), on click only, and reads **Starred** once you have.
@@ -221,6 +249,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An opened session no longer jumps back to the bottom.** Opening a session paints pi's
+  on-disk copy and then pi's live `get_messages` reply. When both hold the same rows, the
+  transcript now re-measures them in place instead of rebuilding the list, which had thrown
+  away every row height and snapped a reader who had scrolled up back to the latest message.
+- **Mouse-wheel scrolling in the transcript moves from where you are.** Each wheel event now
+  moves the list's current position (the vendored GPUI list used to replay the whole gesture
+  onto the position from its first paint), and a single notch can leave the live edge.
 - **Issue and pull request rows show their title and labels again.** A list
   longer than the pane squeezed every row down to its first line, so each row
   read only "Issue · #154" with the time. Rows now keep their full height and
@@ -237,6 +272,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   maximized remains a separate state (#131).
 
 ### Changed
+
+- **Questions and choices read as a decision card.** The agent's questionnaire panel and an
+  extension's plain `select` now share one card above the composer: a *Decision needed*
+  header, the question in a larger weight, and one row per option with a radio (or a check for
+  multi-select), its description always visible, and a **Recommended** badge where the label
+  carries `(Recommended)`. A `select` no longer dims the window behind a modal; confirm, input
+  and editor dialogs keep the modal. ⏎ / click answer, esc or × cancels.
+- **Queue and Steer are named on the send controls.** Mid-run with something typed, the
+  primary send keeps its label (**Queue** or **Steer**) and the other lane is a labelled pill
+  beside it, instead of two look-alike arrow discs. Queued rows tag their lane with a matching
+  badge and glyph.
 
 - **A quieter About page.** Settings → About opens on the app's identity — its mark beside
   the name, the one-line description and a single "Version · GPUI" line — over one board:
