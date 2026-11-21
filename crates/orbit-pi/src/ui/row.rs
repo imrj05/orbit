@@ -6,6 +6,7 @@
 //! an optional leading glyph or logo on the title's line. Callers own the id,
 //! the selection and hover treatment, the trailing slot and the click.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use gpui::{
@@ -22,7 +23,7 @@ use crate::theme::{
     Theme,
 };
 use crate::ui::icon::icon;
-use crate::ui::style::control::ControlExt;
+use crate::ui::style::control::{ControlExt, TipExt};
 
 /// A settings label and optional supporting text beside an intrinsic-size control.
 pub(crate) fn setting_row(
@@ -107,6 +108,22 @@ fn picker_line_height(size: TextSize, theme: &Theme) -> gpui::Pixels {
     BufferLineHeight::Comfortable.resolve(size.px(theme))
 }
 
+/// The trailing slot of a picker row, on the **title's** line: a branch note,
+/// a badge, a count, a check. Exactly the title's line box tall, so in a
+/// two-line row these sit level with the title instead of floating between
+/// the title and the detail line. The row puts its children at the top
+/// (`items_start`); a one-line row is unchanged, since its single line is the
+/// whole row.
+pub(crate) fn picker_title_slot(theme: &Theme) -> gpui::Div {
+    div()
+        .debug_selector(|| "picker-title-slot".to_string())
+        .flex_none()
+        .h(picker_line_height(picker::TEXT, theme))
+        .flex()
+        .items_center()
+        .gap(list_item::content_gap(theme))
+}
+
 /// The text body of a two-line picker row: a title over a secondary detail
 /// line, each on a fixed line box so the pair is exactly
 /// [`picker::two_line_entry_height`] tall.
@@ -138,14 +155,12 @@ pub(crate) enum MarkElement {
 /// logo image instead (`PickerRow::mark`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum EntryMarkLike {
-    Local,
     Folder,
 }
 
 impl EntryMarkLike {
     fn icon_path(self) -> &'static str {
         match self {
-            Self::Local => "icons/monitor.svg",
             Self::Folder => "icons/folder.svg",
         }
     }
@@ -179,7 +194,7 @@ impl PickerRow {
     }
 
     /// The leading mark: a logo image when the workspace has one (the same
-    /// mark the header's folder chip shows), else the [`EntryMark`] glyph.
+    /// mark the header's folder chip shows), else the [`EntryMarkLike`] glyph.
     /// Drawn exactly like [`Self::icon`], on the title's line.
     pub(crate) fn mark(
         mut self,
@@ -220,6 +235,19 @@ impl PickerRow {
     /// and long text ellipsizes inside the row instead of spilling past it.
     /// Wrap it in another div and that promise is gone.
     pub(crate) fn into_element(self, theme: &Theme) -> AnyElement {
+        // The title and detail truncate to the row; hovering the text shows
+        // both in full, so a long path, branch or host is never cut off with
+        // no way to read it. The id is derived from the text so it is stable
+        // across frames and distinct per row, whatever the caller's entry id.
+        let full_text: gpui::SharedString = match &self.detail {
+            Some(detail) => format!("{}\n{detail}", self.title).into(),
+            None => self.title.clone().into(),
+        };
+        let text_id = {
+            let mut hasher = DefaultHasher::new();
+            full_text.hash(&mut hasher);
+            gpui::ElementId::Name(format!("picker-row-text-{:x}", hasher.finish()).into())
+        };
         let gap = list_item::content_gap(theme);
         let icon_size = context_menu::ICON.px(theme);
         let leading = self.mark.map(|mark| match mark {
@@ -284,6 +312,9 @@ impl PickerRow {
             }
         });
         div()
+            .id(text_id)
+            .debug_selector(|| "picker-row-text".to_string())
+            .tip(full_text)
             .flex_1()
             .min_w_0()
             .flex()

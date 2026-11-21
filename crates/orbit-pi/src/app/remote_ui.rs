@@ -20,23 +20,6 @@ pub(crate) enum TaskPlace {
     Remote(RemoteHost),
 }
 
-/// The host a `remote-host` picker row stands for: the row's position among
-/// the host rows indexes the host list they were built from.
-pub(crate) fn remote_host_for_action(
-    action_ids: &[&'static str],
-    ix: usize,
-    hosts: &[RemoteHost],
-) -> Option<RemoteHost> {
-    if action_ids.get(ix).copied() != Some("remote-host") {
-        return None;
-    }
-    let nth = action_ids[..ix]
-        .iter()
-        .filter(|id| **id == "remote-host")
-        .count();
-    hosts.get(nth).cloned()
-}
-
 impl OrbitApp {
     /// Spawn pi for the session this view is showing: on the remote host
     /// while the session is remote, otherwise locally in `workspace`. Every
@@ -50,6 +33,9 @@ impl OrbitApp {
         if self.account_switching {
             anyhow::bail!("Wait for the account switch to finish");
         }
+        let decision = self.project_trust_for(workspace);
+        self.prompt_for_unknown_trust(workspace, decision);
+        let approve_project = decision.is_trusted();
         match &self.remote {
             Some(host) => {
                 let secret = self.remote_secret(host);
@@ -57,6 +43,7 @@ impl OrbitApp {
                     &host.target()?,
                     secret.as_deref(),
                     self.remote_launch_workflow().map(WorkflowMode::as_wire),
+                    approve_project,
                 )
             }
             None => {
@@ -64,11 +51,17 @@ impl OrbitApp {
                     self.provider_accounts.begin_session()?;
                 }
                 let routes = self.provider_accounts.routes()?;
+                let mcp_env = if approve_project {
+                    self.mcp.secret_env()
+                } else {
+                    Vec::new()
+                };
                 self.extensions.spawn_with_accounts(
                     workspace,
                     apply_default,
-                    &self.mcp.secret_env(),
+                    &mcp_env,
                     &routes,
+                    approve_project,
                 )
             }
         }
@@ -76,19 +69,24 @@ impl OrbitApp {
 
     /// The workflow mode a remote pi starts in. The host's store has no entry
     /// for a session it has not started yet, so the launch carries the mode
-    /// as `ORBIT_WORKFLOW_MODE` (the extension's fallback for exactly that
-    /// moment): a New Task choice, the live mode when an existing session is
-    /// respawned, otherwise Build like any new local session. A session being
-    /// resumed from the sidebar gets none: its own store entry (or the mode
-    /// recorded in its file) decides, and a launch value would override that.
+    /// as `ORBIT_WORKFLOW_MODE`: a New Task choice, an exact stored mode when
+    /// one exists, otherwise Build for a new session. Resumed or ambiguous
+    /// sessions get no launch value, so their own store or branch record
+    /// decides instead of an invented Build masking Plan/Ask.
     pub(super) fn remote_launch_workflow(&self) -> Option<WorkflowMode> {
         if let Some(mode) = self.workflow_pending {
             return Some(mode);
         }
-        if self.session_id.is_some() {
-            return Some(self.workflow_mode);
+        // A resumed session's own store entry or branch record decides. An
+        // invalid/missing local value must never be normalized to Build and
+        // then used to mask a valid Plan/Ask branch entry.
+        if self.remote_resuming {
+            return None;
         }
-        (!self.remote_resuming).then(WorkflowMode::default)
+        match self.session_id.as_deref() {
+            Some(session_id) => crate::workflow::load_valid_for(session_id),
+            None => Some(WorkflowMode::default()),
+        }
     }
 
     /// Mirror a workflow change into the host's `~/.orbit-pi/workflow.json`,
@@ -174,38 +172,4 @@ pub(super) fn remote_unavailable(theme: Theme, host: &str) -> AnyElement {
         Some(&tr!("remote.unavailable_detail")),
         EmptyFill::Full,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn host(name: &str) -> RemoteHost {
-        RemoteHost {
-            name: name.into(),
-            ssh: name.into(),
-            user: None,
-            port: None,
-            dir: "/srv".into(),
-            enabled: true,
-            local_dir: None,
-        }
-    }
-
-    #[test]
-    fn host_rows_map_to_hosts_by_their_order_among_host_rows() {
-        let ids = ["new-project", "remote-host", "remote-host"];
-        let hosts = [host("a"), host("b")];
-        assert_eq!(
-            remote_host_for_action(&ids, 1, &hosts).map(|h| h.name),
-            Some("a".into())
-        );
-        assert_eq!(
-            remote_host_for_action(&ids, 2, &hosts).map(|h| h.name),
-            Some("b".into())
-        );
-        assert!(remote_host_for_action(&ids, 0, &hosts).is_none());
-        assert!(remote_host_for_action(&ids, 3, &hosts).is_none());
-        assert!(remote_host_for_action(&ids, 9, &hosts).is_none());
-    }
 }

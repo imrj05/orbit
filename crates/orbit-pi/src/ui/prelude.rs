@@ -23,7 +23,7 @@ pub(crate) use crate::ui::glyph::{
 pub(crate) use crate::ui::icon::{
     disclosure_chevron, dropdown_chevron, icon, icon_dyn, BUTTON_GROUP,
 };
-pub(crate) use crate::ui::kbd::{kbd_shortcut, working_folder_keyboard_hints};
+pub(crate) use crate::ui::kbd::{kbd_shortcut, working_folder_footer, working_folder_keyboard_hints};
 pub(crate) use crate::ui::menu::{
     context_menu_entry, context_menu_separator, context_menu_surface, menu_header,
     menu_section_header, picker_header,

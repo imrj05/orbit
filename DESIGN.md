@@ -98,14 +98,10 @@ typography:
     lineHeight: "20px"
 # Radius values are before the user's corner-rounding preference.
 rounded:
-  none: "0px"
-  xs: "2px"
   sm: "4px"
-  md: "5px"
-  lg: "6px"
-  xl: "8px"
-  xxl: "10px"
-  xxxl: "12px"
+  md: "6px"
+  lg: "9px"
+  xl: "12px"
   full: "9999px"
 spacing:
   hair: "1px"
@@ -230,7 +226,7 @@ does today, so this section never describes a surface that has not shipped.
 | Surfaces are neutral, not tinted | `background` → `surface` → `surface_elevated` differ by a few lightness points only | Shipped |
 | Separation is a hairline, not a shadow | 1px `border` between regions; `border_subtle` inside one | Shipped |
 | Shadows are restrained and primarily for floating overlays | `elevation_2` / `elevation_3` for floating surfaces; existing contact-shadow exceptions are documented below | Shipped |
-| Controls are 6px, panels 8px | `Radius::Large` 6px, `panel::RADIUS` 8px, for every palette | Shipped |
+| Rounded controls and cards | `Radius::Large` 9px, `panel::RADIUS` 12px, for every palette | Shipped |
 | Density over air: 28px rows, 13–14px body | `ButtonSize::Medium` 28px, `list_item` rows, `TextSize::Default` | Shipped |
 | Accent and action are separate roles | `accent` marks identity; primary fills read `action`, which a palette may key to the accent | Shipped |
 | Restrained UI type, 400–600 | `TextSize` 11–16 at default settings; a separate monospace family serves code | Shipped |
@@ -425,7 +421,7 @@ palettes are pixel-identical, while Operational gets the olive-tinted selected r
 Operational's colorway is the near-black canvas, the lime interaction accent, and the
 olive-tinted selected row. Geometry is not part of that list: every palette resolves the
 same ramp — 6px controls, 8px cards and panels, 11px captions (`TextSize::XSmall`), flat
-buttons, and one restrained shadow layer for popovers/modals. The `DesignSystem` enum
+buttons, and a soft shadow layer for popovers/modals. The `DesignSystem` enum
 names a palette family, not a shape language.
 
 **Shape roles.** Corner values are chosen by component role, not by call site:
@@ -526,8 +522,8 @@ list-board rows (`settings_group`, the MCP server rows).
 ## Shapes
 
 Corners are soft but restrained. Before the corner-rounding preference, list
-items and compact button frames use 5px, standard buttons and inputs use 6px,
-and panels and elevated surfaces use 8px. The chat composer is fixed at 12px. `full` is
+items and compact button frames use 6px, standard buttons and inputs use 9px,
+panels and popovers use 12px, and modal cards use 16px. The chat composer is fixed at 12px. `full` is
 reserved for circular or pill-shaped elements such as status dots, avatar
 monograms, the send button, and the toggle-switch track.
 
@@ -562,12 +558,14 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   effect pixel size, and a **black** overlay — never a palette tint, which washed a bright
   picture out while claiming to dim it. Hero mode paints it only in the main column;
   full-window mode paints it behind the sidebar too, with translucent surfaces above.
-  The reader's own message bubble, like the transcript's tool and activity cards, is
-  frosted glass while wallpaper glass is on (the contrast-floored card tint over a
-  blurred backdrop) and opaque otherwise; a tool card's terminal plane takes the card
-  tint instead of covering the frost. The chat composer is an explicit
-  exception: with supported wallpaper glass behind it, it uses the contrast-adjusted card fill
-  and a rounded backdrop frost; otherwise it retains its opaque surface. Hero mode
+  The reader's own message bubble is frosted glass while wallpaper glass is on (the
+  contrast-floored card tint over a blurred backdrop) and opaque otherwise. The
+  transcript's cards and the dock cards are **inspector glass** (below): they frost
+  over a wallpaper, and in dark palettes over the bare workbench too; a tool card's
+  terminal plane is a recessed well at its own contrast floor, not a second layer of
+  glass. The chat composer uses contrast-adjusted floating glass in dark palettes,
+  or the wallpaper glass treatment where the picture sits behind it; unsupported
+  renderers and accessibility preferences retain an opaque surface. Hero mode
   has no wallpaper behind the composer in active chat. The page itself never goes below
   88% of the palette canvas, so an artwork effect's dots tint the page instead of drawing
   behind the transcript; panels and cards keep the card-opacity treatment and its frost,
@@ -595,6 +593,33 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
 Both are the page's floor, not an illustration: nothing on the page depends on them, and
 the chat page has neither.
 
+**Inspector glass.** The surfaces a developer reads a run through — tool, thought,
+delegation, question and summary cards in the transcript, and the session-details,
+Review and Explorer docks — share one material. It frosts under the floating rule:
+over a wallpaper at `GLASS_BLUR` with the user's card tint; with no wallpaper, in dark
+palettes on a renderer with a backdrop pass, at `FLOATING_GLASS_BLUR` with the tint at
+`Theme::floating_glass_alpha` (the lowest alpha that keeps primary, secondary and muted text
+on target over black and white). Light palettes, Reduce Transparency and Increase
+Contrast keep the opaque card. A transcript card has no outline: the tint and the frost
+(or, opaque, the `overlay` plate) carry its shape, so a turn's cards read as one material
+rather than a stack of boxes; rules inside a card and the dock frames keep their
+hairlines. No highlight line marks the top edge (a sheen there read as a stray
+border). While it frosts, an open tool or delegation card
+lifts with the elevated surface's contact shadow; children that reach a card's edge
+round to its radius less the 1px border, so inner and outer corners run concentric; a tool call's command and output sit in a
+well at the code background's own contrast floor (never below the user's card
+opacity over a wallpaper). An opaque card gets no shadow.
+
+Settings groups, empty-resource cards and shared Usage boards use the
+contrast-controlled floating frost on a bare dark page. Over full-window
+wallpaper they follow its glass setting; hero-only wallpaper is excluded from
+these pages. Without wallpaper, light palettes and reduced-transparency or
+unsupported renderers keep an opaque board. The page beneath stays opaque
+without full-window glass.
+
+Queue, run-status, approval and inline-question cards above the composer use
+the shared floating-card treatment and keep their existing semantic edges.
+
 ## Components
 
 Every component below has **one owner** in `crates/orbit-pi/src/ui/`
@@ -616,7 +641,7 @@ Every component below has **one owner** in `crates/orbit-pi/src/ui/`
 | Toast card, avatar, lightbox, keycaps, switch, tooltip | `ui/toast.rs`, `ui/avatar.rs`, `ui/lightbox.rs`, `ui/kbd.rs`, `ui/switch.rs`, `ui/tooltip.rs` |
 
 ### Buttons
-- **Shape:** `button::radius(size)` — 5px on compact frames, 6px on the standard scale;
+- **Shape:** `button::radius(size)` — 6px on compact frames, 9px on the standard scale;
   32px (`Large`), 28px (`Medium`), 22px (`Default`), 18px (`Compact`), 16px (`None`).
 - **Primary:** `surface_elevated` + 1px `border`, hover steps to `surface_hover` with a
   `border_strong` edge. One per screen region. A palette may instead key its primary
@@ -650,7 +675,7 @@ Every component below has **one owner** in `crates/orbit-pi/src/ui/`
 
 ### Inputs / Fields
 - **Style:** 1px hairline, fixed 12px radius on the chat composer
-  (`input::composer_radius`), 6px before preferences on inline fields (`input::RADIUS`).
+  (`input::composer_radius`), 9px before preferences on inline fields (`input::RADIUS`).
   The composer uses `surface_secondary`, with contrast-adjusted glass when available.
 - **Focus:** other fields step their border to `focus_ring` (1px). The composer keeps
   its resting hairline when focused; its caret indicates text focus.
@@ -672,7 +697,7 @@ the same two pieces (`modal_card`, `modal_scrim` in `ui/dialog.rs`):
   it. Mandatory or in-progress dialogs may prevent dismissal when interruption would
   be unsafe; explain the state and any available action. There is one scrim value for
   every modal — a dialog that wants a darker backdrop changes `scrim_modal`, not itself.
-- **Card:** `elevation_3` (elevated surface, `border_strong`, one restrained shadow),
+- **Card:** `elevation_3` (elevated surface, `border_strong`, one soft shadow),
   the panel corner, a clipped column, and the UI font. Width and height bounds belong
   to the caller; everything else belongs to the shell.
 - **Anatomy:** header (`modal::header_padding_*`, Small headline) → body → footer, with
@@ -688,7 +713,7 @@ plausible — that is how the worktree dialogs drifted to `surface_secondary` wh
 other modal floated on `surface_elevated`.
 
 ### Navigation
-- Sidebar rows: 28px tall, 5px radius, 14px icon (Small) in a fixed 20px slot, label in
+- Sidebar rows: 28px tall, 6px radius, 14px icon (Small) in a fixed 20px slot, label in
   `text_secondary`/`text_muted`; hover fills `surface_hover`; the active destination is
   marked by `surface_selected` fill with `selection_fg`, never by accent color alone.
 - A running session row leads with a small accent arc turning in place and its title
@@ -1154,7 +1179,7 @@ swap states instantly rather than transitioning.
 | Menu / popover open | anchored card, context menu | `Interaction` + travel | fade plus an 8px travel out of the anchor edge, as one card; `anchored_popover_at` (a context menu at the pointer) fades only, because it has no edge | the card appears at once |
 | Dialog open | modal card | `Layout` | the card fades in over the scrim; it cannot scale for the reason below | the card appears at once |
 | Panel open / close | sidebar, side pane, explorer, terminal, Git | `Layout` | the panel's own width; chips on its edge ride the same curve | panels snap |
-| Send morph | composer submit | `Travel` (state) + `Interaction` (hover) | the square grows into a labelled button that names the action, and folds back to a square while a turn runs; width and label ride one transition | the end state is drawn immediately |
+| Send morph | composer submit | `Travel` (state) + `Interaction` (hover) | while idle, the disabled square grows into a labelled Send button when a draft becomes sendable and folds back when cleared; width and label share a retargetable transition. While a turn runs, Stop occupies the empty slot and a draft exposes the named send lanes | the end state is drawn immediately |
 | Composer dock | first send from the new-task page | `Travel` | the composer leaves the page's centered column for the session's: the space below it closes, the column widens 800 → 960, the folder row collapses, and the transcript's ink fades in, all on one clock (`new_task::settle`) | the session frame is painted on the frame of the send |
 
 Four rules hold across the table:
@@ -1383,8 +1408,8 @@ Long transcripts must remain scanable.
 
 The composer is a primary work surface.
 
-- Use `input::composer_radius` (fixed 12px) and the composer surface; frost it only
-  with enabled, supported wallpaper glass, falling back to opaque otherwise.
+- Use `input::composer_radius` (fixed 12px) and the composer surface; frost it
+  under the floating-glass rule, falling back to opaque when unavailable.
 - Keep the input visually distinct from the transcript without making it look like a
   floating SaaS widget.
 - **The new-task page is the same composer in the middle of the page.** There is no second
@@ -1772,12 +1797,13 @@ below are before that preference.
 
 | Role | Value | Token |
 | -- | -- | -- |
-| Control radius | 5px compact / 6px standard | `button::radius(size)` |
-| Input radius | 6px | `input::RADIUS` |
+| Control radius | 6px compact / 9px standard | `button::radius(size)` |
+| Input radius | 9px | `input::RADIUS` |
 | Chat composer radius | fixed 12px | `input::composer_radius` |
-| Panel radius | 8px | `panel::RADIUS` |
-| Row / menu-entry radius | 5px | `list_item::RADIUS` |
-| Badge radius | 4px | `Radius::Small` |
+| Panel radius | 12px | `panel::RADIUS` |
+| Modal radius | 16px | `modal::radius` |
+| Row / menu-entry radius | 6px | `list_item::RADIUS` |
+| Badge radius | Full | `Badge` capsule |
 | Control heights | 16 / 18 / 22 / 28 / 32px | `ButtonSize` |
 | Icons | 10 / 12 / 14 / 16px | `IconSize`, or `ButtonSize::icon_size` inside a button |
 | Type | 11 / 12 / 14 / 16px | `TextSize` |

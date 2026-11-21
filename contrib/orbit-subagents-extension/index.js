@@ -422,6 +422,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
     sessionId,
     store: readWorkflowStore(path.join(deps.home ?? os.homedir(), ".orbit-pi", "workflow.json")),
     env: deps.env,
+    entries: branchEntries(ctx),
   });
   const allowed = allowedCeiling(accessMode, workflowMode);
   // Settings → Permissions can pre-authorize a family for one agent, which is
@@ -519,6 +520,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
       sessionId,
       parentModel: modelId(ctx?.model),
       parentThinking: typeof ctx?.thinkingLevel === "string" ? ctx.thinkingLevel : null,
+      parentCwd: ctx?.cwd,
       onProgress: progress.push,
     });
   };
@@ -611,6 +613,43 @@ function safeSessionId(ctx) {
   } catch {
     return "unknown";
   }
+}
+
+/** The resumed branch is the workflow extension's final on-disk fallback. */
+function branchEntries(ctx) {
+  try {
+    return ctx?.sessionManager?.getBranch?.() ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve a workspace identity for trust decisions. Symlinks are collapsed
+ * when the path exists; a missing/inaccessible path still gets a lexical
+ * identity rather than making delegation fail. Blank/unusable input stays
+ * unknown and can never establish trust.
+ */
+export function canonicalWorkspace(cwd) {
+  if (typeof cwd !== "string" || cwd.trim() === "") return null;
+  let resolved;
+  try {
+    resolved = path.resolve(cwd);
+  } catch {
+    return null;
+  }
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/** Project trust and MCP secrets may cross only inside this one workspace. */
+export function sameCanonicalWorkspace(parentCwd, childCwd) {
+  const parent = canonicalWorkspace(parentCwd);
+  const child = canonicalWorkspace(childCwd);
+  return parent !== null && child !== null && parent === child;
 }
 
 function modelId(model) {
@@ -719,6 +758,7 @@ export async function runChild(state, {
   sessionId,
   parentModel,
   parentThinking,
+  parentCwd,
   onProgress,
 }) {
   const now = deps.now;
@@ -740,6 +780,7 @@ export async function runChild(state, {
     return state;
   }
 
+  const sameWorkspace = sameCanonicalWorkspace(parentCwd, state.cwd);
   const argv = buildArgv({
     promptPath,
     prompt: `Task: ${state.task}`,
@@ -749,13 +790,16 @@ export async function runChild(state, {
     tools: agent?.tools ?? null,
     toolsPresent: agent?.toolsPresent === true,
     ceiling: state.capability,
+    approveProject: sameWorkspace && deps.env?.ORBIT_PROJECT_TRUST === "1",
   });
-  const env = { ...deps.env, ORBIT_SUBAGENT_STATUS_TOKEN: "", ...buildEnv({
+  const env = buildEnv({
+    parentEnv: deps.env,
+    sameWorkspace,
     parentSessionId: sessionId,
     agentName: state.agent,
     ceiling: state.capability,
     workflowMode: state.workflowMode,
-  }) };
+  });
 
   let child;
   try {

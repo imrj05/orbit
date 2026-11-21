@@ -22,6 +22,11 @@ Orbit talks to the network only for things you asked for:
   provider your `pi` agent is configured to use, exactly as the `pi` CLI does on
   its own. That traffic is governed by the provider's policy, not Orbit's.
 
+Remote Markdown images are not fetched by Orbit at all. They render as passive
+alt text with an explicit **Open** action; only that action hands a safe HTTP(S)
+URL to your browser. Remaining GitHub avatar downloads use HTTPS, timeouts,
+bounded redirects, and an 8 MiB response cap.
+
 None of these carry a telemetry identifier, and Orbit adds no tracking data to
 them.
 
@@ -32,6 +37,8 @@ data that `pi` writes. This never leaves your machine except through the
 provider calls above:
 
 * workspace list, marks, and sort preferences;
+* explicit workspace project-trust decisions (`project-trust.json`), including
+  canonical local folders and remote account+directory identities;
 * theme, appearance, and interface preferences, including your favorite
   and recently used models;
 * window, terminal, and layout state;

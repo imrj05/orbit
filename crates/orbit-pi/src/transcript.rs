@@ -3012,6 +3012,14 @@ impl Transcript {
             .map(|message| message.text())
     }
 
+    /// What has crossed the wire so far, counted from the transcript itself
+    /// (never estimated): prompts the user sent, assistant replies received,
+    /// and tool calls with how many failed. Summary boundary rows count as
+    /// neither side.
+    pub fn activity_counts(&self) -> ActivityCounts {
+        activity_counts(&self.messages.borrow())
+    }
+
     /// Mark the one-time rail hint as seen — it stops rendering and the
     /// dismissal persists for this install. Returns true on the first call
     /// (i.e. the UI should repaint).
@@ -3401,8 +3409,96 @@ fn subagent_child_exists(messages: &[ChatMessage], tab: crate::right_dock::Subag
         .is_some_and(|run| tab.child_ix < run.children.len())
 }
 
+/// Message and tool totals for the session-details panel's Activity group.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ActivityCounts {
+    pub sent: usize,
+    pub received: usize,
+    pub tool_calls: usize,
+    pub failed_tools: usize,
+}
+
+fn activity_counts(messages: &[ChatMessage]) -> ActivityCounts {
+    let mut counts = ActivityCounts::default();
+    for message in messages.iter().filter(|message| !message.is_summary()) {
+        if message.user {
+            counts.sent += 1;
+            continue;
+        }
+        counts.received += 1;
+        for tool in message.steps.iter().flat_map(|step| &step.tools) {
+            counts.tool_calls += 1;
+            counts.failed_tools += usize::from(tool.failed);
+        }
+    }
+    counts
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn activity_counts_tally_both_sides_and_failed_tools() {
+        let tool = |failed: bool| ToolCall {
+            name: "bash".into(),
+            summary: String::new(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: None,
+            output: None,
+            failed,
+            facts: Default::default(),
+            details: None,
+        };
+        let message = |user: bool, steps: Vec<Step>, summary: Option<SummaryRow>| ChatMessage {
+            user,
+            summary,
+            steps,
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        let messages = vec![
+            message(true, Vec::new(), None),
+            message(
+                false,
+                vec![
+                    Step {
+                        tools: vec![tool(false), tool(true)],
+                        ..Step::default()
+                    },
+                    Step {
+                        tools: vec![tool(false)],
+                        ..Step::default()
+                    },
+                ],
+                None,
+            ),
+            message(
+                false,
+                Vec::new(),
+                Some(SummaryRow {
+                    branch: false,
+                    summary: String::new(),
+                    tokens_before: None,
+                }),
+            ),
+        ];
+        assert_eq!(
+            activity_counts(&messages),
+            ActivityCounts {
+                sent: 1,
+                received: 1,
+                tool_calls: 3,
+                failed_tools: 1,
+            }
+        );
+        assert_eq!(activity_counts(&[]), ActivityCounts::default());
+    }
+
     use super::*;
     use serde_json::json;
 

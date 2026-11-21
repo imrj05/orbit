@@ -9,8 +9,9 @@
  *   build  normal agent work (default)
  *   ask    read-only question answering
  *
- * Plan and Ask disable the write tools and gate bash to a read-only allowlist.
- * This is a guard, not a sandbox — pi ships none, and Orbit does not add one.
+ * Plan and Ask disable the write tools, default-deny untrusted tools, and gate
+ * bash to a read-only allowlist. This is a guard, not a sandbox — pi ships none,
+ * and Orbit does not add one.
  *
  * The mode itself lives per session in `~/.orbit-pi/workflow.json` (a map of
  * pi session id → wire id) and is read fresh on every hook, so a change in the
@@ -36,8 +37,19 @@ export const DISABLED_TOOLS = {
   build: [],
 };
 
+/** Pi's built-in tools that only observe the workspace. */
+const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
 /** Tools that execute a process, where bash is gated by the allowlist. */
 const EXEC_TOOLS = new Set(["bash", "powershell", "shell", "exec", "terminal"]);
+
+/** Delegation is safe only because the child inherits this workflow policy. */
+const DELEGATE_TOOLS = new Set(["subagent"]);
+
+/** Whether a tool may stay active in Plan/Ask. Everything else is untrusted. */
+function availableInReadOnlyMode(name) {
+  return READ_ONLY_TOOLS.has(name) || EXEC_TOOLS.has(name) || DELEGATE_TOOLS.has(name);
+}
 
 /** Coerce an arbitrary value to a known mode, falling back to the default. */
 export function normalizeMode(raw) {
@@ -50,15 +62,22 @@ function label(mode) {
 }
 
 /**
- * The tools a mode leaves active, derived from the base set by *subtracting*
- * the disabled names. Never hardcode the full set — pi owns tool names.
+ * The tools a mode leaves active. Build preserves pi's set; Plan/Ask subtract
+ * the write tools and default-deny every tool outside the known read-only set.
  */
 export function allowedTools(mode, baseTools = []) {
-  const disabled = new Set(DISABLED_TOOLS[normalizeMode(mode)] ?? []);
+  const resolved = normalizeMode(mode);
+  const disabled = new Set(DISABLED_TOOLS[resolved] ?? []);
   const seen = new Set();
   const out = [];
   for (const name of baseTools) {
-    if (typeof name !== "string" || disabled.has(name) || seen.has(name)) continue;
+    if (typeof name !== "string" || seen.has(name)) continue;
+    const normalized = name.toLowerCase();
+    if (disabled.has(normalized)) continue;
+    // MCP and extension annotations cannot prove that a call is read-only.
+    // Default-deny everything except known observers, gated shells, and the
+    // subagent whose child is clamped by this same workflow mode.
+    if (resolved !== "build" && !availableInReadOnlyMode(normalized)) continue;
     seen.add(name);
     out.push(name);
   }
@@ -163,14 +182,13 @@ const DESTRUCTIVE_PATTERNS = [
 
 // Read-only commands allowed in plan/ask mode. Anchored at the start.
 const SAFE_PATTERNS = [
-  /^\s*cat\b/, /^\s*head\b/, /^\s*tail\b/, /^\s*less\b/, /^\s*more\b/,
+  /^\s*cat\b/, /^\s*head\b/, /^\s*tail\b/,
   /^\s*grep\b/, /^\s*rg\b/, /^\s*find\b/, /^\s*fd\b/, /^\s*ls\b/, /^\s*pwd\b/,
-  /^\s*tree\b/, /^\s*wc\b/, /^\s*file\b/, /^\s*stat\b/, /^\s*du\b/, /^\s*df\b/,
+  /^\s*tree\b/, /^\s*wc\b/, /^\s*stat\b/, /^\s*du\b/, /^\s*df\b/,
   /^\s*sort\b/, /^\s*uniq\b/, /^\s*diff\b/, /^\s*which\b/, /^\s*whereis\b/,
   /^\s*uname\b/, /^\s*whoami\b/, /^\s*id\b/, /^\s*date\b/, /^\s*uptime\b/,
-  /^\s*ps\b/, /^\s*env\b/, /^\s*printenv\b/, /^\s*bat\b/, /^\s*eza\b/, /^\s*jq\b/,
-  /^\s*sed\s+-n/i,
-  /^\s*git\s+(status|log|diff|show|blame|rev-parse|ls-files|ls-tree|ls-remote|remote|config\s+--get)/i,
+  /^\s*ps\b/, /^\s*env\b/, /^\s*printenv\b/, /^\s*eza\b/, /^\s*jq\b/,
+  /^\s*git\s+(status|log|diff|show|blame|rev-parse|ls-files|ls-tree|remote|config\s+--get)/i,
   /^\s*git\s+branch(?!\s+-[dD])/i,
   /^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
   /^\s*yarn\s+(list|info|why|audit)/i,
@@ -178,26 +196,295 @@ const SAFE_PATTERNS = [
   /^\s*python\d?\s+--version/i,
 ];
 
+/** Split one simple shell command into argv. Quoting is honored; bad input fails closed. */
+function shellWords(command) {
+  const words = [];
+  let word = "";
+  let quote = null;
+  let escaped = false;
+  let started = false;
+  for (const char of command) {
+    if (escaped) {
+      word += char;
+      escaped = false;
+      started = true;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      started = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      else word += char;
+      started = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (started) words.push(word);
+      word = "";
+      started = false;
+      continue;
+    }
+    word += char;
+    started = true;
+  }
+  if (quote !== null || escaped) return null;
+  if (started) words.push(word);
+  return words;
+}
+
+/** `find` actions that delete, write a report, or execute another program. */
+const FIND_MUTATING_ACTIONS = new Set([
+  "-delete",
+  "-exec",
+  "-execdir",
+  "-ok",
+  "-okdir",
+  "-fls",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+]);
+
+function readOnlyFind(args) {
+  return !args.some((arg) => FIND_MUTATING_ACTIONS.has(arg));
+}
+
+/** ripgrep's preprocessor is an arbitrary command, even when its name is benign. */
+function readOnlyRg(args) {
+  for (const arg of args) {
+    if (arg === "--") return true;
+    if (arg === "--pre" || arg.startsWith("--pre=")) return false;
+    if (arg === "--hostname-bin" || arg.startsWith("--hostname-bin=")) return false;
+  }
+  return true;
+}
+
+/** fd's immediate and batch exec forms, including bundled short flags. */
+function readOnlyFd(args) {
+  for (const arg of args) {
+    if (arg === "--") return true;
+    if (/^--exec(?:-batch)?(?:=|$)/.test(arg)) return false;
+    if (/^-[^-]+/.test(arg) && /[xX]/.test(arg.slice(1))) return false;
+  }
+  return true;
+}
+
+function envAssignment(arg) {
+  return /^[^=]+=/.test(arg);
+}
+
+/** env may print the environment, but may never reach a utility operand. */
+function readOnlyEnv(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--") return args.slice(index + 1).every(envAssignment);
+    if (arg.startsWith("--")) {
+      if (arg === "--ignore-environment" || arg === "--null") continue;
+      if (arg === "--unset") {
+        index += 1;
+        continue;
+      }
+      if (arg.startsWith("--unset=")) continue;
+      // --split-string/--chdir/--argv0 and unknown future execution options
+      // fail closed rather than being mistaken for printing options.
+      return false;
+    }
+    if (arg.startsWith("-") && arg !== "-") {
+      if (/^-[i0]+$/.test(arg)) continue;
+      if (arg === "-u") {
+        index += 1;
+        continue;
+      }
+      if (/^-u.+/.test(arg)) continue;
+      return false;
+    }
+    if (!envAssignment(arg)) return false;
+  }
+  return true;
+}
+
+/** Whether a GNU long option (including an unambiguous abbreviation) appears. */
+function hasLongOption(args, longName) {
+  for (const arg of args) {
+    if (arg === "--") return false;
+    if (!arg.startsWith("--")) continue;
+    const option = arg.slice(2).split("=", 1)[0];
+    if (option !== "" && longName.startsWith(option)) return true;
+  }
+  return false;
+}
+
+/** Whether an output option appears before `--` ends option parsing. */
+function hasOutputOption(args, longName, shortName) {
+  for (const arg of args) {
+    if (arg === "--") return false;
+    if (arg.startsWith("--")) {
+      const option = arg.slice(2).split("=", 1)[0];
+      // GNU long options may be abbreviated when unambiguous (`--out`).
+      if (option !== "" && longName.startsWith(option)) return true;
+    }
+    // Utilities such as sort accept short-option bundles (`-ro output`).
+    if (shortName && /^-[^-]+/.test(arg) && arg.slice(1).includes(shortName)) return true;
+  }
+  return false;
+}
+
+const GIT_BRANCH_MUTATING_OPTIONS = new Set([
+  "--delete",
+  "--move",
+  "--copy",
+  "--force",
+  "--create-reflog",
+  "--set-upstream-to",
+  "--unset-upstream",
+  "--edit-description",
+  "--track",
+  "--no-track",
+  "--recurse-submodules",
+]);
+
+/** Options that make the remaining positional arguments filters, not a new branch name. */
+const GIT_BRANCH_LIST_OPTIONS = new Set([
+  "--list",
+  "--show-current",
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+  "--points-at",
+  "--sort",
+  "--format",
+]);
+
+const GIT_BRANCH_READ_OPTIONS = new Set([
+  ...GIT_BRANCH_LIST_OPTIONS,
+  "--all",
+  "--remotes",
+  "--verbose",
+  "--ignore-case",
+  "--omit-empty",
+  "--column",
+  "--no-column",
+  "--color",
+  "--no-color",
+  "--abbrev",
+  "--no-abbrev",
+]);
+
+function readOnlyGitBranch(args) {
+  let listing = false;
+  let positional = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--") {
+      positional ||= index + 1 < args.length;
+      break;
+    }
+    if (arg.startsWith("--")) {
+      const option = arg.split("=", 1)[0];
+      if (GIT_BRANCH_MUTATING_OPTIONS.has(option)) return false;
+      if (!GIT_BRANCH_READ_OPTIONS.has(option)) return false;
+      listing ||= GIT_BRANCH_LIST_OPTIONS.has(option);
+      continue;
+    }
+    if (arg.startsWith("-") && arg !== "-") {
+      // The read-only short flags are -a, -r and -v (including -vv). Every
+      // creation/deletion/upstream flag and every unknown flag fails closed.
+      if (!/^-[arv]+$/.test(arg)) return false;
+      continue;
+    }
+    positional = true;
+  }
+  return listing || !positional;
+}
+
+function readOnlyGitRemote(args) {
+  if (args.length === 0) return true;
+  if (args.every((arg) => arg === "-v" || arg === "--verbose")) return true;
+  // These subcommands inspect configuration or the remote without changing it.
+  if (args[0] === "show") {
+    return !args.slice(1).some((arg) => arg === "-p" || arg === "--prune");
+  }
+  if (args[0] === "get-url") return true;
+  // Prune is allowed only in its explicitly non-mutating form.
+  if (args[0] === "prune") {
+    return args.slice(1).some((arg) => arg === "-n" || arg === "--dry-run");
+  }
+  // add/remove/rename/set-*/update and unknown future subcommands fail closed.
+  return false;
+}
+
+function readOnlyGit(args) {
+  const [rawSubcommand, ...rest] = args;
+  const subcommand = rawSubcommand?.toLowerCase();
+  if (subcommand === "branch") return readOnlyGitBranch(rest);
+  if (subcommand === "remote") return readOnlyGitRemote(rest);
+  // Diff output files and external diff programs are not read-only.
+  return !rest.some(
+    (arg) =>
+      arg === "--output" ||
+      arg.startsWith("--output=") ||
+      arg === "--ext-diff" ||
+      arg === "--textconv",
+  );
+}
+
+function readOnlyNpm(args) {
+  if (args[0]?.toLowerCase() !== "audit") return true;
+  return !args.slice(1).some((arg) => {
+    const option = arg.toLowerCase();
+    return option === "fix" || option === "--fix" || option.startsWith("--fix=");
+  });
+}
+
 /**
  * Whether a bash command is safe under plan/ask mode.
  *
  * Rejects compound commands (`;`, `&&`, `||`, `|`), redirects (`>`, `<`),
  * command substitution (`$(`, backticks), subshells, and newlines outright —
- * a false *allow* is worse than a false block. Then it must match the
- * read-only allowlist and no destructive pattern.
+ * a false *allow* is worse than a false block. The command must then match the
+ * read-only allowlist, no destructive pattern, and the parsed per-utility
+ * policy. The last step catches write/execute options and subcommands that a
+ * broad command-name allowlist cannot (`rg --pre`, `fd -x`, `env sh`,
+ * `find -exec`, `sort -o`, `npm audit fix`).
  */
 export function isSafeCommand(command) {
   const cmd = String(command ?? "");
   if (cmd.trim() === "") return false;
   if (/[;&|`<>\n]|\$\(|[()]/.test(cmd)) return false;
+  // ANSI-C and locale-aware quotes can hide option bytes from the parser.
+  if (cmd.includes("$'") || cmd.includes('$"')) return false;
   if (DESTRUCTIVE_PATTERNS.some((re) => re.test(cmd))) return false;
-  return SAFE_PATTERNS.some((re) => re.test(cmd));
+  if (!SAFE_PATTERNS.some((re) => re.test(cmd))) return false;
+  const words = shellWords(cmd);
+  if (!words || words.length === 0) return false;
+  const [rawUtility, ...args] = words;
+  const utility = rawUtility.toLowerCase();
+  if (utility === "find") return readOnlyFind(args);
+  if (utility === "rg") return readOnlyRg(args);
+  if (utility === "fd") return readOnlyFd(args);
+  if (utility === "env") return readOnlyEnv(args);
+  if (utility === "sort") {
+    return !hasOutputOption(args, "output", "o") && !hasLongOption(args, "compress-program");
+  }
+  if (utility === "tree") return !hasOutputOption(args, "output", "o");
+  if (utility === "git") return readOnlyGit(args);
+  if (utility === "npm") return readOnlyNpm(args);
+  return true;
 }
 
 /**
  * Why a tool call is blocked under `mode`, or `undefined` when it may run.
- * `build` never blocks; plan/ask block the disabled write tools and any bash
- * command outside the read-only allowlist.
+ * `build` never blocks; plan/ask block write tools, unsafe bash, and every
+ * MCP/custom/orchestration tool except the workflow-clamped subagent.
  */
 export function blockReason(mode, toolName, input) {
   const resolved = normalizeMode(mode);
@@ -212,8 +499,10 @@ export function blockReason(mode, toolName, input) {
     if (!isSafeCommand(command)) {
       return `${label(resolved)} mode: command blocked (not on the read-only allowlist). Switch to Build to run it.`;
     }
+    return undefined;
   }
-  return undefined;
+  if (availableInReadOnlyMode(name)) return undefined;
+  return `${label(resolved)} mode: ${name || "tool"} is blocked. Only read-only built-ins, safe shell commands, and guarded subagents are available; switch to Build for MCP, custom, or other orchestration tools.`;
 }
 
 /**

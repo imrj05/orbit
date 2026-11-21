@@ -69,11 +69,11 @@ impl DismissGuard {
     }
 }
 
-/// The floating panel a picker or dropdown sits on: the modal-tier elevated
-/// surface (`elevation_3`), the UI face, and the picker's text size. Callers set
+/// The floating panel a picker or dropdown sits on: the elevated popover
+/// surface (`elevation_2`), the UI face, and the picker's text size. Callers set
 /// the width and the column.
 pub(crate) fn picker_surface<E: Styled + ParentElement>(el: E, theme: &Theme) -> E {
-    el.elevation_3(theme)
+    el.elevation_2(theme)
         .font_family(theme::ui_font_family())
         .text_size(picker::TEXT.px(theme))
 }

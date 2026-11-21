@@ -2873,11 +2873,11 @@ pub(crate) fn dock_shell(
                 .flex_1()
                 .min_h_0()
                 .w_full()
-                .bg(theme.page_canvas())
+                .bg(theme.dock_canvas())
                 .overflow_hidden()
                 .flex()
                 .flex_col()
-                .page_card(&theme, body),
+                .dock_card(&theme, body),
         )
 }
 

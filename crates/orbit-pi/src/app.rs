@@ -82,7 +82,7 @@ use crate::watch;
 use crate::widgets::{ExtensionWidget, WidgetPlacement};
 use crate::workflow::WorkflowMode;
 use crate::workspace_mark::WorkspaceMark;
-use crate::workspace_picker::{EntryMark, PickerAction, WorkspaceEntry, WorkspacePicker};
+use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 272.;
 // Keep the wordmark (now with its own lead past the traffic lights), the window
@@ -838,6 +838,20 @@ pub struct OrbitApp {
     /// Focus handle that carries the `WorkInMenu` key context while the picker
     /// is open (focus moves here so ↑/↓/Enter/Escape hit it).
     work_in_menu_focus: FocusHandle,
+    /// The "Existing worktrees" flyout beside the Work in picker: whether it
+    /// is open, its search field (which takes focus while open) and the
+    /// lowercased query it filters by, the highlighted row, and its scroll.
+    work_in_flyout_open: bool,
+    work_in_worktree_filter: Entity<ComposerInput>,
+    work_in_worktree_query: String,
+    work_in_flyout_highlight: crate::ui::menu::MenuState,
+    work_in_flyout_scroll: ScrollHandle,
+    /// Window bounds of the "Existing worktrees" row and of the open flyout,
+    /// read at paint: the flyout anchors beside the row, and a click inside
+    /// the flyout must not dismiss the picker it belongs to.
+    work_in_existing_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<Pixels>>>>,
+    work_in_flyout_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<Pixels>>>>,
+    _work_in_filter_sub: Subscription,
     /// Remote-tracking refs for the picker's remote level. Fetched on demand
     /// when that level opens; empty until then.
     worktree_remotes: Vec<crate::git_ops::RefEntry>,
@@ -1172,6 +1186,14 @@ pub struct OrbitApp {
     /// The bundled pi extensions (quota bridge + access guard), spawned with
     /// `--extension` on every session process.
     extensions: BundledExtensions,
+    /// Explicit per-workspace consent for project-local pi resources.
+    project_trust: crate::project_trust::ProjectTrust,
+    project_trust_prompt: Option<project_trust_ui::ProjectTrustPrompt>,
+    project_trust_focus: FocusHandle,
+    project_trust_modal_focus: ModalFocus,
+    project_trust_focus_pending: bool,
+    /// Trust granted mid-run; the restart waits for the run to settle.
+    project_trust_apply_pending: Option<String>,
     provider_accounts: crate::provider_accounts::ProviderAccounts,
     /// Profiles per provider, cached so a provider row never reads the
     /// account store while painting. Refreshed by the Settings controller.
@@ -1881,6 +1903,24 @@ impl OrbitApp {
                 .with_max_lines(1)
                 .with_wrap(false)
         });
+        // The "Existing worktrees" flyout's search field: a picker filter, so
+        // ↑/↓/Enter/Escape reach the flyout while backspace still edits.
+        let work_in_worktree_filter = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_placeholder_key("working_folder.search_worktrees")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let work_in_filter_sub = cx.observe(&work_in_worktree_filter, |app: &mut Self, input, cx| {
+            let text = input.read(cx).text().trim().to_lowercase();
+            if app.work_in_worktree_query != text {
+                app.work_in_worktree_query = text;
+                app.work_in_flyout_highlight = crate::ui::menu::MenuState::default();
+                app.work_in_flyout_scroll.set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            }
+        });
         let sidebar_search_sub = cx.observe(&sidebar_search, |app: &mut Self, input, cx| {
             let text = input.read(cx).text().trim().to_lowercase();
             if app.sidebar_query != text {
@@ -2032,7 +2072,31 @@ impl OrbitApp {
         // one deferred probe at launch so the status-bar chip and the MCP page
         // start from real state instead of "not checked".
         let mcp_probe_at = (!mcp.is_empty()).then(|| Instant::now() + Duration::from_secs(3));
-        let (client, connect_error) = match extensions.spawn(&workspace, true, &mcp.secret_env()) {
+        let project_trust = crate::project_trust::ProjectTrust::load();
+        let initial_trust_key = project_trust_ui::trust_key(&workspace, None);
+        let initial_trust = project_trust.decision(&initial_trust_key);
+        let initial_trusted = initial_trust.is_trusted();
+        let project_trust_prompt = (initial_trust
+            == crate::project_trust::TrustDecision::Unknown)
+            .then(|| project_trust_ui::ProjectTrustPrompt {
+                key: initial_trust_key,
+                workspace: workspace.display().to_string(),
+                local: true,
+            });
+        let project_trust_focus_pending = project_trust_prompt.is_some();
+        // Unknown and denied workspaces still get Orbit's explicitly loaded
+        // extensions, but no project resources or MCP secret environment.
+        let initial_mcp_env = if initial_trusted {
+            mcp.secret_env()
+        } else {
+            Vec::new()
+        };
+        let (client, connect_error) = match extensions.spawn(
+            &workspace,
+            true,
+            &initial_mcp_env,
+            initial_trusted,
+        ) {
             Ok(client) => (Some(client), String::new()),
             Err(err) => (None, tr!("runtime.pi_spawn_failed", error = err)),
         };
@@ -2564,6 +2628,14 @@ impl OrbitApp {
             work_in_scroll: ScrollHandle::new(),
             work_in_hosts: Vec::new(),
             work_in_menu_focus: cx.focus_handle(),
+            work_in_flyout_open: false,
+            work_in_worktree_filter,
+            work_in_worktree_query: String::new(),
+            work_in_flyout_highlight: crate::ui::menu::MenuState::default(),
+            work_in_flyout_scroll: ScrollHandle::new(),
+            work_in_existing_bounds: Default::default(),
+            work_in_flyout_bounds: Default::default(),
+            _work_in_filter_sub: work_in_filter_sub,
             worktree_remotes: Vec::new(),
             worktree_remote_names: Vec::new(),
             worktree_local_branches: Vec::new(),
@@ -2699,6 +2771,12 @@ impl OrbitApp {
             auth: AuthManager::new(),
             quota: QuotaManager::new(),
             extensions,
+            project_trust,
+            project_trust_prompt,
+            project_trust_focus: cx.focus_handle(),
+            project_trust_modal_focus: ModalFocus::default(),
+            project_trust_focus_pending,
+            project_trust_apply_pending: None,
             provider_accounts: crate::provider_accounts::ProviderAccounts::load(),
             account_profile_map: std::collections::BTreeMap::new(),
             account_remove_confirm: None,
@@ -4565,6 +4643,7 @@ mod permissions_ui;
 mod pi_update_ui;
 mod pickers;
 mod plugin_update_ui;
+mod project_trust_ui;
 mod provider_accounts;
 mod remote_hosts_ui;
 mod repo_star;
@@ -4575,7 +4654,7 @@ mod remote_sessions_ui;
 mod remote_ui;
 mod server_clone_ui;
 mod ssh_auth_ui;
-use remote_ui::{remote_host_for_action, remote_unavailable, TaskPlace};
+use remote_ui::{remote_unavailable, TaskPlace};
 mod retention_ui;
 mod rewind_ui;
 mod runtime;

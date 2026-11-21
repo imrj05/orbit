@@ -57,7 +57,7 @@ Modelled on t3code's environment panel, built from the MCP page's anatomy
   connection, Edit, Remove with an inline confirm). Under a hairline: the
   directory, the pi version once connected, and any problem with its fix
   (Install pi, Use opc, …). Off keeps the host saved (`"enabled": false`,
-  written only when off) and hides it from the New Task folder picker.
+  written only when off) and hides it from the Work in picker.
 - **Form:** SSH host or alias with `~/.ssh/config` suggestions (concrete
   `Host` aliases; patterns skipped; `Include` followed), Username and Port side
   by side, Remote directory, Display name (defaults to the host), an inline
@@ -85,15 +85,21 @@ The script, in order:
 3. `cd`s into `dir` (exit 66 if missing);
 4. refuses to continue without the guard (exit 78);
 5. checks `pi` is on the login shell's PATH (exit 127);
-6. `exec`s `env ORBIT_WORKFLOW_MODE=<mode> pi --mode rpc --approve --extension
+6. `exec`s `env ORBIT_WORKFLOW_MODE=<mode> pi --mode rpc (--approve only for a
+   trusted remote workspace, otherwise --no-approve) --extension
    ~/.orbit-pi/remote-guard/index.js --extension ~/.orbit-pi/remote-workflow/index.js`.
+   The decision is persisted locally per remote account+directory; an unknown or
+   denied workspace never loads project resources and no local MCP secrets are
+   forwarded in either state.
 
 The whole script is one argument of the remote shell's `-c`, which Linux caps
 at 128 KiB; a test keeps the shipped files under 96 KiB.
 
-**Workflow mode on the host.** `ORBIT_WORKFLOW_MODE` covers the session until
-the host's store has its id: the New Task choice, the live mode on a respawn,
-otherwise Build. Changing the chip mid-session writes the session's entry into
+**Workflow mode on the host.** `ORBIT_WORKFLOW_MODE` covers a new session until
+the host's store has its id, or an existing session only when its stored value
+is an exact Plan/Build/Ask. Missing or invalid state sends no launch value, so
+the session's own valid branch record wins instead of an invented Build.
+Changing the chip mid-session writes the session's entry into
 the host's `~/.orbit-pi/workflow.json` over a short ssh of its own
 (`orbit_rpc::remote::set_workflow_mode_script`, run by the host's Node, merged
 through a temp file and a rename); the extension reads it on its next hook. A
@@ -118,7 +124,7 @@ the host did not get.
 After t3code's flow (`app/ssh_auth_ui.rs`):
 
 1. A connection (Test connection, a row's Test, or starting a task from the
-   folder picker) runs the read-only probe with `BatchMode=yes`.
+   Work in picker) runs the read-only probe with `BatchMode=yes`.
 2. If ssh reports `Permission denied (…)` and lists `password` or
    `keyboard-interactive`, Orbit opens the **SSH password** dialog (a masked
    field that refuses copy). A server that lists only `publickey` gets an
@@ -208,8 +214,8 @@ After t3code's "Add to another machine". Nothing of the working tree is
 uploaded: the server clones the project with **its own git**, and Orbit copies
 only the ignored files the user ticks.
 
-- **Where:** the new-task folder picker's **Add this project to a server…**
-  (when a host exists and a project is open) and a host card's ⋯ →
+- **Where:** the Work in picker's **Add this project to a server…** (under the
+  hosts, when a host exists, on the new-task page) and a host card's ⋯ →
   **Add a project from this Mac…** (that host picked).
 - **The dialog** (`app/server_clone_ui.rs`) reads the project off the UI
   thread (`server_clone::inspect`): the repository root, `origin` with any
@@ -283,9 +289,10 @@ pi writes a remote session's file on the host, so this Mac's
 
 ## In the app
 
-- **Start:** the new-task folder picker lists one row per host, then **Add a
-  remote host…** (opens Settings → Remote hosts with the form) or **Edit remote
-  hosts…** (opens the page).
+- **Start:** the new-task page's **Work in** picker lists one row per enabled
+  host (tagged *Experimental*), then **Add this project to a server…**. The
+  folder picker lists folders only. Hosts are added and edited in Settings →
+  Remote hosts.
 - **Shown as remote:** the folder chip and the status bar name the host
   (tooltip `ssh:dir`). The branch chip shows the **host's** branch and
   ahead/behind (`remote_git_ui::remote_branch_chip`), from the same read-only

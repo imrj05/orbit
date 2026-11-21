@@ -897,11 +897,90 @@ pub fn open_path_default(path: &Path) {
 ///
 /// Bug-report screenshots, update staging, and login helpers are written here
 /// so a producer never falls back to a relative path and the leftovers stay in
-/// one place on disk.
+/// one place on disk. On Unix the shared temporary namespace makes this a
+/// security boundary: the root must be a real directory owned by this user and
+/// private before any caller can write through it.
 pub fn scratch_dir() -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join("orbit-pi");
+    #[cfg(unix)]
+    secure_scratch_dir(&dir)?;
+    #[cfg(not(unix))]
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+#[cfg(unix)]
+fn secure_scratch_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+
+    // SAFETY: `geteuid` takes no arguments, has no preconditions, and only
+    // reads the process's effective user id.
+    let owner = unsafe { libc::geteuid() };
+    match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => {
+            validate_scratch_dir(dir, owner, &metadata)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // `mode` keeps a newly created directory private even before the
+            // explicit permission check below. If another entry won the create
+            // race, validation below still has to accept it before use.
+            let mut builder = std::fs::DirBuilder::new();
+            builder.mode(0o700);
+            match builder.create(dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(error) => return Err(error),
+    }
+
+    let metadata = std::fs::symlink_metadata(dir)?;
+    validate_scratch_dir(dir, owner, &metadata)?;
+    if metadata.permissions().mode() & 0o7777 != 0o700 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+
+    // Re-read after chmod: neither a replacement nor a partially applied
+    // permission change may turn a failed check into a usable scratch root.
+    let metadata = std::fs::symlink_metadata(dir)?;
+    validate_scratch_dir(dir, owner, &metadata)?;
+    if metadata.permissions().mode() & 0o7777 != 0o700 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Orbit scratch directory permissions could not be restricted",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_scratch_dir(
+    dir: &Path,
+    owner: libc::uid_t,
+    metadata: &std::fs::Metadata,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "Orbit scratch root is not a real directory: {}",
+                dir.display()
+            ),
+        ));
+    }
+    if metadata.uid() != owner {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "Orbit scratch root is not owned by the current user: {}",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The user's home directory — the root of both pi's store (`~/.pi`) and
@@ -2185,6 +2264,46 @@ fn macos_clipboard_png() -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn scratch_root_is_private_and_hostile_entries_are_rejected() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let temp = tempfile::tempdir().expect("test directory");
+        let scratch = temp.path().join("scratch");
+        secure_scratch_dir(&scratch).expect("create a private scratch root");
+        std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o777))
+            .expect("make the fixture permissive");
+        secure_scratch_dir(&scratch).expect("restrict an existing scratch root");
+        let metadata = std::fs::symlink_metadata(&scratch).expect("scratch metadata");
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o700);
+        assert!(
+            validate_scratch_dir(&scratch, metadata.uid().wrapping_add(1), &metadata).is_err(),
+            "a root owned by another effective user must not be accepted"
+        );
+
+        let regular_file = temp.path().join("regular-file");
+        std::fs::write(&regular_file, b"not a directory").expect("write hostile root");
+        assert!(secure_scratch_dir(&regular_file).is_err());
+
+        let target = temp.path().join("symlink-target");
+        std::fs::create_dir(&target).expect("create symlink target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
+            .expect("set target permissions");
+        let symlink = temp.path().join("symlink");
+        std::os::unix::fs::symlink(&target, &symlink).expect("create hostile root");
+        assert!(secure_scratch_dir(&symlink).is_err());
+        assert_eq!(
+            std::fs::symlink_metadata(&target)
+                .expect("target metadata")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755,
+            "rejecting a symlink must not chmod its target"
+        );
+    }
 
     #[cfg(not(windows))]
     #[test]

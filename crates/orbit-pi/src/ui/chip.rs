@@ -16,7 +16,7 @@ use gpui::{
 
 use crate::motion::Hover;
 use crate::theme::{
-    tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, RaisedExt, TextSize},
+    tokens::{ButtonSize, DynamicSpacing, IconSize, RaisedExt, TextSize},
     Theme,
 };
 use crate::ui::button::button_frame;
@@ -53,7 +53,26 @@ pub(crate) fn experimental_badge(theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// A one-line label at Compact height, `Radius::Small`, XSmall medium ink.
+/// The quiet "Experimental" tag for a dense list row (a remote host in the
+/// Work in picker): muted ink on the faint overlay face, so a list of places does not
+/// read as a list of warnings. Settings, where the word explains a feature,
+/// keeps the warning-toned [`experimental_badge`].
+pub(crate) fn experimental_tag(theme: &Theme) -> AnyElement {
+    gpui::div()
+        .flex_none()
+        .debug_selector(|| "experimental-tag".to_string())
+        .child(
+            Badge::new(
+                tr!("common.experimental"),
+                theme.text_muted,
+                BadgeFill::Solid(theme.overlay),
+            )
+            .render(theme),
+        )
+        .into_any_element()
+}
+
+/// A one-line capsule at Compact height with XSmall medium ink.
 pub(crate) struct Badge {
     label: SharedString,
     ink: Hsla,
@@ -93,7 +112,7 @@ impl Badge {
             .flex_none()
             .h(ButtonSize::Compact.height(theme))
             .px(DynamicSpacing::Base06.px(theme))
-            .rounded(Radius::Small.px(theme))
+            .rounded_full()
             .flex()
             .items_center()
             .whitespace_nowrap()

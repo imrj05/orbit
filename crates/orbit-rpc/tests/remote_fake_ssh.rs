@@ -136,6 +136,7 @@ fn remote_session_installs_guard_pins_mode_and_speaks_rpc() {
                 files: &workflow,
             }],
             env: &[("ORBIT_WORKFLOW_MODE", "plan")],
+            approve_project: false,
         },
         None,
     )
@@ -159,9 +160,10 @@ fn remote_session_installs_guard_pins_mode_and_speaks_rpc() {
     assert!(mode.contains("\"supervised\""), "mode pinned: {mode}");
     let argv = fs::read_to_string(sandbox.home().join("pi-argv")).expect("pi argv");
     assert!(
-        argv.contains("--mode rpc --approve --extension"),
+        argv.contains("--mode rpc --no-approve --extension"),
         "argv: {argv}"
     );
+    assert!(!argv.contains("--approve"), "argv: {argv}");
     assert!(argv.contains("remote-guard/index.js"), "argv: {argv}");
     assert!(
         argv.ends_with("remote-workflow/index.js\n"),

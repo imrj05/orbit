@@ -32,11 +32,11 @@ import path from "node:path";
 import {
   CONTEXT_TYPE,
   DEFAULT_MODE,
+  MODES,
   WORKFLOW_ENTRY_TYPE,
   applyToolScoping,
   blockReason,
   guidance,
-  normalizeMode,
   policyTools,
   wasScopedReadOnly,
 } from "./policy.js";
@@ -46,13 +46,13 @@ function storePath() {
   return path.join(os.homedir(), ".orbit-pi", "workflow.json");
 }
 
-/** The mode stored for `sessionId`, or `undefined` when absent/unreadable. */
+/** The valid mode stored for `sessionId`; invalid values are absent evidence. */
 export function readStoredMode(sessionId, filePath = storePath()) {
   if (!sessionId) return undefined;
   try {
     const map = JSON.parse(fs.readFileSync(filePath, "utf8"));
     const wire = map?.[sessionId];
-    return typeof wire === "string" ? normalizeMode(wire) : undefined;
+    return typeof wire === "string" && MODES.includes(wire) ? wire : undefined;
   } catch {
     return undefined;
   }
@@ -75,16 +75,24 @@ export function lastCustom(entries, customType) {
   return undefined;
 }
 
-/** Resolve the mode: store → env → session entry → Build. */
+/**
+ * Resolve the mode: valid store → valid env → newest valid session entry →
+ * Build. An invalid present value falls through; it must not become Build and
+ * mask a valid resumed Plan/Ask branch.
+ */
 export function resolveMode(ctx, entries) {
   const sessionId = ctx?.sessionManager?.getSessionId?.();
   const stored = readStoredMode(sessionId);
   if (stored) return stored;
-  if (typeof process.env.ORBIT_WORKFLOW_MODE === "string") {
-    return normalizeMode(process.env.ORBIT_WORKFLOW_MODE);
+  const fromEnv = process.env.ORBIT_WORKFLOW_MODE;
+  if (typeof fromEnv === "string" && MODES.includes(fromEnv)) return fromEnv;
+  const branch = Array.isArray(entries) ? entries : [];
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    if (entry?.type !== "custom" || entry.customType !== WORKFLOW_ENTRY_TYPE) continue;
+    const mode = entry.data?.mode;
+    if (typeof mode === "string" && MODES.includes(mode)) return mode;
   }
-  const entry = lastCustom(entries ?? [], WORKFLOW_ENTRY_TYPE);
-  if (typeof entry?.mode === "string") return normalizeMode(entry.mode);
   return DEFAULT_MODE;
 }
 
@@ -104,9 +112,9 @@ export default function activate(pi) {
   let appliedMode = null;
   /**
    * Tool names this extension removed from the active set. Tracked across
-   * mode changes so Build restores exactly what Plan/Ask took away, while
-   * tools another extension owns (MCP's `codemode` / `tool_search`) are
-   * never touched.
+   * mode changes so Build restores exactly what Plan/Ask took away. Plan/Ask
+   * remove untrusted MCP/custom tools and brokers too; Build can restore the
+   * same names without resurrecting anything another extension removed.
    */
   let removedByUs = [];
 

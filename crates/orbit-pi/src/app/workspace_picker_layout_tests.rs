@@ -1,4 +1,4 @@
-//! Regression test: the new-task page's "Work in" picker draws one row per
+//! Regression test: the new-task page's folder picker draws one row per
 //! two-line entry box and never lets a row's text spill into the row below.
 //!
 //! The rows used to be pinned to the *one-line* picker height while carrying two
@@ -107,8 +107,8 @@ fn worktree(path: &Path, name: &str, is_main: bool) -> Worktree {
     }
 }
 
-/// A main checkout plus one linked worktree, so the picker shows the pinned
-/// current folder, a real worktree, and the action rows.
+/// A main checkout plus one linked worktree on disk: the worktree must not
+/// leak into the folder picker's rows.
 struct Fixture {
     root: PathBuf,
 }
@@ -136,9 +136,6 @@ impl Fixture {
         self.root.clone()
     }
 
-    fn linked(&self) -> PathBuf {
-        self.root.join(".worktrees/113")
-    }
 }
 
 impl Drop for Fixture {
@@ -198,180 +195,22 @@ fn new_task_keyboard_hints_fit_the_picker_at_maximum_ui_scale(cx: &mut gpui::Tes
     }
 }
 
-#[gpui::test]
-fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
-    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
-    let fixture = Fixture::new();
-    let app = cx.update(|cx| cx.new(OrbitApp::new));
-    let window_cx = cx.add_empty_window();
-    window_cx.update(|window, cx| {
-        app.update(cx, |app, cx| {
-            app.worktrees = vec![
-                worktree(&fixture.repo(), "repo", true),
-                worktree(&fixture.linked(), "113", false),
-            ];
-            app.worktree_repo_root = Some(fixture.repo());
-            app.current_workspace = Some(fixture.repo());
-            app.workspace_picker = None;
-            app.toggle_workspace_picker(window, cx);
-        });
-    });
-
-    let _ = window_cx.draw(
-        point(px(0.), px(0.)),
-        gpui::size(px(420.), px(640.)),
-        |_, cx| cx.new(|_| PickerProbe { app: app.clone() }),
-    );
-
-    let list = window_cx
-        .debug_bounds("workspace-picker-list")
-        .expect("the list laid out");
-    let entries_group = window_cx
-        .debug_bounds("workspace-rows")
-        .expect("the folder rows laid out");
-    // The machine group only exists while a host is configured; on a machine
-    // without `remote-hosts.json` entries the group is omitted entirely.
-    let actions_group = window_cx.debug_bounds("workspace-actions");
-
-    let entries = app.update(window_cx, |app, _cx| app.workspace_entries().len());
-    let theme = window_cx.update(|_window, cx| *theme::get(cx));
-    let row_h = f32::from(picker::two_line_entry_height(&theme));
-    assert_eq!(entries, 1, "the picker lists this device, once");
-
-    // Each group is exactly one two-line entry per row. A row whose text is
-    // taller than the height the list assumes is the bug this pins: the group
-    // would measure taller than its row count × the token.
-    let expected_entries = entries as f32 * row_h;
-    assert!(
-        (f32::from(entries_group.size.height) - expected_entries).abs() <= 1.,
-        "{entries} folder rows must tile at {row_h}px each: expected {expected_entries}, was {}",
-        f32::from(entries_group.size.height)
-    );
-    let action_rows = expected_action_rows();
-    if action_rows == 1 {
-        // No configured host: the "new project" verb is still there, so the
-        // machine group exists with exactly that one row.
-        let actions_group = actions_group.expect("the verb row laid out");
-        let expected_actions = row_h + 1.; // one row plus its hairline
-        assert!(
-            (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
-            "with no configured host only the new-project verb remains: expected ~{expected_actions}, was {}",
-            f32::from(actions_group.size.height)
-        );
-    } else {
-        let actions_group = actions_group.expect("the action rows laid out");
-        let expected_actions = action_rows as f32 * row_h + 1.;
-        assert!(
-            (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
-            "{action_rows} action rows tile at {row_h}px each (plus the hairline): expected ~{expected_actions}, was {}",
-            f32::from(actions_group.size.height)
-        );
-
-        // The verbs sit under the folders, not on top of them.
-        assert!(
-            f32::from(actions_group.top()) >= f32::from(entries_group.bottom()) - 1.,
-            "the actions must follow the folders: folders {entries_group:?}, actions {actions_group:?}"
-        );
-    }
-
-    // No scroll offset is applied when the picker opens, so the first folder
-    // is fully inside the viewport.
-    assert!(
-        f32::from(entries_group.top()) >= f32::from(list.top()) - 1.,
-        "the first row must be fully visible: list {list:?}, rows {entries_group:?}"
-    );
-
-    // The viewport is taller than one row, so it never shows a single clipped
-    // row with nothing else.
-    assert!(
-        f32::from(list.size.height) >= row_h,
-        "the list is at least one row tall: {}",
-        f32::from(list.size.height)
-    );
-}
-
-/// A filter that matches no folder keeps the verbs. "New worktree…" is exactly
-/// what a search that found nothing should still offer, and dropping it is how
-/// the old no-match branch took the way out away with the way in.
-#[gpui::test]
-fn a_filter_that_matches_nothing_keeps_the_action_rows(cx: &mut gpui::TestAppContext) {
-    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
-    let fixture = Fixture::new();
-    let app = cx.update(|cx| cx.new(OrbitApp::new));
-    let window_cx = cx.add_empty_window();
-    window_cx.update(|window, cx| {
-        app.update(cx, |app, cx| {
-            app.worktrees = vec![
-                worktree(&fixture.repo(), "repo", true),
-                worktree(&fixture.linked(), "113", false),
-            ];
-            app.worktree_repo_root = Some(fixture.repo());
-            app.current_workspace = Some(fixture.repo());
-            app.toggle_workspace_picker(window, cx);
-            let picker = app.workspace_picker.clone().expect("picker open");
-            picker.update(cx, |picker, cx| {
-                picker.set_filter_text("no-such-folder", cx)
-            });
-        });
-    });
-
-    let _ = window_cx.draw(
-        point(px(0.), px(0.)),
-        gpui::size(px(420.), px(640.)),
-        |_, cx| cx.new(|_| PickerProbe { app: app.clone() }),
-    );
-
-    let theme = window_cx.update(|_window, cx| *theme::get(cx));
-    let row_h = f32::from(picker::two_line_entry_height(&theme));
-
-    let rows = window_cx
-        .debug_bounds("workspace-rows")
-        .expect("the empty state laid out");
-    let actions = window_cx.debug_bounds("workspace-actions");
-    assert!(
-        (f32::from(rows.size.height) - row_h).abs() <= 1.,
-        "one no-match row: was {}",
-        f32::from(rows.size.height)
-    );
-    let action_rows = expected_action_rows();
-    if action_rows == 1 {
-        // No configured host: the "new project" verb still keeps the group.
-        let actions = actions.expect("the verb row stayed");
-        let expected_actions = row_h + 1.; // one row plus its hairline
-        assert!(
-            (f32::from(actions.size.height) - expected_actions).abs() <= 2.,
-            "with no configured host only the new-project verb remains: was {}",
-            f32::from(actions.size.height)
-        );
-    } else {
-        let actions = actions.expect("the verbs stayed");
-        assert!(
-            (f32::from(actions.size.height) - (action_rows as f32 * row_h + 1.)).abs() <= 2.,
-            "all {action_rows} machine rows remain: was {}",
-            f32::from(actions.size.height)
-        );
+/// A folder row as the picker lists it.
+fn folder_entry(path: PathBuf, note: Option<&str>) -> WorkspaceEntry {
+    WorkspaceEntry {
+        name: sessions::workspace_label(&path),
+        path,
+        note: note.map(str::to_string),
     }
 }
 
-/// The machine rows the picker builds: one row per enabled remote host, then
-/// "Add this project to a server…" when there is a host (the picker is open
-/// over a project), then "New project". Hosts come from the machine's own
-/// `remote-hosts.json`, so the count is read, not assumed; `1` means no host.
-fn expected_action_rows() -> usize {
-    let hosts: Vec<_> = crate::remote_hosts::load()
-        .0
-        .into_iter()
-        .filter(|host| host.enabled)
-        .collect();
-    let add_to_server = usize::from(!hosts.is_empty());
-    OrbitApp::remote_actions(&hosts).len() + add_to_server + 1
-}
-
-/// Open the picker over a repository with one linked worktree: enough folder
-/// and verb rows that the list scrolls.
-fn open_scrolling_picker<'a>(
+/// Open the picker over the fixture repository, then swap in `rows` so the
+/// layout does not depend on the machine's session store.
+fn open_picker_with<'a>(
     cx: &'a mut gpui::TestAppContext,
     fixture: &Fixture,
+    rows: usize,
+    filter: Option<&str>,
 ) -> (Entity<OrbitApp>, &'a mut gpui::VisualTestContext) {
     cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
     let app = cx.update(|cx| cx.new(OrbitApp::new));
@@ -383,25 +222,117 @@ fn open_scrolling_picker<'a>(
             app.current_workspace = Some(fixture.repo());
             app.workspace_picker = None;
             app.toggle_workspace_picker(window, cx);
-            // The machine's own host list would decide how many rows there
-            // are; a layout test needs a list long enough to scroll.
             let picker = app.workspace_picker.clone().expect("picker open");
-            let entries = app.workspace_entries();
-            let actions: Vec<crate::workspace_picker::PickerAction> = (0..10)
-                .map(|ix| crate::workspace_picker::PickerAction {
-                    id: "remote-host",
-                    icon: "icons/server-stack.svg",
-                    label: format!("host-{ix}"),
-                    hint: Some(format!("ssh:/srv/app-{ix}")),
-                    group_start: ix == 0,
-                    mono: true,
-                })
-                .collect();
-            picker.update(cx, |picker, cx| picker.set_rows(entries, actions, cx));
+            let mut entries = vec![folder_entry(fixture.repo(), None)];
+            entries.extend(
+                (1..rows).map(|ix| folder_entry(PathBuf::from(format!("/srv/app-{ix}")), Some("2d"))),
+            );
+            picker.update(cx, |picker, cx| {
+                picker.set_rows(entries, cx);
+                if let Some(filter) = filter {
+                    picker.set_filter_text(filter, cx);
+                }
+            });
         });
     });
     draw_picker(window_cx, &app);
     (app, window_cx)
+}
+
+#[gpui::test]
+fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new();
+    let (_app, window_cx) = open_picker_with(cx, &fixture, 2, None);
+
+    let list = window_cx
+        .debug_bounds("workspace-picker-list")
+        .expect("the list laid out");
+    let entries_group = window_cx
+        .debug_bounds("workspace-rows")
+        .expect("the folder rows laid out");
+    assert!(
+        window_cx.debug_bounds("workspace-actions").is_none(),
+        "the folder picker has no machine or worktree rows"
+    );
+
+    let entries = 2;
+    let theme = window_cx.update(|_window, cx| *theme::get(cx));
+    let row_h = f32::from(picker::two_line_entry_height(&theme));
+
+    // The group is exactly one two-line entry per row. A row whose text is
+    // taller than the height the list assumes is the bug this pins: the
+    // group would measure taller than its row count × the token.
+    let gap = f32::from(picker::row_gap(&theme));
+    let expected_entries = entries as f32 * row_h + (entries as f32 - 1.) * gap;
+
+    // Rows never touch: a row gap apart, so a highlight is one rounded row,
+    // not a slab joined to the next.
+    let next = window_cx
+        .debug_bounds("workspace-entry-1")
+        .expect("the second folder row");
+    let first = window_cx
+        .debug_bounds("workspace-entry-0")
+        .expect("the current folder row");
+    assert!(
+        f32::from(next.top() - first.bottom()) >= gap - 0.5,
+        "a row gap between rows: {first:?} then {next:?}"
+    );
+
+    // The current folder's check sits on its title line — the top of the
+    // row's content — not centred between title and path.
+    let slot = window_cx
+        .debug_bounds("workspace-entry-slot-0")
+        .expect("its trailing slot");
+    let pad = crate::theme::tokens::picker::ROW_SPACING.padding_y(&theme);
+    assert!(
+        (slot.top() - (first.top() + pad)).abs() <= px(1.),
+        "the trailing slot rides the title line: slot {slot:?} in row {first:?}"
+    );
+    assert!(
+        (f32::from(entries_group.size.height) - expected_entries).abs() <= 1.,
+        "{entries} folder rows must tile at {row_h}px each: expected {expected_entries}, was {}",
+        f32::from(entries_group.size.height)
+    );
+
+    // No scroll offset is applied when the picker opens, so the first folder
+    // is fully inside the viewport.
+    assert!(
+        f32::from(entries_group.top()) >= f32::from(list.top()) - 1.,
+        "the first row must be fully visible: list {list:?}, rows {entries_group:?}"
+    );
+    assert!(
+        f32::from(list.size.height) >= row_h,
+        "the list is at least one row tall: {}",
+        f32::from(list.size.height)
+    );
+}
+
+/// A filter that matches no folder draws one muted no-match row; "Choose
+/// folder…" stays in the footer as the way out.
+#[gpui::test]
+fn a_filter_that_matches_nothing_shows_one_no_match_row(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new();
+    let (_app, window_cx) = open_picker_with(cx, &fixture, 3, Some("no-such-folder"));
+    let theme = window_cx.update(|_window, cx| *theme::get(cx));
+    let row_h = f32::from(picker::two_line_entry_height(&theme));
+    let rows = window_cx
+        .debug_bounds("workspace-rows")
+        .expect("the empty state laid out");
+    assert!(
+        (f32::from(rows.size.height) - row_h).abs() <= 1.,
+        "one no-match row: was {}",
+        f32::from(rows.size.height)
+    );
+}
+
+/// Enough folders that the list scrolls.
+const SCROLLING_ROWS: usize = 12;
+
+fn open_scrolling_picker<'a>(
+    cx: &'a mut gpui::TestAppContext,
+    fixture: &Fixture,
+) -> (Entity<OrbitApp>, &'a mut gpui::VisualTestContext) {
+    open_picker_with(cx, fixture, SCROLLING_ROWS, None)
 }
 
 fn draw_picker(cx: &mut gpui::VisualTestContext, app: &Entity<OrbitApp>) {
@@ -415,8 +346,7 @@ fn draw_picker(cx: &mut gpui::VisualTestContext, app: &Entity<OrbitApp>) {
 
 /// The wheel scrolls the list and the list stays where it was put. Render
 /// used to re-reveal the highlighted row every frame, so each redraw pulled
-/// the list back to the first folder and it flipped between the folders and
-/// the verbs instead of scrolling.
+/// the list back to the first folder instead of scrolling.
 #[gpui::test]
 fn a_wheel_scroll_stays_where_it_was_put(cx: &mut gpui::TestAppContext) {
     let fixture = Fixture::new();
@@ -446,34 +376,31 @@ fn a_wheel_scroll_stays_where_it_was_put(cx: &mut gpui::TestAppContext) {
     );
 }
 
-/// Arrowing down to the last verb shows all of it. The reveal used to model
-/// the list as rows × height, missing the list's padding and the group
-/// hairlines, so it capped the scroll short of the last row.
+/// Arrowing down to the last folder shows all of it. The reveal used to model
+/// the list as rows × height, missing the list's padding and row gaps, so it
+/// capped the scroll short of the last row.
 #[gpui::test]
-fn arrowing_to_the_last_verb_reveals_it_whole(cx: &mut gpui::TestAppContext) {
+fn arrowing_to_the_last_folder_reveals_it_whole(cx: &mut gpui::TestAppContext) {
     let fixture = Fixture::new();
     let (app, cx) = open_scrolling_picker(cx, &fixture);
-    // The scrolling fixture swaps in ten host rows, so the last machine row is
-    // the ninth of them (the picker's own list has no setup row anymore).
-    let (entries, actions) = app.update(cx, |app, _| (app.workspace_entries().len(), 10));
-    for _ in 0..(entries + actions - 1) {
+    for _ in 0..(SCROLLING_ROWS - 1) {
         cx.dispatch_action(crate::PickerSelectNext);
         draw_picker(cx, &app);
     }
     let list = cx.debug_bounds("workspace-picker-list").expect("list");
     // `debug_bounds` wants a `'static` selector.
     let last_selector: &'static str =
-        Box::leak(format!("workspace-action-{}", actions - 1).into_boxed_str());
+        Box::leak(format!("workspace-entry-{}", SCROLLING_ROWS - 1).into_boxed_str());
     let last = cx
         .debug_bounds(last_selector)
-        .expect("the last verb laid out");
+        .expect("the last folder laid out");
     assert!(
         last.top() >= list.top() - px(0.5) && last.bottom() <= list.bottom() + px(0.5),
-        "the last verb is fully inside the list: {last:?} in {list:?}"
+        "the last folder is fully inside the list: {last:?} in {list:?}"
     );
 
     // And back up to the first folder brings the top of the list back.
-    for _ in 0..(entries + actions - 1) {
+    for _ in 0..(SCROLLING_ROWS - 1) {
         cx.dispatch_action(crate::PickerSelectPrev);
         draw_picker(cx, &app);
     }

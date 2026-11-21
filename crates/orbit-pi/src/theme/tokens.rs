@@ -63,18 +63,18 @@ impl Theme {
 pub enum Radius {
     /// 4px.
     Small,
-    /// 5px — compact buttons and list items.
+    /// 6px — compact buttons and list items.
     Medium,
-    /// 6px — standard buttons and input fields.
+    /// 9px — standard buttons and input fields.
     Large,
-    /// 8px — panels and elevated surfaces.
+    /// 12px — panels and elevated surfaces.
     XLarge,
     /// 9999px — pills and discs.
     Full,
 }
 
 impl Radius {
-    /// One radius ramp for every palette: the Linear-aligned scale. Shapes are
+    /// One radius ramp for every palette. Shapes are
     /// part of the design language, not of a palette, so Orbit Azure and
     /// Operational draw the same button and the same card.
     ///
@@ -84,9 +84,9 @@ impl Radius {
         let base = match self {
             Self::Full => return px(9999.),
             Self::Small => px(4.),
-            Self::Medium => px(5.),
-            Self::Large => px(6.),
-            Self::XLarge => px(8.),
+            Self::Medium => px(6.),
+            Self::Large => px(9.),
+            Self::XLarge => px(12.),
         };
         base + px(theme
             .ui
@@ -285,7 +285,6 @@ impl IconSize {
             Self::Custom(rems) => theme.rems(rems),
         }
     }
-
 }
 
 // ── Buttons (`ui/src/components/button/button_like.rs`) ────────────────
@@ -438,7 +437,7 @@ pub mod list_item {
 pub mod panel {
     use super::*;
 
-    /// Standard panel/card corner: 8px before the rounding preference,
+    /// Standard panel/card corner: 12px before the rounding preference,
     /// shared by all palettes.
     pub const RADIUS: Radius = Radius::XLarge;
 }
@@ -505,6 +504,21 @@ pub mod picker {
     /// The search row's horizontal padding (`px_2p5`).
     pub fn search_padding_x(theme: &Theme) -> Pixels {
         theme.rems(0.625)
+    }
+
+    /// A compact picker anchored to a small control (the "Work in" chip):
+    /// 300px at the default size, in rems so it follows the UI font. Definite,
+    /// never content-sized — a row's flexible text column needs a width to
+    /// grow into.
+    pub fn compact_width(theme: &Theme) -> Pixels {
+        theme.rems(18.75)
+    }
+
+    /// The space between two picker rows, so a highlighted row and its
+    /// neighbour never touch: a highlight reads as one rounded row, not as a
+    /// slab joined to the next.
+    pub fn row_gap(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base02.px(theme)
     }
 
     /// Above the first and below the last row.
@@ -684,6 +698,11 @@ pub mod toast {
 pub mod modal {
     use super::*;
 
+    /// A modal is softer than a popover while following the rounding preference.
+    pub fn radius(theme: &Theme) -> Pixels {
+        panel::RADIUS.px(theme) + px(4.)
+    }
+
     pub fn header_padding_x(theme: &Theme) -> Pixels {
         DynamicSpacing::Base12.px(theme)
     }
@@ -816,14 +835,20 @@ pub enum ElevationIndex {
 }
 
 impl ElevationIndex {
-    /// The shadow stack for this layer. Each is restrained: a floating surface
-    /// is defined by its hairline first and its shadow second, with no broad
-    /// ambient layer. Structural chrome (panels, panes, title bar) is not an
-    /// elevation and casts nothing.
-    pub fn shadow(self, _theme: &Theme) -> Vec<BoxShadow> {
+    /// Soft separation for floating glass and opaque fallback surfaces.
+    /// Structural chrome is not an elevation and casts nothing.
+    pub fn shadow(self, theme: &Theme) -> Vec<BoxShadow> {
         match self {
-            Self::ElevatedSurface => vec![drop_shadow(1., 2., 0.10)],
-            Self::ModalSurface => vec![drop_shadow(2., 6., 0.16)],
+            Self::ElevatedSurface => vec![drop_shadow(8., 20., 0.12)],
+            Self::ModalSurface => vec![drop_shadow(
+                20.,
+                40.,
+                if theme.mode == crate::theme::ThemeMode::Light {
+                    0.12
+                } else {
+                    0.24
+                },
+            )],
         }
     }
 }
@@ -838,7 +863,7 @@ fn drop_shadow(offset_y: f32, blur: f32, alpha: f32) -> BoxShadow {
 }
 
 /// Zed's `StyledExt::elevation_*`: the elevated fill, the shared
-/// [`panel::RADIUS`] corner, a 1px hairline, and the layer's shadow. The hairline is Orbit's
+/// role-specific corner, a 1px hairline, and the layer's shadow. The hairline is Orbit's
 /// floating-surface stroke (`border_strong`), the role Zed's `border_variant`
 /// plays.
 ///
@@ -970,7 +995,10 @@ fn elevated<E: Styled + ParentElement>(
     index: ElevationIndex,
     bordered: bool,
 ) -> E {
-    let radius = panel::RADIUS.px(theme);
+    let radius = match index {
+        ElevationIndex::ElevatedSurface => panel::RADIUS.px(theme),
+        ElevationIndex::ModalSurface => modal::radius(theme),
+    };
     // Every elevation floats, and floating layers frost over a wallpaper and,
     // in dark palettes, over the workbench itself (`floating_glass_sigma`).
     // Zed's `elevated_surface_background` is Orbit's `surface_elevated`.
@@ -1242,7 +1270,7 @@ mod tests {
         assert!(close(ButtonSize::Default.height(&theme), 22.));
         assert!(close(ButtonSize::Medium.height(&theme), 28.));
         assert!(close(Radius::Small.px(&theme), 4.));
-        assert!(close(Radius::Large.px(&theme), 6.));
+        assert!(close(Radius::Large.px(&theme), 9.));
         assert!(close(tooltip::max_width(&theme), 288.));
         assert!(close(HeadlineSize::Small.px(&theme), 16.));
     }
@@ -1254,7 +1282,11 @@ mod tests {
             let (compact, default, comfortable) = spacing.values();
             assert_eq!(spacing.at_percent(80), compact, "{spacing:?} compact");
             assert_eq!(spacing.at_percent(100), default, "{spacing:?} default");
-            assert_eq!(spacing.at_percent(120), comfortable, "{spacing:?} comfortable");
+            assert_eq!(
+                spacing.at_percent(120),
+                comfortable,
+                "{spacing:?} comfortable"
+            );
         }
         // Past the outer anchors the table is held, not extrapolated.
         assert_eq!(DynamicSpacing::Base08.at_percent(60), 4.);
@@ -1294,12 +1326,14 @@ mod tests {
     #[test]
     fn panel_and_composer_radii_are_semantic() {
         let theme = default_theme();
-        assert!(close(panel::RADIUS.px(&theme), 8.));
-        assert!(close(input::RADIUS.px(&theme), 6.));
+        assert!(close(panel::RADIUS.px(&theme), 12.));
+        assert!(close(modal::radius(&theme), 16.));
+        assert!(close(input::RADIUS.px(&theme), 9.));
         assert_eq!(input::composer_radius(&theme), px(12.));
         let mut rounded = theme;
         rounded.ui.corner_rounding = crate::theme::MAX_CORNER_ROUNDING;
         assert_eq!(input::composer_radius(&rounded), px(12.));
+        assert_eq!(modal::radius(&rounded), modal::radius(&theme) + px(4.));
         assert_ne!(input::RADIUS.px(&rounded), input::RADIUS.px(&theme));
         assert_eq!(list_item::RADIUS, Radius::Medium);
     }
@@ -1350,9 +1384,9 @@ mod tests {
         for id in crate::theme::ThemeId::ALL {
             let theme = Theme::for_id(id);
             assert!(close(Radius::Small.px(&theme), 4.), "{id:?}");
-            assert!(close(Radius::Medium.px(&theme), 5.), "{id:?}");
-            assert!(close(Radius::Large.px(&theme), 6.), "{id:?}");
-            assert!(close(Radius::XLarge.px(&theme), 8.), "{id:?}");
+            assert!(close(Radius::Medium.px(&theme), 6.), "{id:?}");
+            assert!(close(Radius::Large.px(&theme), 9.), "{id:?}");
+            assert!(close(Radius::XLarge.px(&theme), 12.), "{id:?}");
             assert!(close(TextSize::XSmall.px(&theme), 11.), "{id:?}");
             assert_eq!(
                 ElevationIndex::ElevatedSurface.shadow(&theme).len(),
@@ -1392,26 +1426,26 @@ mod tests {
     }
 
     #[test]
-    fn elevation_shadows_are_restrained() {
+    fn elevation_shadows_separate_floating_surfaces() {
         let dark = Theme::dark();
         let light = Theme::light();
         for theme in [dark, light] {
             let elevated = ElevationIndex::ElevatedSurface.shadow(&theme);
-            assert_eq!(elevated.len(), 1, "one hairline-shaped popover layer");
-            assert_eq!(elevated[0].offset, point(px(0.), px(1.)));
-            assert_eq!(elevated[0].blur_radius, px(2.));
+            assert_eq!(elevated.len(), 1);
+            assert_eq!(elevated[0].offset, point(px(0.), px(8.)));
+            assert_eq!(elevated[0].blur_radius, px(20.));
 
             let modal = ElevationIndex::ModalSurface.shadow(&theme);
-            assert_eq!(modal.len(), 1, "one restrained modal layer");
-            assert_eq!(modal[0].offset, point(px(0.), px(2.)));
-            assert_eq!(modal[0].blur_radius, px(6.));
+            assert_eq!(modal.len(), 1);
+            assert_eq!(modal[0].offset, point(px(0.), px(20.)));
+            assert_eq!(modal[0].blur_radius, px(40.));
 
             for shadow in elevated.iter().chain(&modal) {
                 assert_eq!(shadow.spread_radius, px(0.));
                 assert_eq!(shadow.offset.x, px(0.));
                 assert!(
-                    shadow.color.a <= 0.2,
-                    "a floating surface is defined by its hairline first"
+                    shadow.color.a <= 0.24,
+                    "floating shadows remain translucent"
                 );
             }
         }

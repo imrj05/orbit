@@ -19,7 +19,7 @@ There is deliberately no MCP client in Orbit. Everything that would duplicate Pi
 │  config I/O · validation · secrets · state  │
 ├─────────────────────────────────────────────┤
 │                 Pi process                  │
-│        pi --mode rpc --approve              │
+│  pi --mode rpc --approve (trusted only)     │
 ├─────────────────────────────────────────────┤
 │             Pi MCP extension                │
 │     stdio / streamable HTTP · tools         │
@@ -87,11 +87,12 @@ Descriptions are **not** part of Pi's schema, so Orbit keeps them in
 - **Global** — `~/.pi/agent/mcp.json`, available across all projects.
 - **Project** — `<project>/.pi/mcp.json`, available only in that project.
 
-Pi only loads project configuration in trusted projects. Orbit spawns every session with
-`--approve` (project trust), so project servers always load in Orbit sessions. The
-standalone `pi mcp list` probe follows Pi's persisted trust store; when a project is not
-trusted there, the probe reports a note and Orbit shows it on the page rather than pretending
-the project servers failed.
+Pi only loads project configuration in trusted projects. Orbit persists an explicit
+per-workspace decision in `~/.orbit-pi/project-trust.json`: only a trusted canonical
+workspace gets `--approve`; unknown and denied workspaces get `--no-approve`, so their
+project servers stay off. The standalone `pi mcp list` probe follows the same Orbit
+decision, not the remote session's. When a project is untrusted, the probe reports Pi's
+note and Orbit shows it rather than pretending the project servers failed.
 
 ## Lifecycle
 
@@ -131,8 +132,11 @@ and keeps the values in `~/.orbit-pi/mcp-secrets.json`:
    `MCP_P<WORKSPACE_HASH>_<SERVER>_<FIELD>`, so two projects — or a project and the global
    scope — with the same server and field never share one stored value.
 2. A value that already contains a `${NAME}` reference (or a `!command`) is written verbatim.
-3. Every Pi spawn and every `pi mcp list` probe receives the store's values as environment
-   variables, so Pi expands the references exactly as it would for a shell export.
+3. Trusted Pi spawns and trusted `pi mcp list` probes receive the store's values as
+   environment variables, so Pi expands the references exactly as it would for a shell
+   export. Unknown and denied workspaces receive no MCP secret environment. The exact
+   exported names (never the values) are shared with the subagent extension so a
+   cross-workspace child can remove every one, including hand-written non-`MCP_` keys.
 4. Values are masked in the UI (`••••••••`); an untouched mask round-trips to the value it
    hides, and an untouched literal is migrated into the store on save.
 5. Removing a server prunes the Orbit-generated secrets in the current workspace's
@@ -145,11 +149,11 @@ The store is chmod `0600` on Unix and lives in the user profile on Windows — t
 user-scoped trust model as Pi's own credential files under `~/.pi/agent/`. A keychain-backed
 store can replace `mcp/secrets.rs` behind the same API.
 
-The store's values are injected into every agent process, exactly as shell exports would be;
-Pi resolves them only where the configuration references them. Project trust is the boundary:
-Orbit spawns sessions with `--approve`, so a project's configuration and extensions run with
-the same access a terminal session would grant them. Keep credentials out of untrusted
-projects.
+The store's values are injected only into a trusted workspace's agent process, exactly as
+shell exports would be; Pi resolves them only where the configuration references them.
+Project trust is the boundary: an explicit Orbit decision is required before a project's
+configuration and extensions run. A delegated child inherits those values only when its
+canonical cwd is that same trusted workspace. Keep credentials out of untrusted projects.
 
 ## Logging
 
@@ -174,9 +178,9 @@ Orbit does not implement either tool; Pi owns them. What Orbit does is:
   `mcp.json`; the Add/Edit form offers all five modes;
 - leave `autoEnableCodemode` alone and warn on the page when it is `false` while a codemode
   server is enabled (the tools would be unreachable);
-- keep its bundled workflow extension from disturbing them — Plan/Ask subtract only the
-  write tools from the *current* active set, so a `codemode`/`tool_search` tool that Pi
-  activated when a server connected survives a mode change;
+- enforce the read-only workflow boundary — Plan/Ask disable `codemode`, `tool_search`,
+  direct MCP tools, and custom tools, and their `tool_call` backstop blocks the same calls
+  even when Full access would otherwise allow them; Build restores them;
 - render `codemode`, `tool_search`, and the MCP resource tools with their own card icons and
   labels in the transcript.
 
@@ -288,9 +292,9 @@ Manual checks:
   `${NAME}` secret it references. Use Test connection; the toast carries Pi's status.
 - **`Sign-in required`** — OAuth server. Use **Sign in** on the row (or `pi mcp login <server>`
   in a terminal); the next probe picks up the stored credentials.
-- **Project servers missing from the probe** — the project is not trusted by the standalone
-  `pi mcp list`. Orbit sessions pass `--approve`, so they still load; the page shows Pi's
-  note.
+- **Project servers missing from the probe** — the workspace is not trusted in Orbit's
+  project-trust store. Use **Trust workspace…** in the command palette to review the
+  decision; untrusted sessions and probes intentionally keep project resources off.
 - **Tools do not reach the model** — check the server's exposure and the global
   `autoEnableCodemode` setting. Codemode tools need codemode (or `tool_search`) enabled.
 - **A config file is rejected** — the page lists the exact path and entry; fix the entry or

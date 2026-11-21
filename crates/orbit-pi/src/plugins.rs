@@ -133,24 +133,24 @@ pub(crate) fn discover(workspace: &Path) -> (Vec<PluginPackage>, Option<String>)
 
 /// Install `source` via `pi install`, optionally into project scope.
 pub(crate) fn install(source: &str, project: bool, workspace: &Path) -> Result<String, String> {
-    let mut args = vec!["install".to_string(), source.to_string()];
-    if project {
-        // Trust the project-local settings for this command only; the app
-        // already launches pi with `--approve`.
-        args.push("-l".to_string());
-        args.push("-a".to_string());
-    }
+    let args = package_args("install", source, project);
     run_pi(&args, workspace)
 }
 
 /// Remove `source` from the scope it was installed in.
 pub(crate) fn remove(source: &str, project: bool, workspace: &Path) -> Result<String, String> {
-    let mut args = vec!["remove".to_string(), source.to_string()];
+    let args = package_args("remove", source, project);
+    run_pi(&args, workspace)
+}
+
+/// `-l` selects the project settings file; it must not imply consent to load
+/// project resources. `run_pi` makes that trust decision explicitly.
+fn package_args(action: &str, source: &str, project: bool) -> Vec<String> {
+    let mut args = vec![action.to_string(), source.to_string()];
     if project {
         args.push("-l".to_string());
-        args.push("-a".to_string());
     }
-    run_pi(&args, workspace)
+    args
 }
 
 /// Update a single installed `source`.
@@ -624,7 +624,7 @@ fn run_pi(args: &[String], workspace: &Path) -> Result<String, String> {
     let bin = orbit_rpc::pi_binary();
     let mut command = Command::new(&bin);
     command
-        .args(args)
+        .args(run_pi_args(args))
         .env("PI_SKIP_VERSION_CHECK", "1")
         // `pi` is `#!/usr/bin/env node`; a bundled `.app` PATH lacks `node`.
         .env("PATH", orbit_rpc::augmented_path(Path::new(&bin).parent()))
@@ -675,6 +675,14 @@ fn run_pi(args: &[String], workspace: &Path) -> Result<String, String> {
     }
 }
 
+/// Keep package options after their subcommand (notably `-l`) and make the
+/// one-shot process ignore trust-gated project resources explicitly.
+fn run_pi_args(args: &[String]) -> Vec<String> {
+    let mut argv = args.to_vec();
+    argv.push("--no-approve".to_string());
+    argv
+}
+
 fn read_to_end(mut reader: impl Read) -> String {
     let mut buffer = Vec::new();
     let _ = reader.read_to_end(&mut buffer);
@@ -692,6 +700,26 @@ fn first_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_commands_keep_scope_without_granting_project_trust() {
+        assert_eq!(
+            run_pi_args(&package_args("install", "npm:demo", true)),
+            vec!["install", "npm:demo", "-l", "--no-approve"]
+        );
+        assert_eq!(
+            run_pi_args(&package_args("remove", "npm:demo", true)),
+            vec!["remove", "npm:demo", "-l", "--no-approve"]
+        );
+        assert_eq!(
+            run_pi_args(&package_args("install", "npm:demo", false)),
+            vec!["install", "npm:demo", "--no-approve"]
+        );
+        assert_eq!(
+            run_pi_args(&["update".to_string(), "npm:demo".to_string()]),
+            vec!["update", "npm:demo", "--no-approve"]
+        );
+    }
 
     #[test]
     fn parses_npm_sources() {

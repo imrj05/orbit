@@ -71,8 +71,13 @@ process, no tokens, no half-done work.
 
 A child is a normal `pi` in the same workspace and trust context, with the same
 project instructions and skills. It also loads the extensions pi discovers for
-that user and project. This is a **guard, not a sandbox**: a child in Full
-access can do what the parent could do.
+that user and project. Approval and the exact MCP secret-name set are inherited
+only when the child's canonical cwd equals the parent's trusted workspace; a
+model-supplied different cwd gets `--no-approve` and no MCP secrets, and Orbit's
+guardrail variables are re-applied after secret removal. Workflow resolution
+mirrors the parent (store → env → newest valid session entry), so missing or
+invalid state cannot turn a resumed Plan/Ask into Build. This is a **guard, not
+a sandbox**: a child in Full access can do what the parent could do.
 
 ## The three shapes
 

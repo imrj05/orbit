@@ -453,3 +453,83 @@ fn many_open_files_keep_the_explorer_inside_the_window(cx: &mut gpui::TestAppCon
         "the dock ends at the window's right edge, not past it: {panel:?} in {viewport:?}"
     );
 }
+
+fn open_drawn(app: &Entity<OrbitApp>, cx: &mut gpui::VisualTestContext) {
+    let viewport = cx.update(|window, _| window.viewport_size());
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            for dependency in &mut app.deps {
+                dependency.installed = true;
+            }
+            app.open_session_details(cx);
+        });
+    });
+    let app = app.clone();
+    let _ = cx.draw(gpui::point(px(0.), px(0.)), viewport, move |_, _| app);
+}
+
+/// Activity counts what the transcript holds, and Usage shows pi's own
+/// session totals — only the buckets pi reported: no cache rows when nothing
+/// was cached, and no Cost row for a model without a cost table.
+#[gpui::test]
+fn activity_and_usage_show_only_reported_figures(cx: &mut gpui::TestAppContext) {
+    let (app, cx) = new_app(cx);
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.session_usage = Some(SessionUsage {
+                input: 12_000,
+                output: 3_400,
+                cache_read: 0,
+                cache_write: 0,
+                total: 15_400,
+                cost: None,
+            });
+        });
+    });
+    open_drawn(&app, cx);
+
+    for id in ["sess-sent", "sess-received", "sess-tool-calls"] {
+        assert!(cx.debug_bounds(id).is_some(), "{id} is on screen");
+    }
+    for id in ["sess-usage-input", "sess-usage-output"] {
+        assert!(cx.debug_bounds(id).is_some(), "{id} is on screen");
+    }
+    for id in [
+        "sess-usage-cache-read",
+        "sess-usage-cache-write",
+        "sess-usage-cost",
+    ] {
+        assert!(cx.debug_bounds(id).is_none(), "{id} has nothing to report");
+    }
+}
+
+/// A long session file path wraps inside the card in full instead of
+/// losing its tail (the file name) to an ellipsis.
+#[gpui::test]
+fn a_long_identifier_wraps_inside_the_panel(cx: &mut gpui::TestAppContext) {
+    let (app, cx) = new_app(cx);
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.session_id = Some("019a6c2e-5b1f-7d33-a0c4-2f8e9b6d1c55".into());
+            app.current_session_path = Some(PathBuf::from(
+                "/Users/someone/.pi/agent/sessions/--Users-someone-Projects-a-rather-long-workspace-name--/2026-11-20T09-41-12-019a6c2e-5b1f-7d33-a0c4-2f8e9b6d1c55.jsonl",
+            ));
+        });
+    });
+    open_drawn(&app, cx);
+
+    let panel = cx
+        .debug_bounds("session-details-panel")
+        .expect("the details panel is on screen");
+    let value = cx
+        .debug_bounds("sess-detail-value-1")
+        .expect("the session file value is on screen");
+    assert!(
+        value.origin.x + value.size.width <= panel.origin.x + panel.size.width,
+        "the path stays inside the card: {value:?} in {panel:?}"
+    );
+    assert!(
+        value.size.height > px(30.),
+        "the path wraps onto more lines rather than truncating: {value:?}"
+    );
+}

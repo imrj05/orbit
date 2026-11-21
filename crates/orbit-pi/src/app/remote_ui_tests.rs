@@ -24,21 +24,26 @@ fn host(name: &str) -> RemoteHost {
     }
 }
 
-#[test]
-fn picker_lists_hosts_only_without_a_setup_row() {
-    let empty = OrbitApp::remote_actions(&[]);
-    assert_eq!(
-        empty.iter().map(|a| a.id).collect::<Vec<_>>(),
-        Vec::<&str>::new(),
-        "with no hosts there is no machine row (host config lives in Settings)"
-    );
-
-    let rows = OrbitApp::remote_actions(&[host("a"), host("b")]);
-    assert_eq!(
-        rows.iter().map(|a| a.id).collect::<Vec<_>>(),
-        ["remote-host", "remote-host"]
-    );
-    assert_eq!(rows[0].hint.as_deref(), Some("a.example:/srv/app"));
+/// Hosts are a *where*, so they live in the Work in picker only; the
+/// new-task folder picker lists folders and nothing else.
+#[gpui::test]
+fn hosts_are_offered_by_work_in_not_by_the_folder_picker(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _cx| {
+            app.work_in_hosts = vec![host("a"), host("b")];
+            app.sessions = vec![];
+            app.workspaces = vec![];
+            let folder = std::env::temp_dir();
+            app.current_workspace = Some(folder.clone());
+            let entries = app.workspace_entries();
+            assert!(
+                entries.iter().all(|entry| entry.path.is_dir()),
+                "every folder-picker row is a local folder"
+            );
+            assert_eq!(entries.len(), 1, "no host rows among the folders");
+        });
+    });
 }
 
 #[gpui::test]
@@ -183,22 +188,13 @@ fn a_remote_launch_carries_the_right_workflow_mode(cx: &mut gpui::TestAppContext
             assert_eq!(app.remote_launch_workflow(), Some(WorkflowMode::Ask));
             app.workflow_pending = None;
             app.session_id = Some("remote-1".into());
-            assert_eq!(app.remote_launch_workflow(), Some(WorkflowMode::Plan));
+            assert_eq!(
+                app.remote_launch_workflow(),
+                None,
+                "missing store evidence falls through to the session branch"
+            );
         });
     });
-}
-
-#[test]
-fn remote_rows_open_their_own_group_and_set_locations_in_mono() {
-    let with_hosts = OrbitApp::remote_actions(&[host("a"), host("b")]);
-    assert!(with_hosts[0].group_start, "the first host opens the group");
-    assert!(!with_hosts[1].group_start);
-    assert!(with_hosts[0].mono && with_hosts[1].mono);
-
-    assert!(
-        OrbitApp::remote_actions(&[]).is_empty(),
-        "with no hosts the machine group is gone entirely"
-    );
 }
 
 // ── Settings → Remote hosts ───────────────────────────────────────────────

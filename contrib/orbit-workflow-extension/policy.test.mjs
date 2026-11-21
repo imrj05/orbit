@@ -28,13 +28,26 @@ test("normalizeMode falls back to build", () => {
   assert.equal(normalizeMode(undefined), DEFAULT_MODE);
 });
 
-test("allowedTools subtracts the disabled write tools", () => {
-  const base = ["read", "bash", "edit", "write", "grep"];
-  assert.deepEqual(allowedTools("plan", base), ["read", "bash", "grep"]);
-  assert.deepEqual(allowedTools("ask", base), ["read", "bash", "grep"]);
+test("allowedTools keeps read-only built-ins and default-denies custom tools", () => {
+  const base = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+  assert.deepEqual(allowedTools("plan", base), ["read", "bash", "grep", "find", "ls"]);
+  assert.deepEqual(allowedTools("ask", base), ["read", "bash", "grep", "find", "ls"]);
   assert.deepEqual(allowedTools("build", base), base);
-  // Unknown names are ignored, duplicates collapse.
-  assert.deepEqual(allowedTools("plan", ["read", "read", "nope", "edit"]), ["read", "nope"]);
+  // Duplicates collapse. Unknown, MCP, and tool-broker tools are not trusted
+  // to be read-only; the guarded subagent remains available.
+  assert.deepEqual(
+    allowedTools("plan", [
+      "read",
+      "read",
+      "custom_tool",
+      "mcp__filesystem__read_file",
+      "codemode",
+      "tool_search",
+      "subagent",
+      "edit",
+    ]),
+    ["read", "subagent"],
+  );
 });
 
 test("applyToolScoping keeps tools activated after session start", () => {
@@ -43,12 +56,12 @@ test("applyToolScoping keeps tools activated after session start", () => {
   assert.deepEqual(state.tools, ["read", "edit", "write", "bash"]);
   // Pi's MCP extension activates `codemode` once a codemode server connects.
   const active = [...state.tools, "codemode"];
-  // A mode change must not drop a tool this extension does not own.
+  // Plan disables the broker rather than trusting the tools it can reach.
   state = applyToolScoping("plan", active, state.removed);
-  assert.deepEqual(state.tools, ["read", "bash", "codemode"]);
-  // Switching back restores the writes and still keeps codemode.
+  assert.deepEqual(state.tools, ["read", "bash"]);
+  // Switching back restores exactly what this policy removed, including codemode.
   state = applyToolScoping("build", state.tools, state.removed);
-  assert.deepEqual(state.tools, ["read", "bash", "codemode", "edit", "write"]);
+  assert.deepEqual(state.tools, ["read", "bash", "edit", "write", "codemode"]);
   // Nothing is left to restore once the mode allows everything.
   assert.deepEqual(state.removed, []);
 });
@@ -121,9 +134,131 @@ test("plan and ask gate bash by the allowlist", () => {
   assert.equal(isSafeCommand(""), false);
 });
 
-test("non-bash tools are not gated", () => {
-  assert.equal(blockReason("plan", "grep", { pattern: "x" }), undefined);
-  assert.equal(blockReason("plan", "read", { path: "x" }), undefined);
+test("Plan and Ask reject mutating utility options and subcommands", () => {
+  const mutations = [
+    "find /tmp/target -delete",
+    "find . -exec custom-mutation {} +",
+    "find . -execdir custom-mutation {} +",
+    "find . -fprint /tmp/files",
+    "sed -n '1w /tmp/x' Cargo.toml",
+    "sed -n '1W /tmp/x' Cargo.toml",
+    "sed -n 'e custom-mutation' Cargo.toml",
+    "sed -n 's/foo/bar/e' Cargo.toml",
+    "sed -n 's/foo/bar/w /tmp/x' Cargo.toml",
+    "sed -n -e '1w /tmp/x' Cargo.toml",
+    "sed -n -f script.sed Cargo.toml",
+    "sed -n -i.bak 's/foo/bar/' Cargo.toml",
+    "rg --pre 'sh mutate.sh' p .",
+    "rg --pre=custom-mutation p .",
+    "rg --hostname-bin=custom-mutation p .",
+    "bat --paging=always --pager=custom-mutation Cargo.toml",
+    "file -C -m /tmp/magic",
+    "git ls-remote --upload-pack=custom-mutation /tmp/repo",
+    "git diff --ext-diff HEAD",
+    "sort $'-\\x6f' /tmp/out /etc/passwd",
+    "sort $\"-o\" /tmp/out /etc/passwd",
+    "fd -x touch x",
+    "fd -x custom-mutation",
+    "fd --exec custom-mutation",
+    "fd --exec-batch custom-mutation",
+    "fd -X custom-mutation",
+    "fd -Hix custom-mutation",
+    "env sh -c 'echo x'",
+    "env custom-mutation",
+    "env FOO=bar custom-mutation",
+    "env --split-string=custom-mutation",
+    "env -S custom-mutation",
+    "sort --compress-program=custom-mutation input",
+    "sort --compress-program custom-mutation input",
+    "sort --compress-p=custom-mutation input",
+    "sort -o output input",
+    "sort --output=output input",
+    "sort --out=output input",
+    "sort -ro output input",
+    "tree -o output.txt",
+    "git branch topic",
+    "git branch -m old new",
+    "git branch --set-upstream-to=origin/main topic",
+    "git branch --delete topic",
+    "git remote add origin https://example.test/repo.git",
+    "git remote set-url origin https://example.test/repo.git",
+    "git remote remove origin",
+    "git remote show --prune origin",
+    "git remote show -p origin",
+    "git remote rename old new",
+    "git remote prune origin",
+    "npm audit fix",
+    "npm audit fix --force",
+    "npm audit --fix",
+    "NPM AUDIT FIX",
+    "GIT branch topic",
+    "git diff --output=changes.patch",
+  ];
+  for (const command of mutations) {
+    assert.equal(isSafeCommand(command), false, `${command} must be rejected`);
+  }
+});
+
+test("the parsed utility policy preserves established read-only forms", () => {
+  const reads = [
+    "find . -type f -print",
+    "find . -name '*delete*' -print",
+    "rg -n TODO src",
+    "rg --hidden --glob '*.rs' TODO src",
+    "rg -- --pre",
+    "fd . src",
+    "fd --type f --hidden . src",
+    "fd -- --exec",
+    "env",
+    "env -0",
+    "env -i PATH=/usr/bin",
+    "env --ignore-environment FOO=bar",
+    "env -u FOO",
+    "env -- FOO=bar",
+    "sort -u input",
+    "sort --reverse input",
+    "sort -- -o",
+    "sort -- --compress-program=literal",
+    "git branch",
+    "git branch -a -vv",
+    "git branch --list topic",
+    "git branch --show-current",
+    "git branch --contains HEAD",
+    "git branch --format=%H --list",
+    "git remote",
+    "git remote -v",
+    "git remote show origin",
+    "git remote get-url --all origin",
+    "git remote prune --dry-run origin",
+    "npm audit --json",
+    "npm audit signatures",
+    "git diff HEAD",
+  ];
+  for (const command of reads) {
+    assert.equal(isSafeCommand(command), true, `${command} must remain allowed`);
+  }
+});
+
+test("read-only built-ins and guarded delegation pass; custom and broker tools fail closed", () => {
+  for (const mode of ["plan", "ask"]) {
+    assert.equal(blockReason(mode, "grep", { pattern: "x" }), undefined);
+    assert.equal(blockReason(mode, "read", { path: "x" }), undefined);
+    assert.equal(blockReason(mode, "find", { path: "." }), undefined);
+    assert.equal(blockReason(mode, "ls", { path: "." }), undefined);
+    assert.equal(blockReason(mode, "subagent", { agent: "scout", task: "map" }), undefined);
+    for (const tool of [
+      "codemode",
+      "tool_search",
+      "mcp__filesystem__write_file",
+      "mcp__filesystem__read_file",
+      "custom_tool",
+    ]) {
+      assert.match(blockReason(mode, tool, {}), /blocked/, `${mode} must block ${tool}`);
+    }
+  }
+  // Build still leaves the access guard in charge of these tools.
+  assert.equal(blockReason("build", "mcp__filesystem__write_file", {}), undefined);
+  assert.equal(blockReason("build", "codemode", {}), undefined);
 });
 
 test("guidance differs per mode", () => {

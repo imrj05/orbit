@@ -1286,21 +1286,23 @@ fn helper_error(flags: &HelperFlags, reason: &str) -> i32 {
     let path = flags
         .parent_dir()
         .join(format!(".{prefix_name}.update-error"));
-    #[cfg(target_os = "macos")]
-    let _ = std::fs::write(path, format!("{reason}\n"));
-    #[cfg(not(target_os = "macos"))]
-    {
-        use std::io::Write as _;
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-        {
-            let _ = writeln!(file, "{reason}");
-        }
-    }
+    write_helper_error(&path, reason);
     println!("ERROR\t{reason}");
     1
+}
+
+/// Record the first helper failure without following a pre-existing path.
+/// In particular, a planted symlink must never redirect this write.
+#[cfg(unix)]
+fn write_helper_error(path: &Path, reason: &str) {
+    use std::io::Write as _;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{reason}");
+    }
 }
 
 /// Write the readiness marker the helper waits on. The path comes from the
@@ -1439,7 +1441,7 @@ fn download_and_stage(
     let Some(layout) = layout else {
         anyhow::bail!("this build cannot install an update");
     };
-    let (archive, temporary) = fetch_artifact(offer, progress, cancel)?;
+    let (archive, _, temporary) = fetch_artifact(offer, progress, cancel)?;
     let mut staged = stage_artifact(archive, temporary, &offer.version, layout)?
         .ok_or_else(|| anyhow::anyhow!("the update could not be staged"))?;
     staged.notes = offer.notes.clone();
@@ -1453,7 +1455,9 @@ fn download_and_stage(
     progress: &mut dyn FnMut(u64, u64),
     cancel: &AtomicBool,
 ) -> anyhow::Result<StagedUpdate> {
-    let (archive, temporary) = fetch_artifact(offer, progress, cancel)?;
+    // Keep the verified handle alive through staging. Windows still stages
+    // the installer by path; Unix passes this handle straight to extraction.
+    let (_verified, archive, temporary) = fetch_artifact(offer, progress, cancel)?;
     let mut staged = stage_artifact(archive, temporary)?
         .ok_or_else(|| anyhow::anyhow!("the update could not be staged"))?;
     staged.notes = offer.notes.clone();
@@ -1462,13 +1466,13 @@ fn download_and_stage(
 }
 
 /// Validate the offer, download the artifact into a temporary directory, and
-/// check both its declared length and its release signature. Returns the
-/// archive and the directory that owns it.
+/// check both its declared length and its release signature. Returns the exact
+/// verified open file, its path for installer staging, and its owning directory.
 fn fetch_artifact(
     offer: &ReleaseOffer,
     progress: &mut dyn FnMut(u64, u64),
     cancel: &AtomicBool,
-) -> anyhow::Result<(PathBuf, PathBuf)> {
+) -> anyhow::Result<(std::fs::File, PathBuf, PathBuf)> {
     validate_release_version(&offer.version)?;
     validate_download_url(&offer.url)?;
     let declared_length = offer
@@ -1489,19 +1493,22 @@ fn fetch_artifact(
         progress,
         cancel,
     )
-    .and_then(|()| {
-        let actual_length = std::fs::metadata(&archive)?.len();
+    .and_then(|mut file| {
+        let actual_length = file.metadata()?.len();
         anyhow::ensure!(
             actual_length == declared_length,
             "the update artifact does not match the length the feed declared"
         );
-        verify_artifact(&archive, &offer.signature)
+        verify_artifact(&mut file, &offer.signature)?;
+        Ok(file)
     });
-    if let Err(error) = verified {
-        let _ = std::fs::remove_dir_all(&directory);
-        return Err(error);
+    match verified {
+        Ok(file) => Ok((file, archive, directory)),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&directory);
+            Err(error)
+        }
     }
-    Ok((archive, directory))
 }
 
 #[cfg(unix)]
@@ -1523,14 +1530,14 @@ fn artifact_name() -> &'static str {
 /// so the helper's swap is a same-filesystem rename.
 #[cfg(unix)]
 fn stage_artifact(
-    archive: PathBuf,
+    archive: std::fs::File,
     temporary: PathBuf,
     version: &str,
     layout: &InstallLayout,
 ) -> anyhow::Result<Option<StagedUpdate>> {
     let staging = create_unique_sibling(layout, "update")?;
     let expected_root = expected_archive_root(layout, version);
-    let extracted = extract_release_archive(&archive, &staging, &expected_root).and_then(|_| {
+    let extracted = extract_release_archive(archive, &staging, &expected_root).and_then(|_| {
         anyhow::ensure!(
             staged_executable(&staging, &layout.exe_name).is_file(),
             "the update archive is missing its executable"
@@ -1617,13 +1624,17 @@ fn create_unique_sibling(layout: &InstallLayout, kind: &str) -> anyhow::Result<P
 /// release or platform is rejected before anything is written.
 #[cfg(unix)]
 fn extract_release_archive(
-    path: &Path,
+    mut archive: std::fs::File,
     destination: &Path,
     expected_root: &std::ffi::OsStr,
 ) -> anyhow::Result<()> {
     use std::collections::HashSet;
+    use std::io::Seek as _;
 
-    let decoder = flate2::read::GzDecoder::new(std::fs::File::open(path)?);
+    // Verification leaves the handle at EOF. Rewind this same file rather
+    // than reopening its path, which may since have been replaced.
+    archive.rewind()?;
+    let decoder = flate2::read::GzDecoder::new(archive);
     let mut archive = tar::Archive::new(decoder);
     let mut saw_root = false;
     let mut seen = HashSet::new();
@@ -1706,15 +1717,27 @@ fn extract_release_archive(
     Ok(())
 }
 
-fn verify_artifact(path: &Path, signature: &str) -> anyhow::Result<()> {
+fn verify_artifact(file: &mut std::fs::File, signature: &str) -> anyhow::Result<()> {
     let key = verifying_key().ok_or_else(|| anyhow::anyhow!("the public key is unusable"))?;
+    verify_artifact_with_key(file, signature, &key)
+}
+
+fn verify_artifact_with_key(
+    file: &mut std::fs::File,
+    signature: &str,
+    key: &ed25519_dalek::VerifyingKey,
+) -> anyhow::Result<()> {
+    use std::io::{Read as _, Seek as _};
+
     let signature = base64::engine::general_purpose::STANDARD
         .decode(signature.trim())
         .ok()
         .and_then(|bytes| <[u8; 64]>::try_from(bytes).ok())
         .map(|bytes| ed25519_dalek::Signature::from_bytes(&bytes))
         .ok_or_else(|| anyhow::anyhow!("the update signature is malformed"))?;
-    let bytes = std::fs::read(path)?;
+    file.rewind()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
     key.verify_strict(&bytes, &signature)
         .map_err(|_| anyhow::anyhow!("the update artifact failed signature verification"))
 }
@@ -1770,12 +1793,22 @@ fn http_get(url: &str) -> anyhow::Result<String> {
         .map_err(http_failure)?
         .error_for_status()
         .map_err(http_failure)?;
-    let bytes = response.bytes().map_err(http_failure)?;
+    read_feed(response)
+}
+
+/// Read at most one byte beyond the feed limit so an oversized response is
+/// rejected before an unbounded body or UTF-8 string can be allocated.
+fn read_feed(reader: impl std::io::Read) -> anyhow::Result<String> {
+    use std::io::Read as _;
+
+    let mut bytes = Vec::new();
+    let mut bounded = reader.take(MAX_FEED_BYTES + 1);
+    bounded.read_to_end(&mut bytes)?;
     anyhow::ensure!(
         bytes.len() as u64 <= MAX_FEED_BYTES,
         "the update feed is implausibly large"
     );
-    Ok(String::from_utf8(bytes.to_vec())?)
+    Ok(String::from_utf8(bytes)?)
 }
 
 fn download_to(
@@ -1788,7 +1821,7 @@ fn download_to(
     expected_total: u64,
     progress: &mut dyn FnMut(u64, u64),
     cancel: &AtomicBool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<std::fs::File> {
     use std::io::Read as _;
     use std::io::Write as _;
 
@@ -1802,7 +1835,11 @@ fn download_to(
         .content_length()
         .filter(|length| *length > 0)
         .unwrap_or(expected_total);
-    let mut file = std::fs::File::create(destination)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
     let mut buffer = vec![0_u8; 64 * 1024];
     let mut copied = 0_u64;
     progress(0, total);
@@ -1827,7 +1864,7 @@ fn download_to(
     }
     file.sync_all()?;
     progress(copied, total);
-    Ok(())
+    Ok(file)
 }
 
 /// Rate-limit the progress events a download emits: one per whole percent (or
@@ -2219,6 +2256,18 @@ mod tests {
     }
 
     #[test]
+    fn feed_reader_rejects_an_oversized_stream_at_the_byte_cap() {
+        let mut stream = std::io::Cursor::new(vec![b'x'; MAX_FEED_BYTES as usize + 2]);
+        let error = read_feed(&mut stream).expect_err("an oversized feed must be rejected");
+        assert_eq!(error.to_string(), "the update feed is implausibly large");
+        assert_eq!(
+            stream.position(),
+            MAX_FEED_BYTES + 1,
+            "the reader stops at the cap instead of draining the response"
+        );
+    }
+
+    #[test]
     fn http_failure_prefers_the_root_cause() {
         #[derive(Debug)]
         struct Leaf;
@@ -2314,8 +2363,12 @@ mod tests {
 
         let destination = root.join("destination");
         std::fs::create_dir_all(&destination).expect("create destination");
-        extract_release_archive(&archive, &destination, std::ffi::OsStr::new("Orbit Pi.app"))
-            .expect("extract the release");
+        extract_release_archive(
+            std::fs::File::open(&archive).expect("open archive"),
+            &destination,
+            std::ffi::OsStr::new("Orbit Pi.app"),
+        )
+        .expect("extract the release");
 
         assert!(
             destination.join("Contents").is_dir(),
@@ -2327,6 +2380,56 @@ mod tests {
         assert_eq!(mode, 0o755, "the executable bit must survive extraction");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Extraction consumes the exact file whose bytes verified, even when the
+    /// download path is replaced between verification and extraction.
+    #[cfg(unix)]
+    #[test]
+    fn extraction_consumes_the_verified_file_not_its_path() {
+        use ed25519_dalek::Signer as _;
+
+        let temp = tempfile::tempdir().expect("test directory");
+        let source = temp.path().join("source").join("Contents");
+        std::fs::create_dir_all(&source).expect("create source tree");
+        std::fs::write(source.join("Info.plist"), b"verified bytes").expect("write plist");
+
+        let archive_path = temp.path().join("release.tar.gz");
+        let file = std::fs::File::create(&archive_path).expect("create archive");
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        builder
+            .append_dir_all("Orbit Pi.app", temp.path().join("source"))
+            .expect("append the release tree");
+        builder
+            .into_inner()
+            .expect("finish the archive")
+            .finish()
+            .expect("finish the gzip stream");
+
+        let archive_bytes = std::fs::read(&archive_path).expect("read archive for signing");
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
+        let signature = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.sign(&archive_bytes).to_bytes());
+        let mut verified = std::fs::File::open(&archive_path).expect("open downloaded archive");
+        verify_artifact_with_key(&mut verified, &signature, &signing_key.verifying_key())
+            .expect("verify the open archive");
+
+        // Renaming keeps the verified handle on the original inode. A fresh
+        // pathname read would instead encounter this invalid replacement.
+        std::fs::rename(&archive_path, temp.path().join("verified.tar.gz"))
+            .expect("move the verified archive aside");
+        std::fs::write(&archive_path, b"not the verified archive")
+            .expect("replace the archive path");
+        let destination = temp.path().join("destination");
+        std::fs::create_dir(&destination).expect("create destination");
+        extract_release_archive(verified, &destination, std::ffi::OsStr::new("Orbit Pi.app"))
+            .expect("extract the same handle that verified");
+        assert_eq!(
+            std::fs::read(destination.join("Contents").join("Info.plist"))
+                .expect("read extracted file"),
+            b"verified bytes"
+        );
     }
 
     /// The helper must only ever swap in a staging directory this prefix
@@ -2404,6 +2507,24 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("relaunched install did not observe the error marker");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_error_never_follows_a_planted_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("planted-target");
+        std::fs::write(&target, b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&target, temp.path().join(".orbit-pi.update-error")).unwrap();
+        let flags = HelperFlags {
+            install_dir: temp.path().join("orbit-pi"),
+            staged_dir: temp.path().join("staged"),
+            parent_pid: 0,
+            ready_file: temp.path().join("ready"),
+        };
+
+        assert_eq!(helper_error(&flags, "install failed"), 1);
+        assert_eq!(std::fs::read(target).unwrap(), b"unchanged");
     }
 
     #[cfg(unix)]
@@ -2491,8 +2612,12 @@ mod tests {
         let destination = root.join("destination");
         std::fs::create_dir_all(&destination).expect("create destination");
         assert!(
-            extract_release_archive(&archive, &destination, std::ffi::OsStr::new("Orbit Pi.app"),)
-                .is_err(),
+            extract_release_archive(
+                std::fs::File::open(&archive).expect("open archive"),
+                &destination,
+                std::ffi::OsStr::new("Orbit Pi.app"),
+            )
+            .is_err(),
             "an archive rooted at another name must be rejected"
         );
 
@@ -2570,8 +2695,10 @@ mod tests {
             &mut |done, total| ticks.push((done, total)),
             &AtomicBool::new(false),
         );
+        // Close the returned verified-file handle before removing its folder
+        // (required by Windows, and harmless on Unix).
+        drop(downloaded.expect("the artifact must download"));
         let cleanup = std::fs::remove_dir_all(&directory);
-        downloaded.expect("the artifact must download");
         cleanup.expect("the temp directory is ours to remove");
 
         assert!(ticks.len() > 1, "progress is reported while bytes arrive");

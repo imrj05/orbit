@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { beforeEach } from "node:test";
 
-import activate, { resolveMode } from "./index.js";
+import activate, { readStoredMode, resolveMode } from "./index.js";
 
 let home;
 
@@ -109,10 +109,10 @@ test("before_agent_start injects guidance and re-arms the mode live", async () =
   assert.deepEqual(pi.state.tools, ["read", "bash", "grep", "edit", "write"]);
 });
 
-test("a tool activated after session start survives a mode change", async () => {
+test("a broker activated after session start is blocked in Plan and restored in Build", async () => {
   // The MCP extension activates `codemode` after `session_start`, once a
-  // server with that exposure connects. A later workflow-mode change used to
-  // rebuild from a session-start snapshot and drop it silently.
+  // server with that exposure connects. Plan must remove it even though the
+  // workflow policy did not own its registration; Build restores it exactly.
   writeStore({ s1: "build" });
   const pi = fakePi();
   activate(pi);
@@ -121,7 +121,7 @@ test("a tool activated after session start survives a mode change", async () => 
 
   writeStore({ s1: "plan" });
   await pi.fire("before_agent_start", {}, fakeCtx());
-  assert.deepEqual(pi.state.tools, ["read", "bash", "grep", "codemode"]);
+  assert.deepEqual(pi.state.tools, ["read", "bash", "grep"]);
 
   writeStore({ s1: "build" });
   await pi.fire("before_agent_start", {}, fakeCtx());
@@ -129,9 +129,9 @@ test("a tool activated after session start survives a mode change", async () => 
     "read",
     "bash",
     "grep",
-    "codemode",
     "edit",
     "write",
+    "codemode",
   ]);
 });
 
@@ -191,6 +191,45 @@ test("tool_call blocks writes in read-only modes and passes in build", async () 
   assert.equal(await pi.fire("tool_call", { toolName: "edit", input: {} }, fakeCtx()), undefined);
 });
 
+test("Plan/Ask block MCP, custom, and broker calls even when Full access allows them", async () => {
+  writeStore({ s1: "plan" });
+  const pi = fakePi();
+  activate(pi);
+  await pi.fire("session_start", {}, fakeCtx());
+
+  for (const event of [
+    { toolName: "codemode", input: { code: "await tools.mcp__filesystem__write_file({})" } },
+    { toolName: "tool_search", input: { query: "write" } },
+    { toolName: "mcp__filesystem__write_file", input: { path: "/tmp/x", content: "x" } },
+    { toolName: "custom_mutation", input: {} },
+  ]) {
+    const result = await pi.fire("tool_call", event, fakeCtx());
+    assert.equal(result?.block, true, `${event.toolName} must be blocked`);
+  }
+
+  // Codemode's nested calls fire the same hook with their real tool name and
+  // a parent call id. Default-deny applies there too, not only to the broker.
+  const nested = await pi.fire(
+    "tool_call",
+    {
+      toolName: "mcp__filesystem__write_file",
+      toolCallId: "nested-1",
+      parentToolCallId: "codemode-1",
+      input: { path: "/tmp/x", content: "x" },
+    },
+    fakeCtx(),
+  );
+  assert.equal(nested?.block, true);
+  assert.equal(
+    await pi.fire("tool_call", { toolName: "read", input: { path: "README.md" } }, fakeCtx()),
+    undefined,
+  );
+  assert.equal(
+    await pi.fire("tool_call", { toolName: "subagent", input: { agent: "scout", task: "map" } }, fakeCtx()),
+    undefined,
+  );
+});
+
 test("the store for the session id wins over the env fallback", () => {
   writeStore({ s1: "ask" });
   process.env.ORBIT_WORKFLOW_MODE = "plan";
@@ -204,6 +243,32 @@ test("the store for the session id wins over the env fallback", () => {
   const branch = [{ type: "custom", customType: "orbit:workflow", data: { mode: "ask" } }];
   assert.equal(resolveMode(fakeCtx("missing"), branch), "ask");
   assert.equal(resolveMode(fakeCtx("missing"), []), "build");
+});
+
+test("invalid store, env, and branch values fall through instead of forcing Build", () => {
+  const file = path.join(home, ".orbit-pi", "workflow.json");
+  const entry = (mode, customType = "orbit:workflow") => ({
+    type: "custom",
+    customType,
+    data: { mode },
+  });
+  const branch = [entry("build"), entry("plan"), entry("bogus"), entry("ask", "someone-else")];
+
+  writeStore({ s1: "bogus" });
+  assert.equal(readStoredMode("s1", file), undefined);
+  process.env.ORBIT_WORKFLOW_MODE = "ask";
+  assert.equal(resolveMode(fakeCtx("s1"), branch), "ask", "invalid store falls through to valid env");
+
+  process.env.ORBIT_WORKFLOW_MODE = "bogus";
+  assert.equal(resolveMode(fakeCtx("s1"), branch), "plan", "invalid store/env reach the newest valid branch entry");
+  delete process.env.ORBIT_WORKFLOW_MODE;
+  assert.equal(resolveMode(fakeCtx("s1"), branch), "plan");
+
+  writeStore({ other: "ask" });
+  assert.equal(resolveMode(fakeCtx("s1"), [entry("nonsense")]), "build", "Build is only the no-evidence default");
+
+  writeStore({ s1: "ask" });
+  assert.equal(readStoredMode("s1", file), "ask", "an exact valid store value still wins");
 });
 
 test("context drops stale guidance only when the mode adds none", async () => {

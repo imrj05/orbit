@@ -78,8 +78,12 @@ pub(super) const SESSION_DETAILS_W: f32 = 320.;
 pub(super) const SESSION_DETAILS_GUTTER: f32 = 12.;
 /// The details card's header row, matching the Explorer's header height.
 const SESSION_DETAILS_HEADER_H: f32 = 40.;
-/// One inspector row in the details panel.
+/// One inspector row in the details panel (a minimum: rows grow with the UI
+/// font instead of clipping).
 const SESSION_DETAILS_ROW_H: f32 = 28.;
+/// A figure row in the Activity and Usage groups: denser than an inspector
+/// row, since it carries one line of text and no glyph.
+const SESSION_DETAILS_STAT_H: f32 = 24.;
 
 impl OrbitApp {
     /// True while a run is in flight: the busy flag, a streaming transcript, or
@@ -2516,7 +2520,7 @@ impl OrbitApp {
         let model_section = Self::details_section(tr!("session.detail_model"), true, theme).child(
             div()
                 .id("sess-model")
-                .h(px(SESSION_DETAILS_ROW_H))
+                .min_h(theme.ui_px(SESSION_DETAILS_ROW_H))
                 .px(DynamicSpacing::Base12.px(&theme))
                 .flex()
                 .items_center()
@@ -2550,7 +2554,7 @@ impl OrbitApp {
                 .map(|percent| (percent / 100.0).clamp(0.0, 1.0) as f32);
             let row = div()
                 .id("sess-context")
-                .h(px(SESSION_DETAILS_ROW_H))
+                .min_h(theme.ui_px(SESSION_DETAILS_ROW_H))
                 .px(DynamicSpacing::Base12.px(&theme))
                 .flex()
                 .items_center()
@@ -2578,6 +2582,88 @@ impl OrbitApp {
             };
             Self::details_section(tr!("session.context"), true, theme).child(row)
         };
+
+        // ── Activity ── what crossed the wire, counted from the transcript:
+        // prompts sent, replies received, tool calls and how many failed.
+        let activity = self.transcript.activity_counts();
+        let activity_section = (activity.sent + activity.received > 0).then(|| {
+            let failed = (activity.failed_tools > 0).then(|| {
+                (
+                    tr!("session.failed_count", count = activity.failed_tools),
+                    theme.error,
+                )
+            });
+            Self::details_section(tr!("session.activity"), true, theme)
+                .child(Self::details_stat(
+                    "sess-sent",
+                    tr!("session.prompts_sent"),
+                    activity.sent.to_string(),
+                    None,
+                    theme,
+                ))
+                .child(Self::details_stat(
+                    "sess-received",
+                    tr!("session.replies_received"),
+                    activity.received.to_string(),
+                    None,
+                    theme,
+                ))
+                .child(Self::details_stat(
+                    "sess-tool-calls",
+                    tr!("usage.stat_tool_calls"),
+                    activity.tool_calls.to_string(),
+                    failed,
+                    theme,
+                ))
+        });
+
+        // ── Usage ── the session's running token and cost totals from pi's
+        // `get_session_stats`. Absent until pi reports them; a model with no
+        // cost table leaves the Cost row out rather than showing $0.
+        let usage_section = self.session_usage.as_ref().map(|usage| {
+            let tokens = crate::context_meter::format_tokens;
+            Self::details_section(tr!("session.usage"), true, theme)
+                .child(Self::details_stat(
+                    "sess-usage-input",
+                    tr!("context_meter.input"),
+                    tokens(usage.input),
+                    None,
+                    theme,
+                ))
+                .child(Self::details_stat(
+                    "sess-usage-output",
+                    tr!("context_meter.output"),
+                    tokens(usage.output),
+                    None,
+                    theme,
+                ))
+                .when(usage.cache_read + usage.cache_write > 0, |section| {
+                    section
+                        .child(Self::details_stat(
+                            "sess-usage-cache-read",
+                            tr!("context_meter.cache_read"),
+                            tokens(usage.cache_read),
+                            None,
+                            theme,
+                        ))
+                        .child(Self::details_stat(
+                            "sess-usage-cache-write",
+                            tr!("context_meter.cache_write"),
+                            tokens(usage.cache_write),
+                            None,
+                            theme,
+                        ))
+                })
+                .children(usage.cost.map(|cost| {
+                    Self::details_stat(
+                        "sess-usage-cost",
+                        tr!("context_meter.cost"),
+                        crate::context_meter::format_cost(cost),
+                        None,
+                        theme,
+                    )
+                }))
+        });
 
         // ── Changes ── the working tree's counts with the two places they
         // lead: Review beside the chat, and the Git page to commit. A remote
@@ -2625,10 +2711,14 @@ impl OrbitApp {
                 Self::details_meta_left(tr!("sidepane.no_changes"), theme).into_any_element()
             };
             Self::details_section(tr!("git_panel.section_changes"), true, theme).child(
+                // Wraps rather than clips: at a large UI font or with longer
+                // translated labels the actions drop under the counts.
                 div()
-                    .h(px(SESSION_DETAILS_ROW_H + 4.))
+                    .min_h(theme.ui_px(SESSION_DETAILS_ROW_H + 4.))
                     .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base02.px(&theme))
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
                     .child(icon(
@@ -2670,6 +2760,8 @@ impl OrbitApp {
             .child(environment.border_t_1().border_color(theme.hairline_subtle()))
             .child(model_section)
             .child(context_section)
+            .children(activity_section)
+            .children(usage_section)
             .children(changes_section)
             .children(identifiers)
             .child(div().flex_none().h(DynamicSpacing::Base08.px(&theme)));
@@ -2695,7 +2787,7 @@ impl OrbitApp {
                     .w_full()
                     .bg(theme.surface)
                     .overflow_hidden()
-                    .page_card(
+                    .dock_card(
                         &theme,
                         div()
                             .size_full()
@@ -3345,9 +3437,9 @@ impl OrbitApp {
         let v = value.clone();
         div()
             .px(DynamicSpacing::Base12.px(&theme))
-            .py(px(7.))
+            .py(DynamicSpacing::Base06.px(&theme))
             .flex()
-            .items_center()
+            .items_start()
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 div()
@@ -3355,18 +3447,26 @@ impl OrbitApp {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(DynamicSpacing::Base02.px(&theme))
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_muted)
                             .child(label),
                     )
+                    // An id or a path is code: the code face, wrapped in full.
+                    // Truncating it cut off the tail — the file name, the
+                    // last id digits — which is the part that tells two apart.
                     .child(
                         div()
-                            .text_size(TextSize::Small.px(&theme))
+                            .debug_selector(move || format!("sess-detail-value-{ix}"))
+                            .w_full()
+                            .min_w_0()
+                            .font_family(theme::code_font_family())
+                            .text_size(theme.code_px(12.))
+                            .line_height(theme.code_px(17.))
                             .text_color(theme.text_primary)
-                            .truncate()
+                            .whitespace_normal()
                             .child(if value.is_empty() {
                                 "—".to_string()
                             } else {
@@ -3446,7 +3546,7 @@ impl OrbitApp {
     ) -> Stateful<Div> {
         div()
             .id(id)
-            .h(px(SESSION_DETAILS_ROW_H))
+            .min_h(theme.ui_px(SESSION_DETAILS_ROW_H))
             .px(DynamicSpacing::Base12.px(&theme))
             .flex()
             .items_center()
@@ -3454,6 +3554,50 @@ impl OrbitApp {
             .child(icon(glyph, IconSize::Small.px(&theme), theme.text_muted))
             .child(Self::details_label(label, theme))
             .children(meta.map(|meta| Self::details_meta(meta, theme)))
+    }
+
+    /// A figure row: a muted label leading and the value trailing in
+    /// tabular figures, so a column of numbers lines up on its last digit.
+    /// `note` is an optional trailing qualifier in its own tone (a failure
+    /// count in the error ink).
+    fn details_stat(
+        id: &'static str,
+        label: String,
+        value: String,
+        note: Option<(String, Hsla)>,
+        theme: Theme,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .debug_selector(move || id.to_string())
+            .min_h(theme.ui_px(SESSION_DETAILS_STAT_H))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .text_size(TextSize::Small.px(&theme))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.text_muted)
+                    .child(label),
+            )
+            .children(note.map(|(note, ink)| {
+                div()
+                    .flex_none()
+                    .font(crate::ui::style::text::num_font())
+                    .text_color(ink)
+                    .child(note)
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .font(crate::ui::style::text::num_font())
+                    .text_color(theme.text_primary)
+                    .child(value),
+            )
     }
 
     fn details_label(text: String, theme: Theme) -> Div {

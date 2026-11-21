@@ -15,7 +15,7 @@ use crate::theme::{
 };
 
 /// The frame every modal shares: the elevated surface, its floating shadow and
-/// panel corner, a clipped column, and a hitbox that stops a click on the card
+/// modal corner, a clipped column, and a hitbox that stops a click on the card
 /// from reaching the scrim beneath it.
 ///
 /// Callers add the layer id, the width and height bounds, the key context, and

@@ -35,11 +35,12 @@ contract changes. Preserve Orbit's identity unless a redesign is requested.
 
 ## Design principles
 
-- **Instrument panel, not website:** quiet, neutral chrome; useful data carries
-  the visual weight. Favor tonal layers and 1px hairlines over decorative cards.
+- **Frosted workbench:** use soft, rounded surfaces and quiet translucent ink
+  washes inspired by Monocode. Useful data carries the visual weight; preserve
+  legibility and a clear hierarchy between structural and floating surfaces.
 - **Premium means precise:** clear hierarchy, aligned edges, coherent rhythm,
   careful typography, immediate feedback, predictable behavior and polished
-  empty/error states. It does not mean blur, glow, gradients or more animation.
+  empty/error states. Frost and soft shadows express depth without obscuring data.
 - **Native and keyboard-first:** keep focus visible, distinct from selection;
   preserve platform conventions, text editing, shortcuts and focus restoration.
   A command-palette route complements rather than automatically replaces a
@@ -64,10 +65,10 @@ Resolve tokens through the current theme and verify scaling at the call site.
 | Color | Semantic `Theme` roles for canvas, surfaces, text, border, focus, action, selection, status, code and syntax across thirteen dark and light palettes. Accent and action are separate roles. See §Colour roles and theme compatibility. |
 | Text | `TextSize`: 11, 12, 14, 16px default reference, plus UI/editor preferences. `HeadlineSize` and `BufferLineHeight` provide additional scales. UI and monospace families serve different roles. |
 | Spacing | `DynamicSpacing`: 0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 at default settings; density and UI scaling apply. |
-| Radius | `Radius::px`: 0, 2, 4, 5, 6, 8, 10, 12px, and full, before the corner-rounding preference. Use component role tokens rather than assuming a radius from an enum name. |
+| Radius | `Radius::px`: 4, 6, 9, 12px, and full, before the corner-rounding preference. Use component role tokens rather than assuming a radius from an enum name. |
 | Controls | `ButtonSize` reference heights: 16, 18, 22, 28, 32px; `IconSize` has 10, 12, 14, 16 and 48px plus custom. |
 | Border and focus | `BORDER_WIDTH` is 1px, and the focus ring is a `BORDER_WIDTH` border in `focus_ring`. Validate that focus remains visible in real contexts rather than copying a web outline rule. |
-| Depth | Flat structural surfaces; `ElevationIndex` reserves restrained shadows for elevated surfaces and modals. |
+| Depth | Quiet structural surfaces; `ElevationIndex` gives floating surfaces and modals soft shadows. |
 | Motion | `Motion`: 150ms interaction, 200ms layout, 260ms travel (50ms instant is specified but not built); reduced motion resolves centrally. Loops and chart cadences have separate contracts. |
 
 The values above are resolved by their respective tokens; they do not all scale
@@ -85,10 +86,10 @@ All pixel values here are base values before user preferences, unless noted.
 | UI typography | Default 14px, large 16px, small 12px, extra-small 11px; use `TextSize` and user-adjustable UI/editor sizes. Use the UI family for interface text and the monospace family for code; preserve platform fallback. |
 | Headings and leading | Use `TextSize::Large` for page titles and `HeadlineSize` for modal headlines. Buffer line-height roles are 1.3 (`Standard`) and 1.618 (`Comfortable`); select per context and respect custom settings. Do not apply global tracking. |
 | Density | `DynamicSpacing` resolves the listed 14-step scale at compact 80%, default 100%, and comfortable 120%, interpolating between anchors before UI font scaling. Use semantic gaps and insets consistently. |
-| Corners | `None` 0, `XSmall` 2, `Small` 4, `Medium` 5, `Large` 6, `XLarge` 8, `XXLarge` 10, `XXXLarge` 12, `Full` 9999px. The corner-rounding preference adds up to 4px to intermediate steps, not `None` or `Full`; it is not density- or font-scaled. |
-| Component corners | Compact/none buttons and list entries use `Medium` 5px; default/medium/large buttons and inputs use `Large` 6px; the chat composer has a fixed 12px radius independent of preferences; panels use `XLarge` 8px; badges use `Small` 4px. Resolve through component tokens. |
+| Corners | `Small` 4, `Medium` 6, `Large` 9, `XLarge` 12, `Full` 9999px. The corner-rounding preference adds up to 4px to non-full steps; it is not density- or font-scaled. |
+| Component corners | Compact/none buttons and list entries use `Medium` 6px; default/medium/large buttons and inputs use `Large` 9px; the chat composer has a fixed 12px radius independent of preferences; panels use `XLarge` 12px; modal cards use 16px; badges are fully rounded. Resolve through component tokens. |
 | Controls | Button heights are `None` 16, `Compact` 18, `Default` 22, `Medium` 28 and `Large` 32px before UI scaling. Match the icon to the button's `icon_size`; the icon scale is 10, 12, 14, 16 and 48px, plus custom. Visual size is not proof of usable hit area. |
-| Edges and depth | Borders and focus rings are 1px. Keep structural regions flat; floating surfaces may combine a hairline with a restrained shadow. Existing composer contact shadows are a documented exception, not a general card treatment. Focus remains distinct from selection. |
+| Edges and depth | Borders and focus rings are 1px. Keep structural regions calm; floating surfaces combine frosted or opaque fills with a fine edge and a soft shadow. Focus remains distinct from selection. |
 | Motion | Interaction 150ms, layout 200ms and travel 260ms, all decelerating; instant (50ms, linear) is specified but not built — add it to `Motion` with its first caller. Hover, press, focus and selection do not use travel; a control changing size and meaning may. No bounce by default. Reduced motion resolves to the end state. |
 
 ### Colour roles and theme compatibility
@@ -201,11 +202,11 @@ existing components before creating a new primitive.
 | Chips and badges | Distinguish actionable chips from informational badges; use button sizing/states for controls and badge roles for status. Make selected/open states clear, handle long labels, and provide a keyboard path. |
 | Sidebar and side panels | Preserve stable navigation, selected versus focused states, resizable bounds and focus on open/close. Support direct manipulation and a keyboard route for important pane actions; do not assume a pane steals focus. |
 | Dropdowns, pickers and context menus | Anchor dropdowns and pickers to their trigger; pointer-invoked context menus may anchor to the pointer and need a keyboard equivalent. Stay within the viewport, support keyboard navigation and dismissal, and restore focus. Positioning and row helpers do not provide the full interaction contract: callers must implement and test bounds, keyboard behavior, dismissal and focus restoration. Window-space popovers do not snap automatically. Test long labels and large UI scaling. |
-| Inputs and composer | Use `input::RADIUS` / fixed `input::composer_radius` and existing input behavior. The chat composer is an explicit glass exception: with enabled, supported wallpaper frost behind it use the contrast-adjusted card fill and backdrop blur; otherwise keep its opaque surface. Hero wallpaper is behind the composer only on the new-task page. Preserve native text editing, paste, selection, accessible labels, visible focus and nearby validation. Keep access and workflow controls visible; wrap the toolbar when space is tight. Keep the composer distinct from the transcript without making it a decorative card. |
+| Inputs and composer | Use `input::RADIUS` / fixed `input::composer_radius` and existing input behavior. The chat composer uses contrast-adjusted floating glass where supported and an opaque fallback otherwise. Hero wallpaper is behind the composer only on the new-task page. Preserve native text editing, paste, selection, accessible labels, visible focus and nearby validation. Keep access and workflow controls visible; wrap the toolbar when space is tight. Keep the composer distinct from the transcript without making it a decorative card. |
 | Transcript edge | Above the composer, the existing 3rem bottom settle appears only while scrolled away from the live edge. With wallpaper glass, smoothly blend sharp into frosted backdrop from top to bottom over the original unclipped bounds; add no palette wash or black dimming. Use one Gaussian pass, not stacked strips or blur animation. Without glass or renderer support, retain the composited-page fade. Let the jump button supply its own contrast; the composer follows its glass contract. |
 | New-task page | The same composer in the middle of the page, not a second template: the chat column with an empty transcript, centered by flex weights (`new_task::settle`) at `new_task::COMPOSER_MAX_W` and narrowing with the window. Its context header shares the composer surface: folder and branch controls on the left, and the working-directory control on the right when in a repository. The location control names the project at its main checkout and the worktree inside a linked worktree; its picker retains the Local row. The folder control opens the workspace picker beneath itself; the status row does not duplicate these controls. No headline, mark or card above it. The composer border remains a quiet hairline while its input is focused; the caret indicates text focus. The empty footer leaves out the context meter until real usage exists. The first send docks the composer into the session layout on one `Travel` clock; Reduce Motion paints the session frame at once. |
 | Dialogs | Identify the task and affected object; keep actions in a predictable footer. Trap focus while modal and restore it on close. Escape and scrim clicks cancel dismissible dialogs; a mandatory or in-progress dialog may prevent dismissal when interruption would be unsafe, while explaining the state and any available action. Make destructive consequences explicit. Verify the actual focus and keyboard implementation. |
-| Rows, tables and lists | Use shared list metrics and interaction states; keep hover, selection and focus distinct, metadata readable, and dense content inspectable. Use stable alignment and keyboard-accessible disclosure for truncated values. |
+| Rows, tables and lists | Use shared list metrics and interaction states; keep hover, selection and focus distinct, metadata readable, and dense content inspectable. Use stable alignment and keyboard-accessible disclosure for truncated values. Picker rows sit `picker::row_gap` apart and only the highlight fills one — the row in force is said by its check, Medium weight and brighter ink, never by a second filled slab. A two-line row's trailing note, badge, count or check goes in `picker_title_slot`, on the title's line. Leading marks in one list are one icon family (stroke glyphs); a logo stays on its chip. In a dense list, status words take the quiet `experimental_tag`, not the warning badge. |
 | Toggles, tooltips and feedback | Inspect `ui/switch.rs`, `empty_state` and `error_state` in `app/helpers.rs`, and `ui/tooltip.rs`. `switch` provides the visual, pointer and keyboard behavior (Tab focus, focus ring, Space/Enter), not an accessible name; supply or record that separately. Give switches clear state, avoid hover-only essential information, and place actionable errors near their cause. Use loading feedback without unnecessary layout shifts. |
 
 ## Icon policy
@@ -244,6 +245,7 @@ has adopted each treatment.
 | Disclosure and switch | Existing disclosure and switch helpers; keep layout and indicator state consistent. |
 | Menu, popover and dialog | `anchored_popover` applies entrance motion; `modal_card` supplies the frame, not animation. See `dialog.rs` for composing the card with `motion::enter`. Preserve the spatial relationship to the trigger. |
 | New-task composer dock | One `Motion::Travel`: the gap under the composer closes, the column widens to the session's, the folder row collapses and the transcript's ink fades in, all from `new_task::settle`. Its cubic ease-out softens the long slide; the clock starts on the first visible chat frame. A resumed session never replays it. |
+| Send control | The idle send button grows from a disabled square into a labelled action when the draft becomes sendable, and reverses from its current width if cleared. Width and label share `Motion::Travel`; the action responds immediately and Reduce Motion resolves the final shape. During a run, Stop and the explicit queue/steer lanes retain their existing behavior. |
 | Side-panel resize/open/close | Existing layout motion or retargetable spring where appropriate; track direct manipulation promptly and avoid overshoot. |
 | Spinner and live progress | Existing loop helpers and cadence; retain a static state indicator under reduced motion. |
 | Charts | Use the separate `theme::tokens::chart` cadence, not chart durations for control feedback. |
@@ -281,27 +283,65 @@ shipped tokens or instructions to add abstractions prematurely:
    checks. Add screenshot or interaction coverage where tooling supports it;
    don't claim a visual or platform check that was not run.
 
-## Apple-inspired materials: opt-in exploration only
+## Frosted materials
 
-Opaque chrome is the default; the wallpaper-glass chat composer and the
-full-window glass pages are explicit exceptions, not a whole-app glassmorphism
-interface. The one shipped `floating`
+Opaque chrome is the default. Floating and inspector surfaces use a common
+frosted material, and wallpaper can extend the treatment to pages. The `floating`
 material: in dark palettes, layers built on `elevation_2` / `elevation_3` frost
 the workbench behind them even with no wallpaper (`Theme::floating_glass_sigma`,
 `FLOATING_GLASS_BLUR`, and a per-palette tint from `floating_glass_alpha`: the
-lowest alpha above `FLOATING_GLASS_MIN_ALPHA` that keeps text contrast over
+lowest alpha above `FLOATING_GLASS_MIN_ALPHA` that keeps primary, secondary,
+and muted text at 4.5:1 or better over
 black and white backdrops). Light palettes, unsupported renderers and the OS Reduce
 Transparency / Increase Contrast preferences keep the opaque card. Do not give a
 floating surface its own blur value or override its fill after the elevation
-helper; structural panes, transcript cards and the composer stay wallpaper-only.
+helper; structural panes (sidebar, top bar) stay wallpaper-only. The composer
+uses the same contrast-controlled floating frost in dark palettes, with the
+wallpaper setting and accessibility fallbacks respected.
+
+The queue, run-status, approval and inline-question cards above the composer
+use `SurfaceExt::floating_card_surface`, including their existing semantic
+edges. They share the floating material and its opaque fallback; their layout,
+keyboard handling and state remain owned by each surface.
+
+**Inspector glass** (approved 2026-11-20) is the material of the surfaces a
+developer reads a run through: the transcript's cards (tool calls, thoughts,
+delegations, questions, summaries) and the right-dock cards (session details,
+Review, Explorer). It frosts under the *floating* rule — over a wallpaper the
+wallpaper contract decides; with none, dark palettes on a renderer with a
+backdrop pass frost, and light palettes, Reduce Transparency and Increase
+Contrast keep the opaque card. Build it only through the shared helpers:
+`SurfaceExt::inspector_card` for a transcript card (fill from
+`frosted_transcript_fill` → `Theme::inspector_fill`), `SurfaceExt::dock_card`
+for a dock frame with its root on `Theme::dock_canvas`, and
+`Theme::inspector_well` for a text well inside a card (a tool call's command
+and output) — a well sits at its own contrast floor, never a second faint layer
+of glass. A transcript inspector card draws **no outline** (approved
+2026-11-20): its tint and frost carry the shape, and an opaque card keeps the
+`overlay` plate; its 1px border stays, transparent, because that channel
+carries the blur request and keeps both cases the same size. Dividers *inside*
+a card (header / detail) and the dock frames keep their hairlines. The
+material's polish is fixed: no edge highlight (the top-edge sheen was removed
+2026-11-20 — it read as a stray, differently coloured border); an open card (a tool
+call or a delegation showing its detail) takes `SurfaceExt::inspector_lift` —
+`ElevationIndex::ElevatedSurface`'s contact shadow — only while it frosts; and
+a child that reaches the card's edge (header wash, error strip, detail plane)
+rounds to `inspector_inner_radius`, the card's radius less its 1px border, so
+the corners run concentric. No per-component blur value, no edge highlight, no shadow on an opaque card, and
+no glass on inputs or structural chrome. The renderer cost is one
+backdrop pass per visible card (the transcript is virtualized); measure frame
+time on device before widening it further.
+
 Pages and dock cards are glass over a **full-window** wallpaper (approved
 2026-11-18): frame a page or dock with `SurfaceExt::page_card`, paint the page
 root with `Theme::page_canvas`, raised surfaces inside it with
 `Theme::page_fill`, and give a sticky band over scrolling rows
 `page_sticky_frost`. Do not nest another blur inside a page beyond the shared
-`card_surface` boards. Hero mode and no-wallpaper pages stay opaque. If the user
-asks for further material exploration, first present the tradeoff and obtain
-approval before changing that contract or the default.
+`card_surface` boards. Settings groups and shared Usage boards use floating
+glass on a bare dark page, with `Theme::for_page` excluding hero-only wallpaper.
+They retain the wallpaper setting and opaque accessibility fallback. Keep the
+underlying page opaque without full-window wallpaper, and avoid introducing
+extra nested blur layers inside a board.
 
 A possible **experimental** material system could have semantic roles such as
 `opaque`, `floating` and `overlay`, not arbitrary per-component blur values.

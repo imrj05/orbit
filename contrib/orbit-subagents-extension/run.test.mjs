@@ -64,7 +64,7 @@ test("the prompt is the agent body plus the two fixed blocks", () => {
   assert.ok(prompt.indexOf(SCOPE_BLOCK) < prompt.indexOf(GUIDANCE_BLOCK));
 });
 
-test("argv always pins json mode, no session, approval and a task", () => {
+test("argv pins json mode, no session, fail-closed project trust and a task", () => {
   const argv = buildArgv({
     promptPath: "/tmp/p.md",
     prompt: "Task: find auth",
@@ -94,8 +94,21 @@ test("argv always pins json mode, no session, approval and a task", () => {
     "--extension",
     "/a/workflow.js",
   ]);
-  assert.ok(argv.includes("--approve"));
+  assert.ok(argv.includes("--no-approve"));
+  assert.ok(!argv.includes("--approve"));
   assert.deepEqual(argv.slice(-4), ["--append-system-prompt", "/tmp/p.md", "--", "Task: find auth"]);
+});
+
+test("argv grants project trust only for an explicit trusted parent", () => {
+  const trusted = buildArgv({ prompt: "Task: x", approveProject: true });
+  assert.ok(trusted.includes("--approve"));
+  assert.ok(!trusted.includes("--no-approve"));
+
+  for (const approveProject of [false, undefined]) {
+    const untrusted = buildArgv({ prompt: "Task: x", approveProject });
+    assert.ok(untrusted.includes("--no-approve"));
+    assert.ok(!untrusted.includes("--approve"));
+  }
 });
 
 test("an exec ceiling keeps MCP tools declared and omits exclude-tools", () => {
@@ -112,6 +125,12 @@ test("an absent tools line passes no tool flag; an empty one disables tools", ()
 
 test("the child env carries every guardrail", () => {
   const env = buildEnv({
+    parentEnv: {
+      PATH: "/bin",
+      MCP_API_KEY: "secret",
+      ORBIT_SUBAGENT_STATUS_TOKEN: "parent-token",
+    },
+    sameWorkspace: true,
     parentSessionId: "s1",
     agentName: "worker",
     ceiling: "exec",
@@ -123,6 +142,39 @@ test("the child env carries every guardrail", () => {
   assert.equal(env.ORBIT_SUBAGENT_DEPTH, "1");
   assert.equal(env.ORBIT_SUBAGENT_PARENT, "s1");
   assert.equal(env.PI_SKIP_VERSION_CHECK, "1");
+  assert.equal(env.PATH, "/bin");
+  assert.equal(env.MCP_API_KEY, "secret", "same-workspace children keep MCP credentials");
+  assert.equal(env.ORBIT_SUBAGENT_STATUS_TOKEN, "", "the parent's status channel is never inherited");
+});
+
+test("cross-workspace and unverified child envs strip every MCP secret", () => {
+  const parentEnv = {
+    PATH: "/bin",
+    MCP_API_KEY: "secret",
+    MCP_OTHER_TOKEN: "also-secret",
+    OTHER_CREDENTIAL: "secret-without-a-prefix",
+    ORBIT_WORKFLOW_MODE: "build",
+    ORBIT_SUBAGENT_CEILING: "all",
+    ORBIT_PROJECT_TRUST: "1",
+    ORBIT_MCP_SECRET_NAMES: JSON.stringify([
+      "MCP_API_KEY",
+      "MCP_OTHER_TOKEN",
+      "OTHER_CREDENTIAL",
+      "ORBIT_WORKFLOW_MODE",
+      "ORBIT_SUBAGENT_CEILING",
+    ]),
+  };
+  for (const sameWorkspace of [false, undefined]) {
+    const env = buildEnv({ parentEnv, sameWorkspace, workflowMode: "plan", ceiling: "read" });
+    assert.equal(env.PATH, "/bin");
+    assert.equal(env.ORBIT_WORKFLOW_MODE, "plan");
+    assert.equal(env.ORBIT_SUBAGENT_CEILING, "read");
+    assert.equal(env.OTHER_CREDENTIAL, undefined);
+    assert.equal(env.MCP_API_KEY, undefined);
+    assert.equal(env.MCP_OTHER_TOKEN, undefined);
+    assert.equal(env.ORBIT_PROJECT_TRUST, "0");
+    assert.equal(env.ORBIT_MCP_SECRET_NAMES, undefined);
+  }
 });
 
 test("the decoder splits on LF, not on Unicode separators", () => {

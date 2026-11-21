@@ -98,6 +98,7 @@ mod session_order;
 mod perf;
 mod permissions;
 mod plugins;
+mod project_trust;
 mod provider_accounts;
 mod providers;
 mod quota;
@@ -312,6 +313,7 @@ actions!(
         WorkInMenuFirst,
         WorkInMenuLast,
         WorkInMenuConfirm,
+        WorkInMenuOpenSubmenu,
         WorkInMenuClose
     ]
 );
@@ -559,6 +561,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // Work-in picker keys — same shape again.
         KeyBinding::new("escape", WorkInMenuClose, Some("WorkInMenu")),
         KeyBinding::new("enter", WorkInMenuConfirm, Some("WorkInMenu")),
+        KeyBinding::new("right", WorkInMenuOpenSubmenu, Some("WorkInMenu")),
         KeyBinding::new("up", WorkInMenuPrev, Some("WorkInMenu")),
         KeyBinding::new("down", WorkInMenuNext, Some("WorkInMenu")),
         KeyBinding::new("home", WorkInMenuFirst, Some("WorkInMenu")),

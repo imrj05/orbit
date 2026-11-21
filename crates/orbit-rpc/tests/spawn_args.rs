@@ -2,9 +2,9 @@
 //! default session model (`--provider` / `--model`).
 //!
 //! A fake pi records its argv, so the test proves the flags reach the child
-//! process and that an empty slice leaves the base `--mode rpc --approve` argv
-//! byte-identical to before the seam existed. Unix-only because the fake server
-//! is a shell script.
+//! process, convenience spawns fail closed with `--no-approve`, and the
+//! trust-aware entry point selects `--approve` only for an explicit trusted
+//! launch. Unix-only because the fake server is a shell script.
 
 #![cfg(unix)]
 
@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use orbit_rpc::PiClient;
+use orbit_rpc::{PiClient, PI_BIN_ENV};
 
-/// Distinguishes the two tests' scratch dirs; `SystemTime` alone can return
+/// Distinguishes the tests' scratch dirs; `SystemTime` alone can return
 /// the same nanosecond to tests that construct a `FakePi` in parallel.
 static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
 
@@ -84,8 +84,8 @@ fn empty_extra_args_keep_the_base_argv() {
             .expect("spawn fake pi");
     assert_eq!(
         fake.read_argv(),
-        vec!["--mode", "rpc", "--approve"],
-        "an empty extra-args slice must not change argv"
+        vec!["--mode", "rpc", "--no-approve"],
+        "an empty extra-args slice must keep the fail-closed base argv"
     );
 }
 
@@ -111,7 +111,7 @@ fn extra_args_are_appended_to_the_base_argv() {
         vec![
             "--mode",
             "rpc",
-            "--approve",
+            "--no-approve",
             "--provider",
             "anthropic",
             "--model",
@@ -119,5 +119,24 @@ fn extra_args_are_appended_to_the_base_argv() {
             "--thinking",
             "high",
         ]
+    );
+}
+
+#[test]
+fn explicit_project_trust_selects_approve() {
+    let fake = FakePi::new();
+    let previous = std::env::var_os(PI_BIN_ENV);
+    std::env::set_var(PI_BIN_ENV, &fake.bin);
+    let spawned =
+        PiClient::spawn_with_extensions_and_env_and_args(workspace(), None, &[], &[], &[], true);
+    match previous {
+        Some(value) => std::env::set_var(PI_BIN_ENV, value),
+        None => std::env::remove_var(PI_BIN_ENV),
+    }
+    let _client = spawned.expect("spawn trusted fake pi");
+    assert_eq!(
+        fake.read_argv(),
+        vec!["--mode", "rpc", "--approve"],
+        "the trust-aware entry point must select exactly one trust flag"
     );
 }

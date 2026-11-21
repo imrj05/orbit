@@ -28,9 +28,10 @@ use crate::theme::tokens::{
     context_menu, modal, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::ui::banner::{Banner, BannerTone};
-use crate::ui::field::{form_label, FormRow, TextField};
+use crate::ui::field::{form_label, search_field, FormRow, TextField};
 use crate::ui::popover::{popover_picker, PopoverExt};
 use crate::ui::prelude::*;
+use crate::ui::row::picker_title_slot;
 use crate::worktree::{self, Worktree, WorktreeError, WorktreeManager};
 use crate::worktree_setup;
 
@@ -1500,7 +1501,7 @@ impl OrbitApp {
                     .items_center()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .child(icon(
-                        "icons/branch.svg",
+                        WORKTREE_ICON,
                         IconSize::Medium.px(&theme),
                         theme.text_secondary,
                     ))
@@ -3037,13 +3038,25 @@ pub(super) fn missing_worktree_local(missing: &Path, candidates: &[PathBuf]) -> 
 // Git. The host rows come from `remote-hosts.json`, read once when the picker
 // opens — never per frame.
 
+/// The worktree mark: a folder with a branch, the same glyph Settings →
+/// Worktrees uses. A worktree is a *place* (a checkout folder), so it never
+/// borrows the branch glyph the branch chip beside it already means.
+pub(super) const WORKTREE_ICON: &str = "icons/worktree.svg";
+
 /// One row of the status bar's "Work in" picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WorkInRow {
-    /// This device: the working folder the task would run in.
+    /// This device: the main checkout, or the worktree the task runs in now.
     Folder(crate::working_folder::FolderRow),
+    /// Create a worktree (the Worktrees page's quick-create dialog).
+    NewWorktree,
+    /// Opens the flyout that lists and searches the repository's worktrees.
+    ExistingWorktrees { count: usize },
     /// A configured SSH host, where only the agent runs.
     Remote(crate::remote_hosts::RemoteHost),
+    /// Put this project on a server (git clone there plus its ignored
+    /// files), offered under the hosts once there is a host to go to.
+    AddToServer,
 }
 
 impl OrbitApp {
@@ -3054,22 +3067,186 @@ impl OrbitApp {
             .or_else(|| self.main_worktree_path())
     }
 
-    /// The picker's rows: this device's working folder, then each enabled
-    /// remote host. `None` when there is no repository, so the control hides
-    /// and non-worktree projects are unchanged (§39).
+    /// The picker's rows, in the order a place is chosen: the current
+    /// checkout (the main one), the worktree the task runs in now when that is
+    /// not the main checkout — so the check is always on screen — then **New
+    /// worktree**, **Existing worktrees** (when the repository has any; the
+    /// list itself is the flyout), each enabled remote host, and **Add this
+    /// project to a server** under them. The new-task page's folder picker
+    /// lists folders only, so every *where* lives here. `None` when
+    /// there is no repository, so the control hides and non-worktree projects
+    /// are unchanged (§39).
     pub(super) fn work_in_rows(&self) -> Option<Vec<WorkInRow>> {
         let root = self.work_in_root()?;
-        let local = crate::working_folder::location_rows(
+        let all = crate::working_folder::location_rows(
+            &self.worktrees,
+            &root,
+            self.current_workspace.as_deref(),
+        );
+        // In a session (a conversation on screen) the picker only says where
+        // this task runs — the current checkout, or the worktree it runs in.
+        // Moving elsewhere (a new or existing worktree, a remote host) is
+        // offered on the new-task page, before there is a session to leave.
+        if !self.transcript.is_empty() {
+            let current = all
+                .iter()
+                .find(|row| row.selected)
+                .or_else(|| all.first())
+                .cloned();
+            return Some(current.map(WorkInRow::Folder).into_iter().collect());
+        }
+        let mut folders = all.into_iter();
+        let mut rows: Vec<WorkInRow> = folders.next().map(WorkInRow::Folder).into_iter().collect();
+        let linked: Vec<_> = folders.collect();
+        if let Some(active) = linked.iter().find(|row| row.selected) {
+            rows.push(WorkInRow::Folder(active.clone()));
+        }
+        rows.push(WorkInRow::NewWorktree);
+        if !linked.is_empty() {
+            rows.push(WorkInRow::ExistingWorktrees {
+                count: linked.len(),
+            });
+        }
+        rows.extend(self.work_in_hosts.iter().cloned().map(WorkInRow::Remote));
+        if !self.work_in_hosts.is_empty() {
+            rows.push(WorkInRow::AddToServer);
+        }
+        Some(rows)
+    }
+
+    /// The flyout's rows: every linked worktree (not the main checkout), in
+    /// Git's order, narrowed by the search field over its name, branch and
+    /// path.
+    pub(super) fn work_in_worktree_rows(&self) -> Vec<crate::working_folder::FolderRow> {
+        let Some(root) = self.work_in_root() else {
+            return Vec::new();
+        };
+        let needle = self.work_in_worktree_query.as_str();
+        crate::working_folder::location_rows(
             &self.worktrees,
             &root,
             self.current_workspace.as_deref(),
         )
         .into_iter()
-        .next()
-        .map(WorkInRow::Folder);
-        let mut rows: Vec<WorkInRow> = local.into_iter().collect();
-        rows.extend(self.work_in_hosts.iter().cloned().map(WorkInRow::Remote));
-        Some(rows)
+        .skip(1)
+        .filter(|row| {
+            needle.is_empty()
+                || row.label.to_lowercase().contains(needle)
+                || row
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.to_lowercase().contains(needle))
+                || row
+                    .folder
+                    .path
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(needle)
+        })
+        .collect()
+    }
+
+    /// Open the "Existing worktrees" flyout with an empty search, the active
+    /// worktree highlighted, and the keyboard in its search field.
+    pub(super) fn open_work_in_flyout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.work_in_worktree_filter
+            .update(cx, |input, cx| input.clear(cx));
+        self.work_in_worktree_query.clear();
+        self.work_in_flyout_open = true;
+        let rows = self.work_in_worktree_rows();
+        let active = rows.iter().position(|row| row.selected).unwrap_or(0);
+        self.work_in_flyout_highlight = crate::ui::menu::MenuState::default();
+        self.work_in_flyout_highlight.highlight(active);
+        self.work_in_flyout_scroll.set_offset(point(px(0.), px(0.)));
+        self.work_in_worktree_filter.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Close the flyout; `refocus` hands the keyboard back to the picker
+    /// (Escape), otherwise focus is left to whoever closes the picker too.
+    pub(super) fn close_work_in_flyout(
+        &mut self,
+        refocus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.work_in_flyout_open {
+            return;
+        }
+        self.work_in_flyout_open = false;
+        self.work_in_flyout_bounds.set(None);
+        if refocus {
+            window.focus(&self.work_in_menu_focus);
+        }
+        cx.notify();
+    }
+
+    /// → on the picker: open the flyout when the highlight is on "Existing
+    /// worktrees". Elsewhere it does nothing.
+    pub(super) fn on_work_in_open_submenu(
+        &mut self,
+        _: &crate::WorkInMenuOpenSubmenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows = self.work_in_rows().unwrap_or_default();
+        let ix = self.work_in_menu_highlight.highlighted();
+        if matches!(rows.get(ix), Some(WorkInRow::ExistingWorktrees { .. })) {
+            self.open_work_in_flyout(window, cx);
+        }
+    }
+
+    pub(super) fn on_work_in_flyout_next(
+        &mut self,
+        _: &crate::PickerSelectNext,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.work_in_worktree_rows().len();
+        if count > 0 {
+            self.work_in_flyout_highlight.next(count);
+            self.work_in_flyout_scroll
+                .scroll_to_item(self.work_in_flyout_highlight.highlighted());
+        }
+        cx.notify();
+    }
+
+    pub(super) fn on_work_in_flyout_prev(
+        &mut self,
+        _: &crate::PickerSelectPrev,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.work_in_worktree_rows().len();
+        if count > 0 {
+            self.work_in_flyout_highlight.prev(count);
+            self.work_in_flyout_scroll
+                .scroll_to_item(self.work_in_flyout_highlight.highlighted());
+        }
+        cx.notify();
+    }
+
+    pub(super) fn on_work_in_flyout_confirm(
+        &mut self,
+        _: &crate::PickerConfirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows = self.work_in_worktree_rows();
+        self.work_in_flyout_highlight.reconcile(rows.len(), |_| true);
+        let ix = self.work_in_flyout_highlight.highlighted();
+        if let Some(row) = rows.get(ix).cloned() {
+            self.choose_work_in_folder(row, window, cx);
+        }
+    }
+
+    pub(super) fn on_work_in_flyout_cancel(
+        &mut self,
+        _: &crate::PickerCancel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_work_in_flyout(true, window, cx);
     }
 
     /// The main worktree path, when one is known.
@@ -3160,9 +3337,12 @@ impl OrbitApp {
     /// must not overlap it.
     pub(super) fn dismiss_work_in_menu(&mut self) {
         self.work_in_menu_open = false;
+        self.work_in_flyout_open = false;
     }
 
     pub(super) fn close_work_in_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.work_in_flyout_open = false;
+        self.work_in_flyout_bounds.set(None);
         if self.work_in_menu_open {
             self.work_in_menu_open = false;
             self.input.read(cx).focus(window);
@@ -3282,25 +3462,14 @@ impl OrbitApp {
             return;
         };
         match row {
-            WorkInRow::Folder(folder) => {
-                let target = folder.folder;
-                if folder.prunable {
-                    // Git lists it but the directory moved or vanished:
-                    // reconnect it rather than fail on an empty click.
-                    self.close_work_in_menu(window, cx);
-                    self.adopt_worktree(target.path, window, cx);
-                    return;
-                }
-                if !target.location.is_usable() {
-                    self.close_work_in_menu(window, cx);
-                    self.adopt_worktree(target.path, window, cx);
-                    return;
-                }
-                self.work_in_menu_open = false;
-                if !self.worktree_is_active(&target.path) {
-                    self.open_worktree(&target.path, cx);
-                }
+            WorkInRow::Folder(folder) => self.choose_work_in_folder(folder, window, cx),
+            WorkInRow::NewWorktree => {
+                // The same quick create the Worktrees page's New button uses;
+                // "open after create" decides whether the task moves into it.
+                self.close_work_in_menu(window, cx);
+                self.open_new_worktree_with_suggestion(window, cx);
             }
+            WorkInRow::ExistingWorktrees { .. } => self.open_work_in_flyout(window, cx),
             WorkInRow::Remote(host) => {
                 // Starting on the host parks this session the way any other
                 // folder change does; the probe asks for a password first if
@@ -3308,7 +3477,36 @@ impl OrbitApp {
                 self.close_work_in_menu(window, cx);
                 self.connect_remote_task(host, cx);
             }
+            WorkInRow::AddToServer => {
+                self.close_work_in_menu(window, cx);
+                self.open_server_clone(None, window, cx);
+            }
         }
+    }
+
+    /// Move the task to `folder` (a row of the picker or of its flyout): a
+    /// usable folder starts the task there; a prunable or broken one is
+    /// reconnected instead of failing on an empty click.
+    pub(super) fn choose_work_in_folder(
+        &mut self,
+        folder: crate::working_folder::FolderRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = folder.folder;
+        if folder.prunable || !target.location.is_usable() {
+            // Git lists it but the directory moved or vanished: reconnect it
+            // rather than fail on an empty click.
+            self.close_work_in_menu(window, cx);
+            self.adopt_worktree(target.path, window, cx);
+            return;
+        }
+        self.work_in_flyout_open = false;
+        self.work_in_menu_open = false;
+        if !self.worktree_is_active(&target.path) {
+            self.open_worktree(&target.path, cx);
+        }
+        cx.notify();
     }
 
     /// The quick create flow the Worktrees page's **New** button uses: open the
@@ -3375,7 +3573,7 @@ impl OrbitApp {
         // branch glyph for a worktree, a folder for anything else.
         let icon_path = match self.working_folder().map(|folder| folder.location) {
             Some(crate::working_folder::Location::Local) => "icons/monitor.svg",
-            Some(crate::working_folder::Location::Worktree { .. }) => "icons/branch.svg",
+            Some(crate::working_folder::Location::Worktree { .. }) => WORKTREE_ICON,
             Some(crate::working_folder::Location::PlainFolder { .. }) => "icons/folder.svg",
             Some(crate::working_folder::Location::Broken(_)) => "icons/alert-circle.svg",
             None => "icons/monitor.svg",
@@ -3411,10 +3609,6 @@ impl OrbitApp {
         let this = cx.weak_entity();
         let rows = self.work_in_rows().unwrap_or_default();
         let selected_ix = self.work_in_selected_ix(&rows);
-        // Worth saying whenever there is a conversation to leave behind, not
-        // only while a turn streams: starting a task in another place parks a
-        // live run and tears down an idle session either way.
-        let leaving = self.is_running() || !self.transcript.is_empty();
 
         let mut list = div()
             .id("work-in-list")
@@ -3426,13 +3620,19 @@ impl OrbitApp {
             .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
-            .gap(DynamicSpacing::Base01.px(&theme));
+            .gap(picker::row_gap(&theme));
         for (ix, row) in rows.iter().enumerate() {
-            // The device row and the hosts are one list; a hairline opens the
-            // host group where it starts.
+            // Three groups in one list — this device's places (current
+            // checkout, new worktree), the existing worktrees, the remote
+            // hosts — each opened by a hairline where it starts.
             let group_start = ix > 0
-                && matches!(row, WorkInRow::Remote(_))
-                && matches!(rows[ix - 1], WorkInRow::Folder(_));
+                && match row {
+                    WorkInRow::ExistingWorktrees { .. } => true,
+                    WorkInRow::Remote(_) => !matches!(rows[ix - 1], WorkInRow::Remote(_)),
+                    // Joins the hosts it acts on, under the same hairline.
+                    WorkInRow::AddToServer => false,
+                    _ => false,
+                };
             list = list.child(self.work_in_row(
                 ix,
                 row,
@@ -3443,9 +3643,14 @@ impl OrbitApp {
             ));
         }
 
+        // A definite width in rems, so it grows with the UI font. It cannot be
+        // content-sized: in gpui 0.2.2 a shrink-to-fit popover gives the row's
+        // flexible text column no room, and the check collapses onto the
+        // label. A longer host or path truncates and shows in full on hover
+        // (`PickerRow`'s tooltip).
         let mut popup = popover_picker(div(), &theme)
             .debug_selector(|| "work-in-popup".to_string())
-            .w(px(300.))
+            .w(picker::compact_width(&theme))
             .key_context("WorkInMenu")
             .track_focus(&self.work_in_menu_focus)
             .on_action(cx.listener(Self::on_work_in_next))
@@ -3453,31 +3658,197 @@ impl OrbitApp {
             .on_action(cx.listener(Self::on_work_in_first))
             .on_action(cx.listener(Self::on_work_in_last))
             .on_action(cx.listener(Self::on_work_in_confirm))
+            .on_action(cx.listener(Self::on_work_in_open_submenu))
             .on_action(cx.listener(Self::on_work_in_close))
-            .dismiss_on_outside(cx.listener(|app, _, window, cx| {
+            .dismiss_on_outside(cx.listener(|app, event: &MouseDownEvent, window, cx| {
+                // The flyout paints beside the picker, outside its bounds; a
+                // click in it belongs to the picker, not outside it.
+                let in_flyout = app.work_in_flyout_open
+                    && app
+                        .work_in_flyout_bounds
+                        .get()
+                        .is_some_and(|bounds| bounds.contains(&event.position));
+                if in_flyout {
+                    return;
+                }
                 app.menu_dismissed_at.arm();
                 app.close_work_in_menu(window, cx);
             }))
             .child(picker_header(tr!("working_folder.title"), &theme))
             .child(list);
-        // One honest line: choosing another place starts a task there, and the
-        // conversation on screen belongs to the place being left.
-        if leaving {
-            popup = popup.child(
-                div()
-                    .px(picker::list_padding_y(&theme))
-                    .pb(DynamicSpacing::Base08.px(&theme))
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(tr!("working_folder.new_task_note")),
-            );
-        }
-        popup = popup.child(working_folder_keyboard_hints(&theme));
+        // No "starts a new task there" note: in a session the picker lists
+        // only the place the task runs in, and on the new-task page there is
+        // no session to leave. The footer is the key legend alone.
+        popup = popup.child(working_folder_footer(None, &theme));
+        // The flyout is the picker's sibling, not its child: the picker's
+        // surface clips to its rounded rectangle, which would cut it off.
+        let flyout = self.work_in_flyout(&theme, cx);
         Some(crate::ui::popover::column_menu(
-            popup,
+            div().child(popup).children(flyout),
             "anchored_popover-in-9",
             &theme,
         ))
+    }
+
+    /// The "Existing worktrees" flyout: a search field over the repository's
+    /// worktrees, beside the row that opened it. `None` while closed, or until
+    /// that row has painted once (its bounds anchor the flyout).
+    fn work_in_flyout(&self, theme: &Theme, cx: &Context<Self>) -> Option<AnyElement> {
+        if !self.work_in_flyout_open {
+            return None;
+        }
+        let anchor = self.work_in_existing_bounds.get()?;
+        let rows = self.work_in_worktree_rows();
+        let highlighted = self.work_in_flyout_highlight.highlighted();
+        let this = cx.weak_entity();
+        let body: AnyElement = if rows.is_empty() {
+            div()
+                .debug_selector(|| "work-in-worktrees-empty".to_string())
+                .px(picker::search_padding_x(theme))
+                .py(DynamicSpacing::Base08.px(theme))
+                .text_size(TextSize::Small.px(theme))
+                .text_color(theme.text_muted)
+                .child(tr!("working_folder.no_matching_worktrees"))
+                .into_any_element()
+        } else {
+            let mut list = div()
+                .id("work-in-worktree-list")
+                .debug_selector(|| "work-in-worktree-list".to_string())
+                .w_full()
+                .max_h(px(280.))
+                .overflow_y_scroll()
+                .track_scroll(&self.work_in_flyout_scroll)
+                .py(picker::list_padding_y(theme))
+                .flex()
+                .flex_col()
+                .gap(picker::row_gap(theme));
+            for (ix, row) in rows.iter().enumerate() {
+                list = list.child(self.work_in_worktree_entry(
+                    ix,
+                    row,
+                    ix == highlighted,
+                    theme,
+                    this.clone(),
+                ));
+            }
+            list.into_any_element()
+        };
+        let bounds = self.work_in_flyout_bounds.clone();
+        let surface = popover_picker(div(), theme)
+            .id("work-in-worktrees")
+            .debug_selector(|| "work-in-worktrees".to_string())
+            .relative()
+            .w(picker::compact_width(theme))
+            .occlude()
+            .on_action(cx.listener(Self::on_work_in_flyout_next))
+            .on_action(cx.listener(Self::on_work_in_flyout_prev))
+            .on_action(cx.listener(Self::on_work_in_flyout_confirm))
+            .on_action(cx.listener(Self::on_work_in_flyout_cancel))
+            .child(
+                search_field(self.work_in_worktree_filter.clone(), theme)
+                    .debug_selector(|| "work-in-worktree-search".to_string()),
+            )
+            .child(body)
+            .child(
+                gpui::canvas(move |painted, _, _| bounds.set(Some(painted)), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
+            );
+        // Beside the row, its search field level with it: the menu's edge plus
+        // the popover gap, then snapped inside the window.
+        let x = anchor.right()
+            + crate::theme::tokens::list_item::inset(theme)
+            + crate::theme::tokens::popover::MENU_OFFSET;
+        let y = anchor.top() - picker::list_padding_y(theme);
+        Some(
+            gpui::anchored()
+                .position_mode(gpui::AnchoredPositionMode::Window)
+                .position(point(x, y))
+                .snap_to_window_with_margin(crate::theme::tokens::popover::WINDOW_MARGIN)
+                .child(surface)
+                .into_any_element(),
+        )
+    }
+
+    /// One worktree in the flyout: its branch over its path, the worktree
+    /// mark, a check on the one the task runs in now, and `prunable` when Git
+    /// lists it but its folder is gone.
+    fn work_in_worktree_entry(
+        &self,
+        ix: usize,
+        row: &crate::working_folder::FolderRow,
+        highlighted: bool,
+        theme: &Theme,
+        this: gpui::WeakEntity<OrbitApp>,
+    ) -> AnyElement {
+        let title = row.detail.clone().unwrap_or_else(|| row.label.clone());
+        let path = crate::skills::display_path(&row.folder.path);
+        let choose = row.clone();
+        let hover = this.clone();
+        picker_entry(
+            div().id(ElementId::NamedInteger("work-in-worktree".into(), ix as u64)),
+            theme,
+        )
+        .debug_selector(move || format!("work-in-worktree-{ix}"))
+        .when(highlighted, |entry| entry.bg(theme.selected_wash()))
+        .when(!highlighted, |entry| entry.hover_state(theme))
+        .on_mouse_move(move |_, _, cx| {
+            hover
+                .update(cx, |app, cx| {
+                    if app.work_in_flyout_highlight.highlighted() != ix {
+                        app.work_in_flyout_highlight.highlight(ix);
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            let choose = choose.clone();
+            this.update(cx, |app, cx| app.choose_work_in_folder(choose, window, cx))
+                .ok();
+        })
+        .child(
+            PickerRow::new(
+                title,
+                if highlighted {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                },
+                if highlighted {
+                    theme.text_secondary
+                } else {
+                    theme.text_muted
+                },
+            )
+            .icon(WORKTREE_ICON, theme.text_muted)
+            .weight(FontWeight::MEDIUM)
+            .detail(path)
+            .mono()
+            .into_element(theme),
+        )
+        .items_start()
+        .when(row.prunable || row.selected, |entry| {
+            entry.child(
+                picker_title_slot(theme)
+                    .children(
+                        row.prunable
+                            .then(|| work_in_tag(tr!("working_folder.prunable"), theme)),
+                    )
+                    .when(row.selected, |slot| {
+                        slot.child(
+                            div()
+                                .debug_selector(|| "work-in-worktree-check".to_string())
+                                .child(icon(
+                                    "icons/check.svg",
+                                    context_menu::ICON.px(theme),
+                                    theme.accent_text,
+                                )),
+                        )
+                    }),
+            )
+        })
+        .into_any_element()
     }
 
     /// One row of the picker: this device, or a remote host. Both are two-line
@@ -3493,12 +3864,16 @@ impl OrbitApp {
         theme: &Theme,
         this: gpui::WeakEntity<OrbitApp>,
     ) -> AnyElement {
-        let highlighted = ix == self.work_in_menu_highlight.highlighted();
+        // The submenu row stays lit while its flyout is open, so the eye can
+        // follow which row the flyout belongs to.
+        let opens_flyout = matches!(row, WorkInRow::ExistingWorktrees { .. });
+        let highlighted = ix == self.work_in_menu_highlight.highlighted()
+            || (opens_flyout && self.work_in_flyout_open);
         let (icon_path, label, detail, prunable) = match row {
             WorkInRow::Folder(folder) => {
                 let icon_path = match &folder.folder.location {
                     crate::working_folder::Location::Local => "icons/monitor.svg",
-                    crate::working_folder::Location::Worktree { .. } => "icons/branch.svg",
+                    crate::working_folder::Location::Worktree { .. } => WORKTREE_ICON,
                     crate::working_folder::Location::PlainFolder { .. } => "icons/folder.svg",
                     crate::working_folder::Location::Broken(_) => "icons/alert-circle.svg",
                 };
@@ -3511,13 +3886,39 @@ impl OrbitApp {
             }
             // A host's `ssh:dir` is a location, so it reads in the mono family
             // the same way a path does.
+            WorkInRow::NewWorktree => (
+                WORKTREE_ICON,
+                tr!("working_folder.new_worktree"),
+                None,
+                false,
+            ),
+            WorkInRow::ExistingWorktrees { .. } => (
+                WORKTREE_ICON,
+                tr!("working_folder.existing_worktrees"),
+                None,
+                false,
+            ),
             WorkInRow::Remote(host) => (
                 "icons/server-stack.svg",
                 tr!("remote.host_row", host = host.name.clone()),
                 Some(host.location()),
                 false,
             ),
+            WorkInRow::AddToServer => (
+                "icons/cloud-upload.svg",
+                tr!("server_clone.picker_row"),
+                None,
+                false,
+            ),
         };
+        let count = match row {
+            WorkInRow::ExistingWorktrees { count } => Some(*count),
+            _ => None,
+        };
+        // Remote hosts are experimental; the row says so where the machine
+        // is chosen, on the title's line.
+        let experimental = matches!(row, WorkInRow::Remote(_));
+        let anchor = opens_flyout.then(|| self.work_in_existing_bounds.clone());
         let this_row = this;
         div()
             .debug_selector(move || format!("work-in-row-{ix}"))
@@ -3529,17 +3930,21 @@ impl OrbitApp {
                     div().id(ElementId::NamedInteger("work-in-entry".into(), ix as u64)),
                     theme,
                 )
-                .when(selected || highlighted, |row| {
-                    row.bg(theme.selected_wash())
-                })
-                .when(!selected && !highlighted, |row| row.hover_state(theme))
+                // Only the highlight fills a row; the place in force is said
+                // by its check and Medium ink, not by a second filled slab.
+                .when(highlighted, |row| row.bg(theme.selected_wash()))
+                .when(!highlighted, |row| row.hover_state(theme))
                 // Scrolling rows under a stationary pointer must not change
-                // the keyboard highlight or trigger a rebuild.
+                // the keyboard highlight or trigger a rebuild. Moving onto
+                // another row puts the flyout away.
                 .on_mouse_move({
                     let this_row = this_row.clone();
-                    move |_, _, cx| {
+                    move |_, window, cx| {
                         this_row
                             .update(cx, |app, cx| {
+                                if !opens_flyout && app.work_in_flyout_open {
+                                    app.close_work_in_flyout(true, window, cx);
+                                }
                                 if app.work_in_menu_highlight.highlighted() != ix {
                                     app.work_in_menu_highlight.highlight(ix);
                                     cx.notify();
@@ -3577,18 +3982,59 @@ impl OrbitApp {
                     }
                     body.into_element(theme)
                 })
-                .children(prunable.then(|| work_in_tag(tr!("working_folder.prunable"), theme)))
-                .when(selected, |row| {
+                // Trailing items share the title's line, not the gap between
+                // the title and its detail.
+                .items_start()
+                .when(prunable || count.is_some() || selected || experimental, |row| {
                     row.child(
-                        div()
-                            .debug_selector(|| "work-in-check".to_string())
-                            .child(icon(
-                                "icons/check.svg",
-                                context_menu::ICON.px(theme),
-                                theme.accent_text,
-                            )),
+                        picker_title_slot(theme)
+                            .children(
+                                prunable.then(|| work_in_tag(tr!("working_folder.prunable"), theme)),
+                            )
+                            .when(experimental, |slot| {
+                                slot.child(crate::ui::chip::experimental_tag(theme))
+                            })
+                            // The submenu row: how many worktrees wait behind
+                            // it, and the chevron that says it opens aside.
+                            .when_some(count, |slot, count| {
+                                slot.child(
+                                    div()
+                                        .flex_none()
+                                        .font(crate::ui::style::text::num_font())
+                                        .text_size(TextSize::Small.px(theme))
+                                        .text_color(theme.text_muted)
+                                        .child(count.to_string()),
+                                )
+                                .child(icon(
+                                    "icons/chevron-right.svg",
+                                    context_menu::ICON.px(theme),
+                                    theme.text_muted,
+                                ))
+                            })
+                            .when(selected, |slot| {
+                                slot.child(
+                                    div()
+                                        .debug_selector(|| "work-in-check".to_string())
+                                        .child(icon(
+                                            "icons/check.svg",
+                                            context_menu::ICON.px(theme),
+                                            theme.accent_text,
+                                        )),
+                                )
+                            }),
                     )
-                }),
+                })
+                // Its window bounds anchor the flyout beside it.
+                .when_some(anchor, |row, anchor| {
+                    row.relative().child(
+                        gpui::canvas(
+                            move |painted, _, _| anchor.set(Some(painted)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                })
             )
             .into_any_element()
     }
@@ -3788,7 +4234,7 @@ fn worktree_empty_state(theme: Theme, busy: bool, has_no_error: bool) -> AnyElem
             )
         } else {
             icon(
-                "icons/branch.svg",
+                WORKTREE_ICON,
                 IconSize::Medium.px(&theme),
                 theme.text_muted,
             )

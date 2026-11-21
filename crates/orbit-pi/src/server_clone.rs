@@ -59,7 +59,7 @@ pub struct ProjectSource {
 impl ProjectSource {
     /// The clone URL in `protocol`, when the origin can be written that way.
     pub fn url(&self, protocol: CloneProtocol) -> String {
-        clone_url_for(&self.origin, protocol).unwrap_or_else(|| self.origin.clone())
+        clone_url_for(&self.origin, protocol).unwrap_or_else(|| strip_credentials(&self.origin))
     }
 
     /// Whether the origin can be switched between SSH and HTTPS.
@@ -154,35 +154,41 @@ pub fn is_default_copied(path: &str) -> bool {
     name == ".env" || name.starts_with(".env.") || name == ".envrc" || name == ".dev.vars"
 }
 
-/// Drop the `user:password@` part of an http(s) URL: a token in `origin`
-/// would otherwise land on the host's command line and in its `.git/config`.
-pub fn strip_credentials(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
-    };
-    if !matches!(scheme, "http" | "https") {
-        return url.to_string();
-    }
-    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    if path.is_empty() && !rest.contains('/') {
-        format!("{scheme}://{host}")
-    } else {
-        format!("{scheme}://{host}/{path}")
+/// Remove URL credentials and credential-bearing query/fragment components:
+/// a token in `origin` must not land on the host's command line or in its
+/// `.git/config`. SSH keeps its username; other schemes drop all userinfo.
+/// A malformed absolute URL fails closed rather than being passed through,
+/// while an ordinary scp-like `git@host:path` remains untouched.
+pub fn strip_credentials(value: &str) -> String {
+    match url::Url::parse(value) {
+        Ok(mut parsed) => {
+            let keep_username = parsed.scheme() == "ssh";
+            if (!parsed.username().is_empty() || parsed.password().is_some())
+                && (parsed.set_password(None).is_err()
+                    || (!keep_username && parsed.set_username("").is_err()))
+            {
+                return String::new();
+            }
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            parsed.into()
+        }
+        Err(_) if value.contains("://") => String::new(),
+        Err(_) => value.to_string(),
     }
 }
 
 /// The protocol `url` is written in, if it is SSH or HTTPS.
 pub fn protocol_of(url: &str) -> Option<CloneProtocol> {
-    if url.starts_with("https://") || url.starts_with("http://") {
-        Some(CloneProtocol::Https)
-    } else if url.starts_with("ssh://") || scp_parts(url).is_some() {
-        Some(CloneProtocol::Ssh)
-    } else {
-        None
+    if let Some((scheme, _)) = url.split_once("://") {
+        if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") {
+            return Some(CloneProtocol::Https);
+        }
+        if scheme.eq_ignore_ascii_case("ssh") {
+            return Some(CloneProtocol::Ssh);
+        }
     }
+    scp_parts(url).map(|_| CloneProtocol::Ssh)
 }
 
 /// `git@host:owner/repo.git` → (`git`, `host`, `owner/repo.git`).
@@ -202,7 +208,10 @@ fn host_and_path(url: &str) -> Option<(String, String)> {
         return Some((host.to_string(), path.to_string()));
     }
     let (scheme, rest) = url.split_once("://")?;
-    if !matches!(scheme, "ssh" | "http" | "https") {
+    if !(scheme.eq_ignore_ascii_case("ssh")
+        || scheme.eq_ignore_ascii_case("http")
+        || scheme.eq_ignore_ascii_case("https"))
+    {
         return None;
     }
     let (authority, path) = rest.split_once('/')?;
@@ -218,11 +227,12 @@ fn host_and_path(url: &str) -> Option<(String, String)> {
 /// `https://host/path` for HTTPS — or `None` when it is neither form (a local
 /// path, `git://`).
 pub fn clone_url_for(url: &str, protocol: CloneProtocol) -> Option<String> {
-    let current = protocol_of(url)?;
+    let sanitized = strip_credentials(url);
+    let current = protocol_of(&sanitized)?;
     if current == protocol {
-        return Some(url.to_string());
+        return Some(sanitized);
     }
-    let (host, path) = host_and_path(url)?;
+    let (host, path) = host_and_path(&sanitized)?;
     Some(match protocol {
         CloneProtocol::Ssh => format!("git@{host}:{path}"),
         CloneProtocol::Https => format!("https://{host}/{path}"),
@@ -394,13 +404,59 @@ mod tests {
             "https://github.com/o/r.git"
         );
         assert_eq!(
-            strip_credentials("https://github.com/o/r.git"),
+            strip_credentials("HTTPS://x-access-token:ghp_secret@github.com/o/r.git"),
             "https://github.com/o/r.git"
         );
         assert_eq!(
-            strip_credentials("git@github.com:o/r.git"),
-            "git@github.com:o/r.git"
+            strip_credentials("http://user:secret@example.com/o/r.git"),
+            "http://example.com/o/r.git"
         );
+        assert_eq!(
+            strip_credentials("ssh://git:secret@github.com/o/r.git"),
+            "ssh://git@github.com/o/r.git"
+        );
+        assert_eq!(
+            strip_credentials("https://github.com/o/r.git?access_token=secret#signature"),
+            "https://github.com/o/r.git"
+        );
+        assert_eq!(
+            strip_credentials("git://user:secret@example.com/o/r.git?token=secret"),
+            "git://example.com/o/r.git"
+        );
+        for ordinary in [
+            "https://github.com/o/r.git",
+            "http://example.com/o/r.git",
+            "git@github.com:o/r.git",
+            "ssh://git@github.com/o/r.git",
+        ] {
+            assert_eq!(strip_credentials(ordinary), ordinary);
+        }
+        assert_eq!(
+            clone_url_for("HTTPS://token@github.com/o/r.git", CloneProtocol::Https).as_deref(),
+            Some("https://github.com/o/r.git")
+        );
+    }
+
+    #[test]
+    fn malformed_absolute_origins_fail_closed_without_echoing_credentials() {
+        let malformed = "HTTPS://user:still-secret@github.com:bad-port/o/r.git";
+        assert_eq!(strip_credentials(malformed), "");
+        assert_eq!(
+            strip_credentials("ssh://git:still-secret@github.com:bad-port/o/r.git"),
+            ""
+        );
+        assert_eq!(strip_credentials("git://github.com:bad-port/o/r.git"), "");
+        assert_eq!(clone_url_for(malformed, CloneProtocol::Https), None);
+        let source = ProjectSource {
+            root: PathBuf::new(),
+            subdir: String::new(),
+            name: "project".into(),
+            origin: malformed.into(),
+            files: Vec::new(),
+            truncated: false,
+        };
+        assert_eq!(source.url(CloneProtocol::Https), "");
+        assert_eq!(strip_credentials("not a url"), "not a url");
     }
 
     #[test]

@@ -136,8 +136,8 @@ impl PiClient {
         )
     }
 
-    /// Spawn with extra startup flags appended to the base `--mode rpc
-    /// --approve` argv. Orbit uses this for the default session model
+    /// Spawn with extra startup flags appended to the fail-closed `--mode rpc
+    /// --no-approve` argv. Orbit uses this for the default session model
     /// (`--provider` / `--model`).
     pub fn spawn_with_args(
         workspace_dir: &Path,
@@ -162,6 +162,7 @@ impl PiClient {
             extensions,
             &[],
             args,
+            false,
         )
     }
 
@@ -181,19 +182,22 @@ impl PiClient {
             extensions,
             env,
             &[],
+            false,
         )
     }
 
     /// [`spawn_with_extensions_and_env`](Self::spawn_with_extensions_and_env)
     /// plus extra startup flags — the seam Orbit uses to inject MCP secret
     /// values (`${NAME}` references in `mcp.json`) together with the default
-    /// session model.
+    /// session model. `approve_project` is the caller's explicit project-trust
+    /// decision; every convenience wrapper without it fails closed.
     pub fn spawn_with_extensions_and_env_and_args(
         workspace_dir: &Path,
         session_dir: Option<&Path>,
         extensions: &[PathBuf],
         env: &[(&str, &str)],
         args: &[String],
+        approve_project: bool,
     ) -> Result<Self> {
         Self::spawn_inner(
             &resolve_pi_bin(),
@@ -202,6 +206,7 @@ impl PiClient {
             extensions,
             env,
             args,
+            approve_project,
         )
     }
 
@@ -231,7 +236,15 @@ impl PiClient {
         extensions: &[PathBuf],
         args: &[String],
     ) -> Result<Self> {
-        Self::spawn_inner(bin, workspace_dir, session_dir, extensions, &[], args)
+        Self::spawn_inner(
+            bin,
+            workspace_dir,
+            session_dir,
+            extensions,
+            &[],
+            args,
+            false,
+        )
     }
 
     /// Spawn a specific executable as the RPC server. [`spawn`](Self::spawn)
@@ -252,7 +265,7 @@ impl PiClient {
         session_dir: Option<&Path>,
         args: &[String],
     ) -> Result<Self> {
-        Self::spawn_inner(bin, workspace_dir, session_dir, &[], &[], args)
+        Self::spawn_inner(bin, workspace_dir, session_dir, &[], &[], args, false)
     }
 
     fn spawn_inner(
@@ -262,6 +275,7 @@ impl PiClient {
         extensions: &[PathBuf],
         env: &[(&str, &str)],
         extra_args: &[String],
+        approve_project: bool,
     ) -> Result<Self> {
         static NEXT_STATUS_TOKEN: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(0);
@@ -276,12 +290,17 @@ impl PiClient {
         );
         let mut command = std::process::Command::new(bin);
         // `--approve` grants *project trust* (load project-local settings,
-        // extensions, and skills) — it is not tool-call approval. This is the
-        // isolated transport seam used by tests and callers that don't pass
-        // extensions; the app spawns through `BundledExtensions`, which loads
-        // the access guard that confirms tool calls per the active mode.
+        // extensions, and skills) — it is not tool-call approval. Only the
+        // explicit trust-aware spawn entry point may grant it; every other
+        // caller arrives here with `approve_project == false`. The access
+        // guard separately confirms tool calls per the active mode.
+        let project_trust = if approve_project {
+            "--approve"
+        } else {
+            "--no-approve"
+        };
         command
-            .args(["--mode", "rpc", "--approve"])
+            .args(["--mode", "rpc", project_trust])
             // The default session model lands here (`--provider` / `--model`).
             // Empty for every existing caller, so argv is unchanged unless a
             // default is configured.

@@ -53,12 +53,7 @@ pub(crate) fn card(
         .id(SharedString::from(id))
         .flex_none()
         .w_full()
-        // The fill stays translucent behind wallpaper even without backdrop blur.
-        .card_surface(
-            &theme,
-            theme.hairline(),
-            theme.card_fill(theme.surface_elevated),
-        )
+        .board_surface(&theme, theme.surface_elevated)
         .flex()
         .flex_col()
         .child(

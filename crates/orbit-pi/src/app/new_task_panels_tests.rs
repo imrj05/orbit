@@ -13,23 +13,24 @@ fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     })
 }
 
-/// The picker is a machine list: this device plus the configured hosts, in and
-/// out of a repository. Only the worktree verbs used to depend on the Git root,
-/// and they are no longer offered here.
+/// Outside a repository the folder picker still opens on the current folder:
+/// it is a list of folders, and the current one is always its first row.
 #[gpui::test]
-fn the_picker_offers_this_device_outside_a_repository(cx: &mut gpui::TestAppContext) {
+fn the_folder_picker_starts_with_the_current_folder_outside_a_repository(
+    cx: &mut gpui::TestAppContext,
+) {
     let app = test_app(cx);
+    let folder = std::env::temp_dir();
     cx.update(|cx| {
         app.update(cx, |app, _cx| {
             app.worktree_repo_root = None;
             app.worktrees.clear();
+            app.current_workspace = Some(folder.clone());
+            app.sessions = vec![];
+            app.workspaces = vec![folder.clone()];
             let entries = app.workspace_entries();
-            assert_eq!(entries.len(), 1, "one row: this device");
-            assert_eq!(
-                entries[0].mark,
-                EntryMark::Folder,
-                "outside a repository the row is a plain folder"
-            );
+            assert_eq!(entries.len(), 1, "the sidebar copy is the same folder");
+            assert_eq!(entries[0].path, folder);
         });
     });
 }

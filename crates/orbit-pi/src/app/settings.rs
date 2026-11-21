@@ -194,7 +194,7 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
     (SettingsSection::Agent, "icons/spark.svg", "settings.agent"),
     (
         SettingsSection::Worktrees,
-        "icons/worktree-settings.svg",
+        "icons/worktree.svg",
         "worktree.settings.title",
     ),
     (
@@ -2135,11 +2135,7 @@ impl OrbitApp {
     ) -> AnyElement {
         div()
             .w_full()
-            .card_surface(
-                &theme,
-                theme.hairline(),
-                theme.card_fill(theme.surface_secondary),
-            )
+            .board_surface(&theme, theme.surface_secondary)
             .px(DynamicSpacing::Base12.px(&theme))
             .py(DynamicSpacing::Base40.px(&theme))
             .flex()
@@ -4521,11 +4517,7 @@ impl OrbitApp {
         let last = rows.len().saturating_sub(1);
         let mut board = div()
             .w_full()
-            .card_surface(
-                &theme,
-                theme.hairline(),
-                theme.card_fill(theme.surface_secondary),
-            )
+            .board_surface(&theme, theme.surface_secondary)
             .flex()
             .flex_col();
         for (i, row) in rows.into_iter().enumerate() {

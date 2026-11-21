@@ -684,6 +684,13 @@ impl Render for OrbitApp {
                 self.remote_password_focus.open(&focus, window, cx);
             }
         }
+        if self.project_trust_focus_pending {
+            self.project_trust_focus_pending = false;
+            if self.project_trust_prompt.is_some() {
+                let focus = self.project_trust_focus.clone();
+                self.project_trust_modal_focus.open(&focus, window, cx);
+            }
+        }
         // Each modal's opener gets the keyboard back on the first frame after
         // the modal is gone, however it closed. Runs before the composer
         // hand-off below so a remote task that just started still wins.
@@ -701,11 +708,16 @@ impl Render for OrbitApp {
             self.server_clone_focus.closed(self.server_clone.is_some()),
             self.remote_password_focus
                 .closed(self.remote_password_prompt.is_some()),
+            self.project_trust_modal_focus
+                .closed(self.project_trust_prompt.is_some()),
         ];
         if let Some(opener) = closed.into_iter().flatten().last() {
             self.return_focus(opener, window, cx);
         }
-        if self.composer_focus_pending && self.remote_password_prompt.is_none() {
+        if self.composer_focus_pending
+            && self.remote_password_prompt.is_none()
+            && self.project_trust_prompt.is_none()
+        {
             self.composer_focus_pending = false;
             self.input.read(cx).focus(window);
         }
@@ -1492,7 +1504,7 @@ impl Render for OrbitApp {
                                                 .relative()
                                                 .bg(composer_theme.composer_fill())
                                                 .rounded(input::composer_radius(&theme))
-                                                .frosted_card(
+                                                .frosted_floating_card(
                                                     &composer_theme,
                                                     Self::composer_border_color(
                                                         &theme,
@@ -1792,6 +1804,9 @@ impl Render for OrbitApp {
             // its connection check may raise.
             .children(self.server_clone_layer(theme, cx.entity(), cx))
             .children(self.remote_password_layer(theme, cx.entity(), cx))
+            // ── workspace trust — Orbit's own decision before pi loads
+            // project-local code, settings, skills or MCP servers.
+            .children(self.project_trust_layer(theme, cx.entity(), cx))
             // ── update modal — the search, changelog, and install decision,
             // opened by the download control and Check for Updates. Below the
             // extension dialog (a run blocks on it) and the lightbox.
@@ -4360,6 +4375,9 @@ impl OrbitApp {
     /// ring. `None` when no such modal is open. Only fields that are on screen
     /// are listed: focusing a hidden one would drop the keyboard.
     pub(super) fn modal_fields(&self) -> Option<Vec<Entity<crate::composer::ComposerInput>>> {
+        if self.project_trust_prompt.is_some() {
+            return Some(Vec::new());
+        }
         if let Some(prompt) = &self.remote_password_prompt {
             return Some(vec![prompt.input.clone()]);
         }
@@ -4458,6 +4476,7 @@ impl OrbitApp {
             || self.dialog.is_some()
             || self.lightbox.is_some()
             || self.updater_dialog.is_some()
+            || self.project_trust_prompt.is_some()
             || self.session_menu.is_some()
             || self.workspace_menu.is_some()
             || self.sidebar_sort_menu
@@ -4562,41 +4581,16 @@ impl OrbitApp {
             ),
             (false, _) => ("icons/send.svg", tr!("composer.send"), tr!("composer.send")),
         };
-        if !has_payload {
-            // Resting, unclickable: a darker well and a disabled glyph, with no
-            // pointer, hover, or click handler to invite a press that cannot
-            // land. The tooltip says why instead of naming a shortcut that
-            // would do nothing.
-            let tooltip = tr!("composer.nothing_to_send");
-            // Bespoke: the composer's round send/stop controls morph, fill with
-            // the action role and own their press ramps.
-            return icon_button_frame(
-                div()
-                    .id("send-btn")
-                    .debug_selector(|| "send-btn".to_string()),
-                &theme,
-                ButtonSize::Medium,
-            )
-            .rounded_full()
-            .bg(theme.overlay)
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-            .child(icon(
-                icon_path,
-                ButtonSize::Medium.icon_size().px(&theme),
-                theme.text_disabled,
-            ))
-            .into_any_element();
-        }
         let shortcut = if running {
             mode.shortcut_label(mode)
         } else {
             platform::shortcuts::label(platform::shortcuts::SEND)
         };
-        let tooltip = tr!(
-            "composer.shortcut_hint",
-            keys = shortcut,
-            action = action.clone()
-        );
+        let tooltip = if has_payload {
+            tr!("composer.shortcut_hint", keys = shortcut, action = action.clone())
+        } else {
+            tr!("composer.nothing_to_send")
+        };
         let square = ButtonSize::Medium.height(&theme);
         let icon_size = ButtonSize::Medium.icon_size().px(&theme);
         let label_size = button::label_size(ButtonSize::Medium).px(&theme);
@@ -4614,7 +4608,11 @@ impl OrbitApp {
         // used to inherit the page ink, so in dark mode it stayed near-white
         // while the fill was light — invisible on the button, however readable
         // it was on the canvas.
-        let label_color = theme.action_fg;
+        let label_color = if has_payload {
+            theme.action_fg
+        } else {
+            theme.text_disabled
+        };
         // Bespoke: the composer's round send/stop controls morph, fill with
         // the action role and own their press ramps.
         let control = icon_button_frame(
@@ -4625,11 +4623,14 @@ impl OrbitApp {
             ButtonSize::Medium,
         )
         .rounded_full()
-        .raised(theme.action, &theme)
-        .pressed_state(&theme, PressedRamp::Action)
-        .cursor_pointer()
+        .when(has_payload, |control| {
+            control
+                .raised(theme.action, &theme)
+                .pressed_state(&theme, PressedRamp::Action)
+                .cursor_pointer()
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
+        })
         .overflow_hidden()
-        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
         .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into());
         // One wrapper owns both values: the hover fades `action` into
         // `action_hover`, and the state morphs the square into a labelled
@@ -4644,14 +4645,14 @@ impl OrbitApp {
             // With something to send the button always names its action —
             // Send, Queue or Steer — so the two lanes on screen mid-run never
             // have to be told apart by glyph alone.
-            1.0,
+            if has_payload { 1.0 } else { 0.0 },
             move |control, hover, morphed| {
                 control
-                    .bg(crate::motion::blend(
-                        theme.action,
-                        theme.action_hover,
-                        hover,
-                    ))
+                    .bg(if has_payload {
+                        crate::motion::blend(theme.action, theme.action_hover, hover)
+                    } else {
+                        theme.overlay
+                    })
                     .w(square + (labelled - square) * morphed)
                     .child(
                         icon(icon_path, icon_size, label_color)
@@ -4803,10 +4804,10 @@ impl OrbitApp {
                     // A floating strip over the wallpaper, like the approval
                     // bar below it: translucent, and frosted wherever the
                     // renderer can blur.
-                    .card_surface(
+                    .floating_card_surface(
                         &theme,
                         theme.hairline(),
-                        theme.card_fill(theme.surface_elevated),
+                        theme.surface_elevated,
                     )
                     .flex()
                     .items_center()
@@ -4852,10 +4853,10 @@ impl OrbitApp {
                     .mb(DynamicSpacing::Base08.px(&theme))
                     .px(px(10.))
                     .py(px(7.))
-                    .card_surface(
+                    .floating_card_surface(
                         &theme,
                         theme.hairline(),
-                        theme.card_fill(theme.surface_elevated),
+                        theme.surface_elevated,
                     )
                     .flex()
                     .items_center()
@@ -4907,10 +4908,10 @@ impl OrbitApp {
             // Sits in the composer column beside the approval bar and the run
             // strip, so it takes the same glass: a pane over the wallpaper,
             // not an opaque slab dropped on it.
-            .card_surface(
+            .floating_card_surface(
                 &theme,
                 theme.accent.opacity(0.3),
-                theme.card_fill(theme.surface_elevated),
+                theme.surface_elevated,
             )
             .flex()
             .flex_col()
@@ -5282,10 +5283,10 @@ impl OrbitApp {
             .h(px(BAR_H))
             .mb(px(GAP))
             .px(DynamicSpacing::Base12.px(&theme))
-            .card_surface(
+            .floating_card_surface(
                 &theme,
                 theme.accent.opacity(0.3),
-                theme.card_fill(theme.surface_elevated),
+                theme.surface_elevated,
             )
             .flex()
             .items_center()
@@ -5403,10 +5404,10 @@ impl OrbitApp {
                 .debug_selector(|| "queue-bar".to_string())
                 .w_full()
                 .mb(DynamicSpacing::Base08.px(&theme))
-                .card_surface(
+                .floating_card_surface(
                     &theme,
                     theme.hairline(),
-                    theme.card_fill(theme.surface_elevated),
+                    theme.surface_elevated,
                 )
                 .flex()
                 .flex_col()

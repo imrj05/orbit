@@ -486,8 +486,12 @@ impl McpManager {
 
 /// Run `pi mcp list --json` in `workspace` with Orbit's secrets in the
 /// environment. Blocking: call it on `cx.background_executor()`.
-pub(crate) fn probe(workspace: &Path, env: &[(String, String)]) -> McpProbe {
-    probe_with_agent_dir(workspace, env, None)
+pub(crate) fn probe(
+    workspace: &Path,
+    env: &[(String, String)],
+    approve_project: bool,
+) -> McpProbe {
+    probe_with_agent_dir(workspace, env, None, approve_project)
 }
 
 /// [`probe`] with an explicit `PI_CODING_AGENT_DIR`. The live test drives a
@@ -497,8 +501,14 @@ pub(crate) fn probe_with_agent_dir(
     workspace: &Path,
     env: &[(String, String)],
     agent_dir: Option<&Path>,
+    approve_project: bool,
 ) -> McpProbe {
-    let mut command = pi_mcp_command(&["mcp", "list", "--json"], workspace, env);
+    let mut command = pi_mcp_command(
+        &["mcp", "list", "--json"],
+        workspace,
+        env,
+        approve_project,
+    );
     if let Some(dir) = agent_dir {
         command.env("PI_CODING_AGENT_DIR", dir);
     }
@@ -552,11 +562,21 @@ pub(crate) fn probe_with_agent_dir(
 /// `PATH` (a bundled `.app` lacks `node`), quiet non-interactive env, and
 /// Orbit's secret values so `${NAME}` references resolve exactly as they do
 /// in a session.
-fn pi_mcp_command(args: &[&str], workspace: &Path, env: &[(String, String)]) -> Command {
+fn pi_mcp_command(
+    args: &[&str],
+    workspace: &Path,
+    env: &[(String, String)],
+    approve_project: bool,
+) -> Command {
     let bin = orbit_rpc::pi_binary();
     let mut command = Command::new(&bin);
     command
         .args(args)
+        .arg(if approve_project {
+            "--approve"
+        } else {
+            "--no-approve"
+        })
         .env("PI_SKIP_VERSION_CHECK", "1")
         .env("PATH", orbit_rpc::augmented_path(Path::new(&bin).parent()))
         .env("NO_COLOR", "1")
@@ -582,12 +602,14 @@ pub(crate) fn login(
     server: &str,
     browser_timeout: Duration,
     cancel: Option<&AtomicBool>,
+    approve_project: bool,
 ) -> Result<(), McpError> {
     let seconds = browser_timeout.as_secs().max(1).to_string();
     let mut command = pi_mcp_command(
         &["mcp", "login", server, "--timeout", &seconds],
         workspace,
         env,
+        approve_project,
     );
     run_auth_command(
         &mut command,
@@ -603,8 +625,14 @@ pub(crate) fn logout(
     workspace: &Path,
     env: &[(String, String)],
     server: &str,
+    approve_project: bool,
 ) -> Result<(), McpError> {
-    let mut command = pi_mcp_command(&["mcp", "logout", server], workspace, env);
+    let mut command = pi_mcp_command(
+        &["mcp", "logout", server],
+        workspace,
+        env,
+        approve_project,
+    );
     run_auth_command(&mut command, PROBE_TIMEOUT, None, server, AuthOp::SignOut)
 }
 
@@ -1497,7 +1525,7 @@ process.stdin.on('data', (chunk) => {
         }
         config::write_add(&agent.join("mcp.json"), "echo", &def).unwrap();
 
-        let outcome = probe_with_agent_dir(&workspace, &[], Some(&agent));
+        let outcome = probe_with_agent_dir(&workspace, &[], Some(&agent), true);
         assert!(outcome.fatal.is_none(), "fatal: {:?}", outcome.fatal);
         let echo = outcome
             .servers

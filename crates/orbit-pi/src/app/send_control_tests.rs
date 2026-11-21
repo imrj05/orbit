@@ -40,6 +40,50 @@ fn app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     })
 }
 
+/// Typing and clearing a draft retarget the same control, so the square can
+/// grow and shrink without restarting from an invented position.
+#[gpui::test]
+fn send_morph_tracks_payload_in_both_directions(cx: &mut gpui::TestAppContext) {
+    use crate::motion::registry::Transitions;
+    use crate::theme::MotionPreference;
+    use gpui::{point, px, size, ElementId};
+
+    cx.update(|cx| {
+        let mut theme = Theme::for_id(ThemeId::Orbit);
+        theme.ui.motion = MotionPreference::Full;
+        cx.set_global(theme);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        let app = app.clone();
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            size(px(1000.), px(800.)),
+            move |_, _| app,
+        );
+    };
+    let key = ElementId::NamedInteger("send-btn".into(), u64::MAX);
+    draw(cx);
+    assert_eq!(Transitions::get(key.clone()).unwrap().to(), 0.0);
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.input.update(cx, |input, cx| input.set_text("hello", cx));
+        });
+    });
+    draw(cx);
+    assert_eq!(Transitions::get(key.clone()).unwrap().to(), 1.0);
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.input.update(cx, |input, cx| input.set_text("", cx));
+        });
+    });
+    draw(cx);
+    assert_eq!(Transitions::get(key).unwrap().to(), 0.0);
+}
+
 /// A collapsed paste is a sendable message on its own. The control used to
 /// check only text and attachments, so a pill-only composer rendered as
 /// disabled while Enter still sent it — the button lied about what it would do.

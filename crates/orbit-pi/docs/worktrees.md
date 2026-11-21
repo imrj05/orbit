@@ -77,26 +77,50 @@ new task there runs pi with that path as its cwd.
 ### From the status bar ("Work in")
 
 The status bar shows where the next task will run. In a Git repository, the
-**Work in** chip reads `Local` at the main working directory or the active
-worktree's name. Outside a repository, a folder chip takes its place. Opening
-**Work in** lists two kinds of place:
+**Work in** chip names the project at the main working directory or the active
+worktree's name. Outside a repository, a folder chip takes its place. The same
+chip opens the same picker on the status bar and on the new-task page's folder
+row. **In a session** (a conversation on screen) it lists only where the task
+runs — the current checkout, or the worktree the session runs in — with nothing
+to move to. **On the new-task page**, before there is a session to leave, it
+lists, in groups:
 
-- **Local** — this device, in the working folder on screen.
+- **Current checkout** — the repository's main working directory on this device —
+  and, when the task already runs in a linked worktree, that worktree with its
+  check, so the place you are in is always on screen.
+- **New worktree** — the Worktrees page's quick-create dialog (suggested name,
+  new branch); "Open after create" decides whether the task moves into it.
+- **Existing worktrees ›** (when the repository has any, with their count) —
+  opens a flyout beside the picker: a search field over the linked worktrees,
+  each as its branch over its path, the active one checked. Typing narrows by
+  name, branch or path; ↑/↓ and Enter choose; Escape steps back to the picker.
+  → on the row (or Enter, or a click) opens it. Choosing a prunable worktree
+  reconnects it instead of failing.
 - Every enabled **remote host** from Settings → Remote hosts (`ssh:dir` under the
   name). Picking one runs the same connection check, password prompt and guarded
   launch as the new-task picker, then parks this session and starts a task on the
   host.
 
-The new-task page's **Work in** picker asks the same question and lists the same
-two kinds of place, plus **Choose folder…** for the native dialog and the
-**Add / Edit hosts** row. The host list is read once, when the picker opens, so
-no render path touches `remote-hosts.json`.
+The new-task page's folder selector (the folder field's picker,
+`workspace_picker.rs`) answers a different question — *which folder* — and lists
+no worktree or host rows: **Recent folders** (the current one first with its
+branch, then each session folder newest-first with when it last ran, then the
+sidebar's projects; folders that no longer exist and linked worktrees of this
+repository are left out) and **Choose folder…**. Keeping the two pickers apart
+means choosing a folder never doubles as choosing a worktree or a machine.
+Every row's trailing note or check rides its title line, and paths under home
+read `~/…`.
+Choosing a worktree whose folder is gone reconnects it.
 
-Worktree verbs are not in either picker: **New worktree**, opening an existing
-worktree, a remote branch checked out as a local branch that tracks it, and
-**Clone repository** all live on the **Worktrees** page, which owns repository
-provisioning. A clone started there appears in the sidebar like any other
-project.
+The host list is read once, when the picker opens, so no render path touches
+`remote-hosts.json`. A worktree is marked with the worktree glyph
+(`icons/worktree.svg`, a folder with a branch — the Settings → Worktrees mark),
+never the branch glyph the branch chip beside it uses.
+
+Renaming, moving, locking and removing worktrees, a remote branch checked out
+as a local branch that tracks it, and **Clone repository** stay on the
+**Worktrees** page, which owns repository provisioning. A clone started there
+appears in the sidebar like any other project.
 
 To clone, enter a repository URL and folder name and choose a parent directory.
 Git runs in the background with progress and cancellation. A successful clone

@@ -129,16 +129,30 @@ export function readAccessMode(filePath = accessPath()) {
   return ["supervised", "auto-accept-edits", "full-access"].includes(mode) ? mode : DEFAULT_ACCESS_MODE;
 }
 
+function validWorkflowMode(raw) {
+  return typeof raw === "string" && ["plan", "build", "ask"].includes(raw) ? raw : undefined;
+}
+
 /**
- * The session's workflow mode: the app's store for this session id first (the
- * workflow extension's own resolution order), then the environment value Orbit
- * hands a spawned session, then Build.
+ * Mirror the parent workflow extension exactly: this session's valid store
+ * entry, then a valid environment fallback, then the newest valid
+ * `orbit:workflow` entry on the resumed session branch. Invalid values are
+ * absent evidence, not an instruction to Build; Build is only the final
+ * default when no valid evidence exists.
  */
-export function resolveWorkflowMode({ sessionId, store = null, env = process.env } = {}) {
+export function resolveWorkflowMode({ sessionId, store = null, env = process.env, entries = [] } = {}) {
   const stored = typeof sessionId === "string" && store && typeof store === "object" ? store[sessionId] : undefined;
-  if (["plan", "build", "ask"].includes(stored)) return stored;
-  const fromEnv = env?.ORBIT_WORKFLOW_MODE;
-  if (["plan", "build", "ask"].includes(fromEnv)) return fromEnv;
+  const storedMode = validWorkflowMode(stored);
+  if (storedMode) return storedMode;
+  const envMode = validWorkflowMode(env?.ORBIT_WORKFLOW_MODE);
+  if (envMode) return envMode;
+  const branch = Array.isArray(entries) ? entries : [];
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    if (entry?.type !== "custom" || entry.customType !== "orbit:workflow") continue;
+    const branchMode = validWorkflowMode(entry.data?.mode);
+    if (branchMode) return branchMode;
+  }
   return DEFAULT_WORKFLOW_MODE;
 }
 
@@ -148,7 +162,9 @@ export function readWorkflowStore(filePath = workflowPath()) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const out = {};
   for (const [sessionId, mode] of Object.entries(raw)) {
-    if (["plan", "build", "ask"].includes(mode)) out[sessionId] = mode;
+    // Preserve present strings so resolution can skip invalid values and use
+    // the next source of evidence instead of normalizing them to Build.
+    if (typeof mode === "string") out[sessionId] = mode;
   }
   return out;
 }

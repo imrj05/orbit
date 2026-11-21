@@ -524,10 +524,10 @@ impl Dialog {
             .debug_selector(|| "dialog-card".to_string())
             .w_full()
             .mb(DynamicSpacing::Base08.px(&theme))
-            .card_surface(
+            .floating_card_surface(
                 &theme,
                 theme.accent.opacity(0.3),
-                theme.card_fill(theme.surface_elevated),
+                theme.surface_elevated,
             )
             .flex()
             .flex_col()

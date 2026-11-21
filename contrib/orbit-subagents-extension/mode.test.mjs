@@ -80,14 +80,65 @@ test("the access mode falls back to supervised", () => {
   assert.equal(readAccessMode(path.join(dir, "access.json")), "supervised");
 });
 
-test("the workflow mode resolves store → env → build", () => {
+test("the workflow mode resolves store → env → newest branch entry → build", () => {
+  const entry = (mode, customType = "orbit:workflow") => ({ type: "custom", customType, data: { mode } });
+  const branch = [entry("ask"), entry("plan"), entry("build", "someone-else")];
   const store = { "session-a": "plan" };
-  assert.equal(resolveWorkflowMode({ sessionId: "session-a", store, env: {} }), "plan");
-  assert.equal(resolveWorkflowMode({ sessionId: "session-b", store, env: { ORBIT_WORKFLOW_MODE: "ask" } }), "ask");
+  assert.equal(
+    resolveWorkflowMode({ sessionId: "session-a", store, env: { ORBIT_WORKFLOW_MODE: "ask" }, entries: branch }),
+    "plan",
+    "the session's store entry wins",
+  );
+  assert.equal(
+    resolveWorkflowMode({ sessionId: "session-b", store, env: { ORBIT_WORKFLOW_MODE: "ask" }, entries: branch }),
+    "ask",
+    "env wins over the branch",
+  );
+  assert.equal(
+    resolveWorkflowMode({ sessionId: "session-b", store, env: {}, entries: branch }),
+    "plan",
+    "the newest workflow entry on this branch wins",
+  );
   assert.equal(resolveWorkflowMode({ sessionId: "session-b", store, env: {} }), "build");
   assert.equal(
-    resolveWorkflowMode({ sessionId: "session-b", store: { "session-b": "bogus" }, env: {} }),
+    resolveWorkflowMode({
+      sessionId: "session-b",
+      store: { "session-b": "bogus" },
+      env: { ORBIT_WORKFLOW_MODE: "ask" },
+      entries: branch,
+    }),
+    "ask",
+    "an invalid store value falls through to valid env evidence",
+  );
+  assert.equal(
+    resolveWorkflowMode({
+      sessionId: "session-b",
+      store,
+      env: { ORBIT_WORKFLOW_MODE: "bogus" },
+      entries: branch,
+    }),
+    "plan",
+    "an invalid env value falls through to the newest valid branch entry",
+  );
+  assert.equal(
+    resolveWorkflowMode({
+      sessionId: "session-b",
+      store: { "session-b": "bogus" },
+      env: { ORBIT_WORKFLOW_MODE: "bogus" },
+      entries: [entry("ask"), entry("bogus")],
+    }),
+    "ask",
+    "an invalid newest workflow entry does not mask older valid branch evidence",
+  );
+  assert.equal(
+    resolveWorkflowMode({
+      sessionId: "session-b",
+      store: { "session-b": "bogus" },
+      env: { ORBIT_WORKFLOW_MODE: "bogus" },
+      entries: [entry("bogus")],
+    }),
     "build",
+    "Build is the default only when no valid evidence exists",
   );
 });
 
@@ -96,7 +147,9 @@ test("the workflow store is read leniently", () => {
   assert.deepEqual(readWorkflowStore(path.join(dir, "missing.json")), {});
   const file = path.join(dir, "workflow.json");
   fs.writeFileSync(file, JSON.stringify({ a: "plan", b: "nonsense", c: 3 }));
-  assert.deepEqual(readWorkflowStore(file), { a: "plan" });
+  assert.deepEqual(readWorkflowStore(file), { a: "plan", b: "nonsense" });
+  fs.writeFileSync(file, "{not json");
+  assert.deepEqual(readWorkflowStore(file), {}, "a corrupt store has no store-level answer");
 });
 
 test("Plan and Ask cap every child at read, whatever the access mode", () => {

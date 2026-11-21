@@ -22,7 +22,7 @@ use crate::theme::{self, Theme};
 use crate::ui::field::search_field;
 use crate::ui::popover::PopoverExt;
 use crate::ui::prelude::{
-    picker_entry, picker_header, picker_surface, working_folder_keyboard_hints, ControlExt,
+    picker_entry, picker_header, picker_surface, working_folder_footer, ControlExt,
     PressedRamp, StatefulControlExt,
 };
 
@@ -421,21 +421,9 @@ impl Render for RewindPicker {
                 list.into_any_element()
             })
             // What a rewind does, stated once where the choice is made: a new
-            // session is branched off, and this one is not thrown away.
-            .child(
-                div()
-                    .px(picker::search_padding_x(&theme))
-                    .py(DynamicSpacing::Base06.px(&theme))
-                    .border_t_1()
-                    .border_color(theme.hairline())
-                    .flex_none()
-                    .w_full()
-                    .whitespace_normal()
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(tr!("rewind.note")),
-            )
-            .child(working_folder_keyboard_hints(&theme));
+            // session is branched off, and this one is not thrown away. One
+            // footer zone with the key legend, under a single rule.
+            .child(working_folder_footer(Some(tr!("rewind.note").into()), &theme));
 
         div()
             .id("rewind-layer")

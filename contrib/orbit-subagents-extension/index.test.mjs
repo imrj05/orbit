@@ -106,8 +106,14 @@ function deps(spawn, extra = {}) {
   };
 }
 
-function ctx(sessionId = "session-a", cwd = "/repo") {
-  return { cwd, sessionManager: { getSessionId: () => sessionId } };
+function ctx(sessionId = "session-a", cwd = "/repo", branch = []) {
+  return {
+    cwd,
+    sessionManager: {
+      getSessionId: () => sessionId,
+      getBranch: () => branch,
+    },
+  };
 }
 
 function stream(child, events) {
@@ -134,12 +140,17 @@ function successfulChild(child) {
   child.emit("close", 0);
 }
 
-async function callTool(pi, spawn, params, { signal, onUpdate, sessionId = "session-a", cwd = "/repo", counts = new Map() } = {}) {
+async function callTool(
+  pi,
+  spawn,
+  params,
+  { signal, onUpdate, sessionId = "session-a", cwd = "/repo", branch = [], counts = new Map() } = {},
+) {
   return executeTool({
     params,
     signal,
     onUpdate,
-    ctx: ctx(sessionId, cwd),
+    ctx: ctx(sessionId, cwd, branch),
     pi,
     deps: deps(spawn),
     counts,
@@ -373,6 +384,8 @@ test("a single delegation returns the report, details and usage", async () => {
   assert.equal(call.options.env.ORBIT_SUBAGENT_CEILING, "read");
   assert.equal(call.options.env.ORBIT_SUBAGENT_DEPTH, "1");
   assert.equal(call.options.env.ORBIT_WORKFLOW_MODE, "build");
+  assert.ok(call.argv.includes("--no-approve"));
+  assert.ok(!call.argv.includes("--approve"));
 
   assert.match(result.content[0].text, /scout — done/);
   assert.match(result.content[0].text, /auth is in src\/auth\.rs/);
@@ -384,6 +397,116 @@ test("a single delegation returns the report, details and usage", async () => {
   assert.equal(result.details.children[0].usage.input, 1000);
   assert.equal(result.usage.input, 1000);
   assert.equal(result.usage.turns, 1);
+});
+
+test("children inherit project trust only when ORBIT_PROJECT_TRUST is exactly 1", async () => {
+  for (const [value, expected] of [
+    ["1", "--approve"],
+    ["true", "--no-approve"],
+    ["0", "--no-approve"],
+    [" 1", "--no-approve"],
+  ]) {
+    const spawn = fakeSpawn(successfulChild);
+    await executeTool({
+      params: { agent: "scout", task: "find auth" },
+      ctx: ctx(),
+      pi: fakePi(),
+      deps: deps(spawn, {
+        env: {
+          PATH: process.env.PATH ?? "",
+          ORBIT_PROJECT_TRUST: value,
+          MCP_API_KEY: "same-workspace-secret",
+        },
+      }),
+      counts: new Map(),
+    });
+
+    const argv = spawn.calls[0].argv;
+    assert.ok(argv.includes(expected), `ORBIT_PROJECT_TRUST=${JSON.stringify(value)}`);
+    assert.equal(
+      argv.filter((arg) => arg === "--approve" || arg === "--no-approve").length,
+      1,
+    );
+    assert.equal(spawn.calls[0].options.env.MCP_API_KEY, "same-workspace-secret");
+  }
+});
+
+test("a different canonical workspace never inherits trust or MCP secrets", async () => {
+  const parent = path.join(home, "parent-workspace");
+  const other = path.join(home, "other-workspace");
+  fs.mkdirSync(parent);
+  fs.mkdirSync(other);
+  const spawn = fakeSpawn(successfulChild);
+
+  await executeTool({
+    params: { agent: "scout", task: "find auth", cwd: other },
+    ctx: ctx("session-a", parent),
+    pi: fakePi(),
+    deps: deps(spawn, {
+      env: {
+        PATH: process.env.PATH ?? "",
+        ORBIT_PROJECT_TRUST: "1",
+        MCP_API_KEY: "secret",
+        MCP_SECONDARY_TOKEN: "also-secret",
+        OTHER_VALUE: "kept",
+      },
+    }),
+    counts: new Map(),
+  });
+
+  const [call] = spawn.calls;
+  assert.equal(call.options.cwd, other);
+  assert.ok(call.argv.includes("--no-approve"));
+  assert.ok(!call.argv.includes("--approve"));
+  assert.equal(call.options.env.MCP_API_KEY, undefined);
+  assert.equal(call.options.env.MCP_SECONDARY_TOKEN, undefined);
+  assert.equal(call.options.env.OTHER_VALUE, "kept");
+});
+
+test("an unknown parent workspace fails trust closed and strips MCP secrets", async () => {
+  const child = path.join(home, "child-workspace");
+  fs.mkdirSync(child);
+  const spawn = fakeSpawn(successfulChild);
+  const context = ctx("session-a", child);
+  delete context.cwd;
+
+  await executeTool({
+    params: { agent: "scout", task: "find auth", cwd: child },
+    ctx: context,
+    pi: fakePi(),
+    deps: deps(spawn, {
+      env: { PATH: process.env.PATH ?? "", ORBIT_PROJECT_TRUST: "1", MCP_API_KEY: "secret" },
+    }),
+    counts: new Map(),
+  });
+
+  const [call] = spawn.calls;
+  assert.ok(call.argv.includes("--no-approve"));
+  assert.ok(!call.argv.includes("--approve"));
+  assert.equal(call.options.env.MCP_API_KEY, undefined);
+});
+
+test("canonical same-workspace aliases retain a trusted parent's approval", async () => {
+  const parent = path.join(home, "canonical-workspace");
+  const nested = path.join(parent, "nested");
+  fs.mkdirSync(nested, { recursive: true });
+  const alias = path.join(nested, "..");
+  const spawn = fakeSpawn(successfulChild);
+
+  await executeTool({
+    params: { agent: "scout", task: "find auth", cwd: alias },
+    ctx: ctx("session-a", parent),
+    pi: fakePi(),
+    deps: deps(spawn, {
+      env: { PATH: process.env.PATH ?? "", ORBIT_PROJECT_TRUST: "1", MCP_API_KEY: "secret" },
+    }),
+    counts: new Map(),
+  });
+
+  const [call] = spawn.calls;
+  assert.ok(call.argv.includes("--approve"));
+  assert.ok(!call.argv.includes("--no-approve"));
+  assert.equal(call.options.env.MCP_API_KEY, "secret");
 });
 
 test("inherited guardrails become one --extension per path, never doubled", async () => {
@@ -495,6 +618,36 @@ test("an agent's pinned mode is used for the child", async () => {
   await callTool(fakePi(), spawn, { agent: "reviewer", task: "review" });
   assert.equal(spawn.calls[0].options.env.ORBIT_WORKFLOW_MODE, "plan");
 });
+
+for (const storeState of ["missing", "corrupt"]) {
+  for (const mode of ["plan", "ask"]) {
+    test(`a ${storeState} store inherits resumed ${mode} in preflight and the child env`, async () => {
+      writeOrbitFile("access.json", { mode: "full-access" });
+      if (storeState === "corrupt") {
+        fs.writeFileSync(path.join(home, ".orbit-pi", "workflow.json"), "{not json");
+      }
+      // The newest entry is the resumed branch's mode; an older Build entry
+      // and the absent/unreadable store must not turn this child into Build.
+      const branch = [
+        { type: "custom", customType: "orbit:workflow", data: { mode: "build" } },
+        { type: "custom", customType: "orbit:workflow", data: { mode } },
+      ];
+      const spawn = fakeSpawn(successfulChild);
+      const pi = fakePi();
+      const label = mode === "plan" ? "Plan" : "Ask";
+
+      const refused = await callTool(pi, spawn, { agent: "worker", task: "fix it" }, { branch });
+      assert.equal(spawn.calls.length, 0, "preflight refused an editing child before spawning");
+      assert.match(refused.content[0].text, new RegExp(`${label} · Full access`));
+      assert.equal(refused.details.children[0].workflowMode, mode);
+
+      const result = await callTool(pi, spawn, { agent: "scout", task: "map it" }, { branch });
+      assert.equal(spawn.calls.length, 1, "a read-only child remains available");
+      assert.equal(result.details.children[0].workflowMode, mode);
+      assert.equal(spawn.calls[0].options.env.ORBIT_WORKFLOW_MODE, mode);
+    });
+  }
+}
 
 test("a depth-1 child cannot delegate again", async () => {
   const spawn = fakeSpawn(successfulChild);

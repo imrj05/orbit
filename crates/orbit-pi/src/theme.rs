@@ -262,7 +262,8 @@ pub const FLOATING_GLASS_MIN_ALPHA: f32 = 0.55;
 /// WCAG targets a frosted floating layer keeps for its text, whatever is
 /// behind it: the same body / secondary targets wallpaper cards use.
 const FLOATING_GLASS_PRIMARY_CONTRAST: f32 = 4.5;
-const FLOATING_GLASS_SECONDARY_CONTRAST: f32 = 3.0;
+const FLOATING_GLASS_SECONDARY_CONTRAST: f32 = 4.5;
+const FLOATING_GLASS_MUTED_CONTRAST: f32 = 4.5;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceTreatment {
@@ -1522,8 +1523,7 @@ impl Theme {
     /// dialog). With no active wallpaper this is exactly `base`.
     ///
     /// The reader's own message bubble uses it only while wallpaper glass
-    /// frosts behind it, and stays opaque otherwise. The composer uses this
-    /// treatment only when the wallpaper backdrop can actually be frosted.
+    /// frosts behind it, and stays opaque otherwise.
     pub fn card_fill(self, base: Hsla) -> Hsla {
         if self.wallpaper.active {
             base.opacity(self.wallpaper.card_alpha)
@@ -1583,10 +1583,10 @@ impl Theme {
         )
     }
 
-    /// The chat composer uses the contrast-adjusted card treatment only with
-    /// a supported, enabled wallpaper frost; otherwise retain its opaque fill.
+    /// The composer uses the floating material, with an opaque fallback when
+    /// backdrop blur is unavailable or reduced transparency is requested.
     pub fn composer_fill(self) -> Hsla {
-        self.glass_fill(self.surface_secondary)
+        self.inspector_fill(self.surface_secondary)
     }
 
     /// `base` as the card tint only while wallpaper glass actually frosts
@@ -1598,6 +1598,73 @@ impl Theme {
             self.card_fill(base)
         } else {
             base
+        }
+    }
+
+    // ── Inspector glass ────────────────────────────────────────────────
+    // The material of the surfaces a developer reads a run through: the
+    // transcript's cards (tool calls, thoughts, delegations, history) and the
+    // right-dock cards (session details, Review, Explorer). It frosts under
+    // the *floating* rule (`floating_glass_sigma`): over a wallpaper the
+    // wallpaper contract decides; with none, dark palettes on a renderer with
+    // a backdrop pass frost, unless the OS asks for reduced transparency or
+    // increased contrast. Light palettes without a wallpaper stay opaque.
+
+    /// An inspector surface's tint: the wallpaper's card tint over a picture,
+    /// `base` at the contrast floor ([`Self::floating_glass_alpha`]) over the
+    /// bare workbench, and exactly `base` wherever it does not frost.
+    pub fn inspector_fill(self, base: Hsla) -> Hsla {
+        self.inspector_fill_with(base, os_reduce_transparency())
+    }
+
+    /// [`Self::inspector_fill`] with the OS preference passed in.
+    pub fn inspector_fill_with(self, base: Hsla, reduce_transparency: bool) -> Hsla {
+        match self.floating_glass_sigma_with(reduce_transparency) {
+            None => base,
+            Some(_) if self.wallpaper.active => self.card_fill(base),
+            Some(_) => base.opacity(self.floating_glass_alpha(base)),
+        }
+    }
+
+    /// A text well inside an inspector card (a tool call's command and
+    /// output): never a second faint layer of glass. It sits at the contrast
+    /// floor for `base`, and over a wallpaper at least at the user's card
+    /// opacity, so code stays legible over any picture.
+    pub fn inspector_well(self, base: Hsla) -> Hsla {
+        self.inspector_well_with(base, os_reduce_transparency())
+    }
+
+    /// [`Self::inspector_well`] with the OS preference passed in.
+    pub fn inspector_well_with(self, base: Hsla, reduce_transparency: bool) -> Hsla {
+        match self.floating_glass_sigma_with(reduce_transparency) {
+            None => base,
+            Some(_) => {
+                let floor = self.floating_glass_alpha(base);
+                let alpha = if self.wallpaper.active {
+                    floor.max(self.wallpaper.card_alpha)
+                } else {
+                    floor
+                };
+                base.opacity(alpha)
+            }
+        }
+    }
+
+    /// Whether a right-dock card is glass: over a full-window wallpaper (the
+    /// page rule), or as inspector glass with no wallpaper at all. A hero
+    /// wallpaper is not behind the dock, so it stays opaque there.
+    pub fn dock_glass(self) -> bool {
+        self.page_glass()
+            || (!self.wallpaper.active && self.floating_glass_sigma().is_some())
+    }
+
+    /// The canvas a dock's own root paints: clear while the dock card is glass
+    /// (the card already paints tint and frost), `background` otherwise.
+    pub fn dock_canvas(self) -> Hsla {
+        if self.dock_glass() {
+            gpui::transparent_black()
+        } else {
+            self.page_canvas()
         }
     }
 
@@ -1730,8 +1797,9 @@ impl Theme {
     }
 
     /// The blur a *floating* layer (menu, popover, tooltip, toast, modal)
-    /// frosts its backdrop with. Structural panes and the composer keep
-    /// [`Self::glass_sigma`]'s wallpaper-only rule.
+    /// frosts its backdrop with. Structural panes keep
+    /// [`Self::glass_sigma`]'s wallpaper-only rule; the composer and grouped
+    /// page boards also use this floating treatment.
     ///
     /// Over a wallpaper the wallpaper contract decides, so the Glass panes
     /// setting still turns every frost off. With no wallpaper, floating layers
@@ -1755,7 +1823,7 @@ impl Theme {
 
     /// The alpha a frosted floating layer paints `base` at over the workbench:
     /// the lowest value from [`FLOATING_GLASS_MIN_ALPHA`] up at which
-    /// `text_primary` and `text_secondary` keep their targets over both a
+    /// primary, secondary, and muted text keep their targets over both a
     /// black and a white backdrop, so no blurred content behind the glass can
     /// make its text unreadable. Computed from the live colours rather than
     /// stored, so an accent or palette override can never leave it stale.
@@ -1765,14 +1833,19 @@ impl Theme {
             let color = gpui::Rgba::from(color);
             [color.r, color.g, color.b]
         };
-        let (surface, primary, secondary) =
-            (rgb(base), rgb(self.text_primary), rgb(self.text_secondary));
+        let (surface, primary, secondary, muted) = (
+            rgb(base),
+            rgb(self.text_primary),
+            rgb(self.text_secondary),
+            rgb(self.text_muted),
+        );
         let holds = |alpha: f32| {
             [[0.0_f32; 3], [1.0_f32; 3]].iter().all(|backdrop| {
                 let composite: [f32; 3] =
                     std::array::from_fn(|i| backdrop[i] + (surface[i] - backdrop[i]) * alpha);
                 contrast_ratio(primary, composite) >= FLOATING_GLASS_PRIMARY_CONTRAST
                     && contrast_ratio(secondary, composite) >= FLOATING_GLASS_SECONDARY_CONTRAST
+                    && contrast_ratio(muted, composite) >= FLOATING_GLASS_MUTED_CONTRAST
             })
         };
         // Whole hundredths: the result is stable and cheap (at most 45 steps).
@@ -3293,6 +3366,97 @@ mod tests {
     }
 
     #[test]
+    fn inspector_glass_frosts_where_floating_glass_does() {
+        let supported = gpui::backdrop_blur_supported();
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let card = theme.surface_secondary;
+            let code = theme.code_bg;
+            if theme.mode == ThemeMode::Dark && supported {
+                assert_eq!(
+                    theme.inspector_fill_with(card, false),
+                    card.opacity(theme.floating_glass_alpha(card)),
+                    "{id:?}"
+                );
+                assert_eq!(
+                    theme.inspector_well_with(code, false),
+                    code.opacity(theme.floating_glass_alpha(code)),
+                    "{id:?}: the code well sits at its own contrast floor"
+                );
+            } else {
+                assert_eq!(theme.inspector_fill_with(card, false), card, "{id:?}");
+                assert_eq!(theme.inspector_well_with(code, false), code, "{id:?}");
+            }
+            // Reduce Transparency / Increase Contrast: the opaque card.
+            assert_eq!(theme.inspector_fill_with(card, true), card, "{id:?}");
+            assert_eq!(theme.inspector_well_with(code, true), code, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn inspector_glass_over_a_wallpaper_follows_the_wallpaper_contract() {
+        let theme = Theme::dark();
+        let card = theme.surface_secondary;
+        let code = theme.code_bg;
+        let glass = SurfaceTreatment {
+            active: true,
+            glass: true,
+            card_alpha: 0.3,
+            ..SurfaceTreatment::OPAQUE
+        };
+        let frosted = theme.with_wallpaper(glass);
+        assert_eq!(frosted.inspector_fill_with(card, false), card.opacity(0.3));
+        // The well never drops below its contrast floor, however clear the
+        // user sets the cards.
+        let floor = frosted.floating_glass_alpha(code);
+        assert_eq!(
+            frosted.inspector_well_with(code, false),
+            code.opacity(floor.max(0.3))
+        );
+
+        // Glass panes off: an opaque card over the picture, never an
+        // unblurred translucent one.
+        let off = theme.with_wallpaper(SurfaceTreatment {
+            glass: false,
+            ..glass
+        });
+        assert_eq!(off.inspector_fill_with(card, false), card);
+        assert_eq!(off.inspector_well_with(code, false), code);
+    }
+
+    #[test]
+    fn docks_are_glass_only_where_something_frosts_behind_them() {
+        let theme = Theme::dark();
+        let wallpaper = |full_window: bool| SurfaceTreatment {
+            active: true,
+            full_window,
+            glass: true,
+            card_alpha: 0.6,
+            ..SurfaceTreatment::OPAQUE
+        };
+        // A full-window wallpaper: the page glass.
+        let full = theme.with_wallpaper(wallpaper(true));
+        assert!(full.dock_glass());
+        assert_eq!(full.dock_canvas(), gpui::transparent_black());
+        // A hero wallpaper is not behind the dock: it stays opaque.
+        let hero = theme.with_wallpaper(wallpaper(false));
+        assert!(!hero.dock_glass());
+        assert_eq!(hero.dock_canvas(), hero.page_canvas());
+        // No wallpaper: inspector glass exactly where floating glass frosts.
+        for id in ThemeId::ALL {
+            let bare = Theme::for_id(id);
+            assert_eq!(
+                bare.dock_glass(),
+                bare.floating_glass_sigma().is_some(),
+                "{id:?}"
+            );
+            if !bare.dock_glass() {
+                assert_eq!(bare.dock_canvas(), bare.background, "{id:?}");
+            }
+        }
+    }
+
+    #[test]
     fn floating_glass_keeps_text_contrast_over_any_backdrop() {
         use crate::wallpaper::contrast_ratio;
         let rgb = |c: Hsla| {
@@ -3309,7 +3473,8 @@ mod tests {
                     let composite: [f32; 3] =
                         std::array::from_fn(|i| backdrop[i] + (surface[i] - backdrop[i]) * a);
                     contrast_ratio(rgb(theme.text_primary), composite) >= 4.5
-                        && contrast_ratio(rgb(theme.text_secondary), composite) >= 3.0
+                        && contrast_ratio(rgb(theme.text_secondary), composite) >= 4.5
+                        && contrast_ratio(rgb(theme.text_muted), composite) >= 4.5
                 })
         };
         for id in ThemeId::ALL {
@@ -3317,30 +3482,32 @@ mod tests {
             if theme.mode != ThemeMode::Dark {
                 continue;
             }
-            let surface = rgb(theme.surface_elevated);
-            let alpha = theme.floating_glass_alpha(theme.surface_elevated);
-            assert!(
-                (FLOATING_GLASS_MIN_ALPHA..=1.).contains(&alpha),
-                "{id:?}: {alpha}"
-            );
-            assert!(
-                passes(theme, surface, alpha),
-                "{id:?}: {alpha} loses contrast"
-            );
-            if alpha > FLOATING_GLASS_MIN_ALPHA + 0.005 {
+            for base in [theme.surface_elevated, theme.surface_secondary] {
+                let surface = rgb(base);
+                let alpha = theme.floating_glass_alpha(base);
                 assert!(
-                    !passes(theme, surface, alpha - 0.01),
-                    "{id:?}: {alpha} is not the lowest passing tint"
+                    (FLOATING_GLASS_MIN_ALPHA..=1.).contains(&alpha),
+                    "{id:?}: {alpha}"
                 );
+                assert!(
+                    passes(theme, surface, alpha),
+                    "{id:?}: {alpha} loses contrast"
+                );
+                if alpha > FLOATING_GLASS_MIN_ALPHA + 0.005 {
+                    assert!(
+                        !passes(theme, surface, alpha - 0.01),
+                        "{id:?}: {alpha} is not the lowest passing tint"
+                    );
+                }
             }
         }
-        // Onyx's ink allows real glass; the measured minimum is 0.62.
+        // Onyx's ink still allows some translucency with readable secondary text.
         let onyx = Theme::for_id(ThemeId::OrbitOnyx);
-        assert!(onyx.floating_glass_alpha(onyx.surface_elevated) < 0.7);
+        assert!(onyx.floating_glass_alpha(onyx.surface_elevated) < 1.0);
     }
 
     #[test]
-    fn composer_glass_requires_supported_enabled_wallpaper() {
+    fn composer_glass_uses_the_floating_material() {
         let base = Theme::dark();
         let glass = SurfaceTreatment {
             active: true,
@@ -3348,7 +3515,10 @@ mod tests {
             card_alpha: 0.88,
             ..SurfaceTreatment::OPAQUE
         };
-        assert_eq!(base.composer_fill(), base.surface_secondary);
+        assert_eq!(
+            base.composer_fill(),
+            base.inspector_fill(base.surface_secondary)
+        );
         assert_eq!(
             base.with_wallpaper(glass).composer_fill(),
             base.surface_secondary.opacity(0.88)
@@ -3367,7 +3537,7 @@ mod tests {
                 ..glass
             })
             .composer_fill(),
-            base.surface_secondary
+            base.inspector_fill(base.surface_secondary)
         );
     }
 
@@ -3404,11 +3574,7 @@ mod tests {
             assert_eq!(composer.glass_sigma().is_some(), frosted);
             assert_eq!(
                 composer.composer_fill(),
-                if frosted {
-                    base.surface_secondary.opacity(0.88)
-                } else {
-                    base.surface_secondary
-                }
+                composer.inspector_fill(base.surface_secondary)
             );
         }
     }

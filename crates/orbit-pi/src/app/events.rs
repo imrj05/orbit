@@ -59,6 +59,9 @@ impl OrbitApp {
         self.tick_wallpaper_library(cx);
         self.tick_repo_star(cx);
         self.tick_background(cx);
+        // A workspace trusted mid-run reloads project resources only once
+        // the current run has settled.
+        self.tick_project_trust(cx);
         // MCP: external-change detection, the debounced `pi mcp list` probe,
         // and a deferred restart that applies new server configuration while
         // preserving the session.

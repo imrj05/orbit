@@ -67,19 +67,18 @@ use crate::ui::prelude::{
     anchored_popover_at, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
     icon_button_frame, nerd_font_family, picker_entry, press, ControlExt, TipExt, BUTTON_GROUP,
 };
-use crate::ui::style::surface::SurfaceExt;
+use crate::ui::style::surface::{inspector_inner_radius, SurfaceExt};
 use crate::ui::banner::{Banner, BannerTone};
 
-/// A raised transcript surface's own fill on glass: `base` at the
-/// contrast-floored card tint while wallpaper glass is frosting behind it, and
-/// exactly `base` otherwise — so without glass (no wallpaper, Glass off, or a
-/// renderer with no backdrop pass) the surface keeps its opaque plane instead
-/// of showing a sharp picture through text.
+/// A transcript card's fill (tool calls, thoughts, delegations, summaries):
+/// inspector glass wherever it frosts — the wallpaper's card tint over a
+/// picture, the contrast-floored tint over the bare workbench in dark
+/// palettes — and the opaque `overlay` plane everywhere else, so text never
+/// sits over an unblurred backdrop.
 fn frosted_transcript_fill(theme: Theme) -> Hsla {
-    if theme.glass_sigma().is_some() {
-        theme.card_fill(theme.surface_secondary)
-    } else {
-        theme.overlay
+    match theme.floating_glass_sigma() {
+        Some(_) => theme.inspector_fill(theme.surface_secondary),
+        None => theme.overlay,
     }
 }
 
@@ -2580,9 +2579,9 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         // Square hover fill over a rounded card otherwise; see the tool card.
-        .rounded_t(panel::RADIUS.px(&theme))
+        .rounded_t(inspector_inner_radius(&theme))
         .when(!expanded, |header| {
-            header.rounded_b(panel::RADIUS.px(&theme))
+            header.rounded_b(inspector_inner_radius(&theme))
         })
         .cursor_pointer()
         .hover_on_glass(&theme)
@@ -2631,7 +2630,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
+        .inspector_card(&theme, frosted_transcript_fill(theme))
         .child(header);
     if expanded {
         card = card.child(
@@ -3577,7 +3576,7 @@ fn render_thinking_body(
     // the `overlay` wash otherwise.
     let mut card = div()
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
-        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
+        .inspector_card(&theme, frosted_transcript_fill(theme))
         // Header geometry matches `render_activity_card`: Base08 inset and a
         // Base32 row, so badge, title and caret line up with the tool rows.
         .px(DynamicSpacing::Base08.px(&theme))
@@ -3688,8 +3687,11 @@ fn render_thinking_body(
                     }
                 })
                 // Reasoning is prose, not code: the UI face (orbit-design
-                // › UI typography), inset to the title's reading edge.
-                .px(DynamicSpacing::Base04.px(&theme))
+                // › UI typography), hung on the title's edge — past the badge
+                // tile and its gap — so "Thought" and its text share one
+                // reading line and the badge stands alone in its column.
+                .pl(TileLook::Tinted(theme.text_secondary).size() + DynamicSpacing::Base08.px(&theme))
+                .pr(DynamicSpacing::Base04.px(&theme))
                 .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(19.))
                 .text_color(theme.text_secondary)
@@ -3699,19 +3701,24 @@ fn render_thinking_body(
                         "thinking-body".into(),
                         ((key.0 as u64) << 32) | key.1 as u64,
                     );
+                    // Models write their reasoning in Markdown (a `**Plan**`
+                    // heading, `code`); render the inline marks the answer
+                    // body does instead of printing the asterisks.
+                    let (text, base_runs, _, _) = inline_runs(
+                        &parse_inline(&detail),
+                        FontWeight::NORMAL,
+                        theme.text_secondary,
+                        theme,
+                    );
                     let scope = text_scope();
                     let range = scope
                         .as_ref()
-                        .and_then(|scope| scope.state.borrow().range_for(&body_key, &detail));
-                    let runs = highlight_runs(
-                        vec![code_run(detail.len(), theme.text_secondary, &ui_font())],
-                        range,
-                        selection_color(theme),
-                    );
+                        .and_then(|scope| scope.state.borrow().range_for(&body_key, &text));
+                    let runs = highlight_runs(base_runs, range, selection_color(theme));
                     SelectableText::new(
                         body_key,
-                        StyledText::new(detail.clone()).with_runs(runs),
-                        detail.into(),
+                        StyledText::new(text.clone()).with_runs(runs),
+                        text,
                         Vec::new(),
                         scope,
                     )
@@ -3823,7 +3830,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
+        .inspector_card(&theme, frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -4164,10 +4171,11 @@ fn render_subagent_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        // The same quiet hairline as every activity card: a failure is said
-        // by the child's glyph and the error line under the rows, so the
-        // frame does not shout it a third time.
-        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
+        // The same outline-free inspector card as every activity card: a
+        // failure is said by the child's glyph and the error line under the
+        // rows, so the frame does not shout it a third time.
+        .inspector_card(&theme, frosted_transcript_fill(theme))
+        .inspector_lift(&theme, open)
         .flex()
         .flex_col();
 
@@ -4188,9 +4196,9 @@ fn render_subagent_card(
                 id << 8 | ix as u64,
             ))
             .debug_selector(move || format!("subagent-row-{}-{}-{}", key.0, key.1, ix))
-            .when(ix == 0, |row| row.rounded_t(panel::RADIUS.px(&theme)))
+            .when(ix == 0, |row| row.rounded_t(inspector_inner_radius(&theme)))
             .when(rows_end_card && ix + 1 == children_len, |row| {
-                row.rounded_b(panel::RADIUS.px(&theme))
+                row.rounded_b(inspector_inner_radius(&theme))
             })
             .h(DynamicSpacing::Base32.px(&theme))
             .px(DynamicSpacing::Base08.px(&theme))
@@ -4420,7 +4428,7 @@ fn render_subagent_card(
         .w_full()
         .border_t_1()
         .border_color(theme.hairline())
-        .when(!open, |footer| footer.rounded_b(panel::RADIUS.px(&theme)))
+        .when(!open, |footer| footer.rounded_b(inspector_inner_radius(&theme)))
         .h(DynamicSpacing::Base32.px(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
         .flex()
@@ -4653,7 +4661,7 @@ fn render_subagent_strip(
         .border_color(theme.hairline())
         .bg(tone.opacity(0.07))
         .when(round_bottom, |strip| {
-            strip.rounded_b(panel::RADIUS.px(&theme))
+            strip.rounded_b(inspector_inner_radius(&theme))
         })
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base04.px(&theme))
@@ -5153,7 +5161,7 @@ fn render_subagent_detail(
         .min_w_0()
         .border_t_1()
         .border_color(theme.hairline())
-        .rounded_b(panel::RADIUS.px(&theme))
+        .rounded_b(inspector_inner_radius(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
         .flex()
@@ -5646,7 +5654,8 @@ fn render_activity_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))
+        .inspector_card(&theme, frosted_transcript_fill(theme))
+        .inspector_lift(&theme, detail_shown)
         .child(
             div()
                 .id(ElementId::NamedInteger(
@@ -5673,9 +5682,9 @@ fn render_activity_card(
                 .gap(DynamicSpacing::Base08.px(&theme))
                 .text_size(TextSize::Default.px(&theme))
                 .line_height(BufferLineHeight::Standard.relative())
-                .rounded_t(panel::RADIUS.px(&theme))
+                .rounded_t(inspector_inner_radius(&theme))
                 .when(header_is_only_child, |row| {
-                    row.rounded_b(panel::RADIUS.px(&theme))
+                    row.rounded_b(inspector_inner_radius(&theme))
                 })
                 .when(has_detail, |row| row.cursor_pointer())
                 .hover_on_glass(&theme)
@@ -5931,7 +5940,7 @@ fn render_tool_error_strip(tool: &ToolCall, round_bottom: bool, theme: Theme) ->
         .border_t_1()
         .border_color(theme.hairline())
         .bg(theme.error.opacity(0.07))
-        .when(round_bottom, |s| s.rounded_b(panel::RADIUS.px(&theme)))
+        .when(round_bottom, |s| s.rounded_b(inspector_inner_radius(&theme)))
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base04.px(&theme))
         .flex()
@@ -6034,7 +6043,7 @@ fn render_tool_detail(
                 // With no sections below it, the diff is the card's last
                 // child and carries its bottom radius.
                 .when(!has_sections && images.is_empty(), |d| {
-                    d.rounded_b(panel::RADIUS.px(&theme))
+                    d.rounded_b(inspector_inner_radius(&theme))
                 })
                 .child(render_edit_diff(
                     rows,
@@ -6057,12 +6066,14 @@ fn render_tool_detail(
         let mut surface = div()
             .w_full()
             .min_w_0()
-            .bg(theme.glass_fill(theme.code_bg))
+            // A recessed well, not a second faint layer of glass: the code
+            // face holds its contrast over any wallpaper or workbench.
+            .bg(theme.inspector_well(theme.code_bg))
             .flex()
             .flex_col()
             // The surface is always the card's last child, so it carries the
             // card's bottom radius (gpui clips children to a rectangle).
-            .when(images.is_empty(), |s| s.rounded_b(panel::RADIUS.px(&theme)))
+            .when(images.is_empty(), |s| s.rounded_b(inspector_inner_radius(&theme)))
             // Without a diff above it, the surface owns the rule that
             // separates it from the card header.
             .when(diff.is_none(), |s| {
@@ -6097,8 +6108,11 @@ fn render_tool_detail(
                 .w_full()
                 .border_t_1()
                 .border_color(theme.hairline())
-                .rounded_b(panel::RADIUS.px(&theme))
-                .p(DynamicSpacing::Base08.px(&theme))
+                .rounded_b(inspector_inner_radius(&theme))
+                // The code sections' inline inset, so images and text share
+                // one edge inside the card.
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .flex_wrap()
                 .gap(DynamicSpacing::Base06.px(&theme))
@@ -6233,6 +6247,7 @@ fn render_detail_section(
     // prefix preview; the toggle remeasures the row. Copy always carries the
     // full captured text, folded or not.
     let lines: Vec<&str> = content.split('\n').collect();
+    let line_count = lines.len();
     let foldable = lines.len() > OUTPUT_COLLAPSE_LINES;
     let expanded = foldable
         && expanded_sections
@@ -6306,6 +6321,7 @@ fn render_detail_section(
         copy_icon.opacity(icon_to).into_any_element()
     };
     let copy_label = div()
+        .debug_selector(move || format!("tool-section-copy-label-{}-{}-{section}", key.0, key.1))
         .flex_none()
         .text_size(TextSize::XSmall.px(&theme))
         .line_height(theme.ui_px(14.))
@@ -6371,16 +6387,18 @@ fn render_detail_section(
         &theme,
         hover,
     );
-    let copy_control = div().relative().flex_none().child(copy_button).child(
-        div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right(ButtonSize::Default.height(&theme) + DynamicSpacing::Base06.px(&theme))
-            .flex()
-            .items_center()
-            .child(copy_label),
-    );
+    // The label sits in the row's flow, not floated over it: a long
+    // (translated) section label truncates before it instead of running
+    // underneath. Its slot is reserved at rest, so the fade never shifts
+    // the row.
+    let copy_control = div()
+        .debug_selector(move || format!("tool-section-copy-{}-{}-{section}", key.0, key.1))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .child(copy_label)
+        .child(copy_button);
     let hovered_sections_for_event = hovered_sections.clone();
     let mut section_hasher = DefaultHasher::new();
     hover_key.hash(&mut section_hasher);
@@ -6419,7 +6437,9 @@ fn render_detail_section(
                 .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
-                        .flex_1()
+                        .debug_selector(move || {
+                            format!("tool-section-label-{}-{}-{section}", key.0, key.1)
+                        })
                         .min_w_0()
                         .truncate()
                         .font_weight(FontWeight::MEDIUM)
@@ -6428,6 +6448,20 @@ fn render_detail_section(
                         .text_color(theme.text_muted)
                         .child(label.to_string()),
                 )
+                // How much the section holds, before anyone expands it: the
+                // payload's own line count, in tabular figures.
+                .when(line_count > 1, |row| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .font(crate::ui::style::text::num_font())
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .line_height(theme.ui_px(15.))
+                            .text_color(theme.text_muted)
+                            .child(tr!("transcript.line_count", count = line_count)),
+                    )
+                })
+                .child(div().flex_1().min_w_0())
                 .child(copy_control),
         )
         .child(
@@ -9113,10 +9147,9 @@ fn render_block(
     }
 }
 
-/// A block-level image. Remote sources (the GitHub issue screenshots) load
-/// through gpui's image cache; a load failure falls back to the alt text or a
-/// quiet "image unavailable" note instead of leaving a hole. Clicking opens
-/// the source in the browser so a private/expired URL is still reachable.
+/// Markdown-linked images never fetch remote content. The quiet fallback
+/// keeps the alt text visible, and only an explicit Open action hands a safe
+/// HTTP(S) URL to the browser.
 fn render_markdown_image(
     alt: &str,
     url: &str,
@@ -9126,50 +9159,64 @@ fn render_markdown_image(
     sub: usize,
     theme: Theme,
 ) -> impl IntoElement {
-    let url = url.to_string();
-    let open = url.clone();
-    let fallback_alt = alt.to_string();
-    div().w_full().min_w_0().flex().child(
-        img(url)
-            .id(md_id(ix, id_namespace, block_ix, sub))
-            // `min_w_0` is load-bearing: a replaced element's automatic minimum
-            // width is its intrinsic width, so without it `max_w_full` loses
-            // and a large screenshot overflows the column and the rail.
-            .min_w_0()
-            .max_w_full()
-            // Leave the height auto so gpui derives it from the decoded image
-            // and taffy re-derives it from the aspect ratio once
-            // `max_w_full` clamps the width. A definite height (including 0)
-            // makes gpui compute the width *from* it instead — 0 × ratio —
-            // and the loaded image collapses to nothing.
-            .rounded(panel::RADIUS.px(&theme))
-            .border_1()
-            .border_color(theme.hairline())
-            .object_fit(ObjectFit::Contain)
-            .cursor_pointer()
-            .with_fallback(move || markdown_image_fallback(&fallback_alt, theme))
-            .on_click(move |_, _, cx| cx.open_url(&open)),
-    )
+    let open_selector = format!("markdown-image-open-{ix}-{id_namespace}-{block_ix}-{sub}");
+    let open = markdown_image_open_url(url).map(|url| {
+        div()
+            .flex_none()
+            .debug_selector(move || open_selector)
+            .child(
+                crate::ui::button::LinkButton::new(
+                    md_id(ix, id_namespace, block_ix, sub),
+                    tr!("explorer.open"),
+                )
+                .external()
+                .size(TextSize::Small)
+                .on_click(&theme, move |_, _, cx| cx.open_url(&url)),
+            )
+            .into_any_element()
+    });
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .child(markdown_image_fallback(alt, open, theme))
 }
 
-/// The fallback shown when a markdown image cannot load: the alt text when it
-/// says something, otherwise a muted "image unavailable" note.
-fn markdown_image_fallback(alt: &str, theme: Theme) -> AnyElement {
+/// Normalize the URL handed to the OS opener, rejecting malformed targets and
+/// every scheme besides HTTP(S), including local-file and data URLs.
+fn markdown_image_open_url(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(parsed.to_string())
+}
+
+/// The quiet surface for a markdown image: the alt text when it says
+/// something, otherwise a muted "image unavailable" note, plus an optional
+/// explicit browser action.
+fn markdown_image_fallback(alt: &str, open: Option<AnyElement>, theme: Theme) -> AnyElement {
     let label = if alt.trim().is_empty() {
         tr!("markdown.image_unavailable")
     } else {
         alt.to_string()
     };
     div()
+        .w_full()
+        .min_w_0()
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.hairline())
         .bg(theme.overlay)
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
         .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_muted)
-        .child(label)
+        .child(div().flex_1().min_w_0().truncate().child(label))
+        .children(open)
         .into_any_element()
 }
 
@@ -9227,8 +9274,8 @@ fn render_alert(
 }
 
 /// Render one line inside a quote or alert. A standalone image line (GitHub
-/// quotes a bug report whose screenshot was pasted as a raw `<img>` tag) paints
-/// as an image instead of showing the tag as text.
+/// quotes a bug report whose screenshot was pasted as a raw `<img>` tag) gets
+/// the passive image fallback instead of showing the tag as text.
 #[allow(clippy::too_many_arguments)]
 fn render_container_line(
     line: &str,
@@ -10521,7 +10568,7 @@ mod tests {
                     ..theme::SurfaceTreatment::OPAQUE
                 });
                 let mut card =
-                    div().card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme));
+                    div().inspector_card(&theme, frosted_transcript_fill(theme));
                 let expected = Some(frosted_transcript_fill(theme).into());
                 assert_eq!(card.style().background, expected);
             }
@@ -10532,7 +10579,7 @@ mod tests {
         let start = source.find("fn render_thinking_body(").expect("thinking body");
         let body = &source[start..start + 4000];
         assert!(body.contains(
-            ".card_surface(&theme, theme.hairline(), frosted_transcript_fill(theme))"
+            ".inspector_card(&theme, frosted_transcript_fill(theme))"
         ));
         assert!(!body.contains(".bg(theme.overlay)"));
     }
@@ -10579,12 +10626,21 @@ mod tests {
                     card_alpha: 0.8,
                     ..theme::SurfaceTreatment::OPAQUE
                 });
-                let expected = if active && glass {
-                    theme.card_fill(theme.surface_secondary)
-                } else {
-                    theme.overlay
+                // Over a wallpaper the wallpaper decides; with none, the
+                // inspector rule frosts dark palettes (where the renderer and
+                // the OS allow) and keeps light palettes on the opaque plane.
+                let expected = match (active, glass) {
+                    (true, true) => theme.card_fill(theme.surface_secondary),
+                    (true, false) => theme.overlay,
+                    (false, _) if theme.floating_glass_sigma().is_some() => {
+                        theme.inspector_fill(theme.surface_secondary)
+                    }
+                    (false, _) => theme.overlay,
                 };
                 assert_eq!(frosted_transcript_fill(theme), expected);
+                if !active && theme.mode == ThemeMode::Light {
+                    assert_eq!(frosted_transcript_fill(theme), theme.overlay);
+                }
             }
         }
     }
@@ -11960,6 +12016,32 @@ mod tests {
             image_line(&lines[1]).unwrap().1,
             "https://private-user-images.githubusercontent.com/1/2-a.png?jwt=eyJ0eXAi.eyJpc3Mi.OiJnaXRodWI"
         );
+    }
+
+    #[test]
+    fn markdown_image_open_action_only_accepts_absolute_http_urls() {
+        for url in [
+            "https://example.com/shot.png",
+            "http://example.com/shot.png",
+        ] {
+            assert_eq!(markdown_image_open_url(url).as_deref(), Some(url));
+        }
+        for url in [
+            "file:///tmp/shot.png",
+            "data:image/png;base64,AAAA",
+            "javascript:alert(1)",
+            "ftp://example.com/shot.png",
+            "example.com/shot.png",
+            "/tmp/shot.png",
+            "https://",
+            "not a URL",
+        ] {
+            assert_eq!(
+                markdown_image_open_url(url),
+                None,
+                "unsafe or malformed image target: {url}"
+            );
+        }
     }
 
     #[test]
@@ -13893,6 +13975,46 @@ mod tests {
         );
     }
 
+    /// The copy control is in the label row's flow: in a narrow card the
+    /// section label truncates before it instead of running underneath the
+    /// "Copy" text that used to float over the row.
+    #[gpui::test]
+    fn section_label_never_runs_under_the_copy_control(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| ActivityCardTestView {
+            open: Rc::new(RefCell::new(HashSet::from([(0, 0)]))),
+            sections: Rc::new(RefCell::new(HashSet::new())),
+            scroller: MessageScrollerState::new(1),
+            output: None,
+            image_opener: None,
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(150.), px(1200.)),
+            |_, _| view.clone(),
+        );
+        // The fixture is a `read` with no arguments: its one section is the
+        // Output (section 1).
+        let label = cx
+            .debug_bounds("tool-section-label-0-0-1")
+            .expect("section label");
+        // The "Copy" text, not just the button: it used to float, absolutely
+        // positioned, outside the control's box and over the label row.
+        let control = cx
+            .debug_bounds("tool-section-copy-0-0-1")
+            .expect("copy control");
+        let copy = cx
+            .debug_bounds("tool-section-copy-label-0-0-1")
+            .expect("copy label");
+        assert!(
+            copy.left() >= control.left() && copy.right() <= control.right(),
+            "the Copy text {copy:?} owns a slot inside the control {control:?}"
+        );
+        assert!(
+            label.right() <= control.left(),
+            "label {label:?} overlaps the copy control {control:?}"
+        );
+    }
+
     #[gpui::test]
     fn activity_details_do_not_toggle_the_card(cx: &mut gpui::TestAppContext) {
         let open = Rc::new(RefCell::new(HashSet::from([(0, 0)])));
@@ -14737,7 +14859,7 @@ mod tests {
             details: None,
         };
         messages.borrow_mut()[0].steps = vec![
-            Step { text: prose.clone(), thinking: "First thought\nChecking references".into(), tools: vec![tool.clone()], ..Step::default() },
+            Step { text: prose.clone(), thinking: "**First** thought\nChecking references".into(), tools: vec![tool.clone()], ..Step::default() },
             Step { text: second.clone(), thinking: "Second thought\nChecking more references".into(), tools: vec![tool], ..Step::default() },
             Step { text: "| A | B | C | D |\n| --- | --- | --- | --- |\n| A wide table | preserves | the normal | activity layout |".into(), ..Step::default() },
         ];
@@ -14800,6 +14922,15 @@ mod tests {
                 .iter()
                 .find(|block| block.text.as_ref() == prose)
                 .unwrap();
+            // Reasoning renders its inline Markdown: the bold heading paints
+            // without its asterisks (and selection copies what is shown).
+            assert!(
+                selection
+                    .blocks
+                    .iter()
+                    .any(|block| block.text.as_ref() == "First thought\nChecking references"),
+                "the thought body renders `**First**` as bold, not literal asterisks"
+            );
             let next = selection
                 .blocks
                 .iter()
@@ -15401,9 +15532,8 @@ mod tests {
         );
     }
 
-    /// Serves a fixed 200×100 PNG for any image request so the markdown
-    /// image pipeline (parse → fetch → decode → layout) can run headless,
-    /// recording every URI the renderer asked for.
+    /// Serves a fixed 200×100 PNG for local-image tests and records every URI,
+    /// so the markdown tests can also prove that rendering made no request.
     #[derive(Default)]
     struct PngHttpClient {
         requested: Arc<std::sync::Mutex<Vec<String>>>,
@@ -15501,14 +15631,11 @@ mod tests {
         );
     }
 
-    /// A standalone markdown image (the `<img>` tag GitHub stores for a
-    /// pasted issue screenshot) must lay out at the reading column's width
-    /// with its aspect ratio kept. The element used to force a definite
-    /// `height: 0`, from which gpui derives a 0px width — the image decoded
-    /// and then painted 0×0, so issue bodies appeared to have no screenshot
-    /// at all.
+    /// Markdown images are passive content: painting one never asks GPUI's
+    /// image loader for the URL. HTTP(S) gets a separate Open action; a local
+    /// file URL stays noninteractive.
     #[gpui::test]
-    fn markdown_image_lays_out_in_the_reading_column(cx: &mut gpui::TestAppContext) {
+    fn markdown_images_never_fetch_and_only_safe_urls_open(cx: &mut gpui::TestAppContext) {
         let cx = cx.add_empty_window();
         let requested = Arc::new(std::sync::Mutex::new(Vec::new()));
         cx.update(|_, cx| {
@@ -15523,10 +15650,10 @@ mod tests {
             fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
                 div()
                     .id("image-doc")
-                    .w(px(100.))
+                    .w(px(300.))
                     .debug_selector(|| "image-doc".to_string())
                     .child(render_markdown_document(
-                        "<img width=\"1450\" height=\"932\" alt=\"Image\" src=\"https://example.com/shot.png\" />",
+                        "<img alt=\"remote\" src=\"https://example.com/shot.png\" />\n\n<img alt=\"local\" src=\"file:///tmp/shot.png\" />",
                         theme::Theme::for_id(theme::ThemeId::Orbit),
                     ))
             }
@@ -15537,7 +15664,7 @@ mod tests {
             let view = view.clone();
             cx.draw(
                 point(px(0.), px(0.)),
-                gpui::size(px(300.), px(300.)),
+                gpui::size(px(500.), px(300.)),
                 move |_, _| view.clone(),
             );
         };
@@ -15551,28 +15678,33 @@ mod tests {
             requested
                 .lock()
                 .expect("request log is not poisoned")
-                .iter()
-                .any(|uri| uri == "https://example.com/shot.png"),
-            "the document's image must be fetched"
+                .is_empty(),
+            "rendering markdown must not construct an image request"
         );
-        let host = cx
-            .debug_bounds("image-doc")
-            .expect("the document is visible");
-        // The 200×100 fixture scales to the 100px column as 100×50; a
-        // definite zero height instead collapses the box to 0×0.
+        assert!(cx.debug_bounds("image-doc").is_some());
+        assert!(
+            cx.debug_bounds("markdown-image-open-0-0-1-0")
+                .is_none(),
+            "a file URL has no Open action"
+        );
+        let open = cx
+            .debug_bounds("markdown-image-open-0-0-0-0")
+            .expect("an HTTPS image has an explicit Open action");
+        assert!(open.size.width > px(0.) && open.size.height > px(0.), "the Open action has a hit area: {open:?}");
         assert_eq!(
-            host.size.height,
-            px(50.),
-            "the image must keep its ratio at column width"
+            markdown_image_open_url("https://example.com/shot.png").as_deref(),
+            Some("https://example.com/shot.png")
         );
+        assert!(markdown_image_open_url("file:///tmp/shot.png").is_none());
     }
 
-    /// A reply that quotes a pasted screenshot stores a signed
-    /// `private-user-images` URL whose JWT expires within minutes, so fetching
-    /// it 404s and the reply shows only the alt-text fallback. The renderer
-    /// must fetch the durable `user-attachments` URL for the same asset.
+    /// URL normalization still applies to the explicit browser action for a
+    /// quoted GitHub screenshot, but neither the signed nor the durable asset
+    /// URL is fetched while the reply renders.
     #[gpui::test]
-    fn quoted_reply_image_uses_the_durable_asset_url(cx: &mut gpui::TestAppContext) {
+    fn quoted_reply_image_opens_the_durable_asset_without_fetching(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let cx = cx.add_empty_window();
         let requested = Arc::new(std::sync::Mutex::new(Vec::new()));
         cx.update(|_, cx| {
@@ -15607,19 +15739,22 @@ mod tests {
         cx.run_until_parked();
         paint(cx);
 
-        let requested = requested.lock().expect("request log is not poisoned");
         assert!(
-            requested.iter().any(|uri| {
-                uri
-                == "https://github.com/user-attachments/assets/69f721c8-e025-44cd-8242-4e87eef54f7e"
-            }),
-            "the reply must fetch the durable asset URL, got {requested:?}"
+            requested
+                .lock()
+                .expect("request log is not poisoned")
+                .is_empty(),
+            "the quoted reply must not fetch either asset URL"
         );
-        assert!(
-            !requested
-                .iter()
-                .any(|uri| uri.starts_with("https://private-user-images")),
-            "the expired signed URL must never be fetched: {requested:?}"
+        let open = cx
+            .debug_bounds("markdown-image-open-0-0-0-1")
+            .expect("the normalized durable URL has an Open action");
+        assert!(open.size.width > px(0.) && open.size.height > px(0.));
+        assert_eq!(
+            markdown_image_open_url(&normalize_image_url("https://private-user-images.githubusercontent.com/74659438/656345150-69f721c8-e025-44cd-8242-4e87eef54f7e.png?jwt=expired")).as_deref(),
+            Some(
+                "https://github.com/user-attachments/assets/69f721c8-e025-44cd-8242-4e87eef54f7e"
+            )
         );
     }
 

@@ -62,6 +62,7 @@ export function buildArgv({
   tools = null,
   toolsPresent = false,
   ceiling = "exec",
+  approveProject = false,
 }) {
   const argv = ["--mode", "json", "-p", "--no-session"];
   if (model) argv.push("--model", model);
@@ -74,20 +75,53 @@ export function buildArgv({
   // codemode; the ceiling is the real clamp, and this closes the declaration.
   if (ceiling === "read" || ceiling === "edit") argv.push("--exclude-tools", "mcp__*");
   for (const extension of extensions) argv.push("--extension", extension);
-  argv.push("--approve");
+  // Project trust is inherited from the parent; an absent decision fails closed.
+  argv.push(approveProject ? "--approve" : "--no-approve");
   if (promptPath) argv.push("--append-system-prompt", promptPath);
   argv.push("--", prompt);
   return argv;
 }
 
-/** The extra environment a child needs to inherit the parent's guardrails. */
+/**
+ * The child's environment: the parent's values plus its guardrails. MCP
+ * secrets cross into another workspace only when the canonical cwd comparison
+ * proved it is the parent's own workspace; an absent comparison fails closed.
+ */
 export function buildEnv({
+  parentEnv = {},
+  sameWorkspace = false,
   parentSessionId = "",
   agentName = "",
   ceiling = "exec",
   workflowMode = "build",
 } = {}) {
-  return {
+  const env = { ...parentEnv };
+  if (!sameWorkspace) {
+    // Orbit supplies the exact names exported from its secret store. Keep the
+    // prefix fallback for older parents, but never rely on it for arbitrary
+    // hand-written store keys.
+    let secretNames = [];
+    try {
+      const parsed = JSON.parse(parentEnv.ORBIT_MCP_SECRET_NAMES ?? "[]");
+      if (Array.isArray(parsed)) {
+        secretNames = parsed.filter((name) => typeof name === "string");
+      }
+    } catch {
+      secretNames = [];
+    }
+    for (const name of new Set([
+      ...secretNames,
+      ...Object.keys(env).filter((name) => name.startsWith("MCP_")),
+    ])) {
+      delete env[name];
+    }
+    env.ORBIT_PROJECT_TRUST = "0";
+    delete env.ORBIT_MCP_SECRET_NAMES;
+  }
+  // Apply Orbit's variables last: a hand-written secret may deliberately use
+  // a reserved name, but deleting it must never widen the child's mode/tier.
+  Object.assign(env, {
+    ORBIT_SUBAGENT_STATUS_TOKEN: "",
     PI_SKIP_VERSION_CHECK: "1",
     CI: "1",
     NO_COLOR: "1",
@@ -96,7 +130,8 @@ export function buildEnv({
     ORBIT_SUBAGENT_AGENT: agentName,
     ORBIT_SUBAGENT_DEPTH: String(LIMITS.depth),
     ORBIT_SUBAGENT_PARENT: parentSessionId,
-  };
+  });
+  return env;
 }
 
 /**

@@ -44,6 +44,16 @@ A few properties are **by design** and are not vulnerabilities on their own:
   Auto-accept edits / Full access decide which mutating tool calls prompt first.
   `pi` ships no sandbox, and Orbit does not add one. A mode that auto-approves a
   call is not an isolation boundary.
+- **Project trust is explicit.** Unknown and denied workspaces run with
+  `--no-approve`: project settings, extensions, skills, and MCP servers stay
+  disabled and MCP secrets are withheld. Only an explicit decision stored in
+  `~/.orbit-pi/project-trust.json` enables them for a canonical local folder or
+  remote account+directory. Subagents inherit that approval only in the same
+  canonical workspace.
+- **Plan/Ask are read-only workflow guards, not sandboxes.** They use
+  conservative per-command shell policies and default-deny MCP, custom, and
+  orchestration tools. Invalid persisted mode state falls through to the
+  session's branch record rather than becoming Build.
 - **Session data lives in pi's own store** (`~/.pi/agent/`, `~/.orbit-pi/`).
   Orbit reads and writes the same files the `pi` CLI does.
 

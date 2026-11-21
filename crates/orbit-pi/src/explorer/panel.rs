@@ -1740,7 +1740,7 @@ impl Render for ProjectPanel {
                     .w_full()
                     .bg(theme.surface)
                     .overflow_hidden()
-                    .page_card(
+                    .dock_card(
                         &theme,
                         div()
                             .size_full()

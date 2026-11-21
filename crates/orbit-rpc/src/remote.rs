@@ -159,6 +159,9 @@ pub struct RemoteLaunch<'a> {
     /// `[A-Z_][A-Z0-9_]*`; values are shell-quoted. Never a secret: the
     /// script travels on the ssh command line.
     pub env: &'a [(&'a str, &'a str)],
+    /// Whether to load trust-gated project resources on the host. Defaults to
+    /// false so constructing a launch cannot grant trust accidentally.
+    pub approve_project: bool,
 }
 
 impl RemoteTarget {
@@ -395,8 +398,13 @@ pub fn launch_script(target: &RemoteTarget, launch: &RemoteLaunch<'_>) -> Result
         "[ -f \"$G/index.js\" ] || {{ echo 'orbit: access guard missing on host; refusing to start pi' >&2; exit {GUARD_MISSING_EXIT}; }}\n"
     ));
     script.push_str(&locate_pi());
+    let project_trust = if launch.approve_project {
+        "--approve"
+    } else {
+        "--no-approve"
+    };
     script.push_str(&format!(
-        "exec env PI_SKIP_VERSION_CHECK=1{env} \"$PI\" --mode rpc --approve --extension \"$G/index.js\"{extension_args}\n",
+        "exec env PI_SKIP_VERSION_CHECK=1{env} \"$PI\" --mode rpc {project_trust} --extension \"$G/index.js\"{extension_args}\n",
     ));
     Ok(script)
 }
@@ -1237,6 +1245,7 @@ mod tests {
         assert!(guard_check < exec, "guard check must precede exec");
         assert!(script.contains("'{\"mode\":\"supervised\"}' > \"$HOME/.orbit-pi/access.json\""));
         assert!(script.contains("cd -- '/srv/app' || exit 66"));
+        assert!(script.contains("--mode rpc --no-approve --extension"));
         assert!(script.contains("<<'ORBIT_GUARD_EOF'\nexport default 1;\nORBIT_GUARD_EOF"));
     }
 
@@ -1596,6 +1605,30 @@ mod tests {
     }];
 
     #[test]
+    fn launch_script_grants_project_trust_only_when_explicit() {
+        for (approve_project, selected, rejected) in [
+            (false, "--no-approve", "--approve"),
+            (true, "--approve", "--no-approve"),
+        ] {
+            let script = launch_script(
+                &target("/srv/app"),
+                &RemoteLaunch {
+                    guard: &ENTRY,
+                    approve_project,
+                    ..RemoteLaunch::default()
+                },
+            )
+            .expect("script");
+            let exec = script.lines().last().expect("exec line");
+            assert!(
+                exec.contains(&format!("--mode rpc {selected} --extension")),
+                "{exec}"
+            );
+            assert!(!exec.contains(rejected), "{exec}");
+        }
+    }
+
+    #[test]
     fn launch_script_installs_and_loads_extra_extensions_with_env() {
         let script = launch_script(
             &target("/srv/app"),
@@ -1606,6 +1639,7 @@ mod tests {
                     files: &ENTRY,
                 }],
                 env: &[("ORBIT_WORKFLOW_MODE", "plan's")],
+                approve_project: false,
             },
         )
         .expect("script");
@@ -1630,6 +1664,7 @@ mod tests {
                     guard: &ENTRY,
                     extensions,
                     env,
+                    approve_project: false,
                 },
             )
         };

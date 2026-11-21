@@ -55,6 +55,8 @@ pub enum CommandId {
     /// a plain div with a mouse handler, so without this the session's scope
     /// could not be changed from the keyboard at all.
     ChooseWorkflowMode,
+    /// Reopen the explicit project-trust decision for this workspace.
+    TrustWorkspace,
     AbortRun,
     // Navigation
     ToggleCommandPalette,
@@ -445,6 +447,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         "icons/task.svg",
         "command_palette.choose_workflow_mode",
         "workflow mode plan build ask scope read only changes",
+    ),
+    command(
+        CommandId::TrustWorkspace,
+        Agent,
+        "icons/lock.svg",
+        "trust.command",
+        "trust workspace project extensions settings mcp approve folder",
     ),
     with_chord(
         command(
@@ -1303,6 +1312,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         | CommandId::FocusComposer
         | CommandId::ChooseAccess
         | CommandId::ChooseWorkflowMode
+        | CommandId::TrustWorkspace
         | CommandId::ToggleSidePanel
         | CommandId::OpenMcpSettings
         | CommandId::OpenWorktrees

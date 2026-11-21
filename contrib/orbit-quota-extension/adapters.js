@@ -434,10 +434,11 @@ async function orbitQuotaMoonshot(id) {
 }
 
 async function orbitQuotaMiniMax(id) {
-  const { key, origin } = await orbitQuotaResolved(id);
+  const { key } = await orbitQuotaResolved(id);
   if (!key) return { kind: "unsupported", note: "No MiniMax key stored." };
-  const root = (origin && origin.replace(/\/anthropic\/?$/, "").replace(/\/v1\/?$/, "")) ||
-    (id === "minimax-cn" ? "https://api.minimaxi.com" : "https://api.minimax.io");
+  // A custom model base URL is never a quota credential destination. The
+  // provider id alone selects MiniMax's official regional quota origin.
+  const root = id === "minimax-cn" ? "https://api.minimaxi.com" : "https://api.minimax.io";
   const isPayg = /^sk-api-/.test(key);
   if (isPayg) {
     const r = await orbitQuotaJson(root + "/account/query_balance", {
@@ -499,15 +500,40 @@ async function orbitQuotaMiniMax(id) {
   return { kind: "subscription", windows };
 }
 
+const ORBIT_QUOTA_ZAI_HOSTS = new Set(["api.z.ai", "open.bigmodel.cn"]);
+
+function orbitQuotaZaiRoot(origin, id) {
+  const fallback = id === "zai-coding-cn" ? "https://open.bigmodel.cn" : "https://api.z.ai";
+  if (!origin) return fallback;
+  let url;
+  try {
+    url = new URL(origin);
+  } catch {
+    return null;
+  }
+  // For HTTPS, URL normalizes both an omitted port and explicit :443 to "".
+  // Every other port is unexpected and rejected. Building the root from the
+  // parsed origin (never the input string) also drops query and fragment data.
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.port !== "" ||
+    !ORBIT_QUOTA_ZAI_HOSTS.has(url.hostname)
+  ) {
+    return null;
+  }
+  const rootPath = url.pathname.replace(/\/api\/.*$/, "").replace(/\/+$/, "");
+  return url.origin + rootPath;
+}
+
 async function orbitQuotaZai(id) {
   const { key, origin } = await orbitQuotaResolved(id);
   if (!key) return { kind: "unsupported", note: "No Z.AI key stored." };
-  const root =
-    origin && /^https:\/\/(api\.z\.ai|open\.bigmodel\.cn)/.test(origin)
-      ? origin.replace(/(\/api\/.*)$/, "")
-      : id === "zai-coding-cn"
-        ? "https://open.bigmodel.cn"
-        : "https://api.z.ai";
+  const root = orbitQuotaZaiRoot(origin, id);
+  if (!root) {
+    return { kind: "unsupported", error: "Z.AI quota requests allow only the official HTTPS endpoints." };
+  }
   const rawKey = key.replace(/^Bearer\s+/i, "");
   const r = await orbitQuotaJson(root + "/api/monitor/usage/quota/limit", {
     Authorization: rawKey,

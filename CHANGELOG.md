@@ -7,14 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Folder picker lists folders only.** The new-task folder picker now shows
+  your recent folders (the current one first, then session folders and sidebar
+  projects) and **Choose folder…** — nothing else. Worktrees, remote hosts and
+  **Add this project to a server…** live only in the **Work in** picker, so
+  choosing a folder no longer quietly changes where the task runs.
+
+- **Send control motion.** The idle send button now grows into its label when a
+  draft becomes sendable and reverses smoothly when cleared, respecting Reduce Motion.
+
+- **Frosted composer cards.** Queue, retry, approval and inline-question cards
+  now share the composer's floating glass treatment and accessibility fallback.
+
+- **More readable frosted surfaces.** Without wallpaper, the floating glass tint
+  now keeps secondary and muted text at 4.5:1 contrast over bright and dark backdrops.
+
+- **Frosted settings and Usage boards.** Shared settings groups, empty resource
+  cards and Usage boards use contrast-controlled dark glass where supported;
+  full-window wallpaper settings and opaque fallbacks still apply.
+
+- **Softer frosted workbench.** Shared cards, controls, fields and list rows
+  use rounder corners, badges use a capsule shape, and floating surfaces have
+  softer, broader shadows.
+- **Frosted composer.** The composer now uses contrast-controlled glass on a
+  supported dark workbench, including without a wallpaper, with an opaque fallback.
+- **Floating surface hierarchy.** Dialogs have softer 16px corners, while
+  pickers use the lighter popover elevation and shadow.
+
+### Added
+
+- **Inspector glass for tool calls and the detail docks.** Tool, thought, delegation,
+  question and summary cards, and the Session details, Review and Explorer docks, now share
+  one frosted material. They frost over a wallpaper as before and, in dark palettes, over the
+  bare workbench too, with a tint held at the lowest alpha that keeps text readable over black
+  or white. While frosted, an open tool or delegation card lifts with a quiet contact shadow; a tool call's command and output sit in a
+  recessed well that keeps code legible over any backdrop. Light palettes, Reduce
+  Transparency and Increase Contrast keep the opaque cards.
+- **Worktrees in the Work in picker.** The picker now reads **Current checkout** (plus the
+  worktree you are in, checked), **New worktree** — the Worktrees page's quick-create dialog —
+  and **Existing worktrees ›**, which opens a flyout beside it with a search field over every
+  worktree (branch over path). ↑/↓/Enter choose, → opens the flyout, Escape steps back. Worktrees
+  now use their own mark (a folder with a branch, the Settings → Worktrees icon) in the picker,
+  the Work in chip and the Worktrees page, instead of the branch glyph the branch chip uses.
+  The new-task page's project selector offers the same places: **Current checkout**, every
+  worktree as a row its search narrows (branch over path, the active one checked), and **New
+  worktree** beside **New project**.
+- **Activity and Usage in Session details.** The panel now counts what crossed the wire — prompts
+  sent, replies received, tool calls and how many failed — from the transcript itself, and shows
+  pi's running session totals: input, output, cache read/write tokens and cost. Rows appear only
+  for figures pi reported. Values use tabular figures so a column lines up on its last digit.
+- **Line counts on tool-call sections.** An expanded tool card's Command / Arguments / Output
+  sections show how many lines they hold before you expand them.
+
 ### Fixed
 
+- **Security boundaries are enforced end to end.** Opening a workspace no longer
+  silently grants project trust: unknown or denied workspaces use `--no-approve`,
+  keep project resources and MCP secrets off, and require an explicit persisted
+  trust decision before those load. Subagents inherit trust and exact MCP secret
+  names only in the same canonical workspace. Plan/Ask close shell mutation,
+  MCP/custom-tool, invalid-mode, and resumed-delegation bypasses. Remote Markdown
+  images no longer fetch automatically; avatar bodies are capped; clone URLs lose
+  embedded credentials; quota adapters require exact official HTTPS origins. The
+  updater now uses a private scratch root, extracts the same open file whose
+  signature was verified, bounds feed reads, and avoids following error-marker
+  symlinks.
 - **Tool-call cards in the transcript.** A command's preview now fills the row and ends in an
   ellipsis at the card's edge instead of stopping at 72 characters. The ✓ and disclosure caret
   hold one column down the turn, with the edit card's copy button moved to their left. The
   **Thought** card's header uses the same badge, inset and height as the tool rows beside it, and
   its reasoning text is set in the UI face rather than the code font. The turn summary now reads
   "Read 3 files · Edited 1 file" instead of "Ran 3 file reads · Ran 1 file edit".
+- **Tool-call and Thought cards drop their outline.** The tint and the frost now carry each
+  card's shape, so a turn's cards read as one clean material instead of a stack of boxes. The
+  Thought card renders its reasoning's Markdown (a `**Plan**` heading is bold, not wrapped in
+  asterisks) and hangs the text on the title's edge, beside the badge.
+- **In a session, Work in shows only where the task runs.** The status bar's Work in picker
+  lists just the current checkout (or the worktree the session runs in). New worktree, Existing
+  worktrees and remote hosts are offered on the new-task page, before there is a session to
+  leave, and the "Choosing a folder starts a new task there" note is gone.
+- **Pickers are calmer.** Rows in the project selector and the Work in picker now sit a small
+  gap apart instead of touching, and only the highlighted row is filled — the current place is
+  marked by its check and brighter text, not a second filled slab. The project selector drops
+  the "This device" count, uses the same stroke icon as Work in instead of a shrunken project
+  logo, and marks a remote host with a quiet muted "Experimental" tag instead of a warning
+  badge.
+- **Project selector: hosts get their own group; trailing items sit on the title line.** A
+  remote host no longer appears under "This device" — hosts open a **Remote hosts** section of
+  their own. A row's branch note, check, count, `prunable` tag or "Experimental" badge now rides
+  its title's line in the project selector and the Work in picker, instead of floating between
+  the title and the path. Paths under home read `~/…`, as in the Work in picker.
+- **Pickers: one footer, one edge, nothing cut off for good.** The Work in picker's note
+  ("Choosing a folder starts a new task there") sat 6px left of the rows and header; it now
+  shares their edge inside a single footer zone with the key legend, and the rewind picker uses
+  the same footer instead of stacking two rules. Every picker row (Work in, folder, rewind,
+  model, server clone, provider hosts) now shows its full title and path on hover, so a long
+  branch, path or `user@host:dir` is never cut off with no way to read it. The Work in picker's
+  width follows the UI font size.
+- **Card corners and lift are consistent.** Every inspector card's header, error strip and
+  detail plane round to the card's radius less its border, so inner corners nest inside the
+  outer ones; an open delegation card now lifts like an open tool card; and the tool sections'
+  line count uses the regular muted ink instead of a dimmed copy of it.
+- **Tool-call sections: Copy no longer covers the label.** The section's Copy text sat floated over
+  the label row; it now has its own slot, so a long or translated label truncates before it. The
+  image grid shares the code sections' 12px inset.
+- **Session details holds up at large text and in other languages.** Rows grow with the UI font
+  instead of clipping at a fixed height, the Changes row wraps its Review / Commit actions, and the
+  session id and file show in full in the code face rather than losing their tail to an ellipsis.
 - **A sent message's file chip no longer lights up on hover.** It has nothing to open or remove,
   so it now renders as a read-only `FileChip` and gives no hover response.
 

@@ -71,6 +71,30 @@ async function withAuth(auth, fn) {
   }
 }
 
+/** Resolve one credential with a caller-supplied base URL and record its request. */
+async function reportWithOrigin(id, origin, key = "test-key") {
+  return withAuth({}, async () => {
+    const requested = [];
+    configureQuotaAuth(async (providerId) =>
+      providerId === id ? { auth: { apiKey: key, baseUrl: origin } } : null,
+    );
+    const respond = jsonFetch({});
+    globalThis.fetch = async (url, init) => {
+      requested.push({
+        url: String(url),
+        authorization: (init && init.headers && init.headers.Authorization) || "",
+      });
+      return respond(url);
+    };
+    try {
+      const report = await quotaReport(id);
+      return { report, requested };
+    } finally {
+      configureQuotaAuth(null);
+    }
+  });
+}
+
 test("google reports unsupported without a network request", async () => {
   const report = await quotaReport("google");
   assert.equal(report.provider, "google");
@@ -209,6 +233,101 @@ test("baseten sends an ISO range and sums the billing usage categories", async (
     ]);
   } finally {
     configureQuotaAuth(null);
+  }
+});
+
+test("Z.AI accepts only official HTTPS roots and preserves regional base paths", async () => {
+  const cases = [
+    {
+      id: "zai",
+      origin: "https://api.z.ai/api/coding/paas/v4",
+      expected: "https://api.z.ai/api/monitor/usage/quota/limit",
+    },
+    {
+      id: "zai",
+      origin: "https://api.z.ai:443/api/paas/v4",
+      expected: "https://api.z.ai/api/monitor/usage/quota/limit",
+    },
+    {
+      id: "zai-coding-cn",
+      origin: "https://open.bigmodel.cn/api/coding/paas/v4",
+      expected: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+    },
+    {
+      id: "zai-coding-cn",
+      origin: undefined,
+      expected: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+    },
+  ];
+  for (const { id, origin, expected } of cases) {
+    const { report, requested } = await reportWithOrigin(id, origin);
+    assert.equal(report.error, undefined, origin || "regional fallback");
+    assert.deepEqual(requested.map((request) => request.url), [expected]);
+    assert.deepEqual(requested.map((request) => request.authorization), ["test-key"]);
+  }
+});
+
+test("Z.AI rejects lookalike, userinfo, custom-port, HTTP, and proxy origins before fetching", async () => {
+  const origins = [
+    "https://api.z.ai.attacker/api/coding/paas/v4",
+    "https://api.z.ai@attacker/api/coding/paas/v4",
+    "https://user:pass@api.z.ai/api/coding/paas/v4",
+    "https://api.z.ai:8443/api/coding/paas/v4",
+    "https://open.bigmodel.cn:8443/api/coding/paas/v4",
+    "http://api.z.ai/api/coding/paas/v4",
+    "https://proxy.example/api/coding/paas/v4",
+  ];
+  for (const origin of origins) {
+    const { report, requested } = await reportWithOrigin("zai", origin);
+    assert.equal(report.kind, "unsupported", origin);
+    assert.match(report.error, /official HTTPS endpoints/, origin);
+    assert.deepEqual(requested, [], `${origin} must not receive credentials`);
+  }
+});
+
+test("MiniMax custom origins never receive credentials; official id roots are used", async () => {
+  const cases = [
+    {
+      id: "minimax",
+      origin: "https://proxy.example/anthropic",
+      key: "sk-api-test",
+      expected: "https://api.minimax.io/account/query_balance",
+    },
+    {
+      id: "minimax-cn",
+      origin: "https://api.minimaxi.com@attacker/v1",
+      key: "test-key",
+      expected: "https://api.minimaxi.com/v1/token_plan/remains",
+    },
+  ];
+  for (const { id, origin, key, expected } of cases) {
+    const { report, requested } = await reportWithOrigin(id, origin, key);
+    assert.equal(report.error, undefined, origin);
+    assert.deepEqual(requested.map((request) => request.url), [expected]);
+    assert.deepEqual(requested.map((request) => request.authorization), [`Bearer ${key}`]);
+  }
+});
+
+test("MiniMax official global and China base URLs still query quota", async () => {
+  const cases = [
+    {
+      id: "minimax",
+      origin: "https://api.minimax.io/anthropic",
+      key: "test-key",
+      expected: "https://api.minimax.io/v1/token_plan/remains",
+    },
+    {
+      id: "minimax-cn",
+      origin: "https://api.minimaxi.com/anthropic",
+      key: "sk-api-test",
+      expected: "https://api.minimaxi.com/account/query_balance",
+    },
+  ];
+  for (const { id, origin, key, expected } of cases) {
+    const { report, requested } = await reportWithOrigin(id, origin, key);
+    assert.equal(report.error, undefined, origin);
+    assert.deepEqual(requested.map((request) => request.url), [expected]);
+    assert.deepEqual(requested.map((request) => request.authorization), [`Bearer ${key}`]);
   }
 });
 

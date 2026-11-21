@@ -194,7 +194,7 @@ pub struct FolderRow {
 /// checkout and `active` marks the row the working folder is on.
 ///
 /// The main worktree is always the first row even when Git reports a different
-/// order, so "Local" never moves.
+/// order, so the current checkout never moves.
 pub fn location_rows(worktrees: &[Worktree], root: &Path, active: Option<&Path>) -> Vec<FolderRow> {
     let mut rows: Vec<FolderRow> = Vec::new();
     let Some(main) = worktrees
@@ -478,7 +478,8 @@ mod tests {
             Some(Path::new("/repo/113")),
         );
         let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
-        assert_eq!(labels, vec!["Local", "113", "fix"]);
+        let current = tr!("working_folder.local");
+        assert_eq!(labels, vec![current.as_str(), "113", "fix"]);
         assert_eq!(
             rows.iter().position(|row| row.selected),
             Some(1),

@@ -230,6 +230,7 @@ where
         name,
         pump: None,
         theme,
+        role,
         baked: value,
         child: element.into_any_element(),
     }
@@ -257,6 +258,7 @@ struct PointerWatch {
     /// selection).
     pump: Option<ElementId>,
     theme: Theme,
+    role: Motion,
     /// The value the child was built with: the transition's, read at render
     /// time, before this frame's hit test existed. Paint compares it with the
     /// target it derives to tell whether the frame it just drew is already out
@@ -339,8 +341,8 @@ impl Element for PointerWatch {
         let mounted_before = window.with_optional_element_state::<(), _>(id, |state, _| {
             (matches!(state, Some(Some(_))), Some(()))
         });
-        let duration = Motion::Interaction.duration(&self.theme);
-        let ease = Motion::Interaction.easing();
+        let duration = self.role.duration(&self.theme);
+        let ease = self.role.easing();
         let in_flight = Transitions::update(ElementId::Name(self.name.clone()), |current| {
             let now = Instant::now();
             let mut transition = match current {
@@ -350,7 +352,10 @@ impl Element for PointerWatch {
             // Retarget only on a real change: the settled mount state carries no
             // duration, so passing the role's would otherwise bump its
             // generation and start a fade with nothing to fade.
-            if mounted_before && (transition.to() - target).abs() > f32::EPSILON {
+            if mounted_before
+                && ((transition.to() - target).abs() > f32::EPSILON
+                    || (duration.is_zero() && !transition.is_done(now)))
+            {
                 transition.retarget(target, duration, now);
             }
             (transition, !transition.is_done(now))
@@ -463,10 +468,6 @@ where
         (transition, transition)
     });
 
-    if hover_role.duration(&theme).is_zero() && state_role.duration(&theme).is_zero() {
-        return apply(element, hover.value_at(now), state.value_at(now)).into_any_element();
-    }
-
     let baked = hover.value_at(now);
     PointerWatch {
         name,
@@ -474,6 +475,7 @@ where
         // to keep its frames coming too.
         pump: Some(state_key),
         theme,
+        role: hover_role,
         baked,
         child: apply(element, baked, state.value_at(now)).into_any_element(),
     }
@@ -764,6 +766,46 @@ mod tests {
         );
         let selection = Transitions::get(selection_key).expect("selection survives the hover");
         assert_eq!(selection.to(), 1.0, "hovering must not clear the selection");
+    }
+
+    #[gpui::test]
+    fn reduced_motion_control_still_tracks_pointer(cx: &mut gpui::TestAppContext) {
+        struct Probe(Theme);
+        impl gpui::Render for Probe {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                control(
+                    div()
+                        .id("reduced-control")
+                        .debug_selector(|| "reduced-control".into())
+                        .w(px(120.))
+                        .h(px(28.)),
+                    "reduced-control",
+                    &self.0,
+                    Motion::Interaction,
+                    Motion::Interaction,
+                    1.,
+                    |element, _, _| element,
+                )
+            }
+        }
+        let mut theme = Theme::dark();
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        let (_probe, cx) = cx.add_window_view(|_, _| Probe(theme));
+        cx.simulate_mouse_move(point(px(300.), px(200.)), None, Modifiers::none());
+        frame(cx);
+        let bounds = cx.debug_bounds("reduced-control").expect("control lays out");
+        cx.simulate_mouse_move(bounds.center(), None, Modifiers::none());
+        frame(cx);
+        let hover = Transitions::get("reduced-control").expect("hover is tracked");
+        assert_eq!(hover.to(), 1.);
+        assert!(
+            hover.is_done(Instant::now()),
+            "the reduced-motion change is immediate"
+        );
     }
 
     /// Reduce Motion never mounts the animation: the treatment swaps instead.

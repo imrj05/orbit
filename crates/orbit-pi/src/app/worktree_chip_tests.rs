@@ -62,6 +62,19 @@ fn recent_session(path: PathBuf, id: usize) -> SessionInfo {
 }
 
 /// A configured SSH host, as `remote-hosts.json` would parse it.
+/// The new-task page around the Work in chip: no conversation yet, and
+/// nothing (setup, sidebar) in front of the page. The full menu — New
+/// worktree, Existing worktrees, hosts — is offered here.
+fn new_task_page(app: &mut OrbitApp) {
+    app.transcript.clear();
+    for dependency in &mut app.deps {
+        dependency.installed = true;
+    }
+    app.setup_open = false;
+    app.sidebar_visible = false;
+    app.sidebar_width = px(0.);
+}
+
 fn remote_host(name: &str, dir: &str) -> crate::remote_hosts::RemoteHost {
     crate::remote_hosts::RemoteHost {
         name: name.into(),
@@ -186,7 +199,9 @@ fn the_chip_names_the_active_linked_worktree(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn the_picker_lists_this_device_then_the_remote_hosts(cx: &mut gpui::TestAppContext) {
+fn the_picker_lists_this_device_then_the_remote_hosts_then_add_to_server(
+    cx: &mut gpui::TestAppContext,
+) {
     let fixture = Fixture::new("rows");
     let second = fixture.worktree_dir("fix");
     let app = test_app(cx);
@@ -199,19 +214,37 @@ fn the_picker_lists_this_device_then_the_remote_hosts(cx: &mut gpui::TestAppCont
             ];
             app.worktree_repo_root = Some(fixture.repo());
             app.current_workspace = Some(fixture.repo());
+            // The new-task page: the full menu is offered before there is
+            // a session to leave.
+            app.transcript.clear();
             app.work_in_hosts = vec![remote_host("prod-vps", "/srv/app")];
 
             let rows = app.work_in_rows().expect("a repository has rows");
-            assert_eq!(rows.len(), 2, "this device, then the host");
+            assert_eq!(
+                rows.len(),
+                5,
+                "current checkout, new worktree, existing worktrees, the host, add to server"
+            );
             let WorkInRow::Folder(local) = &rows[0] else {
                 panic!("the first row is this device");
             };
             assert_eq!(local.label, tr!("working_folder.local"));
             assert!(local.selected, "the active folder is the selected row");
-            let WorkInRow::Remote(host) = &rows[1] else {
-                panic!("the second row is the host");
+            assert_eq!(rows[1], WorkInRow::NewWorktree);
+            assert_eq!(
+                rows[2],
+                WorkInRow::ExistingWorktrees { count: 2 },
+                "both linked worktrees wait behind the submenu row"
+            );
+            let WorkInRow::Remote(host) = &rows[3] else {
+                panic!("the last row is the host");
             };
             assert_eq!(host.name, "prod-vps");
+            assert_eq!(
+                rows[4],
+                WorkInRow::AddToServer,
+                "putting the project on a server sits under the hosts"
+            );
             assert_eq!(
                 app.work_in_selected_ix(&rows),
                 0,
@@ -754,6 +787,7 @@ fn the_status_bar_picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestApp
             app.worktrees = vec![worktree(&fixture.repo(), "repo", true, false)];
             app.worktree_repo_root = Some(fixture.repo());
             app.current_workspace = Some(fixture.repo());
+            new_task_page(app);
             app.work_in_hosts = vec![remote_host("prod-vps", "/srv/app")];
             // Open both the picker and the chat's status bar, which is where
             // the chip (and its anchored popover) live.
@@ -770,8 +804,10 @@ fn the_status_bar_picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestApp
     let device = window_cx
         .debug_bounds("work-in-row-0")
         .expect("the device row laid out");
+    // Row 1 is "New worktree"; with no linked worktree there is no
+    // "Existing worktrees" row, so the host is row 2.
     let host = window_cx
-        .debug_bounds("work-in-row-1")
+        .debug_bounds("work-in-row-2")
         .expect("the host row laid out");
 
     let theme = window_cx.update(|_window, cx| *theme::get(cx));
@@ -808,4 +844,279 @@ fn the_status_bar_picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestApp
         check.center().x > device.center().x,
         "the check sits in the trailing slot, not next to the label: check {check:?}, rows {device:?}"
     );
+}
+
+/// In a session the picker only says where the task runs: the current
+/// checkout, even with worktrees and a host configured — and, when the
+/// session runs in a worktree, that worktree. No New worktree, Existing
+/// worktrees or host rows.
+#[gpui::test]
+fn in_a_session_the_picker_lists_only_the_current_checkout(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new("in-session");
+    let feature = fixture.worktree_dir("feature");
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            assert!(!app.transcript.is_empty(), "a conversation is on screen");
+            app.worktrees = vec![
+                worktree(&fixture.repo(), "repo", true, false),
+                worktree(&feature, "feature", false, false),
+            ];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.work_in_hosts = vec![remote_host("prod-vps", "/srv/app")];
+
+            app.current_workspace = Some(fixture.repo());
+            let rows = app.work_in_rows().expect("rows");
+            assert_eq!(rows.len(), 1, "only the current checkout");
+            let WorkInRow::Folder(current) = &rows[0] else {
+                panic!("the row is a folder");
+            };
+            assert_eq!(current.label, tr!("working_folder.local"));
+            assert!(current.selected);
+
+            app.current_workspace = Some(feature.clone());
+            let rows = app.work_in_rows().expect("rows");
+            assert_eq!(rows.len(), 1, "only the worktree the task runs in");
+            let WorkInRow::Folder(current) = &rows[0] else {
+                panic!("the row is a folder");
+            };
+            assert_eq!(current.folder.path, feature);
+            assert!(current.selected);
+        });
+    });
+}
+
+
+/// In a linked worktree the picker keeps that worktree on screen with its
+/// check (right under the current checkout), and the highlight starts there.
+#[gpui::test]
+fn the_active_worktree_has_its_own_checked_row(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new("active-worktree");
+    let feature = fixture.worktree_dir("feature");
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            app.worktrees = vec![
+                worktree(&fixture.repo(), "repo", true, false),
+                worktree(&feature, "feature", false, false),
+            ];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.current_workspace = Some(feature.clone());
+            // The new-task page: the full menu is offered before there is
+            // a session to leave.
+            app.transcript.clear();
+            let rows = app.work_in_rows().expect("rows");
+            let WorkInRow::Folder(local) = &rows[0] else {
+                panic!("current checkout first");
+            };
+            assert!(!local.selected);
+            let WorkInRow::Folder(active) = &rows[1] else {
+                panic!("the active worktree follows it");
+            };
+            assert!(active.selected, "the active worktree carries the check");
+            assert_eq!(app.work_in_selected_ix(&rows), 1);
+            assert_eq!(rows[2], WorkInRow::NewWorktree);
+            assert_eq!(rows[3], WorkInRow::ExistingWorktrees { count: 1 });
+        });
+    });
+}
+
+/// "Existing worktrees" opens the flyout with its search field focused; the
+/// query narrows the list by name, branch or path; Escape puts the flyout
+/// away and leaves the picker open.
+#[gpui::test]
+fn existing_worktrees_flyout_searches_and_steps_back(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new("flyout");
+    let alpha = fixture.worktree_dir("alpha");
+    let beta = fixture.worktree_dir("beta");
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.worktrees = vec![
+                worktree(&fixture.repo(), "repo", true, false),
+                worktree(&alpha, "alpha", false, false),
+                worktree(&beta, "beta", false, false),
+            ];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.current_workspace = Some(fixture.repo());
+            // The new-task page: the full menu is offered before there is
+            // a session to leave.
+            app.transcript.clear();
+            app.toggle_work_in_menu(window, cx);
+            let rows = app.work_in_rows().expect("rows");
+            let existing = rows
+                .iter()
+                .position(|row| matches!(row, WorkInRow::ExistingWorktrees { .. }))
+                .expect("the submenu row");
+            app.run_work_in_item(existing, window, cx);
+            assert!(app.work_in_menu_open && app.work_in_flyout_open);
+            assert!(
+                app.work_in_worktree_filter
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "the search field takes the keyboard"
+            );
+            assert_eq!(app.work_in_worktree_rows().len(), 2, "both worktrees listed");
+        });
+    });
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.work_in_worktree_filter
+                .update(cx, |input, cx| input.set_text("bet".to_string(), cx));
+        })
+    });
+    // No `run_until_parked`: opening the picker starts a background
+    // `git worktree list`, which would replace this fixture's list.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let rows = app.work_in_worktree_rows();
+            assert_eq!(rows.len(), 1, "the query narrows the list");
+            assert_eq!(rows[0].label, "beta");
+            app.on_work_in_flyout_cancel(&crate::PickerCancel, window, cx);
+            assert!(!app.work_in_flyout_open, "Escape puts the flyout away");
+            assert!(app.work_in_menu_open, "and leaves the picker open");
+        });
+    });
+}
+
+/// "New worktree" opens the Worktrees page's quick-create dialog and closes
+/// the picker.
+#[gpui::test]
+fn new_worktree_opens_the_create_dialog(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new("new-worktree");
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.worktrees = vec![worktree(&fixture.repo(), "repo", true, false)];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.current_workspace = Some(fixture.repo());
+            // The new-task page: the full menu is offered before there is
+            // a session to leave.
+            app.transcript.clear();
+            app.toggle_work_in_menu(window, cx);
+            let rows = app.work_in_rows().expect("rows");
+            let new = rows
+                .iter()
+                .position(|row| *row == WorkInRow::NewWorktree)
+                .expect("the New worktree row");
+            app.run_work_in_item(new, window, cx);
+            assert!(!app.work_in_menu_open, "the picker closes");
+            assert!(
+                matches!(app.worktree_dialog, Some(WorktreeDialog::Create)),
+                "the create dialog opens"
+            );
+        });
+    });
+}
+
+/// Drawn for real: the flyout sits beside the picker (not over it), level
+/// with the row that opened it, with its search field and one row per
+/// worktree.
+#[gpui::test]
+fn the_flyout_draws_beside_the_picker(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new("flyout-draw");
+    let alpha = fixture.worktree_dir("alpha");
+    let app = test_app(cx);
+    let window_cx = cx.add_empty_window();
+    let viewport = gpui::size(px(1200.), px(800.));
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.worktrees = vec![
+                worktree(&fixture.repo(), "repo", true, false),
+                worktree(&alpha, "alpha", false, false),
+            ];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.current_workspace = Some(fixture.repo());
+            new_task_page(app);
+            app.toggle_work_in_menu(window, cx);
+        })
+    });
+    // The first frame paints the submenu row, whose bounds anchor the flyout.
+    let _ = window_cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.open_work_in_flyout(window, cx))
+    });
+    let _ = window_cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    let popup = window_cx.debug_bounds("work-in-popup").expect("picker");
+    let flyout = window_cx.debug_bounds("work-in-worktrees").expect("flyout");
+    assert!(
+        flyout.left() >= popup.right(),
+        "the flyout opens beside the picker: {flyout:?} vs {popup:?}"
+    );
+    assert!(window_cx.debug_bounds("work-in-worktree-search").is_some());
+    assert!(window_cx.debug_bounds("work-in-worktree-0").is_some());
+}
+
+/// The new-task folder picker lists folders only: the current one, then the
+/// recent session folders. A linked worktree is the Work in picker's row, so
+/// a session that ran in one does not bring it into this list.
+#[gpui::test]
+fn the_folder_picker_lists_recent_folders_but_not_worktrees(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new("project-picker");
+    let feature = fixture.worktree_dir("feature");
+    let other = fixture.root.join("other-project");
+    fs::create_dir_all(&other).unwrap();
+    let gone = fixture.root.join("deleted-project");
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            app.worktrees = vec![
+                worktree(&fixture.repo(), "repo", true, false),
+                worktree(&feature, "feature", false, false),
+            ];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.current_workspace = Some(fixture.repo());
+            app.sessions = vec![
+                recent_session(feature.clone(), 1),
+                recent_session(other.clone(), 2),
+                recent_session(gone.clone(), 3),
+                recent_session(other.clone(), 4),
+            ];
+            app.workspaces = vec![];
+            let entries = app.workspace_entries();
+            let paths: Vec<_> = entries.iter().map(|entry| entry.path.clone()).collect();
+            assert_eq!(
+                paths,
+                vec![fixture.repo(), other.clone()],
+                "current folder first, then each existing session folder once"
+            );
+            assert!(entries[1].note.is_some(), "a recent folder says when");
+        });
+    });
+}
+
+/// Drawn: the folder picker has no machine or worktree rows — only the
+/// folders and the browse row.
+#[gpui::test]
+fn the_folder_picker_draws_no_worktree_or_host_rows(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new("project-picker-drawn");
+    let alpha = fixture.worktree_dir("alpha");
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let app = cx.update(|cx| cx.new(OrbitApp::new));
+    let window_cx = cx.add_empty_window();
+    let viewport = gpui::size(px(1200.), px(800.));
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            new_task_page(app);
+            app.worktrees = vec![
+                worktree(&fixture.repo(), "repo", true, false),
+                worktree(&alpha, "alpha", false, false),
+            ];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.current_workspace = Some(fixture.repo());
+            app.sessions = vec![recent_session(alpha.clone(), 1)];
+            app.workspaces = vec![];
+            app.toggle_workspace_picker(window, cx);
+        })
+    });
+    let _ = window_cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    assert!(window_cx.debug_bounds("workspace-entry-0").is_some(), "the current folder");
+    assert!(
+        window_cx.debug_bounds("workspace-entry-1").is_none(),
+        "the worktree is not a folder row"
+    );
+    assert!(window_cx.debug_bounds("workspace-actions").is_none());
 }

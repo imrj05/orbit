@@ -47,13 +47,17 @@ impl WorkflowMode {
     }
 
     /// Parse a stored id, falling back to [`WorkflowMode::default`] (Build) on
-    /// anything unknown — a hand-edited file never widens what a session may do.
+    /// anything unknown.
     pub fn from_wire(value: &str) -> Self {
+        Self::parse_wire(value).unwrap_or_default()
+    }
+
+    fn parse_wire(value: &str) -> Option<Self> {
         match value {
-            "plan" => Self::Plan,
-            "build" => Self::Build,
-            "ask" => Self::Ask,
-            _ => Self::default(),
+            "plan" => Some(Self::Plan),
+            "build" => Some(Self::Build),
+            "ask" => Some(Self::Ask),
+            _ => None,
         }
     }
 
@@ -128,6 +132,19 @@ pub fn load_for(session_id: &str) -> WorkflowMode {
         .get(session_id)
         .map(|wire| WorkflowMode::from_wire(wire))
         .unwrap_or_default()
+}
+
+/// Load only an exact stored mode. Missing or invalid values return `None`
+/// so a remote respawn can fall through to the session's own branch record
+/// instead of masking a resumed Plan/Ask with an invented Build.
+pub fn load_valid_for(session_id: &str) -> Option<WorkflowMode> {
+    load_valid_for_at(session_id, &store_path())
+}
+
+fn load_valid_for_at(session_id: &str, path: &Path) -> Option<WorkflowMode> {
+    load_map_at(path)
+        .get(session_id)
+        .and_then(|wire| WorkflowMode::parse_wire(wire))
 }
 
 /// Record the mode for a session. The workflow extension reads the file fresh
@@ -218,6 +235,11 @@ mod tests {
             WorkflowMode::from_wire(read.get("s1").unwrap()),
             WorkflowMode::Plan
         );
+        assert_eq!(load_valid_for_at("s1", &path), Some(WorkflowMode::Plan));
+        assert_eq!(load_valid_for_at("missing", &path), None);
+        map.insert("invalid".into(), "bogus".into());
+        write_map_at(&path, &map);
+        assert_eq!(load_valid_for_at("invalid", &path), None);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
