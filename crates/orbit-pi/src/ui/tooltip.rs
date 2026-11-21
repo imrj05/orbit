@@ -8,7 +8,7 @@
 use gpui::{div, prelude::*, Context, IntoElement, Render, SharedString, Window};
 
 use crate::theme;
-use crate::theme::tokens::{tooltip, StyledExt};
+use crate::theme::tokens::{tooltip, Motion, StyledExt};
 
 /// A single-line tooltip.
 pub struct Tooltip {
@@ -28,7 +28,7 @@ impl Render for Tooltip {
         div()
             .pl(tooltip::offset_x(&theme))
             .pt(tooltip::offset_y(&theme))
-            .child(
+            .child(crate::motion::enter(
                 div()
                     .debug_selector(|| "tooltip-card".into())
                     .elevation_2(&theme)
@@ -42,7 +42,11 @@ impl Render for Tooltip {
                             .max_w(tooltip::max_width(&theme))
                             .child(self.text.clone()),
                     ),
-            )
+                "tooltip-card-in",
+                &theme,
+                Motion::Interaction,
+                None,
+            ))
     }
 }
 

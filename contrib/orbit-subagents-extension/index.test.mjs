@@ -399,6 +399,19 @@ test("a single delegation returns the report, details and usage", async () => {
   assert.equal(result.usage.turns, 1);
 });
 
+test("a child's event lines land verbatim in its live log", async () => {
+  const spawn = fakeSpawn(successfulChild);
+  const result = await callTool(fakePi(), spawn, { agent: "scout", task: "find auth" });
+  const log = result.details.children[0].log;
+  assert.equal(typeof log, "string");
+  assert.ok(log.startsWith(path.join(home, ".orbit-pi", "subagent-logs")));
+  const lines = fs.readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(
+    lines.map((event) => event.type),
+    ["session", "message_start", "tool_execution_start", "tool_execution_end", "message_end", "agent_settled"],
+  );
+});
+
 test("children inherit project trust only when ORBIT_PROJECT_TRUST is exactly 1", async () => {
   for (const [value, expected] of [
     ["1", "--approve"],

@@ -2923,3 +2923,7 @@ trust.success: "워크스페이스를 신뢰했습니다. 프로젝트 리소스
 trust.deferred: "워크스페이스를 신뢰했습니다. 프로젝트 리소스는 현재 실행이 완료되면 로드됩니다."
 trust.denied: "프로젝트 리소스 없이 계속합니다. 나중에 명령 팔레트에서 이 워크스페이스를 신뢰할 수 있습니다."
 trust.error: "워크스페이스 신뢰 설정을 저장할 수 없습니다: %{error}"
+transcript_view.failed_count: "%{count}개 실패"
+transcript_view.read_range: "%{start}–%{end}행"
+transcript_view.read_range_of: "%{start}–%{end}행 / 전체 %{total}행"
+right_dock.tab_numbered: "%{agent} · %{number}"

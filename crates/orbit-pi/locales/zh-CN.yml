@@ -2923,3 +2923,7 @@ trust.success: "工作区已受信任。正在重启代理并加载项目资源�
 trust.deferred: "工作区已受信任。项目资源将在当前运行结束后加载。"
 trust.denied: "将在不使用项目资源的情况下继续。稍后可通过命令面板信任此工作区。"
 trust.error: "无法保存工作区的信任决定：%{error}"
+transcript_view.failed_count: "%{count} 个失败"
+transcript_view.read_range: "第 %{start}–%{end} 行"
+transcript_view.read_range_of: "第 %{start}–%{end} 行，共 %{total} 行"
+right_dock.tab_numbered: "%{agent} · %{number}"

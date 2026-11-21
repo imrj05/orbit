@@ -116,7 +116,9 @@ impl ToastCard {
         let (glyph, tint) = self.glyph.unwrap_or_else(|| kind_glyph(self.kind, theme));
         let close_button = IconButton::new(close_id, "icons/x.svg")
             .size(toast_tokens::CLOSE_BUTTON)
-            .on_mouse_up(theme, on_close);
+            .faded(theme, move |button| {
+                button.on_mouse_up(MouseButton::Left, on_close)
+            });
         let count = self.count.map(|count| {
             div()
                 .min_w(toast_tokens::badge_min_width(theme))

@@ -1156,6 +1156,9 @@ pub struct OrbitApp {
     terminal_panel: Entity<TerminalPanel>,
     /// The right pane's tab strip scroller (Review + subagent tabs).
     right_dock_scroll: ScrollHandle,
+    /// Delegated children's live transcripts, keyed by their event log
+    /// (see `crate::subagent_log`). Filled as the reader opens their tabs.
+    child_logs: HashMap<PathBuf, crate::subagent_log::ChildLog>,
     /// Whether the Git page replaces the chat area.
     git_open: bool,
     /// The full-page Git panel (tabs + commit bar).
@@ -2760,6 +2763,7 @@ impl OrbitApp {
             _file_viewer_sub: file_viewer_sub,
             terminal_panel,
             right_dock_scroll: ScrollHandle::new(),
+            child_logs: HashMap::new(),
             git_open: false,
             git_panel: git_panel.clone(),
             usage_open: false,

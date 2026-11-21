@@ -1327,7 +1327,7 @@ impl Transcript {
             expanded_sections: Rc::new(RefCell::new(HashSet::new())),
             expanded_blocks: Rc::new(RefCell::new(HashSet::new())),
             thinking_scrolls: Rc::new(RefCell::new(HashMap::new())),
-            collapsed_thoughts: Rc::new(RefCell::new(HashSet::new())),
+            collapsed_thoughts: Rc::new(RefCell::new(HashMap::new())),
             thinking_detached: Rc::new(RefCell::new(HashSet::new())),
             tool_positions: Rc::new(RefCell::new(HashMap::new())),
             hovered_turn: Rc::new(Cell::new(None)),

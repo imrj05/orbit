@@ -535,6 +535,29 @@ query credentials, and quota adapters require exact official HTTPS origins.
 repository author, model response, remote document, or another local OS user must not cross
 one of those boundaries without an explicit user decision or verified byte stream.
 
+### D24 — A delegated child's live transcript is its own event stream
+
+**Choice:** the subagents extension tees every JSONL line a child `pi --mode json` prints,
+verbatim, into `~/.orbit-pi/subagent-logs/<run>-<child>.jsonl` (0600, `log.js`) and names the
+file in the child's `subagent/1` details (`log`). A child's side-pane tab tails that file off the
+UI thread on the heartbeat (`subagent_log.rs`: byte offset + partial line, ≤ 4 MiB per read) and
+feeds each line through `Event::parse_line` into a second `Transcript`, painted by
+`Transcript::render`. Children still run `--no-session`.
+
+**Consequence:** a child streams in the pane exactly as the main session streams in the chat —
+thoughts, tool calls with their output, the answer — with the same rows (activity groups, the
+file-read listing, Markdown), and a finished child replays from its log. The `details` summary
+stays bounded and is still what the card and the parent model see. The path is honoured only
+when it is a plain `.jsonl` directly inside Orbit's own log directory, because a session file
+can carry `details` from anywhere. Without a readable local log (an older extension, a remote
+host, an unwritable home) the tab shows the summary panel as before. Logs older than a week are
+removed when a run starts.
+
+**Rationale:** pi's own event stream is the truth of what a child did (hard rule 5); widening the
+`details` payload toward a transcript would resend the whole history on every 400 ms update,
+while the event log only grows at its end and needs no new parser — the app already turns those
+exact events into a transcript.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -558,6 +581,10 @@ legacy app today:
     as keyboard/mouse surfaces (⌘P palette, shortcuts), not only through menus.
 
 ### Implementation status (living)
+
+The shared tooltip fades in on the interaction motion role; persistent update
+notice actions and their close control use the retargetable hover treatment.
+Reduce Motion presents their final appearance immediately.
 
 Project trust (D23) now gates every local, remote, MCP, plugin, and delegated pi
 spawn. Unknown workspaces run restricted with no project resources or MCP secrets;
@@ -746,7 +773,12 @@ tier (which writes the `tools:` line and derives the child's ceiling), the workf
 the thinking level, the description and the prompt. Saves are surgical — only the five keys Orbit
 owns change, and a file edited elsewhere is never clobbered without an explicit overwrite; a user
 agent can be created, duplicated, renamed, disabled, deleted (Undo restores the exact bytes) and
-reset to builtin. The inspectable-run viewer in `docs/plans/subagents.md` is not built.
+reset to builtin. A child's side-pane tab is its live transcript (D24): the child's own pi
+events, read from the extension's event log and painted with the chat's rows, under a one-line
+status (state mark, status, elapsed); each tab wears the child's state mark, and two tabs for the
+same agent are numbered. Without a readable local log the tab keeps the summary panel. Covered by
+`node --test` (log module, the tee end to end), `subagent_log` unit tests and a GPUI test for the
+transcript, the fallback and the numbered tabs; not yet tried by hand with a real delegation.
 
 Permissions (D19) ship Settings → Permissions as one flat list, not an editor:
 a scope row (every session / main sessions only / one subagent), then one row per

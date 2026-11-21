@@ -42,7 +42,10 @@ provider calls above:
 * theme, appearance, and interface preferences, including your favorite
   and recently used models;
 * window, terminal, and layout state;
-* session-retention policy.
+* session-retention policy;
+* the live event log of each delegated subagent (`subagent-logs/`, readable
+  only by you), so its tab can show what it did; logs older than a week are
+  removed when the next delegation starts.
 
 There is no `analytics.json`, no pseudonymous identifier, and no queue of
 events.

@@ -188,7 +188,7 @@ impl OrbitApp {
             let probe = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::mcp::manager::probe(&workspace, &env, approve_project)
+                    crate::mcp::manager::probe(&workspace, &env)
                 })
                 .await;
             let _ = this.update(cx, |app, cx| app.on_mcp_probe(probe, cx));
@@ -878,7 +878,6 @@ impl OrbitApp {
                         &name,
                         crate::mcp::manager::LOGIN_TIMEOUT,
                         Some(&cancel),
-                        approve_project,
                     )
                 })
                 .await;
@@ -936,7 +935,7 @@ impl OrbitApp {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::mcp::manager::logout(&workspace, &env, &task_name, approve_project)
+                    crate::mcp::manager::logout(&workspace, &env, &task_name)
                 })
                 .await;
             let _ = this.update(cx, |app, cx| {

@@ -2923,3 +2923,7 @@ trust.success: "Espace de travail désormais de confiance. Redémarrage de l’a
 trust.deferred: "Espace de travail désormais de confiance. Les ressources du projet se chargeront à la fin de l’exécution en cours."
 trust.denied: "Poursuite sans les ressources du projet. Vous pourrez faire confiance à cet espace de travail plus tard depuis la palette de commandes."
 trust.error: "Impossible d’enregistrer la décision de confiance pour l’espace de travail : %{error}"
+transcript_view.failed_count: "%{count} en échec"
+transcript_view.read_range: "lignes %{start}–%{end}"
+transcript_view.read_range_of: "lignes %{start}–%{end} sur %{total}"
+right_dock.tab_numbered: "%{agent} · %{number}"

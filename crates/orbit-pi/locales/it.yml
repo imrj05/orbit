@@ -2923,3 +2923,7 @@ trust.success: "Spazio di lavoro considerato attendibile. Riavvio dell’agente 
 trust.deferred: "Spazio di lavoro considerato attendibile. Le risorse del progetto verranno caricate al termine dell’esecuzione corrente."
 trust.denied: "L’esecuzione continuerà senza le risorse del progetto. Potrai considerare attendibile questo spazio di lavoro in seguito dalla paletta dei comandi."
 trust.error: "Impossibile salvare la decisione sull’attendibilità dello spazio di lavoro: %{error}"
+transcript_view.failed_count: "%{count} non riusciti"
+transcript_view.read_range: "righe %{start}–%{end}"
+transcript_view.read_range_of: "righe %{start}–%{end} di %{total}"
+right_dock.tab_numbered: "%{agent} · %{number}"

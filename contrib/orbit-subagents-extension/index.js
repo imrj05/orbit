@@ -37,6 +37,7 @@ import {
   readWorkflowStore,
   resolveWorkflowMode,
 } from "./mode.js";
+import { openChildLog, pruneLogs } from "./log.js";
 import { parseBundledExtensions } from "./resources.js";
 import {
   BOUNDS,
@@ -501,6 +502,10 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
 
   const children = [];
   const progress = trailingProgress((force) => emitProgress(onUpdate, request.mode, children, force));
+  // One id per delegation names its children's live logs; last week's logs
+  // are cleared first. Both are display-only and never fail the run.
+  const runId = `${now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  pruneLogs({ home: deps.home, now: now() });
   const runOne = async (agent, task) => {
     const state = newChildState({
       id: `c${children.length + 1}`,
@@ -522,6 +527,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
       parentThinking: typeof ctx?.thinkingLevel === "string" ? ctx.thinkingLevel : null,
       parentCwd: ctx?.cwd,
       onProgress: progress.push,
+      runId,
     });
   };
 
@@ -760,6 +766,7 @@ export async function runChild(state, {
   parentThinking,
   parentCwd,
   onProgress,
+  runId = null,
 }) {
   const now = deps.now;
   const systemPrompt = assemblePrompt({ body: agent?.body ?? "" });
@@ -825,13 +832,21 @@ export async function runChild(state, {
 
   let stderr = "";
   const decoder = new LineDecoder();
+  // pi's own event lines, kept verbatim for Orbit's live transcript of this
+  // child. `log` is null when no run id was given or the file can't be made.
+  const log = runId === null ? null : openChildLog({ home: deps.home, run: runId, child: state.id });
+  if (log) state.log = log.path;
   const consume = (line) => {
     const event = parseRecord(line);
     if (event) applyEvent(state, event, now());
   };
+  const consumeAll = (lines) => {
+    log?.append(lines.filter((line) => line.trim() !== ""));
+    for (const line of lines) consume(line);
+  };
 
   child.stdout?.on?.("data", (chunk) => {
-    for (const line of decoder.push(chunk)) consume(line);
+    consumeAll(decoder.push(chunk));
     onProgress?.(false);
   });
   child.stderr?.on?.("data", (chunk) => {
@@ -875,7 +890,8 @@ export async function runChild(state, {
     abortPromise.then(() => setTimeout(() => finish(1), 3500).unref?.());
   });
 
-  for (const line of decoder.end()) consume(line);
+  consumeAll(decoder.end());
+  log?.close();
   if (timer) clearTimeout(timer);
   if (onAbort) signal?.removeEventListener?.("abort", onAbort);
   removePromptDir(promptDir);

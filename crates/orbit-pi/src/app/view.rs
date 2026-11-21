@@ -1683,7 +1683,11 @@ impl Render for OrbitApp {
                                 // Review; Review paints itself (with the strip).
                                 match self.transcript.dock_tabs().active() {
                                     crate::right_dock::DockTab::Subagent(_) => {
-                                        self.render_subagent_dock(theme, cx)
+                                        self.render_subagent_dock(
+                                            theme,
+                                            window.viewport_size().height,
+                                            cx,
+                                        )
                                     }
                                     crate::right_dock::DockTab::Review => {
                                         self.sidepane.clone().into_any_element()

@@ -109,6 +109,7 @@ const SUBAGENTS_RUN_JS: &str = include_str!("../../../contrib/orbit-subagents-ex
 const SUBAGENTS_MODE_JS: &str = include_str!("../../../contrib/orbit-subagents-extension/mode.js");
 const SUBAGENTS_RESOURCES_JS: &str =
     include_str!("../../../contrib/orbit-subagents-extension/resources.js");
+const SUBAGENTS_LOG_JS: &str = include_str!("../../../contrib/orbit-subagents-extension/log.js");
 const SUBAGENTS_BUILTINS_JSON: &str =
     include_str!("../../../contrib/orbit-subagents-extension/builtins.json");
 
@@ -121,6 +122,7 @@ const SUBAGENTS_FILES: &[(&str, &str)] = &[
     ("run.js", SUBAGENTS_RUN_JS),
     ("mode.js", SUBAGENTS_MODE_JS),
     ("resources.js", SUBAGENTS_RESOURCES_JS),
+    ("log.js", SUBAGENTS_LOG_JS),
     ("builtins.json", SUBAGENTS_BUILTINS_JSON),
 ];
 

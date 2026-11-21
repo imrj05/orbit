@@ -294,6 +294,8 @@ export function newChildState({ id, agent, task, cwd, workflowMode, now = Date.n
     aborted: false,
     timedOut: false,
     sawAssistant: false,
+    // The child's live event log (see log.js), when one could be written.
+    log: null,
   };
 }
 
@@ -555,6 +557,7 @@ export function childDetails(state) {
     startedAt: state.startedAt,
     endedAt: state.endedAt,
     timedOut: state.timedOut === true,
+    log: typeof state.log === "string" ? state.log : null,
   };
 }
 

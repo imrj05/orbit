@@ -2923,3 +2923,7 @@ trust.success: "Рабочая область отмечена как довер
 trust.deferred: "Рабочая область отмечена как доверенная. Ресурсы проекта загрузятся после завершения текущего выполнения."
 trust.denied: "Работа продолжится без ресурсов проекта. Доверять этой рабочей области можно будет позже через палитру команд."
 trust.error: "Не удалось сохранить решение о доверии этой рабочей области: %{error}"
+transcript_view.failed_count: "Ошибок: %{count}"
+transcript_view.read_range: "строки %{start}–%{end}"
+transcript_view.read_range_of: "строки %{start}–%{end} из %{total}"
+right_dock.tab_numbered: "%{agent} · %{number}"

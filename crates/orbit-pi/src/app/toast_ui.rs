@@ -174,8 +174,10 @@ impl OrbitApp {
         )
         .size(toast_tokens::ACTION_BUTTON)
         .label(tr!("git_panel.recover_skip"))
-        .on_mouse_up(&theme, move |_, _, cx| {
-            this.update(cx, |app, cx| app.skip_plugin_updates(cx));
+        .faded(&theme, move |button| {
+            button.on_mouse_up(gpui::MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| app.skip_plugin_updates(cx));
+            })
         });
 
         let this = cx.entity();
@@ -190,8 +192,10 @@ impl OrbitApp {
             theme.action_fg,
         ))
         .label(tr!("updater_ui.update_now"))
-        .on_mouse_up(&theme, move |_, _, cx| {
-            this.update(cx, |app, cx| app.apply_plugin_updates(cx));
+        .faded(&theme, move |button| {
+            button.on_mouse_up(gpui::MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| app.apply_plugin_updates(cx));
+            })
         });
 
         let card = toast_card::ToastCard::new(

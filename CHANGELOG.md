@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Frosted code blocks.** Code blocks and Mermaid diagrams in answers now
+  use the same frosted glass as tool cards over a wallpaper (and in dark
+  themes), with the code well's contrast-floored tint so code stays readable.
+  Light themes, Reduce Transparency and Increase Contrast keep the solid card.
+
+- **Watch a subagent work, live.** Opening a delegated agent in the side pane
+  now shows its own transcript as it streams — the files it reads, the
+  commands it runs with their output, its thinking and its answer — drawn
+  exactly like the main chat, and a finished agent replays the same way. A
+  status line above it says what state it is in and for how long. Each tab
+  shows the agent's state (running, done, failed), and two agents with the
+  same name are numbered (`explore · 1`, `explore · 2`). The log behind this
+  stays on your machine and is cleared after a week.
+
+- **Quieter transcript activity.** Inside an expanded activity group, thoughts
+  and finished tool calls are now flat rows with a plain icon instead of
+  stacked cards with tinted badges and a check on every row. A tool call turns
+  into a card only when you open its detail or it fails. The folded summary
+  ("Ran 7 commands · 3 thoughts") is now a plain line with no border and no
+  icon row; it shows a spinner while working and a stop mark if a call failed.
+  Command rows drop the repeated `cd <your project> &&` and `export …`
+  prefix from their one-line preview, so each row shows what actually ran
+  (the full command is still in the opened detail). Finished thoughts fold to
+  a single line with their first sentence; click to read the rest. The
+  activity summary, tool rows and thought rows are now reachable with Tab and
+  open or fold with Enter or Space, with a visible focus ring. Folded command
+  rows are a single ink (syntax colors stay in the opened detail), file paths
+  read from your project root instead of your home folder, finished thoughts
+  no longer repeat "for 2 seconds", and a folded thought's caret now points
+  right like every other folded row (it pointed down, which reads as open).
+  The summary says how many calls failed ("· 1 failed") next to the stop
+  mark, and an opened thought is set at the answer's text size.
+  An opened file read is now just the code: no arguments block, syntax
+  colors for the file's language, line numbers that start where the read
+  started, indentation trimmed to the left edge, and one copy button. A
+  partial read names its slice in the header ("lines 900–1029 of 1412")
+  instead of printing pi's "use offset=… to continue" note as code.
+
+- **Softer interface feedback.** Tooltips fade in and persistent update-notice
+  actions use reversible hover transitions, with Reduce Motion respected.
+
 - **Folder picker lists folders only.** The new-task folder picker now shows
   your recent folders (the current one first, then session folders and sidebar
   projects) and **Choose folder…** — nothing else. Worktrees, remote hosts and

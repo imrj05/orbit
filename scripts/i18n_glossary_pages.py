@@ -461,7 +461,7 @@ GLOSSARY = {
         "No matching worktrees": "没有匹配的工作树",
         "Prompts sent": "已发送提示",
         "Replies received": "已收到回复",
-        "%{count} failed": "%{count} 个失败",
+        "%{count} failed": "%{count} 件失敗",
         "%{count} lines": "%{count} 行",
         "Read %{count} file": "读取了 %{count} 个文件",
         "Read %{count} files": "读取了 %{count} 个文件",

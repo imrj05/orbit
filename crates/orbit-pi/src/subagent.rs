@@ -193,6 +193,10 @@ pub(crate) struct SubagentChild {
     pub last_event_at: Option<i64>,
     /// The child was stopped by its time budget, not by the user.
     pub timed_out: bool,
+    /// The child's live event log as the extension reported it (raw; see
+    /// [`crate::subagent_log::trusted_log_path`] before reading it). Absent
+    /// from older extensions and when the log could not be written.
+    pub log: Option<String>,
 }
 
 impl SubagentChild {
@@ -356,6 +360,11 @@ impl SubagentChild {
                 .get("timedOut")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            log: value
+                .get("log")
+                .and_then(Value::as_str)
+                .filter(|log| !log.trim().is_empty())
+                .map(str::to_string),
         }
     }
 

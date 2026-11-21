@@ -2929,3 +2929,7 @@ trust.success: "Workspace trusted. Restarting the agent with project resources�
 trust.deferred: "Workspace trusted. Project resources will load when the current run settles."
 trust.denied: "Continuing without project resources. You can trust this workspace later from the command palette."
 trust.error: "Could not save the workspace trust decision: %{error}"
+transcript_view.failed_count: "%{count} failed"
+transcript_view.read_range: "lines %{start}–%{end}"
+transcript_view.read_range_of: "lines %{start}–%{end} of %{total}"
+right_dock.tab_numbered: "%{agent} · %{number}"

@@ -246,6 +246,7 @@ has adopted each treatment.
 | Menu, popover and dialog | `anchored_popover` applies entrance motion; `modal_card` supplies the frame, not animation. See `dialog.rs` for composing the card with `motion::enter`. Preserve the spatial relationship to the trigger. |
 | New-task composer dock | One `Motion::Travel`: the gap under the composer closes, the column widens to the session's, the folder row collapses and the transcript's ink fades in, all from `new_task::settle`. Its cubic ease-out softens the long slide; the clock starts on the first visible chat frame. A resumed session never replays it. |
 | Send control | The idle send button grows from a disabled square into a labelled action when the draft becomes sendable, and reverses from its current width if cleared. Width and label share `Motion::Travel`; the action responds immediately and Reduce Motion resolves the final shape. During a run, Stop and the explicit queue/steer lanes retain their existing behavior. |
+| Tooltips and notice actions | A tooltip fades in on `Motion::Interaction` without travel; persistent notice buttons use the shared retargetable hover fade. Actions remain immediate, and Reduce Motion shows the final appearance. |
 | Side-panel resize/open/close | Existing layout motion or retargetable spring where appropriate; track direct manipulation promptly and avoid overshoot. |
 | Spinner and live progress | Existing loop helpers and cadence; retain a static state indicator under reduced motion. |
 | Charts | Use the separate `theme::tokens::chart` cadence, not chart durations for control feedback. |
@@ -305,13 +306,45 @@ edges. They share the floating material and its opaque fallback; their layout,
 keyboard handling and state remain owned by each surface.
 
 **Inspector glass** (approved 2026-11-20) is the material of the surfaces a
-developer reads a run through: the transcript's cards (tool calls, thoughts,
-delegations, questions, summaries) and the right-dock cards (session details,
-Review, Explorer). It frosts under the *floating* rule — over a wallpaper the
+developer reads a run through: the transcript's cards (open or failed tool
+calls, delegations, questions, summaries) and the right-dock cards (session
+details, Review, Explorer). Inside an expanded activity group, a thought and a
+settled tool call are **flat rows** on the group's rail (approved 2026-11-21):
+no fill, a bare `IconSize::Small` glyph in muted ink (no tinted tile), a Medium
+`text_secondary` label, one `ButtonSize::Medium` row height, and no per-row
+success check — only the running spinner and the failure mark. A tool row
+becomes an inspector card when its detail opens or it fails; the flat row keeps
+a transparent 1px edge so that change moves nothing. The group's folded summary
+is a `ChipStyle::Quiet` text control in muted ink with a trailing `›`
+disclosure chevron (no frame, no open fill); its only leading glyph is a state —
+the spinner while live, the failure mark once a call failed — never one icon
+per work kind. A command row's one-line preview drops a `cd <workspace> &&`
+prelude and leading `export NAME=…` clauses (`command_preview`); a `cd`
+elsewhere stays, and the open detail always shows the full command. The folded
+preview is one `text_secondary` ink in the code face: syntax color belongs to
+the open detail only. A file path inside the workspace reads from its root
+(`workspace_relative_path`). An open text `read` is bare code (`read_listing`): no
+Arguments or Output label, the file's syntax from its extension, a muted
+line-number gutter from the read's offset, the indentation its lines share
+trimmed (Copy keeps it), and one copy control floated in the code's corner.
+pi's model-facing continuation note is not code: a partial read's header
+says `lines 900–1029 of 1412` instead. The group summary says a failure in words too
+("· 1 failed"), not only with its mark. A thought row is open while it streams
+and folds once settled, its header then carrying the first sentence in muted
+ink; only a live thought shows its elapsed time, and its caret follows the
+shared `disclosure_chevron` reading (`›` folded, `⌄` open); the reader's own toggle wins either way. All
+three disclosures — the summary line, a tool row with detail, a thought row —
+are keyboard stops through `ActivityToggleKeys`: Tab reaches them, Enter or
+Space folds them, a focused one wears the 1px `focus_ring` without moving
+layout, and a pointer click leaves keyboard focus where it was. A tool row with
+no detail is not a stop. Native accessible names remain a GPUI gap. It frosts under the *floating* rule — over a wallpaper the
 wallpaper contract decides; with none, dark palettes on a renderer with a
 backdrop pass frost, and light palettes, Reduce Transparency and Increase
 Contrast keep the opaque card. Build it only through the shared helpers:
-`SurfaceExt::inspector_card` for a transcript card (fill from
+`SurfaceExt::inspector_card` for a transcript card (a Markdown code block or
+Mermaid diagram takes it through `code_block_surface`, on the code well's
+`inspector_well(code_bg)` fill, and keeps its opaque hairline card where glass
+is off; fill otherwise from
 `frosted_transcript_fill` → `Theme::inspector_fill`), `SurfaceExt::dock_card`
 for a dock frame with its root on `Theme::dock_canvas`, and
 `Theme::inspector_well` for a text well inside a card (a tool call's command

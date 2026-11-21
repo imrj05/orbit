@@ -146,6 +146,8 @@ const OUTPUT_PREVIEW_LINES: usize = 12;
 /// than this scrolls, so a long chain of thought stays readable without
 /// burying the answer below it.
 const THINKING_MAX_HEIGHT: f32 = 260.0;
+/// Line height of an open thought's text, which is set at the answer's 14px.
+const THINKING_LINE_HEIGHT: f32 = 22.0;
 /// Reasoning budget once the card scrolls — far larger than
 /// [`DETAIL_TEXT_CAP`], since the max height keeps the virtualized row
 /// bounded regardless of how much text is retained.
@@ -266,9 +268,10 @@ type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
 /// offset/limit so a wheel that no longer scrolls the card can be chained
 /// to the transcript (rather than swallowed by `occlude`).
 pub(crate) type ThinkingScrolls = Rc<RefCell<HashMap<(usize, usize), ScrollHandle>>>;
-/// "Thought" cards collapsed by the reader, keyed `(message_ix, step_ix)`.
-/// Missing means expanded — the default once the activity group is open.
-pub(crate) type CollapsedThoughts = Rc<RefCell<HashSet<(usize, usize)>>>;
+/// The reader's own collapse choice per "Thought" row, keyed
+/// `(message_ix, step_ix)`: `true` collapsed, `false` expanded. Missing means
+/// the default — open while the thought streams, folded once it settles.
+pub(crate) type CollapsedThoughts = Rc<RefCell<HashMap<(usize, usize), bool>>>;
 /// Live "Thought" cards the reader scrolled away from the newest line,
 /// keyed `(message_ix, step_ix)`. Missing means following: while a card
 /// streams, its view stays pinned to the bottom so each new line of
@@ -1730,6 +1733,9 @@ struct RowPaint {
     thinking_scrolls: ThinkingScrolls,
     collapsed_thoughts: CollapsedThoughts,
     thinking_detached: ThinkingDetached,
+    /// The session's working folder, for tool-row previews that drop a
+    /// redundant `cd <workspace> &&` prelude.
+    workspace: Option<Rc<Path>>,
     hovered_usage: Rc<Cell<Option<usize>>>,
     image_opener: Option<ImageOpener>,
     dock_opener: Option<DockOpener>,
@@ -1793,6 +1799,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let rail_hint_dismissed = view.rail_hint_dismissed.clone();
     let rail_hint_shown_at = view.rail_hint_shown_at.clone();
     let workspace = view.workspace.clone();
+    let workspace_rc: Option<Rc<Path>> = workspace.as_deref().map(Rc::from);
     let rail_scroll = view.rail_scroll.clone();
     let rail_autoscroll = view.rail_autoscroll.clone();
     let scroller = view.scroller.clone();
@@ -2059,6 +2066,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                     thinking_scrolls: thinking_scrolls.clone(),
                     collapsed_thoughts: collapsed_thoughts.clone(),
                     thinking_detached: thinking_detached.clone(),
+                    workspace: workspace_rc.clone(),
                     hovered_usage: hovered_usage.clone(),
                     image_opener: image_opener.clone(),
                     dock_opener: dock_opener.clone(),
@@ -2976,6 +2984,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         paint.thinking_detached.clone(),
                         paint.image_opener.clone(),
                         paint.dock_opener.clone(),
+                        paint.workspace.as_deref(),
                     ));
                 }
             }
@@ -3059,6 +3068,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 paint.thinking_detached.clone(),
                 paint.image_opener.clone(),
                 paint.dock_opener.clone(),
+                paint.workspace.as_deref(),
             ));
         }
     }
@@ -3197,8 +3207,12 @@ fn activity_title(steps: &[Step], live: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     let (mut delegations, mut commands, mut reads, mut edits, mut other, mut thoughts) =
         (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut failed = 0usize;
     for step in steps {
         for tool in &step.tools {
+            if tool.failed {
+                failed += 1;
+            }
             if crate::subagent::is_subagent_tool(&tool.name) {
                 delegations += 1;
                 continue;
@@ -3272,6 +3286,11 @@ fn activity_title(steps: &[Step], live: bool) -> String {
             )
         });
     }
+    // The group's failure mark is a glyph; the words say it too, and how many,
+    // so the reader knows there is something to find before opening it.
+    if failed > 0 {
+        parts.push(tr!("transcript_view.failed_count", count = failed));
+    }
     if parts.is_empty() {
         return if live {
             tr!("transcript.working")
@@ -3309,13 +3328,10 @@ fn render_activity_group(
     thinking_detached: ThinkingDetached,
     image_opener: Option<ImageOpener>,
     dock_opener: Option<DockOpener>,
+    workspace: Option<&Path>,
 ) -> impl IntoElement {
     let steps = &all_steps[range.clone()];
     let title = activity_title(steps, live);
-    // Leading glyph cluster: one icon per distinct work kind (fixed
-    // canonical order, the reasoning bulb last) so a folded group reads as
-    // "what ran", not another line of prose.
-    let icons = activity_group_icons(steps);
     let any_failed = steps
         .iter()
         .any(|step| step.tools.iter().any(|tool| tool.failed));
@@ -3331,16 +3347,27 @@ fn render_activity_group(
         .sum::<usize>()
         .saturating_sub(1);
     let key = (ix, range.start);
-    // State color for the glyph cluster: danger when anything failed, accent
-    // while the group streams. Settled clusters tint per work kind instead
-    // (see `work_tint`).
-    let cluster_state = if any_failed {
-        Some(theme.error)
-    } else if live {
-        Some(theme.accent_text)
-    } else {
-        None
-    };
+    // One state glyph, and only when there is a state to say: a spinner
+    // while the group works, the failure mark once a call in it failed.
+    // Settled, successful work is the label alone — the counts already say
+    // what ran, and an icon per work kind was a second, noisier index.
+    let state_glyph: Option<AnyElement> =
+        activity_group_state(live, any_failed).map(|state| match state {
+            ActivityGroupState::Working => crate::ui::prelude::spinner(
+                ElementId::NamedInteger(
+                    "activity-group-spin".into(),
+                    (ix as u64) << 16 | key.1 as u64,
+                ),
+                IconSize::XSmall.px(&theme),
+                theme.accent_text,
+                theme,
+            )
+            .into_any_element(),
+            ActivityGroupState::Failed => {
+                glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.error)
+                    .into_any_element()
+            }
+        });
     let mut group = div()
         .debug_selector(move || format!("activity-group-{ix}-{}", key.1))
         .w_full()
@@ -3348,40 +3375,62 @@ fn render_activity_group(
         .flex()
         .flex_col()
         .gap(DynamicSpacing::Base04.px(&theme))
-        // Let the summary chip hug its content so it reads as a control
+        // Let the summary line hug its content so it reads as a control
         // instead of a full-width band across the answer column.
         .items_start()
         .child({
-            let glyph_ink = cluster_state.unwrap_or(theme.text_secondary);
-            ChipButton::new(
+            // A quiet text control, not a framed chip: muted ink at rest, the
+            // shared hover wash under the pointer, and the same `›` disclosure
+            // the rows inside use. `open(false)` keeps an expanded group from
+            // holding a filled pill — the turned chevron and the rail below
+            // already say it is open.
+            let chip = ChipButton::new(
                 format!("activity-toggle-{}-{}", ix, key.1),
-                ChipStyle::Outlined { inset: false },
+                ChipStyle::Quiet,
             )
             .shrink()
-            .open(open)
-            .leading(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base04.px(&theme))
-                    .children(icons.iter().copied().map(move |icon| {
-                        // Settled work is monochrome ink; only run/fail state
-                        // takes a color (see `cluster_state`).
-                        glyph(icon, IconSize::XSmall.px(&theme), glyph_ink)
-                    })),
-            )
+            .subdued()
+            .caret(false)
             .label(title)
-            .on_click(&theme, {
+            .trailing(disclosure_chevron(
+                format!("activity-toggle-caret-{}-{}", ix, key.1),
+                open,
+                IconSize::XSmall.px(&theme),
+                theme.text_muted,
+                &theme,
+            ));
+            let chip = match state_glyph {
+                Some(state) => chip.leading(state),
+                None => chip,
+            };
+            let toggle: ActivityToggleFn = Rc::new({
                 let expanded_activities = expanded_activities.clone();
                 let scroller = scroller.clone();
-                move |_, _, cx| {
-                    let mut map = expanded_activities.borrow_mut();
-                    map.insert(key, !open);
+                move |cx| {
+                    expanded_activities.borrow_mut().insert(key, !open);
                     scroller.remeasure_toggle(ix);
                     cx.refresh_windows();
                 }
-            })
+            });
+            let chip = chip.on_click(&theme, {
+                let toggle = toggle.clone();
+                move |_, _, cx| toggle(cx)
+            });
+            ActivityToggleKeys {
+                focus_id: format!("activity-toggle-focus-{ix}-{}", key.1).into(),
+                row: div()
+                    .id(ElementId::NamedInteger(
+                        "activity-toggle-keys".into(),
+                        (ix as u64) << 16 | key.1 as u64,
+                    ))
+                    .debug_selector(move || format!("activity-toggle-keys-{ix}-{}", key.1))
+                    .min_w_0()
+                    .max_w_full()
+                    .child(chip),
+                radius: crate::theme::tokens::button::radius(ButtonSize::Default).px(&theme),
+                theme,
+                toggle,
+            }
         });
 
     if open {
@@ -3395,7 +3444,8 @@ fn render_activity_group(
             .border_color(theme.hairline())
             .flex()
             .flex_col()
-            .gap(DynamicSpacing::Base08.px(&theme));
+            // Flat rows sit close; the rail is the group, not the gaps.
+            .gap(DynamicSpacing::Base04.px(&theme));
         let mut tool_base = tool_base;
         for (step_ix, step) in steps.iter().enumerate() {
             if !step.thinking.is_empty() {
@@ -3436,7 +3486,6 @@ fn render_activity_group(
                 render_activity_card(
                     tool,
                     pulse,
-                    !pulse,
                     theme,
                     nerd,
                     (ix, flat),
@@ -3449,6 +3498,7 @@ fn render_activity_group(
                     scroller.clone(),
                     image_opener.clone(),
                     dock_opener.clone(),
+                    workspace,
                 )
             }));
             tool_base += step.tools.len();
@@ -3457,6 +3507,26 @@ fn render_activity_group(
     }
 
     group
+}
+
+/// The one state an activity group's summary line marks with a glyph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActivityGroupState {
+    Working,
+    Failed,
+}
+
+/// A live group shows it is working (its failed calls show inside it);
+/// a settled group is marked only when a call in it failed. Settled,
+/// successful work carries no glyph.
+fn activity_group_state(live: bool, any_failed: bool) -> Option<ActivityGroupState> {
+    if live {
+        Some(ActivityGroupState::Working)
+    } else if any_failed {
+        Some(ActivityGroupState::Failed)
+    } else {
+        None
+    }
 }
 
 /// How long a step's reasoning took. Live runs carry the measured value on
@@ -3475,6 +3545,13 @@ fn step_thinking_duration(steps: &[Step], step_ix: usize) -> Option<Duration> {
     let end = steps.get(step_ix + 1).and_then(|next| next.timestamp)?;
     let millis = end.checked_sub(start)?;
     (millis > 0).then(|| Duration::from_millis(millis as u64))
+}
+
+/// Whether a thought row is folded: the reader's own choice wins; otherwise
+/// a streaming thought stays open so its reasoning is visible, and a
+/// settled one folds to its header so it never pushes the answer down.
+fn thought_collapsed(choice: Option<bool>, live: bool) -> bool {
+    choice.unwrap_or(!live)
 }
 
 /// Whether a step's reasoning card is still the active phase: the row is
@@ -3521,7 +3598,9 @@ fn render_thinking_body(
     };
     // The label stays the bold accent anchor; the timing is secondary —
     // normal weight and muted, like the other metric text in the row.
-    let timing = duration.map(|duration| {
+    // Only a live thought counts its time: "for 2 seconds" on every settled
+    // row repeated a fact nobody acts on, and pushed the preview aside.
+    let timing = duration.filter(|_| live).map(|duration| {
         let elapsed = if live {
             format_working_elapsed(duration)
         } else {
@@ -3530,7 +3609,10 @@ fn render_thinking_body(
         tr!("transcript.for_duration", duration = elapsed)
     });
     let detail = cap_chars(thinking, THINKING_TEXT_CAP);
-    let collapsed = collapsed_thoughts.borrow().contains(&key);
+    let collapsed = thought_collapsed(collapsed_thoughts.borrow().get(&key).copied(), live);
+    // Folded, the header carries a glimpse of the reasoning so a closed row
+    // still says what it was about.
+    let preview = collapsed.then(|| thought_preview(thinking)).flatten();
     let handle = thinking_scrolls
         .borrow_mut()
         .entry(key)
@@ -3545,16 +3627,25 @@ fn render_thinking_body(
         handle.scroll_to_bottom();
     }
     let id = (key.0 as u64) << 16 | key.1 as u64;
-    // The reasoning glyph sits in the same 22px tile as a tool row's badge,
-    // so "Thought" and "Run"/"Edit" start on one column: brand accent while
-    // the card streams (with a slow opacity pulse, reduce-motion aware), the
+    let toggle: ActivityToggleFn = Rc::new({
+        let collapsed_thoughts = collapsed_thoughts.clone();
+        let scroller = scroller.clone();
+        move |cx| {
+            collapsed_thoughts.borrow_mut().insert(key, !collapsed);
+            scroller.remeasure_toggle(key.0);
+            cx.refresh_windows();
+        }
+    });
+    // The reasoning glyph sits in the same slot as a tool row's glyph, so
+    // "Thought" and "Run"/"Edit" start on one column: brand accent while the
+    // row streams (with a slow opacity pulse, reduce-motion aware), the
     // settled tool ink once it is done.
-    let badge = activity_badge(
+    let badge = activity_glyph(
         "icons/tools/thinking.svg",
         if live {
             theme.accent_text
         } else {
-            theme.text_secondary
+            theme.text_muted
         },
         &theme,
     );
@@ -3571,27 +3662,27 @@ fn render_thinking_body(
     } else {
         badge.into_any_element()
     };
-    // The same card treatment as the tool and activity cards beside it, so a
-    // thought and an edit read as one material: frosted over wallpaper glass,
-    // the `overlay` wash otherwise.
-    let mut card = div()
+    // A flat row on the group's rail, like a settled tool call beside it:
+    // reasoning is secondary prose, not a card to open — the expanded text
+    // simply hangs under its label.
+    let mut card = flat_activity_row(div(), &theme)
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
-        .inspector_card(&theme, frosted_transcript_fill(theme))
-        // Header geometry matches `render_activity_card`: Base08 inset and a
-        // Base32 row, so badge, title and caret line up with the tool rows.
+        // Header geometry matches `render_activity_card`: Base08 inset and
+        // the shared row height, so glyph, title and caret line up with the
+        // tool rows.
         .px(DynamicSpacing::Base08.px(&theme))
         .when(!collapsed, |card| {
-            card.pb(DynamicSpacing::Base08.px(&theme))
+            card.pb(DynamicSpacing::Base04.px(&theme))
         })
         .flex()
         .flex_col()
-        .child(
+        .child(activity_keys(
             div()
                 .id(ElementId::NamedInteger("thought-toggle".into(), id))
                 .group(BUTTON_GROUP)
                 .w_full()
                 .min_w_0()
-                .h(DynamicSpacing::Base32.px(&theme))
+                .h(activity_row_height(&theme))
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base08.px(&theme))
@@ -3610,42 +3701,57 @@ fn render_thinking_body(
                         .child(
                             div()
                                 .flex_none()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.accent_text)
+                                .font_weight(FontWeight::MEDIUM)
+                                // Accent is a state: only the live thought.
+                                .text_color(if live {
+                                    theme.accent_text
+                                } else {
+                                    theme.text_secondary
+                                })
                                 .child(label),
                         )
                         .when_some(timing, |row, timing| {
                             row.child(
                                 div()
+                                    .flex_none()
+                                    .font_weight(FontWeight::NORMAL)
+                                    .text_color(theme.text_muted)
+                                    .child(timing),
+                            )
+                        })
+                        .when_some(preview, |row, preview| {
+                            row.child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("thought-preview-{}-{}", key.0, key.1)
+                                    })
+                                    .flex_1()
                                     .min_w_0()
                                     .truncate()
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(theme.text_muted)
-                                    .child(timing),
+                                    .child(format!("· {preview}")),
                             )
                         }),
                 )
                 .child(disclosure_chevron(
                     format!("thought-caret-{}-{}", key.0, key.1),
-                    collapsed,
+                    !collapsed,
                     IconSize::XSmall.px(&theme),
                     theme.text_muted,
                     &theme,
                 ))
                 .on_click({
-                    let collapsed_thoughts = collapsed_thoughts.clone();
-                    let scroller = scroller.clone();
-                    move |_, _, cx| {
-                        let mut set = collapsed_thoughts.borrow_mut();
-                        if !set.remove(&key) {
-                            set.insert(key);
-                        }
-                        drop(set);
-                        scroller.remeasure_toggle(key.0);
-                        cx.refresh_windows();
-                    }
+                    let toggle = toggle.clone();
+                    move |_, _, cx| toggle(cx)
                 }),
-        );
+            Some((
+                SharedString::from(format!("thought-toggle-focus-{}-{}", key.0, key.1)),
+                toggle,
+            )),
+            inspector_inner_radius(&theme),
+            theme,
+        ));
     if !collapsed {
         card = card.child(
             div()
@@ -3687,13 +3793,16 @@ fn render_thinking_body(
                     }
                 })
                 // Reasoning is prose, not code: the UI face (orbit-design
-                // › UI typography), hung on the title's edge — past the badge
-                // tile and its gap — so "Thought" and its text share one
-                // reading line and the badge stands alone in its column.
-                .pl(TileLook::Tinted(theme.text_secondary).size() + DynamicSpacing::Base08.px(&theme))
+                // › UI typography), hung on the title's edge — past the glyph
+                // and its gap — so "Thought" and its text share one reading
+                // line and the glyph stands alone in its column.
+                .pl(activity_glyph_size(&theme) + DynamicSpacing::Base08.px(&theme))
                 .pr(DynamicSpacing::Base04.px(&theme))
-                .text_size(TextSize::Small.px(&theme))
-                .line_height(theme.ui_px(19.))
+                // The answer's own body size (14px, like its paragraphs and
+                // the header above), with a tighter leading than the answer's
+                // 26px: reasoning is secondary and the card is height-capped.
+                .text_size(TextSize::Default.px(&theme))
+                .line_height(theme.ui_px(THINKING_LINE_HEIGHT))
                 .text_color(theme.text_secondary)
                 .whitespace_normal()
                 .child({
@@ -4102,9 +4211,123 @@ impl RenderOnce for SubagentRowKeys {
     }
 }
 
+/// What an activity disclosure runs when it is activated, by click or by key.
+type ActivityToggleFn = Rc<dyn Fn(&mut App)>;
+
+/// A transcript activity disclosure as a keyboard stop — an activity group's
+/// summary line, a tool row with detail, a thought row: Tab reaches it, Enter
+/// or Space folds or unfolds it through the same `toggle` a click runs, and a
+/// focused one wears the 1px `focus_ring` over itself without moving layout.
+///
+/// Same contract as [`SubagentRowKeys`]: a pointer click toggles but leaves
+/// keyboard focus where it was (the composer keeps its caret), and the handle
+/// lives in keyed state so focus survives a streaming repaint. A native
+/// accessible name and expanded state are still a GPUI gap.
+#[derive(IntoElement)]
+struct ActivityToggleKeys {
+    focus_id: SharedString,
+    row: gpui::Stateful<gpui::Div>,
+    /// The ring's corner radius, matching the control it outlines.
+    radius: Pixels,
+    theme: Theme,
+    toggle: ActivityToggleFn,
+}
+
+impl RenderOnce for ActivityToggleKeys {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let ActivityToggleKeys {
+            focus_id,
+            row,
+            radius,
+            theme,
+            toggle,
+        } = self;
+        let focus = window
+            .use_keyed_state(ElementId::Name(focus_id.clone()), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
+            })
+            .read(cx)
+            .clone();
+        let focused = focus.is_focused(window);
+        row.track_focus(&focus)
+            .key_context("ActivityToggle")
+            // A click is pointer work: keep focus where the reader left it.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_action(move |_: &crate::ActivityToggle, _, cx| toggle(cx))
+            .relative()
+            .when(focused, |row| {
+                row.child(
+                    div()
+                        .debug_selector(move || format!("{focus_id}-ring"))
+                        .absolute()
+                        .inset_0()
+                        .rounded(radius)
+                        .border_1()
+                        .border_color(theme.focus_ring),
+                )
+            })
+    }
+}
+
+/// `row` as an [`ActivityToggleKeys`] stop when it has something to fold;
+/// otherwise the plain row, which is no tab stop (nothing to activate).
+fn activity_keys(
+    row: gpui::Stateful<gpui::Div>,
+    keys: Option<(SharedString, ActivityToggleFn)>,
+    radius: Pixels,
+    theme: Theme,
+) -> AnyElement {
+    match keys {
+        Some((focus_id, toggle)) => ActivityToggleKeys {
+            focus_id,
+            row,
+            radius,
+            theme,
+            toggle,
+        }
+        .into_any_element(),
+        None => row.into_any_element(),
+    }
+}
+
 /// The collapsed header's middle slot for one child: what it is doing now, or
 /// the terminal state. Data (a tool preview) passes through untranslated; the
 /// status words are keys.
+/// A child's state as one leading mark, in the parent's own activity
+/// language: a working child turns the shared spinner (static under Reduce
+/// Motion), a queued one waits in muted ink, and a settled one shows its
+/// outcome. Shape differs per state, so tone is never the only signal. The
+/// delegation card's rows and the side pane's tabs both wear it, so the two
+/// never disagree about one child.
+pub(crate) fn subagent_status_mark(
+    child: &crate::subagent::SubagentChild,
+    pulse: bool,
+    spinner_id: ElementId,
+    size: Pixels,
+    theme: Theme,
+) -> AnyElement {
+    use crate::subagent::{Phase, Status};
+    let queued = matches!(child.phase, Phase::Queued);
+    match child.status {
+        Status::Running if pulse && !queued => {
+            crate::ui::prelude::spinner(spinner_id, size, theme.accent_text, theme)
+        }
+        Status::Running => glyph(
+            "icons/task.svg",
+            size,
+            if queued {
+                theme.text_muted
+            } else {
+                theme.text_secondary
+            },
+        )
+        .into_any_element(),
+        Status::Done => glyph("icons/check.svg", size, theme.success).into_any_element(),
+        Status::Failed => glyph("icons/stop.svg", size, theme.error).into_any_element(),
+        Status::Aborted => glyph("icons/circle-x.svg", size, theme.text_muted).into_any_element(),
+    }
+}
+
 pub(crate) fn subagent_status_label(child: &crate::subagent::SubagentChild) -> String {
     use crate::subagent::{Phase, Status};
     match child.phase {
@@ -4263,47 +4486,13 @@ fn render_subagent_card(
             move |_, _, cx| toggle(cx)
         });
 
-        // The leading mark is the child's state, in the parent's own activity
-        // language: a working child turns the shared spinner (static under
-        // Reduce Motion), a queued one waits in muted ink, and a settled one
-        // shows its outcome. Shape differs per state, so tone is never the
-        // only signal.
-        let queued = matches!(child.phase, crate::subagent::Phase::Queued);
-        let status_mark = match child.status {
-            Status::Running if pulse && !queued => crate::ui::prelude::spinner(
-                ElementId::NamedInteger("subagent-spin".into(), id << 8 | ix as u64),
-                IconSize::Small.px(&theme),
-                theme.accent_text,
-                theme,
-            ),
-            Status::Running => glyph(
-                "icons/task.svg",
-                IconSize::Small.px(&theme),
-                if queued {
-                    theme.text_muted
-                } else {
-                    theme.text_secondary
-                },
-            )
-            .into_any_element(),
-            // A finished child wears the success tone here as in its log,
-            // so the card and the pane never disagree about one outcome.
-            Status::Done => glyph(
-                "icons/check.svg",
-                IconSize::Small.px(&theme),
-                theme.success,
-            )
-            .into_any_element(),
-            Status::Failed => {
-                glyph("icons/stop.svg", IconSize::Small.px(&theme), theme.error).into_any_element()
-            }
-            Status::Aborted => glyph(
-                "icons/circle-x.svg",
-                IconSize::Small.px(&theme),
-                theme.text_muted,
-            )
-            .into_any_element(),
-        };
+        let status_mark = subagent_status_mark(
+            child,
+            pulse,
+            ElementId::NamedInteger("subagent-spin".into(), id << 8 | ix as u64),
+            IconSize::Small.px(&theme),
+            theme,
+        );
         // A chain runs in order, so its rows carry their step number: the
         // footer's `step 2 of 3` then points at a row the eye can find.
         let chain = matches!(run.mode, crate::subagent::Mode::Chain) && children_len > 1;
@@ -5564,7 +5753,6 @@ fn format_kib(bytes: usize) -> String {
 fn render_activity_card(
     tool: &ToolCall,
     pulse: bool,
-    complete: bool,
     theme: Theme,
     nerd: Option<&SharedString>,
     key: (usize, usize),
@@ -5577,6 +5765,7 @@ fn render_activity_card(
     scroller: MessageScrollerState,
     image_opener: Option<ImageOpener>,
     dock_opener: Option<DockOpener>,
+    workspace: Option<&Path>,
 ) -> AnyElement {
     // A structured questionnaire gets its own card — the raw arguments JSON
     // and the generic "Command/Arguments" detail would bury the question.
@@ -5608,7 +5797,15 @@ fn render_activity_card(
     };
     let detail = match mcp {
         Some((_, tool_name)) => tool_name.to_string(),
-        None => activity_preview(tool),
+        // A command drops a `cd <workspace> &&` / `export …` prelude in the
+        // header so rows differ by what they ran; the detail keeps it all.
+        None if tool_command(tool).is_some() => {
+            command_preview(&activity_preview(tool), workspace)
+        }
+        // A path inside the workspace reads from its root, as a command's
+        // `cd <workspace>` prelude is dropped: the home prefix is the same on
+        // every row and pushed the file name into the ellipsis.
+        None => workspace_relative_path(&activity_preview(tool), workspace),
     };
     let icon = activity_icon(&tool.name);
     // The glyph tone: state color while the call runs or once it failed;
@@ -5620,7 +5817,7 @@ fn render_activity_card(
     } else if pulse {
         theme.accent_text
     } else {
-        theme.text_secondary
+        theme.text_muted
     };
     let is_command = tool_command(tool).is_some();
     let has_diff = tool.added > 0 || tool.removed > 0;
@@ -5637,6 +5834,12 @@ fn render_activity_card(
     // devicons palette follows the theme.
     let file_path = file_preview_path(tool);
     let dark = theme.mode == ThemeMode::Dark;
+    // A partial read names its slice beside the path ("lines 900–1029 of
+    // 1412") — the only facts its arguments add — so the open detail can be
+    // the code alone.
+    let read_range = read_listing(tool)
+        .filter(|listing| listing.is_partial())
+        .map(|listing| read_range_label(&listing));
 
     // gpui 0.2.2's `overflow_hidden` clips a rectangle, not the border radius
     // (`Style::overflow_mask` builds the `ContentMask` from `bounds` alone), so
@@ -5645,6 +5848,22 @@ fn render_activity_card(
     // radius instead.
     let detail_shown = tool_open && has_detail;
     let header_is_only_child = !detail_shown && !tool.failed;
+    let toggle: ActivityToggleFn = Rc::new({
+        let scroller = scroller.clone();
+        move |cx| {
+            let mut open = expanded_tools.borrow_mut();
+            if !open.remove(&key) {
+                open.insert(key);
+            }
+            drop(open);
+            scroller.remeasure_toggle(key.0);
+            cx.refresh_windows();
+        }
+    });
+    // A settled call is a flat row on the group's rail; it becomes an
+    // inspector card only when it has something to hold — its open detail or
+    // its error strip. One container per row was the noise.
+    let carded = !header_is_only_child;
     let mut card = div()
         .id(ElementId::NamedInteger(
             "activity-card".into(),
@@ -5654,9 +5873,15 @@ fn render_activity_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .inspector_card(&theme, frosted_transcript_fill(theme))
+        .map(|card| {
+            if carded {
+                card.inspector_card(&theme, frosted_transcript_fill(theme))
+            } else {
+                flat_activity_row(card, &theme)
+            }
+        })
         .inspector_lift(&theme, detail_shown)
-        .child(
+        .child(activity_keys(
             div()
                 .id(ElementId::NamedInteger(
                     "activity-header".into(),
@@ -5664,18 +5889,10 @@ fn render_activity_card(
                 ))
                 .debug_selector(move || format!("tool-header-{}-{}", key.0, key.1))
                 .when(has_detail, |header| {
-                    let scroller = scroller.clone();
-                    header.on_click(move |_, _, cx| {
-                        let mut open = expanded_tools.borrow_mut();
-                        if !open.remove(&key) {
-                            open.insert(key);
-                        }
-                        drop(open);
-                        scroller.remeasure_toggle(key.0);
-                        cx.refresh_windows();
-                    })
+                    let toggle = toggle.clone();
+                    header.on_click(move |_, _, cx| toggle(cx))
                 })
-                .h(DynamicSpacing::Base32.px(&theme))
+                .h(activity_row_height(&theme))
                 .px(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .items_center()
@@ -5688,20 +5905,21 @@ fn render_activity_card(
                 })
                 .when(has_detail, |row| row.cursor_pointer())
                 .hover_on_glass(&theme)
-                .child(activity_badge(icon, tone, &theme))
+                .child(activity_glyph(icon, tone, &theme))
                 .child(
                     div()
                         .flex_none()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text_primary)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_secondary)
                         .child(action),
                 )
                 .when(!detail.is_empty(), |row| {
                     if is_command {
                         // Terminal preview: a muted prompt sigil then the
-                        // command in the code face, syntax-colored exactly
-                        // like the expanded detail.
-                        let tokens = highlight::tokenize_cached(highlight::Lang::Shell, &detail);
+                        // command in the code face, in one settled ink. A
+                        // folded row is an index line; syntax color belongs
+                        // to the open detail, where the command is read —
+                        // across a long turn it outshouted the answer.
                         row.child(
                             div()
                                 .flex_1()
@@ -5717,12 +5935,12 @@ fn render_activity_card(
                                     // `truncate` ellipsizes at the painted
                                     // width; gpui shapes styled runs through
                                     // the same `truncate_line`.
-                                    div().flex_1().min_w_0().truncate().child(syntax_styled(
-                                        &detail,
-                                        tokens.first().map(Vec::as_slice),
-                                        theme.text_secondary,
-                                        theme,
-                                    )),
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.text_secondary)
+                                        .child(detail),
                                 ),
                         )
                     } else if let Some(url) = tool_url(tool) {
@@ -5762,13 +5980,25 @@ fn render_activity_card(
                             ));
                         }
                         row.child(
-                            preview.child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_color(theme.text_secondary)
-                                    .child(detail),
-                            ),
+                            preview
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.text_secondary)
+                                        .child(detail),
+                                )
+                                .when_some(read_range.clone(), |preview, range| {
+                                    // The path truncates first; the range is
+                                    // short and always whole.
+                                    preview.child(
+                                        div()
+                                            .flex_none()
+                                            .font(crate::ui::style::text::num_font())
+                                            .text_color(theme.text_muted)
+                                            .child(range),
+                                    )
+                                }),
                         )
                     }
                 })
@@ -5831,18 +6061,13 @@ fn render_activity_card(
                         theme,
                     ))
                 })
+                // Only the exception is marked: a running spinner or a failure.
+                // A check on every settled call said nothing ten times a turn.
                 .when(tool.failed, |row| {
                     row.child(glyph(
                         "icons/stop.svg",
                         IconSize::XSmall.px(&theme),
                         theme.error,
-                    ))
-                })
-                .when(complete && !tool.failed, |row| {
-                    row.child(glyph(
-                        "icons/check.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.text_muted,
                     ))
                 })
                 // Always drawn, so the row height is stable either way; with no
@@ -5858,7 +6083,15 @@ fn render_activity_card(
                     },
                     &theme,
                 )),
-        );
+            has_detail.then(|| {
+                (
+                    SharedString::from(format!("tool-toggle-focus-{}-{}", key.0, key.1)),
+                    toggle.clone(),
+                )
+            }),
+            inspector_inner_radius(&theme),
+            theme,
+        ));
     // A failed run carries its first error line right on the card — the
     // fact a user scanning the turn needs, without opening the detail.
     if tool.failed {
@@ -5985,6 +6218,9 @@ fn render_tool_detail(
     // JSON arguments. The result is JSON-highlighted when the tool returned
     // structured data, plain otherwise.
     let diff = edit_diff(tool);
+    // A text read is its file's lines: the path and range already sit in the
+    // header, so the arguments JSON would only repeat them.
+    let listing = read_listing(tool);
     let first = match tool_command(tool) {
         Some(command) => Some((
             tr!("transcript.command"),
@@ -5992,7 +6228,7 @@ fn render_tool_detail(
             Some(highlight::Lang::Shell),
             true,
         )),
-        None if diff.is_some() => None,
+        None if diff.is_some() || listing.is_some() => None,
         None => tool.args.as_ref().map(|args| {
             (
                 tr!("transcript.arguments"),
@@ -6014,14 +6250,22 @@ fn render_tool_detail(
             Some(output.clone())
         }
     });
-    let second = output.as_ref().map(|output| {
-        (
+    let second = match listing.as_ref() {
+        Some(listing) => Some((
             tr!("transcript.output"),
-            display_value_capped(output, OUTPUT_TEXT_CAP),
-            section_lang(Some(output)),
+            cap_chars(&listing.display, OUTPUT_TEXT_CAP),
+            tool.path.as_deref().and_then(path_lang),
             false,
-        )
-    });
+        )),
+        None => output.as_ref().map(|output| {
+            (
+                tr!("transcript.output"),
+                display_value_capped(output, OUTPUT_TEXT_CAP),
+                section_lang(Some(output)),
+                false,
+            )
+        }),
+    };
     let sections: Vec<_> = [
         first.map(|(label, content, lang, prompt)| (0u8, label, content, lang, prompt)),
         second.map(|(label, content, lang, prompt)| (1u8, label, content, lang, prompt)),
@@ -6093,6 +6337,7 @@ fn render_tool_detail(
                 content,
                 lang,
                 prompt,
+                listing.clone().filter(|_| section == 1),
                 copied_sections.clone(),
                 hovered_sections.clone(),
                 expanded_sections.clone(),
@@ -6226,6 +6471,7 @@ fn render_detail_section(
     content: String,
     lang: Option<highlight::Lang>,
     prompt: bool,
+    listing: Option<Rc<ReadListing>>,
     copied_sections: CopiedSections,
     hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
@@ -6233,6 +6479,11 @@ fn render_detail_section(
     theme: Theme,
 ) -> impl IntoElement {
     let hover_key = (key.0, key.1, section);
+    // A file listing is bare code: no label row (the header names the file
+    // and its range), a line-number gutter, and the copy control floated in
+    // the corner. Copy carries the lines as read, indentation included.
+    let first_line = listing.as_ref().map(|listing| listing.first_line);
+    let bare = listing.is_some();
     let hover = hovered_sections
         .borrow()
         .get(&hover_key)
@@ -6242,7 +6493,9 @@ fn render_detail_section(
         .borrow()
         .get(&hover_key)
         .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-    let copy_content = content.clone();
+    let copy_content = listing
+        .as_ref()
+        .map_or_else(|| content.clone(), |listing| listing.code.clone());
     // Tall sections (a test run's log, a big edit's arguments) collapse to a
     // prefix preview; the toggle remeasures the row. Copy always carries the
     // full captured text, folded or not.
@@ -6423,10 +6676,22 @@ fn render_detail_section(
         .min_w_0()
         .flex()
         .flex_col()
-        // The label row: a quiet heading on the terminal surface, with the
-        // copy control pinned right so every section's action shares one
-        // axis.
-        .child(
+        .map(|card| {
+            if bare {
+                // Floated over the code's top-right corner; the body keeps
+                // that corner clear so no line runs underneath it.
+                card.relative().child(
+                    div()
+                        .absolute()
+                        .top(DynamicSpacing::Base04.px(&theme))
+                        .right(DynamicSpacing::Base08.px(&theme))
+                        .child(copy_control),
+                )
+            } else {
+                // The label row: a quiet heading on the terminal surface,
+                // with the copy control pinned right so every section's
+                // action shares one axis.
+                card.child(
             div()
                 .w_full()
                 .min_w_0()
@@ -6463,13 +6728,20 @@ fn render_detail_section(
                 })
                 .child(div().flex_1().min_w_0())
                 .child(copy_control),
-        )
+                        )
+            }
+        })
         .child(
             div()
                 .w_full()
                 .min_w_0()
                 .px(DynamicSpacing::Base12.px(&theme))
                 .pb(DynamicSpacing::Base08.px(&theme))
+                .when(bare, |row| {
+                    row.pt(DynamicSpacing::Base08.px(&theme)).pr(
+                        ButtonSize::Default.height(&theme) + DynamicSpacing::Base12.px(&theme),
+                    )
+                })
                 .flex()
                 .items_start()
                 .gap(DynamicSpacing::Base08.px(&theme))
@@ -6485,7 +6757,7 @@ fn render_detail_section(
                     )
                 })
                 .child(render_detail_body(
-                    &content, visible, lang, key, section, theme,
+                    &content, visible, lang, first_line, key, section, theme,
                 )),
         );
     if foldable {
@@ -6557,11 +6829,19 @@ fn render_detail_body(
     content: &str,
     visible: &[&str],
     lang: Option<highlight::Lang>,
+    first_line: Option<usize>,
     key: (usize, usize),
     section: u8,
     theme: Theme,
 ) -> AnyElement {
     let tokens = lang.map(|lang| highlight::tokenize_cached(lang, content));
+    // A file listing numbers its lines from where the read started. The
+    // gutter is as wide as the largest number painted, in the code face so
+    // every digit is one width and the numbers right-align.
+    let gutter_width = first_line.map(|first| {
+        let last = first + visible.len().saturating_sub(1);
+        theme.term_px(8. * last.to_string().len() as f32)
+    });
     div()
         .flex_1()
         .min_w_0()
@@ -6580,7 +6860,7 @@ fn render_detail_body(
                     | ((section as u64) << 12)
                     | line_ix as u64,
             );
-            div().w_full().min_w_0().child(syntax_line(
+            let code = syntax_line(
                 line,
                 tokens
                     .as_deref()
@@ -6589,7 +6869,26 @@ fn render_detail_body(
                 line_id,
                 theme.code_text,
                 theme,
-            ))
+            );
+            match (first_line, gutter_width) {
+                (Some(first), Some(width)) => div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_start()
+                    .gap(DynamicSpacing::Base12.px(&theme))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(width)
+                            .flex()
+                            .justify_end()
+                            .text_color(theme.text_muted)
+                            .child((first + line_ix).to_string()),
+                    )
+                    .child(div().flex_1().min_w_0().child(code)),
+                _ => div().w_full().min_w_0().child(code),
+            }
         }))
         .into_any_element()
 }
@@ -7696,6 +7995,165 @@ fn display_url(url: &str) -> &str {
     url.strip_prefix("www.").unwrap_or(url)
 }
 
+/// A text `read` result taken apart for display: the lines pi returned
+/// (without its model-facing continuation note), where they start, and how
+/// long the file is when the note says so.
+#[derive(Debug, Clone, PartialEq)]
+struct ReadListing {
+    /// The file's lines exactly as read — what Copy puts on the clipboard.
+    code: String,
+    /// `code` with the indentation every non-blank line shares removed, so a
+    /// slice from deep inside a block starts at the left edge.
+    display: String,
+    /// 1-based number of the first line shown.
+    first_line: usize,
+    /// 1-based number of the last line shown.
+    last_line: usize,
+    /// The file's line count, when pi's note reports it (a partial read).
+    total: Option<usize>,
+}
+
+impl ReadListing {
+    /// Whether the header should name the range: only a slice of the file is
+    /// news — a whole-file read is just the file.
+    fn is_partial(&self) -> bool {
+        self.first_line > 1 || self.total.is_some_and(|total| total > self.last_line)
+    }
+}
+
+thread_local! {
+    /// Bounded per-call memo: a card repaints every frame, and the header and
+    /// the open detail both ask, so the split and dedent run once per result.
+    static READ_LISTING_CACHE: RefCell<HashMap<u64, Option<Rc<ReadListing>>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// The listing for a finished text `read`, or `None` for anything else (an
+/// image read, an error, a tool still running, another tool).
+fn read_listing(tool: &ToolCall) -> Option<Rc<ReadListing>> {
+    if tool.name != "read" || tool.failed || tool.output.is_none() {
+        return None;
+    }
+    // A call's result is final once it lands, so its id names it; without
+    // an id there is nothing stable to key on and the listing is rebuilt.
+    let Some(id) = tool.id.as_deref() else {
+        return build_read_listing(tool).map(Rc::new);
+    };
+    let key = {
+        let mut hasher = DefaultHasher::new();
+        id.hash(&mut hasher);
+        tool.path.hash(&mut hasher);
+        hasher.finish()
+    };
+    READ_LISTING_CACHE.with(|cache| {
+        if let Some(hit) = cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let listing = build_read_listing(tool).map(Rc::new);
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= 128 {
+            cache.clear();
+        }
+        cache.insert(key, listing.clone());
+        listing
+    })
+}
+
+fn build_read_listing(tool: &ToolCall) -> Option<ReadListing> {
+    if tool.name != "read" || tool.failed {
+        return None;
+    }
+    let output = tool.output.as_ref()?;
+    let text = match output.get("content").and_then(Value::as_array) {
+        Some(_) => crate::transcript::tool_result_output(output)?,
+        None => output.clone(),
+    };
+    let text = text.as_str()?;
+    // pi appends `\n\n[Showing lines A-B of T. Use offset=N to continue.]` or
+    // `\n\n[R more lines in file. Use offset=N to continue.]`: an
+    // instruction to the model, not file content.
+    let (code, note) = match text.rfind("\n\n[") {
+        Some(at) if text.ends_with(']') && text[at..].contains("offset=") => {
+            (&text[..at], Some(&text[at + 3..text.len() - 1]))
+        }
+        _ => (text, None),
+    };
+    // A single bracketed line is pi's own notice (a line too long to read).
+    if code.trim().is_empty() || (code.starts_with('[') && code.ends_with(']') && !code.contains('\n')) {
+        return None;
+    }
+    let first_line = tool
+        .args
+        .as_ref()
+        .and_then(|args| args.get("offset"))
+        .and_then(Value::as_u64)
+        .map_or(1, |offset| offset.max(1) as usize);
+    let count = code.split('\n').count();
+    let last_line = first_line + count - 1;
+    let leading_number = |text: &str| -> Option<usize> {
+        let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    let total = note.and_then(|note| {
+        if let Some(rest) = note.strip_prefix("Showing lines ") {
+            rest.split_once(" of ").and_then(|(_, tail)| leading_number(tail))
+        } else {
+            leading_number(note).map(|remaining| last_line + remaining)
+        }
+    });
+    Some(ReadListing {
+        code: code.to_string(),
+        display: dedent(code),
+        first_line,
+        last_line,
+        total,
+    })
+}
+
+/// "lines 900–1029", or "lines 900–1029 of 1412" when the file length is known.
+fn read_range_label(listing: &ReadListing) -> String {
+    match listing.total {
+        Some(total) => tr!(
+            "transcript_view.read_range_of",
+            start = listing.first_line,
+            end = listing.last_line,
+            total = total
+        ),
+        None => tr!(
+            "transcript_view.read_range",
+            start = listing.first_line,
+            end = listing.last_line
+        ),
+    }
+}
+
+/// `text` without the leading whitespace every non-blank line shares.
+fn dedent(text: &str) -> String {
+    let indent = text
+        .split('\n')
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start_matches([' ', '\t']).len())
+        .min()
+        .unwrap_or(0);
+    if indent == 0 {
+        return text.to_string();
+    }
+    text.split('\n')
+        .map(|line| line.get(indent..).unwrap_or_else(|| line.trim_start_matches([' ', '\t'])))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Syntax for a read file, from its extension (or a bare `Dockerfile` /
+/// `Makefile` name).
+fn path_lang(path: &str) -> Option<highlight::Lang> {
+    let path = Path::new(path);
+    path.extension()
+        .or_else(|| path.file_name())
+        .and_then(|tag| tag.to_str())
+        .and_then(highlight::lang_for_tag)
+}
+
 /// File-content tools whose header preview is one file path — the tools
 /// that get the file's devicon.
 fn file_preview_path(tool: &ToolCall) -> Option<&str> {
@@ -7761,6 +8219,76 @@ fn tool_command(tool: &ToolCall) -> Option<String> {
         .get("command")
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+/// A command's header preview without its boilerplate prelude: a leading
+/// `cd <dir> &&` (or `;`) whose `<dir>` is the session workspace, and leading
+/// `export NAME=value` clauses. Agents repeat both on every call, so they
+/// filled the truncated header and every row looked the same. A `cd`
+/// anywhere else is kept — where a command ran is a fact. Never strips the
+/// command to nothing, and stops at the first clause it cannot read safely.
+fn command_preview(command: &str, workspace: Option<&Path>) -> String {
+    let workspace = workspace
+        .map(|root| root.to_string_lossy().trim_end_matches('/').to_string())
+        .filter(|root| !root.is_empty());
+    let mut rest = command.trim_start();
+    loop {
+        // The clause ends at the first `&&` or `;`.
+        let cut = [rest.find("&&").map(|at| (at, 2)), rest.find(';').map(|at| (at, 1))]
+            .into_iter()
+            .flatten()
+            .min_by_key(|(at, _)| *at);
+        let Some((at, sep)) = cut else { break };
+        let clause = rest[..at].trim();
+        let after = rest[at + sep..].trim_start();
+        // A quote that the clause does not close may hide the separator.
+        let balanced = clause.matches('"').count().is_multiple_of(2)
+            && clause.matches('\'').count().is_multiple_of(2);
+        if after.is_empty() || !balanced {
+            break;
+        }
+        let strip = if let Some(dir) = clause.strip_prefix("cd ") {
+            let dir = dir.trim().trim_matches(|c| c == '"' || c == '\'');
+            let dir = dir.trim_end_matches('/');
+            workspace.as_deref().is_some_and(|root| dir == root)
+        } else if let Some(assign) = clause.strip_prefix("export ") {
+            assign
+                .split_once('=')
+                .is_some_and(|(name, _)| is_env_name(name.trim()))
+        } else {
+            false
+        };
+        if !strip {
+            break;
+        }
+        rest = after;
+    }
+    rest.to_string()
+}
+
+fn is_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+/// The collapsed header's glimpse of a thought: its first non-empty line,
+/// stripped of Markdown heading/emphasis marks and cut at the first sentence
+/// end. `None` for empty reasoning.
+fn thought_preview(thinking: &str) -> Option<String> {
+    let line = thinking
+        .lines()
+        .map(|line| line.trim().trim_start_matches('#').trim())
+        .find(|line| !line.is_empty())?;
+    let plain = line.replace("**", "").replace('`', "");
+    let plain = plain.trim();
+    let sentence = plain
+        .match_indices(". ")
+        .next()
+        .map_or(plain, |(at, _)| &plain[..=at]);
+    (!sentence.is_empty()).then(|| snippet(sentence, HEADER_PREVIEW_CAP))
 }
 
 fn render_line_delta(added: u64, removed: u64, theme: Theme, size: f32) -> impl IntoElement {
@@ -9506,13 +10034,7 @@ fn render_code_block(
         lines
     };
 
-    let mut card = div()
-        .w_full()
-        .min_w_0()
-        .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.hairline())
-        .bg(theme.code_bg)
+    let mut card = code_block_surface(div().w_full().min_w_0(), theme)
         .overflow_hidden()
         .child(header)
         .child(code_lines_body(
@@ -9801,18 +10323,29 @@ fn render_mermaid_block(
             cx.refresh_windows();
         });
 
-    div()
-        .w_full()
-        .min_w_0()
-        .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.hairline())
-        .bg(theme.code_bg)
+    code_block_surface(div().w_full().min_w_0(), theme)
         .overflow_hidden()
         .child(header)
         .child(body)
         .child(toggle)
         .into_any_element()
+}
+
+/// The card a code block (and a Mermaid diagram) sits on. Where the
+/// transcript's inspector glass frosts, it is that glass — the code well's
+/// contrast-floored fill over a blurred backdrop, as a tool card's terminal
+/// plane is — so code reads over a wallpaper without an opaque slab. Where it
+/// does not (light palettes, Reduce Transparency, Increase Contrast, no
+/// backdrop pass) it stays the opaque `code_bg` card with its hairline.
+fn code_block_surface(el: gpui::Div, theme: Theme) -> gpui::Div {
+    if theme.floating_glass_sigma().is_some() {
+        el.inspector_card(&theme, theme.inspector_well(theme.code_bg))
+    } else {
+        el.rounded(panel::RADIUS.px(&theme))
+            .border_1()
+            .border_color(theme.hairline())
+            .bg(theme.code_bg)
+    }
 }
 
 /// Display label for a code block's title strip: a friendly language name
@@ -9870,14 +10403,9 @@ fn syntax_line(
     )
 }
 
-/// Build a line of syntax-colored text: plain gaps and token spans over the
-/// monospace face, with an empty line carrying a space so its row keeps
-/// height. Shared by code blocks (no-wrap) and tool detail (wrapping).
-fn syntax_styled(text: &str, tokens: Option<&[Token]>, base: Hsla, theme: Theme) -> StyledText {
-    let (display, runs) = syntax_runs(text, tokens, base, theme);
-    StyledText::new(display).with_runs(runs)
-}
-
+/// A line of syntax-colored text as display string + runs: plain gaps and
+/// token spans over the monospace face, with an empty line carrying a space
+/// so its row keeps height. Shared by code blocks and tool detail.
 fn syntax_runs(
     text: &str,
     tokens: Option<&[Token]>,
@@ -10393,45 +10921,6 @@ pub(crate) fn activity_icon(name: &str) -> &'static str {
     }
 }
 
-/// One glyph per distinct work kind in a group, deduped and ordered
-/// canonically (run → read → edit → web → other), the reasoning bulb last
-/// when any step thought. The cluster is an index of what ran; the counts
-/// in the title stay the truth.
-fn activity_group_icons(steps: &[Step]) -> Vec<&'static str> {
-    let mut icons: Vec<&'static str> = Vec::new();
-    for step in steps {
-        for tool in &step.tools {
-            let icon = activity_icon(&tool.name);
-            if !icons.contains(&icon) {
-                icons.push(icon);
-            }
-        }
-    }
-    icons.sort_unstable_by_key(|icon| activity_icon_rank(icon));
-    if steps.iter().any(|step| !step.thinking.is_empty()) {
-        icons.push("icons/tools/thinking.svg");
-    }
-    // Six glyphs is all a compact summary chip can afford before the cluster
-    // starts competing with the title.
-    icons.truncate(6);
-    icons
-}
-
-/// Canonical cluster order: run, then explore, then mutate, then web, then
-/// everything else (task/skill/ask/mcp/wrench).
-fn activity_icon_rank(icon: &'static str) -> usize {
-    match icon {
-        "icons/tools/bash.svg" => 0,
-        "icons/tools/read.svg"
-        | "icons/tools/search.svg"
-        | "icons/tools/find.svg"
-        | "icons/tools/list.svg" => 1,
-        "icons/tools/edit.svg" | "icons/tools/write.svg" => 2,
-        "icons/tools/web.svg" | "icons/tools/fetch.svg" => 3,
-        _ => 4,
-    }
-}
-
 /// A tool glyph in its category badge: a 22px rounded square washed at a low
 /// alpha of the tone, the glyph at full strength. The wash lifts the icon out
 /// of the prose column so a tool row reads as a control at a glance, in every
@@ -10443,6 +10932,38 @@ fn activity_badge(icon: &'static str, tone: Hsla, theme: &Theme) -> gpui::Div {
         TileLook::Tinted(tone),
         theme,
     )
+}
+
+/// A row's leading glyph inside an expanded activity group: the bare tool
+/// glyph, no tile. The glyph shape names the kind; the group's rail already
+/// groups the rows, so a tinted square per row was a third container.
+fn activity_glyph(icon: &'static str, tone: Hsla, theme: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .size(activity_glyph_size(theme))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(glyph(icon, activity_glyph_size(theme), tone))
+}
+
+fn activity_glyph_size(theme: &Theme) -> Pixels {
+    IconSize::Small.px(theme)
+}
+
+/// One row height for thoughts and tool calls inside an activity group, so
+/// their glyphs, labels and carets hold one column down the turn.
+fn activity_row_height(theme: &Theme) -> Pixels {
+    ButtonSize::Medium.height(theme)
+}
+
+/// A settled activity row: no fill, no frost — only the inspector radius so
+/// its hover wash has the card's shape, and a transparent 1px edge so it is
+/// the same size as the card it becomes when opened (no layout jump).
+fn flat_activity_row<E: Styled>(el: E, theme: &Theme) -> E {
+    el.rounded(crate::theme::tokens::panel::RADIUS.px(theme))
+        .border_1()
+        .border_color(gpui::transparent_black())
 }
 
 /// Split a Pi MCP tool name (`mcp__<server>__<tool>`) into `(server, tool)`
@@ -10555,10 +11076,11 @@ mod tests {
     }
     use super::*;
 
-    /// A thought card and a tool card are one material: both paint the shared
-    /// transcript card fill through `card_surface`, with and without glass.
+    /// Settled activity rows are flat: a thought never paints a card, and a
+    /// tool call paints the shared transcript card fill only once it holds
+    /// something (open detail or an error strip).
     #[test]
-    fn thought_and_tool_cards_share_one_fill() {
+    fn settled_activity_rows_are_flat_and_open_tool_cards_frost() {
         for base in [Theme::dark(), Theme::light()] {
             for (active, glass) in [(false, false), (true, false), (true, true)] {
                 let theme = base.with_wallpaper(theme::SurfaceTreatment {
@@ -10573,15 +11095,51 @@ mod tests {
                 assert_eq!(card.style().background, expected);
             }
         }
-        // And the thought card's source uses that treatment, not a fill of
-        // its own (guards the regression where it painted `overlay` directly).
+        // A flat row has no fill and keeps the card's 1px edge, so opening it
+        // into a card does not move anything.
+        let theme = Theme::dark();
+        let mut row = flat_activity_row(div(), &theme);
+        assert_eq!(row.style().background, None);
+        assert_eq!(row.style().border_color, Some(gpui::transparent_black()));
+        // The thought row's source stays flat (guards a card or an `overlay`
+        // slab creeping back), and the tool card frosts only when carded.
         let source = include_str!("transcript_view.rs");
         let start = source.find("fn render_thinking_body(").expect("thinking body");
         let body = &source[start..start + 4000];
-        assert!(body.contains(
-            ".inspector_card(&theme, frosted_transcript_fill(theme))"
-        ));
+        assert!(body.contains("flat_activity_row(div(), &theme)"));
+        assert!(!body.contains(".inspector_card("));
         assert!(!body.contains(".bg(theme.overlay)"));
+        let start = source.find("fn render_activity_card(").expect("tool card");
+        let card = &source[start..start + 6000];
+        assert!(card.contains("if carded {"));
+    }
+
+    /// A code block frosts exactly where the inspector glass does, on the
+    /// code well's contrast-floored fill; elsewhere it is the opaque card.
+    #[test]
+    fn code_blocks_frost_with_the_inspector_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            for active in [false, true] {
+                let theme = base.with_wallpaper(theme::SurfaceTreatment {
+                    active,
+                    glass: true,
+                    card_alpha: 0.8,
+                    ..theme::SurfaceTreatment::OPAQUE
+                });
+                let mut card = code_block_surface(div(), theme);
+                let style = card.style();
+                if theme.floating_glass_sigma().is_some() {
+                    assert_eq!(
+                        style.background,
+                        Some(theme.inspector_well(theme.code_bg).into())
+                    );
+                    assert_ne!(style.border_color, Some(theme.hairline()));
+                } else {
+                    assert_eq!(style.background, Some(theme.code_bg.into()));
+                    assert_eq!(style.border_color, Some(theme.hairline()));
+                }
+            }
+        }
     }
 
     /// The reader's bubble and the tool card's terminal plane are glass only
@@ -10821,6 +11379,139 @@ mod tests {
         );
     }
 
+    fn read_tool(args: Value, text: &str) -> ToolCall {
+        ToolCall {
+            name: "read".into(),
+            summary: String::new(),
+            path: Some("/repo/src/ui/button.rs".into()),
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(args),
+            output: Some(serde_json::json!({ "content": [{ "type": "text", "text": text }] })),
+            failed: false,
+            facts: Default::default(),
+            details: None,
+        }
+    }
+
+    #[test]
+    fn read_listing_strips_pis_note_and_reads_the_range() {
+        let tool = read_tool(
+            serde_json::json!({ "path": "/repo/src/ui/button.rs", "offset": 900, "limit": 3 }),
+            "        a,\n            b,\n        c\n\n[512 more lines in file. Use offset=903 to continue.]",
+        );
+        let listing = read_listing(&tool).expect("a listing");
+        assert_eq!(listing.code, "        a,\n            b,\n        c");
+        assert_eq!(listing.display, "a,\n    b,\nc");
+        assert_eq!((listing.first_line, listing.last_line), (900, 902));
+        assert_eq!(listing.total, Some(1414));
+        assert!(listing.is_partial());
+
+        let tool = read_tool(
+            serde_json::json!({ "path": "/repo/a.rs" }),
+            "x\ny\n\n[Showing lines 1-2 of 4000. Use offset=3 to continue.]",
+        );
+        let listing = read_listing(&tool).expect("a listing");
+        assert_eq!(listing.total, Some(4000));
+        assert!(listing.is_partial());
+
+        // A whole small file: no note, nothing to say about a range.
+        let listing = read_listing(&read_tool(serde_json::json!({}), "fn main() {}\n")).unwrap();
+        assert_eq!(listing.total, None);
+        assert!(!listing.is_partial());
+
+        // A bracket inside the file is content, not pi's note.
+        let listing =
+            read_listing(&read_tool(serde_json::json!({}), "let a = 1;\n\n[b]")).unwrap();
+        assert_eq!(listing.code, "let a = 1;\n\n[b]");
+
+        // pi's own notice, a failed call and other tools are left to the
+        // generic detail.
+        let notice = "[Line 1 is 80KB, exceeds 50KB limit. Use bash: sed -n '1p' a]";
+        assert!(read_listing(&read_tool(serde_json::json!({}), notice)).is_none());
+        let mut failed = read_tool(serde_json::json!({}), "x");
+        failed.failed = true;
+        assert!(read_listing(&failed).is_none());
+        let mut other = read_tool(serde_json::json!({}), "x");
+        other.name = "grep".into();
+        assert!(read_listing(&other).is_none());
+    }
+
+    #[test]
+    fn path_lang_reads_extension_or_bare_name() {
+        assert_eq!(path_lang("/r/src/main.rs"), Some(highlight::Lang::Rust));
+        assert_eq!(path_lang("Dockerfile"), Some(highlight::Lang::Shell));
+        assert_eq!(path_lang("/r/notes.txt"), None);
+    }
+
+    #[test]
+    fn command_preview_drops_the_workspace_prelude_only() {
+        let root = Path::new("/Users/me/repo");
+        let cmd = r#"cd /Users/me/repo && export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p devices"#;
+        assert_eq!(command_preview(cmd, Some(root)), "cargo test -p devices");
+        // A trailing slash, quotes and `;` read the same.
+        assert_eq!(
+            command_preview("cd '/Users/me/repo/'; ls -la", Some(root)),
+            "ls -la"
+        );
+        // A `cd` elsewhere is a fact about where it ran: kept.
+        assert_eq!(
+            command_preview("cd /tmp && ls", Some(root)),
+            "cd /tmp && ls"
+        );
+        assert_eq!(command_preview("cd /Users/me/repo && ls", None), "cd /Users/me/repo && ls");
+        // Never strips to nothing, and a quote hiding the separator stops it.
+        assert_eq!(
+            command_preview("cd /Users/me/repo &&", Some(root)),
+            "cd /Users/me/repo &&"
+        );
+        assert_eq!(
+            command_preview(r#"export X="a && b" && run"#, Some(root)),
+            r#"export X="a && b" && run"#
+        );
+        assert_eq!(command_preview("export 1X=2 && run", Some(root)), "export 1X=2 && run");
+        assert_eq!(command_preview("sed -n 1,2p f; git diff", Some(root)), "sed -n 1,2p f; git diff");
+    }
+
+    #[test]
+    fn thought_preview_is_the_first_plain_sentence() {
+        assert_eq!(
+            thought_preview("\n## **Plan**\nmore").as_deref(),
+            Some("Plan")
+        );
+        assert_eq!(
+            thought_preview("Formatting needs `cargo fmt`. Then clippy.").as_deref(),
+            Some("Formatting needs cargo fmt.")
+        );
+        assert_eq!(thought_preview("  \n "), None);
+    }
+
+    #[test]
+    fn settled_thoughts_fold_unless_the_reader_opened_them() {
+        assert!(!thought_collapsed(None, true), "a live thought is open");
+        assert!(thought_collapsed(None, false), "a settled thought folds");
+        assert!(!thought_collapsed(Some(false), false));
+        assert!(thought_collapsed(Some(true), true));
+    }
+
+    #[test]
+    fn activity_group_marks_only_work_in_progress_or_failure() {
+        assert_eq!(activity_group_state(false, false), None);
+        assert_eq!(
+            activity_group_state(false, true),
+            Some(ActivityGroupState::Failed)
+        );
+        assert_eq!(
+            activity_group_state(true, false),
+            Some(ActivityGroupState::Working)
+        );
+        assert_eq!(
+            activity_group_state(true, true),
+            Some(ActivityGroupState::Working)
+        );
+    }
+
     #[test]
     fn activity_title_aggregates_every_step() {
         let tool = |name: &str| ToolCall {
@@ -10859,54 +11550,23 @@ mod tests {
             "Ran 1 command · Read 1 file · Edited 1 file · Thinking"
         );
         assert_eq!(activity_title(&[], false), "Worked");
+        // A failed call is said in words, with its count, after the work.
+        let mut failing = steps.clone();
+        failing[1].tools[0].failed = true;
+        assert_eq!(
+            activity_title(&failing, false),
+            "Ran 1 command · Read 1 file · Edited 1 file · 2 thoughts · 1 failed"
+        );
     }
 
+    /// The thought row's caret follows the shared contract: `›` folded, `⌄`
+    /// open — the same reading as the tool rows beside it.
     #[test]
-    fn activity_group_icons_dedupe_order_and_cap() {
-        let step = |thinking: &str, tools: &[&str]| Step {
-            thinking: thinking.into(),
-            tools: tools
-                .iter()
-                .map(|name| ToolCall {
-                    name: name.to_string(),
-                    summary: String::new(),
-                    path: None,
-                    added: 0,
-                    removed: 0,
-                    id: None,
-                    args: None,
-                    output: None,
-                    failed: false,
-                    facts: Default::default(),
-                    details: None,
-                })
-                .collect(),
-            ..Step::default()
-        };
-        // Canonical order regardless of arrival order, deduped, bulb last.
-        let icons = activity_group_icons(&[
-            step("", &["read", "bash", "edit", "read", "bash"]),
-            step("hmm", &["bash"]),
-        ]);
-        assert_eq!(
-            icons,
-            vec![
-                "icons/tools/bash.svg",
-                "icons/tools/read.svg",
-                "icons/tools/edit.svg",
-                "icons/tools/thinking.svg",
-            ]
-        );
-        // A thought-only group carries just the bulb; a tools-only group
-        // carries none.
-        assert_eq!(
-            activity_group_icons(&[step("hmm", &[])]),
-            vec!["icons/tools/thinking.svg"]
-        );
-        assert_eq!(
-            activity_group_icons(&[step("", &["bash", "shell"])]),
-            vec!["icons/tools/bash.svg"]
-        );
+    fn thought_caret_passes_open_not_collapsed() {
+        let source = include_str!("transcript_view.rs");
+        let start = source.find("\"thought-caret-{}-{}\"").expect("thought caret");
+        let call = &source[start..start + 120];
+        assert!(call.contains("!collapsed,"), "{call}");
     }
 
     #[test]
@@ -12793,7 +13453,7 @@ mod tests {
             expanded_sections: Rc::new(RefCell::new(HashSet::new())),
             expanded_blocks: Rc::new(RefCell::new(HashSet::new())),
             thinking_scrolls: Rc::new(RefCell::new(HashMap::new())),
-            collapsed_thoughts: Rc::new(RefCell::new(HashSet::new())),
+            collapsed_thoughts: Rc::new(RefCell::new(HashMap::new())),
             thinking_detached: Rc::new(RefCell::new(HashSet::new())),
             hovered_turn: Rc::new(Cell::new(None)),
             hovered_usage: Rc::new(Cell::new(None)),
@@ -12830,8 +13490,10 @@ mod tests {
 
     impl gpui::Render for ActivityCardTestView {
         fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            // A generic tool (labelled Output section, fold, Copy): a `read`
+            // draws its own bare file listing instead.
             let tool = ToolCall {
-                name: "read".into(),
+                name: "grep".into(),
                 summary: "example.txt".into(),
                 path: Some("example.txt".into()),
                 added: 0,
@@ -12850,7 +13512,6 @@ mod tests {
             render_activity_card(
                 &tool,
                 false,
-                true,
                 theme::Theme::for_id(theme::ThemeId::Orbit),
                 None,
                 (0, 0),
@@ -12862,6 +13523,7 @@ mod tests {
                 self.sections.clone(),
                 self.scroller.clone(),
                 self.image_opener.clone(),
+                None,
                 None,
             )
         }
@@ -13604,6 +14266,60 @@ mod tests {
         assert_eq!(open_children.borrow().get(&(0, 0)), Some(&0));
     }
 
+    /// A tool row with detail is a keyboard stop like a child row: a click
+    /// toggles it without taking focus, Tab reaches it and paints the ring
+    /// exactly on the header, and Enter / Space fold it.
+    #[gpui::test]
+    fn a_tool_row_folds_from_the_keyboard(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            crate::bind_keys(cx);
+        });
+        let open = Rc::new(RefCell::new(HashSet::new()));
+        let (view, cx) = cx.add_window_view(|_, _| ActivityCardTestView {
+            open: open.clone(),
+            sections: Rc::new(RefCell::new(HashSet::new())),
+            scroller: MessageScrollerState::new(1),
+            output: None,
+            image_opener: None,
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(600.), px(1200.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+
+        let header = cx.debug_bounds("tool-header-0-0").expect("header").center();
+        cx.simulate_click(header, gpui::Modifiers::none());
+        draw(cx);
+        assert!(open.borrow().contains(&(0, 0)), "a click opens the row");
+        assert!(
+            cx.debug_bounds("tool-toggle-focus-0-0-ring").is_none(),
+            "a click does not take focus"
+        );
+        cx.simulate_click(header, gpui::Modifiers::none());
+        draw(cx);
+        assert!(!open.borrow().contains(&(0, 0)));
+
+        cx.update(|window, _| window.focus_next());
+        draw(cx);
+        let ring = cx
+            .debug_bounds("tool-toggle-focus-0-0-ring")
+            .expect("a focused row wears the ring");
+        let header = cx.debug_bounds("tool-header-0-0").expect("header");
+        assert_eq!(ring, header, "the ring sits exactly on the header, no layout");
+
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(open.borrow().contains(&(0, 0)), "Enter opens");
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert!(!open.borrow().contains(&(0, 0)), "Space folds");
+    }
+
     /// The delegation card paints in every state and at both zoom levels: the
     /// rows while it runs, the reason a child was refused, and the expanded
     /// steps + report. Layout is asserted by drawing, not by restating it.
@@ -13992,8 +14708,8 @@ mod tests {
             gpui::size(px(150.), px(1200.)),
             |_, _| view.clone(),
         );
-        // The fixture is a `read` with no arguments: its one section is the
-        // Output (section 1).
+        // The fixture has no arguments: its one section is the Output
+        // (section 1).
         let label = cx
             .debug_bounds("tool-section-label-0-0-1")
             .expect("section label");
@@ -14013,6 +14729,51 @@ mod tests {
             label.right() <= control.left(),
             "label {label:?} overlaps the copy control {control:?}"
         );
+    }
+
+    struct ReadCardTestView {
+        tool: ToolCall,
+    }
+
+    impl gpui::Render for ReadCardTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            render_activity_card(
+                &self.tool,
+                false,
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+                None,
+                (0, 0),
+                true,
+                Rc::new(RefCell::new(HashSet::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashSet::new())),
+                MessageScrollerState::new(1),
+                None,
+                None,
+                None,
+            )
+        }
+    }
+
+    /// An open text read is bare code: no Arguments or Output label row, and
+    /// its one copy control sits in the code's corner.
+    #[gpui::test]
+    fn an_open_read_is_bare_code(cx: &mut gpui::TestAppContext) {
+        let tool = read_tool(
+            serde_json::json!({ "path": "/repo/src/ui/button.rs", "offset": 900, "limit": 3 }),
+            "a\nb\nc\n\n[9 more lines in file. Use offset=903 to continue.]",
+        );
+        let (view, cx) = cx.add_window_view(|_, _| ReadCardTestView { tool });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(600.)),
+            |_, _| view.clone(),
+        );
+        assert!(cx.debug_bounds("tool-section-label-0-0-0").is_none(), "no Arguments");
+        assert!(cx.debug_bounds("tool-section-label-0-0-1").is_none(), "no Output label");
+        assert!(cx.debug_bounds("tool-section-copy-0-0-1").is_some(), "one copy control");
     }
 
     #[gpui::test]
@@ -14402,6 +15163,10 @@ mod tests {
                     view.expanded_activities
                         .borrow_mut()
                         .insert((0, step_ix), true);
+                    // Settled thoughts fold by default; "open work" opens them.
+                    view.collapsed_thoughts
+                        .borrow_mut()
+                        .insert((0, step_ix), false);
                 }
             }
             if self.live {

@@ -2923,3 +2923,7 @@ trust.success: "Arbeitsbereich als vertrauenswürdig eingestuft. Agent wird mit 
 trust.deferred: "Arbeitsbereich als vertrauenswürdig eingestuft. Projektressourcen werden nach Abschluss des aktuellen Durchlaufs geladen."
 trust.denied: "Der Vorgang wird ohne Projektressourcen fortgesetzt. Du kannst diesem Arbeitsbereich später über die Befehlspalette vertrauen."
 trust.error: "Die Vertrauensentscheidung für den Arbeitsbereich konnte nicht gespeichert werden: %{error}"
+transcript_view.failed_count: "%{count} fehlgeschlagen"
+transcript_view.read_range: "Zeilen %{start}–%{end}"
+transcript_view.read_range_of: "Zeilen %{start}–%{end} von %{total}"
+right_dock.tab_numbered: "%{agent} · %{number}"

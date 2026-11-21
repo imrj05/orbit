@@ -2923,3 +2923,7 @@ trust.success: "Ahora el espacio de trabajo es de confianza. Reiniciando el agen
 trust.deferred: "Ahora el espacio de trabajo es de confianza. Los recursos del proyecto se cargarán cuando termine la ejecución actual."
 trust.denied: "Continuando sin los recursos del proyecto. Puedes confiar en este espacio de trabajo más tarde desde la paleta de comandos."
 trust.error: "No se pudo guardar la decisión de confianza del espacio de trabajo: %{error}"
+transcript_view.failed_count: "%{count} fallidas"
+transcript_view.read_range: "líneas %{start}–%{end}"
+transcript_view.read_range_of: "líneas %{start}–%{end} de %{total}"
+right_dock.tab_numbered: "%{agent} · %{number}"

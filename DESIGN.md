@@ -593,8 +593,8 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
 Both are the page's floor, not an illustration: nothing on the page depends on them, and
 the chat page has neither.
 
-**Inspector glass.** The surfaces a developer reads a run through — tool, thought,
-delegation, question and summary cards in the transcript, and the session-details,
+**Inspector glass.** The surfaces a developer reads a run through — open or failed
+tool calls, delegation, question and summary cards in the transcript, and the session-details,
 Review and Explorer docks — share one material. It frosts under the floating rule:
 over a wallpaper at `GLASS_BLUR` with the user's card tint; with no wallpaper, in dark
 palettes on a renderer with a backdrop pass, at `FLOATING_GLASS_BLUR` with the tint at
@@ -1169,6 +1169,7 @@ swap states instantly rather than transitioning.
 | -- | -- | -- | -- | -- |
 | Hover in | row, button, icon button, menu entry | `Interaction` | fill and ink crossfade out of the painted value | both swap at once |
 | Hover out | the same | `Interaction` | the same fade in reverse, from what is on screen | both swap |
+| Tooltip appearance | shared tooltip | `Interaction` | opacity only, after the platform's tooltip delay | the card appears at once |
 | Press | button, icon button, chip, segment | `Instant` | the pressed ramp; the toolkit offers no transform for a box, so a press cannot scale | the ramp still applies |
 | Release | the same | settle | back to rest, no overshoot | snap to rest |
 | Focus | field, row, card, dialog | `Instant` (not built) | the ring appears at once; the control reserves that 1px border at rest so no layout moves | ring appears at once |

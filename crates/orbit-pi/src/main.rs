@@ -120,6 +120,7 @@ mod shimmer;
 mod sidepane;
 mod skills;
 mod subagent;
+mod subagent_log;
 mod subagent_file;
 mod subagents;
 mod terminal;
@@ -254,6 +255,9 @@ actions!(switch_keys, [SwitchToggle]);
 // Enter/Space open that child's log, Escape closes it (and otherwise falls
 // through to the global abort).
 actions!(subagent_keys, [SubagentRowToggle, SubagentRowClose]);
+// A transcript activity disclosure (a group's summary line, a tool row, a
+// thought row), while its focus handle owns the keyboard: Enter/Space fold it.
+actions!(activity_keys, [ActivityToggle]);
 actions!(
     git_list_keys,
     [
@@ -699,6 +703,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", SubagentRowToggle, Some("SubagentRow")),
         KeyBinding::new("space", SubagentRowToggle, Some("SubagentRow")),
         KeyBinding::new("escape", SubagentRowClose, Some("SubagentRow")),
+        // A focused activity disclosure folds or unfolds, like a native
+        // disclosure button.
+        KeyBinding::new("enter", ActivityToggle, Some("ActivityToggle")),
+        KeyBinding::new("space", ActivityToggle, Some("ActivityToggle")),
     ]);
 }
 

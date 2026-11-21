@@ -222,6 +222,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/workflow.rs       workflow mode (Plan / Build / Ask): per-session persistence to `~/.orbit-pi/workflow.json`, which the workflow extension reads
   src/subagent_file.rs  the agent file format: a lenient reader for `~/.pi/agent/agents/*.md` and a surgical writer that changes only the five keys Orbit owns (name, description, model, thinking, tools), preserving comments, key order, foreign keys and the body
   src/subagents.rs      the Orbit-only half of an agent: `~/.orbit-pi/subagents.json` (enabled, pinned workflow mode, limits), lenient + atomic, preserved for unknown entry fields
+  src/subagent_log.rs   a delegated child's live transcript: tails the extension's event log
+                        (`~/.orbit-pi/subagent-logs/`, trusted paths only) off the UI thread and
+                        feeds pi's own events into a second `Transcript` for its side-pane tab (D24)
   src/subagent.rs       the delegation card's pure half: parses the `subagent/1` details payload leniently and exposes the run's facts (live activity, counts, usage, elapsed); unknown shapes degrade to the generic activity card
   src/bundled_extensions.rs  materializes the bundled pi extensions (quota bridge + access guard + auto-title + workflow + subagents) under `~/.orbit-pi/`, spawns every session with `--extension`, and exports the entry points as `ORBIT_BUNDLED_EXTENSIONS` for child sessions
   src/commit_message.rs one-shot, tool-free `pi -p` conventional-commit generation
@@ -305,7 +308,9 @@ contrib/orbit-subagents-extension/  Orbit's bundled pi extension (loaded with
                         argv/env/prompt + JSONL fold; mode.js reads
                         `~/.orbit-pi/{subagents,workflow,access}.json` and decides
                         what the session mode permits; resources.js forwards the
-                        inherited guardrail extensions. All `node --test` covered
+                        inherited guardrail extensions; log.js tees each child's
+                        event lines into `~/.orbit-pi/subagent-logs/` for its live
+                        tab (D24). All `node --test` covered
 assets/icons/           logo-icon.png app-icon source + icon.icns / icon.ico / icon.png
                         + alpha-logo.png / alpha-logo.icns (macOS debug builds)
 PRODUCT.md  INTENT.md  README.md  AGENTS.md  PRIVACY.md
@@ -642,6 +647,7 @@ These compiled and ran against the pinned version. When in doubt, check
 | `enter` / `escape` / `up` / `down` / `home` / `end` / `right` | Open / close / move / first / last / open the Existing worktrees flyout | `WorkInMenu` (worktree "Work in" picker); inside the flyout its search field takes `Composer Picker` keys (↑/↓/Enter, Escape back to the picker) |
 | `enter` / `escape` / `up` / `down` / `home` / `end` | Confirm / cancel / move / first / last | `DialogSelect` (extension select dialog) |
 | `enter` / `escape` / `up` / `down` | Confirm / deny / move | `Approval` (inline access-guard bar) |
+| `enter` / `space` | Fold / unfold the focused transcript activity summary, tool row or thought row | `ActivityToggle` |
 | `alt-up` / `alt-down` | Move the row under the cursor in the sidebar — a project group, or a session inside its project (the pointer twin is dragging a header or a session row) | `Sidebar` |
 
 ## Pi CLI RPC protocol (official spec)
