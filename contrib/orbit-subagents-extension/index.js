@@ -21,6 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn as nodeSpawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { buildDescription, buildPromptGuidelines, discoverAgents, loadBuiltins, userAgentDir } from "./agents.js";
@@ -504,7 +505,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
   const progress = trailingProgress((force) => emitProgress(onUpdate, request.mode, children, force));
   // One id per delegation names its children's live logs; last week's logs
   // are cleared first. Both are display-only and never fail the run.
-  const runId = `${now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const runId = `${now().toString(36)}${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   pruneLogs({ home: deps.home, now: now() });
   const runOne = async (agent, task) => {
     const state = newChildState({
