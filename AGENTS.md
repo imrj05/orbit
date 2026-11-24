@@ -129,6 +129,10 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/remote_hosts.rs   `~/.orbit-pi/remote-hosts.json`: lenient host list, validated ssh targets,
                         surgical upsert/remove, `~/.ssh/config` alias discovery, the read-only probe
   docs/remote-sessions.md  agent-only SSH sessions: launch script, safety, what is off while remote
+  src/app/confirm_ui.rs the workbench's one confirmation prompt: the `PendingConfirm`
+                        variants (each owns its wording and the call that finally runs),
+                        the layer painted from the app root, and the request/cancel/run
+                        entry points every destructive surface asks through
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
   src/app/right_dock_ui.rs  the right pane's tabs: Review + delegated subagents opened from a card
                         (strip, controller, the subagent view in the shared `dock_shell` frame)
@@ -201,7 +205,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         named components come from their module. `ui/style/` control states,
                         press, material (`card_surface`) and text (`num_font`, `text_width`);
                         `ui/button.rs` `Button`/`IconButton`/`ButtonGroup`/`LinkButton`;
-                        `ui/chip.rs` `ChipButton`/`Badge`/`Pill`; `ui/banner.rs` `Banner`;
+                        `ui/confirm.rs` `ConfirmPrompt` (the one blocking question before a
+                        destructive action); `ui/chip.rs` `ChipButton`/`Badge`/`Pill`;
+                        `ui/banner.rs` `Banner`;
                         `ui/feedback.rs` empty/error/spinner/progress/skeleton; `ui/field.rs`
                         `TextField`/`FormRow`/`search_field`; `ui/menu.rs` `MenuState`/`MenuCursor`;
                         `ui/popover.rs` `dropdown_below/above`, `column_menu`, dismissal;

@@ -1689,7 +1689,6 @@ pub(crate) fn render_side_row(
                                     cwd: cwd.clone(),
                                     at: Some(event.position),
                                     picker: false,
-                                    confirm_delete: false,
                                     can_move_up,
                                     can_move_down,
                                     cursor: Default::default(),
@@ -2110,7 +2109,6 @@ pub(crate) fn render_side_row(
                                 path: session.path.clone(),
                                 title: session.title.clone(),
                                 deletable,
-                                confirm_delete: false,
                                 at: Some(event.position),
                                 reorderable: app.sessions_reorderable(),
                                 can_move_up,
@@ -2606,74 +2604,10 @@ pub(crate) fn session_menu_popup(
     let theme = theme.for_floating();
     let lit = lit_row(&menu.cursor, &session_menu_items(menu));
     let deletable = menu.deletable;
-    let confirm = menu.confirm_delete;
     let pinned = crate::pins::contains(&menu.path);
     let archived = crate::archive::contains(&menu.path);
 
-    let body: AnyElement = if confirm {
-        // Delete confirmation — the destructive step gets a named victim.
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(DynamicSpacing::Base02.px(&theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(tr!("sidebar.delete_this_session")),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(tr!("sidebar.removes_the_session_file_from_disk")),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap(DynamicSpacing::Base06.px(&theme))
-                    .child(
-                        Button::new("menu-cancel", ButtonVariant::Secondary)
-                            .size(ButtonSize::Default)
-                            .faded(&theme, |button| {
-                                button
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let this = this.clone();
-                                        move |_, _, cx| {
-                                            cx.stop_propagation();
-                                            this.update(cx, |app, cx| app.on_menu_cancel(cx));
-                                        }
-                                    })
-                                    .child(tr!("sidebar.cancel"))
-                            }),
-                    )
-                    .child(
-                        Button::new("menu-confirm-delete", ButtonVariant::Destructive)
-                            .size(ButtonSize::Default)
-                            .render(&theme)
-                            .on_mouse_down(MouseButton::Left, {
-                                let this = this.clone();
-                                move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    this.update(cx, |app, cx| {
-                                        app.on_menu_delete_confirm(window, cx)
-                                    });
-                                }
-                            })
-                            .child(tr!("sidebar.delete")),
-                    ),
-            )
-            .into_any_element()
-    } else {
+    let body: AnyElement = {
         div()
             .w_full()
             .flex()
@@ -2811,12 +2745,8 @@ pub(crate) fn session_menu_popup(
             .into_any_element()
     };
 
-    // The branch selector's picker shell sizes the action list to its
-    // entries; the delete confirmation keeps its own fixed card.
+    // The branch selector's picker shell sizes the action list to its rows.
     let popup = picker_surface(div(), &theme)
-        .when(confirm, |pop| {
-            pop.w(px(210.)).p(DynamicSpacing::Base12.px(&theme))
-        })
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -2886,7 +2816,6 @@ pub(crate) fn workspace_menu_button(
                 cwd: cwd_for_click.clone(),
                 at: None,
                 picker: false,
-                confirm_delete: false,
                 can_move_up,
                 can_move_down,
                 cursor: Default::default(),
@@ -3110,96 +3039,6 @@ fn session_move_row(
     )
 }
 
-/// The **Delete project & files** confirmation: the folder that would go, then
-/// what the platform actually does with it. The buttons are named for the
-/// action, not “OK”, and the destructive one never carries the accent.
-fn workspace_delete_confirm(
-    menu: &WorkspaceMenu,
-    this: Entity<OrbitApp>,
-    theme: Theme,
-) -> AnyElement {
-    let path = menu.cwd.display().to_string();
-    let body = if crate::platform::TRASH_IS_RECOVERABLE {
-        tr!("sidebar.delete_project_body_trash")
-    } else {
-        tr!("sidebar.delete_project_body_permanent")
-    };
-    let cancel = {
-        let this = this.clone();
-        Button::new("wm-delete-cancel", ButtonVariant::Secondary)
-            .size(ButtonSize::Default)
-            .render(&theme)
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-                this.update(cx, |app, cx| app.on_workspace_delete_files_cancel(cx));
-            })
-            .child(tr!("sidebar.cancel"))
-    };
-    let confirm = {
-        let this = this.clone();
-        Button::new("wm-delete-confirm", ButtonVariant::Destructive)
-            .size(ButtonSize::Default)
-            .render(&theme)
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-                this.update(cx, |app, cx| app.on_workspace_delete_files_confirm(cx));
-            })
-            .child(tr!("sidebar.delete"))
-    };
-    div()
-        .w_full()
-        .p(DynamicSpacing::Base12.px(&theme))
-        .flex()
-        .flex_col()
-        .gap(DynamicSpacing::Base06.px(&theme))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base02.px(&theme))
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_primary)
-                        .child(tr!(
-                            "sidebar.delete_project_confirm",
-                            name = menu.label.clone()
-                        )),
-                )
-                .child(
-                    div()
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .font_family(theme::code_font_family())
-                        .text_color(theme.text_muted)
-                        .truncate()
-                        .tip(path.clone())
-                        .child(path),
-                )
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .whitespace_normal()
-                        .child(body),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(DynamicSpacing::Base06.px(&theme))
-                .child(crate::motion::hover(
-                    cancel,
-                    "wm-delete-cancel",
-                    &theme,
-                    Hover::fill(theme.surface_elevated, theme.surface_hover),
-                ))
-                .child(confirm),
-        )
-        .into_any_element()
-}
-
 /// The actions popup anchored to a workspace header: Copy path / Worktrees /
 /// Icon & color / Archive sessions / Delete project / Delete project & files,
 /// or — once `Icon & color` is chosen — the picker itself, or the
@@ -3218,9 +3057,7 @@ pub(crate) fn workspace_menu_popup(
 ) -> AnyElement {
     let theme = theme.for_floating();
     let lit = lit_row(&menu.cursor, &workspace_menu_items(menu));
-    let body: AnyElement = if menu.confirm_delete {
-        workspace_delete_confirm(menu, this.clone(), theme)
-    } else if menu.picker {
+    let body: AnyElement = if menu.picker {
         workspace_appearance_picker(menu, mark, this.clone(), theme)
     } else {
         // The action rows wear the branch selector's picker metrics — the
@@ -4487,12 +4324,39 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// First Delete click: swap the popup to the confirmation state.
+    /// First Delete click: close the menu and ask through the confirm
+    /// prompt, which names the session and takes the keyboard.
     pub(super) fn on_menu_delete_request(&mut self, cx: &mut Context<Self>) {
-        if let Some(menu) = self.session_menu.as_mut() {
-            menu.confirm_delete = true;
-            cx.notify();
-        }
+        let Some(menu) = self.session_menu.take() else {
+            return;
+        };
+        let cwd = self.session_delete_workspace(&menu.path);
+        self.request_confirm(
+            super::confirm_ui::PendingConfirm::DeleteSession {
+                path: menu.path,
+                title: menu.title,
+                cwd,
+            },
+            cx,
+        );
+    }
+
+    /// The workspace from the session record, or the known live workspace
+    /// for a local session that has not appeared on disk yet. The sidebar's
+    /// placeholder row can fall back to Orbit's process cwd; don't show that
+    /// guess in a destructive confirmation.
+    fn session_delete_workspace(&self, path: &Path) -> Option<PathBuf> {
+        self.sessions
+            .iter()
+            .find(|session| session.path == path)
+            .map(|session| session.cwd.clone())
+            .or_else(|| {
+                if self.remote.is_none() && self.current_session_path.as_deref() == Some(path) {
+                    self.current_workspace.clone()
+                } else {
+                    None
+                }
+            })
     }
 
     /// Whether Delete must wait: the session has a run in flight, open or
@@ -4514,46 +4378,44 @@ impl OrbitApp {
     /// parked one. That process would write the file back, so it is stopped
     /// first: the open session hands the window to a new task (which parks
     /// it), and the parked process is dropped, which kills it (#166).
-    pub(super) fn on_menu_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(menu) = self.session_menu.take() {
-            if self.session_delete_blocked(&menu.path) {
-                self.toast_warning(tr!("sidebar.live_process_delete"));
+    pub(super) fn delete_session_file(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session_delete_blocked(&path) {
+            self.toast_warning(tr!("sidebar.live_process_delete"));
+            cx.notify();
+            return;
+        }
+        if self.current_session_path.as_ref() == Some(&path) {
+            let cwd = self
+                .current_workspace
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("."));
+            self.begin_new_task(cwd, window, cx);
+            // The switch can be refused (a rewind or an account switch in
+            // flight); the session is still open, so leave its file alone.
+            if self.current_session_path.as_ref() == Some(&path) {
                 cx.notify();
                 return;
             }
-            if self.current_session_path.as_ref() == Some(&menu.path) {
-                let cwd = self
-                    .current_workspace
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("."));
-                self.begin_new_task(cwd, window, cx);
-                // The switch can be refused (a rewind or an account switch in
-                // flight); the session is still open, so leave its file alone.
-                if self.current_session_path.as_ref() == Some(&menu.path) {
-                    cx.notify();
-                    return;
-                }
-            }
-            // Dropping the parked client kills its process.
-            self.lives.remove(&menu.path);
-            if let Err(err) = fs::remove_file(&menu.path) {
-                self.toast_error(tr!("sidebar.delete_failed", error = err));
-            } else {
-                // A deleted session must not leave a stale pin behind.
-                crate::pins::remove(&menu.path);
-                crate::archive::remove(&menu.path);
-                // Nor a review mark for a row that can never come back.
-                self.awaiting_review.remove(&menu.path);
-                self.session_outcomes.remove(&menu.path);
-            }
-            self.sessions = sessions::load_sessions();
-            self.prune_workflow_store();
-            cx.notify();
         }
-    }
-
-    pub(super) fn on_menu_cancel(&mut self, cx: &mut Context<Self>) {
-        self.session_menu = None;
+        // Dropping the parked client kills its process.
+        self.lives.remove(&path);
+        if let Err(err) = fs::remove_file(&path) {
+            self.toast_error(tr!("sidebar.delete_failed", error = err));
+        } else {
+            // A deleted session must not leave a stale pin behind.
+            crate::pins::remove(&path);
+            crate::archive::remove(&path);
+            // Nor a review mark for a row that can never come back.
+            self.awaiting_review.remove(&path);
+            self.session_outcomes.remove(&path);
+        }
+        self.sessions = sessions::load_sessions();
+        self.prune_workflow_store();
         cx.notify();
     }
 
@@ -4883,7 +4745,6 @@ impl OrbitApp {
     pub(super) fn on_workspace_open_picker(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = self.workspace_menu.as_mut() {
             menu.picker = true;
-            menu.confirm_delete = false;
         }
         cx.notify();
     }
@@ -4935,18 +4796,16 @@ impl OrbitApp {
     /// irreversible on every platform Orbit ships, so it gets its own step that
     /// names the folder.
     pub(super) fn on_workspace_delete_files_request(&mut self, cx: &mut Context<Self>) {
-        if let Some(menu) = self.workspace_menu.as_mut() {
-            menu.confirm_delete = true;
-            cx.notify();
-        }
-    }
-
-    /// Back out of the delete-from-disk confirmation, keeping the menu open.
-    pub(super) fn on_workspace_delete_files_cancel(&mut self, cx: &mut Context<Self>) {
-        if let Some(menu) = self.workspace_menu.as_mut() {
-            menu.confirm_delete = false;
-            cx.notify();
-        }
+        let Some(menu) = self.workspace_menu.take() else {
+            return;
+        };
+        self.request_confirm(
+            super::confirm_ui::PendingConfirm::DeleteWorkspaceFiles {
+                cwd: menu.cwd,
+                label: menu.label,
+            },
+            cx,
+        );
     }
 
     /// Confirmed: remove the folder from disk, then drop the project row.
@@ -4956,9 +4815,20 @@ impl OrbitApp {
     /// process is working in). The removal runs off the UI thread; the row only
     /// leaves the sidebar once the folder is actually gone, so a failure leaves
     /// the project where the user can retry it.
-    pub(super) fn on_workspace_delete_files_confirm(&mut self, cx: &mut Context<Self>) {
-        let Some(menu) = self.workspace_menu.take() else {
-            return;
+    pub(super) fn delete_workspace_files(
+        &mut self,
+        cwd: PathBuf,
+        label: String,
+        cx: &mut Context<Self>,
+    ) {
+        let menu = WorkspaceMenu {
+            label,
+            cwd,
+            at: None,
+            picker: false,
+            can_move_up: false,
+            can_move_down: false,
+            cursor: Default::default(),
         };
         let live = self.live_session_paths();
         if let Some(refusal) = project_delete_refusal(&menu.cwd, &self.sessions, &live) {
@@ -5730,10 +5600,10 @@ impl OrbitApp {
     /// delete confirmation or the icon picker, which keep their own controls).
     fn row_menu_items(&self) -> Option<Vec<(RowMenuItem, bool)>> {
         if let Some(menu) = &self.session_menu {
-            return (!menu.confirm_delete).then(|| session_menu_items(menu));
+            return Some(session_menu_items(menu));
         }
         let menu = self.workspace_menu.as_ref()?;
-        (!menu.confirm_delete && !menu.picker).then(|| workspace_menu_items(menu))
+        (!menu.picker).then(|| workspace_menu_items(menu))
     }
 
     fn row_menu_cursor(&mut self) -> Option<&mut crate::ui::menu::MenuCursor> {
@@ -5842,7 +5712,6 @@ impl OrbitApp {
                     path: session.path.clone(),
                     title: session.title.clone(),
                     deletable,
-                    confirm_delete: false,
                     at: None,
                     reorderable: self.sessions_reorderable(),
                     can_move_up,
@@ -5860,8 +5729,7 @@ impl OrbitApp {
                     cwd: cwd.clone(),
                     at: None,
                     picker: false,
-                    confirm_delete: false,
-                    can_move_up,
+                        can_move_up,
                     can_move_down,
                     cursor: Default::default(),
                 };
@@ -6027,18 +5895,16 @@ impl OrbitApp {
         if let Some(ix) = self.sidebar_cursor {
             self.sidebar_list.scroll_to_reveal_item(ix);
         }
-        let (can_move_up, can_move_down) = self.session_move_flags(&session.path);
-        self.session_menu = Some(SessionMenu {
-            path: session.path.clone(),
-            title: session.title,
-            deletable: !self.session_delete_blocked(&session.path),
-            confirm_delete: true,
-            at: None,
-            reorderable: self.sessions_reorderable(),
-            can_move_up,
-            can_move_down,
-            cursor: Default::default(),
-        });
+        self.session_menu = None;
+        let cwd = self.session_delete_workspace(&session.path);
+        self.request_confirm(
+            super::confirm_ui::PendingConfirm::DeleteSession {
+                path: session.path,
+                title: session.title,
+                cwd,
+            },
+            cx,
+        );
         window.focus(&self.sidebar_focus);
         cx.notify();
     }

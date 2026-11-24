@@ -1859,6 +1859,10 @@ impl Render for OrbitApp {
                     .iter()
                     .map(|ui| crate::custom_ui::layer(ui.clone()).into_any_element()),
             )
+            // ── the confirm prompt — one blocking question above Settings
+            // and the pages; armed by a delete/remove/discard that cannot be
+            // undone, and the only place one is asked.
+            .children(self.confirm_layer(theme, window, cx))
             // ── worktrees dialog — create / rename / move / remove,
             // opened from the page and its row menus.
             .children(self.worktree_dialog_layer(theme, cx.entity(), cx))
@@ -4595,6 +4599,11 @@ impl OrbitApp {
     /// ring. `None` when no such modal is open. Only fields that are on screen
     /// are listed: focusing a hidden one would drop the keyboard.
     pub(super) fn modal_fields(&self) -> Option<Vec<Entity<crate::composer::ComposerInput>>> {
+        // The confirm prompt has no fields: its Tab ring is the two footer
+        // buttons `modal_focus_step` appends.
+        if self.pending_confirm.is_some() {
+            return Some(Vec::new());
+        }
         if self.project_trust_prompt.is_some() {
             return Some(Vec::new());
         }
@@ -4691,7 +4700,8 @@ impl OrbitApp {
     /// A keyboard-modal surface owns the input while it is open; Tab must not
     /// walk the focus out from under it.
     fn focus_traversal_blocked(&self) -> bool {
-        self.command_palette.is_some()
+        self.pending_confirm.is_some()
+            || self.command_palette.is_some()
             || self.model_selector.is_some()
             || self.branch_picker.is_some()
             || self.workspace_picker.is_some()

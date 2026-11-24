@@ -48,9 +48,12 @@ fn font_options_with_current(available: &[String], current: &str) -> Vec<String>
 pub(super) enum PluginAction {
     Install,
     Update { source: String },
-    Remove { source: String },
-    ConfirmRemove { source: String, project: bool },
-    CancelRemove,
+    /// Ask through the confirm prompt, then remove the package.
+    Remove {
+        source: String,
+        project: bool,
+        name: String,
+    },
     SetScope { project: bool },
     Refresh,
 }
@@ -1725,7 +1728,7 @@ impl OrbitApp {
     ) -> AnyElement {
         let source = package.source.clone();
         let project = package.scope == PackageScope::Project;
-        let confirming = self.plugin_remove_confirm.as_deref() == Some(source.as_str());
+        let name = package.name.clone();
 
         let mut badges = div()
             .flex()
@@ -1762,44 +1765,7 @@ impl OrbitApp {
             ));
         }
 
-        let actions: AnyElement = if confirming {
-            div()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.error)
-                        .child(tr!("settings.remove_this_plugin")),
-                )
-                .child(self.plugin_button(
-                    format!("plugin-remove-confirm-{source}"),
-                    "Remove",
-                    false,
-                    PluginButtonSize::Compact,
-                    Some("icons/trash.svg"),
-                    false,
-                    theme,
-                    this.clone(),
-                    PluginAction::ConfirmRemove {
-                        source: source.clone(),
-                        project,
-                    },
-                ))
-                .child(self.plugin_button(
-                    format!("plugin-remove-cancel-{source}"),
-                    "Cancel",
-                    false,
-                    PluginButtonSize::Compact,
-                    None,
-                    false,
-                    theme,
-                    this,
-                    PluginAction::CancelRemove,
-                ))
-                .into_any_element()
-        } else {
+        let actions: AnyElement = {
             let mut actions = div()
                 .flex_none()
                 .flex()
@@ -1831,6 +1797,8 @@ impl OrbitApp {
                 this,
                 PluginAction::Remove {
                     source: source.clone(),
+                    project,
+                    name,
                 },
             ));
             actions.into_any_element()
@@ -3082,7 +3050,6 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let confirming = self.provider_remove_confirm.as_deref() == Some(view.id.as_str());
         // Usage opens in a popup (see `provider_usage_layer`).
         let has_usage = view.quota.as_ref().is_some_and(|report| {
             report.has_data() || report.error.is_some() || report.note.is_some()
@@ -3355,38 +3322,12 @@ impl OrbitApp {
             }
         }
         // The head's call to action: the first way to connect, only while
-        // nothing is connected, no sign-in is running and no removal is asked.
-        let cta = (!connected && !confirming && auth_section.is_none() && !sign_in.is_empty())
+        // nothing is connected and no sign-in is running.
+        let cta = (!connected && auth_section.is_none() && !sign_in.is_empty())
             .then(|| sign_in.remove(0));
 
         let mut bar: Vec<AnyElement> = Vec::new();
-        if confirming {
-            bar.push(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .child(tr!("settings.remove_this_provider"))
-                    .into_any_element(),
-            );
-            bar.push(self.provider_button(
-                format!("provider-remove-confirm-{}", view.id),
-                &tr!("settings.remove"),
-                ButtonVariant::Danger,
-                theme,
-                this.clone(),
-                ProviderAction::ConfirmRemove {
-                    id: view.id.clone(),
-                },
-            ));
-            bar.push(self.provider_button(
-                format!("provider-remove-cancel-{}", view.id),
-                &tr!("git_panel.cancel"),
-                ButtonVariant::Secondary,
-                theme,
-                this.clone(),
-                ProviderAction::CancelRemove,
-            ));
-        } else if auth_section.is_none() {
+        if auth_section.is_none() {
             // Every provider keeps the way into its editor — a built-in with
             // no models.json entry included (#131). "Configure" promises an
             // override; "Models" promises the ids/endpoint list.
@@ -3447,6 +3388,7 @@ impl OrbitApp {
                     this.clone(),
                     ProviderAction::Remove {
                         id: view.id.clone(),
+                        name: view.name.clone(),
                     },
                 ));
             }
@@ -3456,14 +3398,13 @@ impl OrbitApp {
         // Open by default for the provider the session's model comes from
         // (`view.active` only means pi serves models for it, which is true of
         // every provider with a list here), while a filter narrowed the list,
-        // while a sign-in runs, and while a removal waits for its answer.
+        // and while a sign-in runs.
         let open = self
             .provider_models_open
             .get(&view.id)
             .copied()
             .unwrap_or(narrowed || view.id == self.model_provider)
-            || auth_section.is_some()
-            || confirming;
+            || auth_section.is_some();
 
         let mut trailing = div()
             .flex_none()
@@ -3867,20 +3808,13 @@ impl OrbitApp {
             ProviderAction::EditKey { .. } => Some("icons/at-sign.svg"),
             ProviderAction::AddAccount { .. } => Some("icons/plus.svg"),
             ProviderAction::RenameAccount { .. } => Some("icons/pencil.svg"),
-            ProviderAction::RemoveAccount { .. } | ProviderAction::ConfirmRemoveAccount { .. } => {
-                Some("icons/trash.svg")
-            }
-            ProviderAction::CancelRemoveAccount => None,
+            ProviderAction::RemoveAccount { .. } => Some("icons/trash.svg"),
             ProviderAction::ShowUsage { .. } => Some("icons/usage-total.svg"),
             ProviderAction::SignOut { .. } => Some("icons/stop.svg"),
             ProviderAction::Configure { .. } => Some("icons/settings.svg"),
-            ProviderAction::Remove { .. } | ProviderAction::ConfirmRemove { .. } => {
-                Some("icons/trash.svg")
-            }
+            ProviderAction::Remove { .. } => Some("icons/trash.svg"),
             ProviderAction::Restart => Some("icons/refresh.svg"),
-            ProviderAction::CancelRemove
-            | ProviderAction::SaveKey
-            | ProviderAction::SaveAccount => None,
+            ProviderAction::SaveKey | ProviderAction::SaveAccount => None,
         }
     }
 
@@ -3930,14 +3864,15 @@ impl OrbitApp {
                 id,
                 label,
             } => self.account_editor_open(provider, name, Some((id, label)), window, cx),
-            ProviderAction::RemoveAccount { id } => {
-                self.account_remove_confirm = Some(id);
-                cx.notify();
-            }
-            ProviderAction::ConfirmRemoveAccount { id } => self.account_remove(id, cx),
-            ProviderAction::CancelRemoveAccount => {
-                self.account_remove_confirm = None;
-                cx.notify();
+            ProviderAction::RemoveAccount {
+                id,
+                label,
+                alias,
+            } => {
+                self.request_confirm(
+                    super::confirm_ui::PendingConfirm::RemoveAccount { id, label, alias },
+                    cx,
+                );
             }
             ProviderAction::SignOut { id } => self.provider_sign_out(id, cx),
             ProviderAction::ShowUsage { id } => {
@@ -3945,14 +3880,11 @@ impl OrbitApp {
                 cx.notify();
             }
             ProviderAction::Configure { id } => self.provider_editor_open(Some(id), window, cx),
-            ProviderAction::Remove { id } => {
-                self.provider_remove_confirm = Some(id);
-                cx.notify();
-            }
-            ProviderAction::ConfirmRemove { id } => self.provider_remove(id, cx),
-            ProviderAction::CancelRemove => {
-                self.provider_remove_confirm = None;
-                cx.notify();
+            ProviderAction::Remove { id, name } => {
+                self.request_confirm(
+                    super::confirm_ui::PendingConfirm::RemoveProvider { id, name },
+                    cx,
+                );
             }
             ProviderAction::SaveKey => self.provider_key_save(window, cx),
             ProviderAction::SaveAccount => self.account_save(window, cx),
@@ -5965,7 +5897,18 @@ impl OrbitApp {
             .size(ButtonSize::Large)
             .label(tr!("settings.session_retention_run"))
             .on_mouse_up(&theme, move |_, _, cx| {
-                this.update(cx, |app, cx| app.run_session_retention(cx));
+                this.update(cx, |app, cx| {
+                    // Deleting is the one mode that removes files; asking
+                    // first is the same courtesy every other delete gets.
+                    if app.retention.mode == crate::session_retention::RetentionMode::Delete {
+                        app.request_confirm(
+                            super::confirm_ui::PendingConfirm::RunSessionRetention,
+                            cx,
+                        );
+                    } else {
+                        app.run_session_retention(cx);
+                    }
+                });
             })
             .into_any_element()
     }
@@ -8673,18 +8616,14 @@ impl OrbitApp {
         {
             self.settings_select = None;
         }
-        self.provider_remove_confirm = None;
         self.provider_editor = None;
         self.provider_key_editor = None;
         self.account_editor = None;
-        self.plugin_remove_confirm = None;
         // The MCP add/edit modal belongs to the MCP page; leaving the page
         // discards it like the provider editors above.
         self.mcp_editor = None;
-        self.mcp_remove_confirm = None;
-        // Likewise the Remote hosts form and its pending remove.
+        // Likewise the Remote hosts form.
         self.remote_host_editor = None;
-        self.remote_host_remove_confirm = None;
         self.remote_host_menu = None;
         self.providers_machine_menu = false;
         self.remote_key_editor = None;
@@ -8738,6 +8677,16 @@ impl OrbitApp {
             return;
         }
         self.plugin_run(PluginOp::Install, source, self.plugin_install_project, cx);
+    }
+
+    /// Remove an installed plugin after the confirm prompt answered.
+    pub(super) fn plugin_remove_confirmed(
+        &mut self,
+        source: String,
+        project: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.plugin_run(PluginOp::Remove, source, project, cx);
     }
 
     /// Run a plugin operation off the UI thread, then reload the list.
@@ -8802,17 +8751,19 @@ impl OrbitApp {
             PluginAction::Update { source } => {
                 self.plugin_run(PluginOp::Update, source, false, cx);
             }
-            PluginAction::Remove { source } => {
-                self.plugin_remove_confirm = Some(source);
-                cx.notify();
-            }
-            PluginAction::ConfirmRemove { source, project } => {
-                self.plugin_remove_confirm = None;
-                self.plugin_run(PluginOp::Remove, source, project, cx);
-            }
-            PluginAction::CancelRemove => {
-                self.plugin_remove_confirm = None;
-                cx.notify();
+            PluginAction::Remove {
+                source,
+                project,
+                name,
+            } => {
+                self.request_confirm(
+                    super::confirm_ui::PendingConfirm::RemovePlugin {
+                        name,
+                        source,
+                        project,
+                    },
+                    cx,
+                );
             }
             PluginAction::SetScope { project } => {
                 self.plugin_install_project = project;
@@ -9500,7 +9451,6 @@ impl OrbitApp {
     pub(super) fn provider_remove(&mut self, id: String, cx: &mut Context<Self>) {
         match providers::remove_provider(&id) {
             Ok(()) => {
-                self.provider_remove_confirm = None;
                 self.reload_custom_providers(cx);
                 self.refresh_catalogs();
                 self.toast_info(tr!("settings.provider_removed", id = id));

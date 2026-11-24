@@ -285,17 +285,20 @@ fn the_session_row_menu_opens_and_runs_from_the_keyboard(cx: &mut gpui::TestAppC
         app.on_sidebar_open_row_menu(&crate::SidebarOpenRowMenu, window, cx);
         app.on_sidebar_end(&crate::SidebarEnd, window, cx);
         app.on_sidebar_confirm(&crate::SidebarConfirm, window, cx);
-        let menu = app.session_menu.as_ref().expect("Delete asks first");
+        assert!(app.session_menu.is_none(), "Delete closes the menu");
         assert!(
-            menu.confirm_delete,
-            "Enter on Delete opens the confirmation"
+            matches!(
+                &app.pending_confirm,
+                Some(super::confirm_ui::PendingConfirm::DeleteSession {
+                    path: captured_path, title, cwd: Some(cwd)
+                }) if captured_path == &path && title == "s1" && cwd == Path::new("/menu-keys/alpha")
+            ),
+            "Enter on Delete captures the session's title, file and workspace"
         );
         app.on_sidebar_confirm(&crate::SidebarConfirm, window, cx);
         assert!(
-            app.session_menu
-                .as_ref()
-                .is_some_and(|menu| menu.confirm_delete),
-            "Enter never confirms the delete"
+            app.pending_confirm.is_some(),
+            "Enter on the menu never confirms the delete"
         );
     });
 }
@@ -306,7 +309,6 @@ fn row_menus_list_each_entry_once_and_disable_moves_at_the_edges() {
         path: PathBuf::from("/m/s.jsonl"),
         title: "s".into(),
         deletable: false,
-        confirm_delete: false,
         at: None,
         reorderable: true,
         can_move_up: false,
@@ -335,7 +337,6 @@ fn task_menu_offers_clone_and_project_menu_offers_rename() {
         path: PathBuf::from("/m/s.jsonl"),
         title: "s".into(),
         deletable: true,
-        confirm_delete: false,
         at: None,
         reorderable: false,
         can_move_up: false,

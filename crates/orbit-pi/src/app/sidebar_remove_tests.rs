@@ -134,7 +134,6 @@ fn archiving_a_workspace_archives_only_its_sessions(cx: &mut gpui::TestAppContex
                 cwd: PathBuf::from("/archive-test/alpha"),
                 at: None,
                 picker: false,
-                confirm_delete: false,
                 can_move_up: false,
                 can_move_down: true,
                 cursor: Default::default(),

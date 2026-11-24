@@ -75,6 +75,7 @@ summary sparkline to read that day across the whole row:
 - Sort projects by last activity, recently added, name, or session count
 - Reorder projects by dragging a project header onto another one, with **⌥↑** / **⌥↓** from the keyboard cursor, or **Move up** / **Move down** in the header's ⋯ menu — the move edits the displayed order and switches the sort to manual so it stays put. Session rows rearrange the same way inside their own project (drag, **⌥↑** / **⌥↓**, or the row menu), with a newly created task still appearing at the top of its group
 - Rename, pin, clone, branch from an earlier message, or delete sessions (including the open one, once its run has stopped), and copy a session id; pinned sessions sort first — right-click a row for its actions
+- **Delete Session** confirms with the full title, the session file path, and the workspace path if known. Scroll long details with the wheel or Page Up / Page Down; Cancel is focused first.
 - Address sessions by position — **⌘1…⌘9** (**Ctrl+1…9**) opens the Nth visible session; hold ⌘ (Ctrl on Windows/Linux) to reveal its shortcut in the sidebar. **Ctrl+Tab / Ctrl+Shift+Tab** cycle them
 - Sessions written by the CLI or another window refresh the sidebar live
 - Execution status for sessions observed during this app launch — Running, Waiting for approval/input, Retrying, Compacting, Completed, Failed, Stopped, Disconnected, or Idle. Open and background sessions use the same real pi events; outcomes remain after reading and switching. Historical or externally written sessions get no guessed status

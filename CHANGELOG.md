@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **One confirmation prompt for every destructive action.** Deleting a session, a
+  project folder, a skill, a subagent, a provider, a plugin, an account, an MCP
+  server or a remote host, removing a worktree, deleting a file from Explorer,
+  discarding changes in Git, and Clean up now (session retention) all ask through
+  the same blocking card (`ui/confirm.rs` + `app/confirm_ui.rs`). The question,
+  what happens, and the object affected are on the card; Cancel takes the
+  keyboard when it opens, Escape cancels, Tab reaches the destructive button, and
+  focus returns to the composer on close. Replaces seven inline row/menu confirm
+  states and three hand-rolled cards, most of which had no keyboard route. Also
+  fixed: a `Danger`/`Destructive`/`Tinted`/`Glass` button panicked the frame under
+  Reduce Motion. Delete Session now shows the full title and the session file
+  and workspace paths (when known). Long details scroll without hiding the
+  actions, and Enter respects the focused button instead of always confirming.
+
 - **Default model in Providers & models.** The model selector now edits the same persisted new-session default as Settings → Agent instead of changing only the current session. The composer still controls the active session's model.
 
 - **Local sessions follow `PI_CODING_AGENT_DIR`.** The sidebar index, its watcher, the

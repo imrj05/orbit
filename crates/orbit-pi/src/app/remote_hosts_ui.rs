@@ -258,7 +258,6 @@ impl OrbitApp {
         );
         let target = ssh.read(cx).focus_handle(cx);
         self.remote_host_editor_focus.open(&target, window, cx);
-        self.remote_host_remove_confirm = None;
         self.remote_host_editor = Some(RemoteHostEditor {
             original: host.map(|host| host.name),
             name,
@@ -493,17 +492,13 @@ impl OrbitApp {
     }
 
     pub(super) fn remote_host_request_remove(&mut self, name: String, cx: &mut Context<Self>) {
-        self.remote_host_remove_confirm = Some(name);
-        cx.notify();
-    }
-
-    pub(super) fn remote_host_cancel_remove(&mut self, cx: &mut Context<Self>) {
-        self.remote_host_remove_confirm = None;
-        cx.notify();
+        self.request_confirm(
+            super::confirm_ui::PendingConfirm::RemoveRemoteHost { name },
+            cx,
+        );
     }
 
     pub(super) fn remote_host_confirm_remove(&mut self, name: String, cx: &mut Context<Self>) {
-        self.remote_host_remove_confirm = None;
         match remote_hosts::remove(&name) {
             Ok(()) => {
                 self.reload_remote_hosts();
@@ -677,7 +672,6 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
     ) -> AnyElement {
         let name = host.name.clone();
-        let confirming = self.remote_host_remove_confirm.as_deref() == Some(name.as_str());
         let active = self.remote_host_name() == Some(name.as_str());
         let check = self.remote_host_checks.get(&name);
         let menu_open = self.remote_host_menu.as_deref() == Some(name.as_str());
@@ -864,38 +858,6 @@ impl OrbitApp {
                         )),
                 );
             }
-        }
-        if confirming {
-            let (cancel_name, remove_name) = (name.clone(), name.clone());
-            detail = detail.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(DynamicSpacing::Base06.px(&theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(tr!("remote_hosts.remove_confirm")),
-                    )
-                    .child(mcp_text_button(
-                        format!("remote-host-remove-cancel-{cancel_name}"),
-                        tr!("remote_hosts.cancel"),
-                        theme,
-                        false,
-                        this.clone(),
-                        |app, _, cx| app.remote_host_cancel_remove(cx),
-                    ))
-                    .child(mcp_text_button(
-                        format!("remote-host-remove-confirm-{remove_name}"),
-                        tr!("remote_hosts.remove"),
-                        theme,
-                        true,
-                        this,
-                        move |app, _, cx| app.remote_host_confirm_remove(remove_name.clone(), cx),
-                    )),
-            );
         }
 
         div()

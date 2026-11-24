@@ -591,6 +591,34 @@ legacy app today:
 
 ### Implementation status (living)
 
+Every destructive action asks the same way. `ui/confirm.rs` owns one
+`ConfirmPrompt` — a blocking card whose header carries the question and the
+consequence, an optional target block naming what goes, and a Cancel /
+`Destructive` pair in its footer — and `app/confirm_ui.rs` owns the workbench's
+`PendingConfirm` variants, their wording, and the one call each finally runs.
+The prompt is painted from the app root, so an ask armed from Settings, the
+sidebar, Explorer, Git or the Worktrees page lands in the same place, with the
+same keyboard: it opens on Cancel (a stray Enter cancels), Escape cancels, Tab
+steps between the two footer buttons, and focus returns to the composer on
+close. Before this, four surfaces swapped their own row or menu into an inline
+confirm state and three hand-rolled their own card, each with its own wording
+rules and, in most cases, no keyboard route at all. Converted: session delete
+and delete-project-and-files (sidebar), skill / subagent / provider / plugin /
+account / MCP server / remote host removal (Settings), **Clean up now** while
+the retention policy is set to delete, worktree removal, Explorer delete, and
+Git's discard / discard-all / force-push / abort / delete-unmerged-branch. Git's
+prompt-layout guard now measures the shared card. `Hovered` also stopped
+registering a second hover style when a fade has nothing to fade to, which
+crashed the frame for every `Danger`/`Destructive`/`Tinted`/`Glass` button under
+Reduce Motion. Not converted: the subagent unsaved-edits "discard draft" bar
+(it guards a form in place, not a delete) and the pointer-sized deletes with no
+confirmation by design (pin, archive, attachment removal, discard a saved
+layout). Delete Session shows the full wrapped title, exact session file path,
+and workspace path when known. Long details scroll with the wheel or Page Up /
+Page Down while both actions stay in view. GPUI tests cover Enter on Cancel and
+Delete, and the session layout at the minimum window size and maximum UI scale.
+Manual GUI exercise of the converted prompts is outstanding.
+
 The prompt composer marks misspelled words with the wavy underline a native text
 view draws, once typing pauses. Orbit paints its own text, so AppKit never
 spell-checked it: `spellcheck.rs` splits a draft into prose runs (fenced and

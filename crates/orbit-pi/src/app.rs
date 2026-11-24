@@ -1256,8 +1256,6 @@ pub struct OrbitApp {
     /// account store while painting. Refreshed by the Settings controller.
     account_profile_map:
         std::collections::BTreeMap<String, Vec<crate::provider_accounts::AccountProfile>>,
-    /// The profile whose inline "Remove?" confirmation is showing.
-    account_remove_confirm: Option<String>,
     /// Whether the account store could be read on the last refresh. A corrupt
     /// store is shown as unavailable, never as "no accounts".
     account_store_healthy: bool,
@@ -1342,8 +1340,6 @@ pub struct OrbitApp {
     account_editor_focus: ModalFocus,
     /// The open provider editor (add or edit), if any.
     provider_editor: Option<ProviderEditor>,
-    /// Provider id awaiting inline remove confirmation.
-    provider_remove_confirm: Option<String>,
     /// Provider id whose usage/quota popup is open.
     provider_usage_open: Option<String>,
     /// Refresh button spin state on the Providers page.
@@ -1386,8 +1382,6 @@ pub struct OrbitApp {
     /// Manual-refresh feedback: the toolbar button turns until this instant,
     /// so an instant reload still acknowledges the click.
     plugin_refresh_spin_until: Option<Instant>,
-    /// Plugin source awaiting inline remove confirmation.
-    plugin_remove_confirm: Option<String>,
     /// Re-render the toolbar as the install field is typed.
     _plugin_source_sub: Subscription,
     /// Search filter for the installed-plugin list.
@@ -1400,8 +1394,13 @@ pub struct OrbitApp {
     selected_skill: Option<PathBuf>,
     /// Cached `SKILL.md` body for the selected skill.
     skill_content: Option<String>,
-    /// A skill directory awaiting delete confirmation.
-    skill_delete_confirm: Option<PathBuf>,
+    /// A destructive action waiting on the confirm prompt. One at a time:
+    /// the prompt is modal, so a second ask replaces the first.
+    pending_confirm: Option<confirm_ui::PendingConfirm>,
+    session_delete_scroll: ScrollHandle,
+    /// Whether the last frame showed the confirm prompt, so opening it can
+    /// hand the keyboard to Cancel and closing can give it back.
+    confirm_showing: bool,
     /// Re-render the skill list as the filter is typed.
     _skills_filter_sub: Subscription,
     /// Settings → Subagents: filter field for the agent list.
@@ -1423,8 +1422,6 @@ pub struct OrbitApp {
     subagent_status_task: Option<gpui::Task<()>>,
     /// A user agent deleted this session; Undo restores its exact bytes.
     subagent_undo: Option<subagents_ui::SubagentUndo>,
-    /// The Delete button has been pressed once.
-    subagent_delete_confirm: bool,
     /// A Select / New / Duplicate held back because it would throw away
     /// unsaved edits; the header asks before running it.
     subagent_discard_pending: Option<subagents_ui::SubagentAction>,
@@ -1507,17 +1504,14 @@ pub struct OrbitApp {
     /// Focus the MCP list on the next paint (`set_settings_section` has no
     /// window to focus with).
     mcp_focus_pending: bool,
-    /// Server name awaiting inline remove confirmation.
-    mcp_remove_confirm: Option<String>,
     /// Settings → Remote hosts: the hosts in `remote-hosts.json`, the
-    /// entries it skipped (with reasons), the open add/edit form, the row
-    /// awaiting a remove confirmation, and each host's last connection check.
+    /// entries it skipped (with reasons), the open add/edit form, and each
+    /// host's last connection check.
     remote_hosts: Vec<crate::remote_hosts::RemoteHost>,
     remote_hosts_skipped: Vec<String>,
     remote_host_editor: Option<remote_hosts_ui::RemoteHostEditor>,
     /// Hands focus back to whatever opened `remote_host_editor` once it closes.
     remote_host_editor_focus: ModalFocus,
-    remote_host_remove_confirm: Option<String>,
     /// The host card whose ⋯ menu is open.
     remote_host_menu: Option<String>,
     /// Settings → Providers & models: the machine shown (`None` = this
@@ -2862,7 +2856,6 @@ impl OrbitApp {
             project_trust_apply_pending: None,
             provider_accounts: crate::provider_accounts::ProviderAccounts::load(),
             account_profile_map: std::collections::BTreeMap::new(),
-            account_remove_confirm: None,
             account_store_healthy: true,
             account_clone_pending: false,
             account_switching: false,
@@ -2894,7 +2887,6 @@ impl OrbitApp {
             account_editor: None,
             account_editor_focus: ModalFocus::default(),
             provider_editor: None,
-            provider_remove_confirm: None,
             provider_usage_open: None,
             providers_refreshing: false,
             provider_filter: provider_filter.clone(),
@@ -2912,7 +2904,6 @@ impl OrbitApp {
             subagent_status: None,
             subagent_status_task: None,
             subagent_undo: None,
-            subagent_delete_confirm: false,
             subagent_discard_pending: None,
             subagent_limits_open: false,
             subagent_error: None,
@@ -2926,14 +2917,15 @@ impl OrbitApp {
             plugin_updates_checking: false,
             plugin_update_skips: crate::plugins::load_skipped_updates(),
             plugin_refresh_spin_until: None,
-            plugin_remove_confirm: None,
             _plugin_source_sub: plugin_source_sub,
             plugins_filter: plugins_filter.clone(),
             _plugins_filter_sub: plugins_filter_sub,
             skills_filter: skills_filter.clone(),
             selected_skill: None,
             skill_content: None,
-            skill_delete_confirm: None,
+            pending_confirm: None,
+            session_delete_scroll: ScrollHandle::new(),
+            confirm_showing: false,
             _skills_filter_sub: skills_filter_sub,
             subagents_filter: subagents_filter.clone(),
             _subagents_filter_sub: subagents_filter_sub,
@@ -2946,12 +2938,10 @@ impl OrbitApp {
             modal_confirm_focus: cx.focus_handle(),
             mcp_list_focus: cx.focus_handle(),
             mcp_focus_pending: false,
-            mcp_remove_confirm: None,
             remote_hosts: Vec::new(),
             remote_hosts_skipped: Vec::new(),
             remote_host_editor: None,
             remote_host_editor_focus: ModalFocus::default(),
-            remote_host_remove_confirm: None,
             remote_host_menu: None,
             providers_machine: None,
             providers_machine_menu: false,
@@ -4293,8 +4283,6 @@ struct SessionMenu {
     /// Sessions with a live pi process (active or parked) must not be
     /// deleted — the process would recreate the file mid-run.
     deletable: bool,
-    /// The popup is showing the delete confirmation instead of the menu.
-    confirm_delete: bool,
     /// Right-click origin in window coordinates: the popup floats at the
     /// pointer, context-menu style. `None` anchors it below the row's `…`
     /// button (the pointer-triggered path).
@@ -4322,8 +4310,6 @@ struct WorkspaceMenu {
     at: Option<Point<Pixels>>,
     /// The menu is showing the icon/tint picker instead of the action list.
     picker: bool,
-    /// The menu is showing the **Delete project & files** confirmation.
-    confirm_delete: bool,
     /// Whether the group has a neighbour above / below in the displayed order,
     /// resolved when the menu opens (issue #143). A move that cannot happen is
     /// painted disabled instead of quietly doing nothing.
@@ -4675,14 +4661,12 @@ enum ProviderAction {
         id: String,
         label: String,
     },
-    /// Ask to remove a profile (inline confirmation).
+    /// Ask to remove a profile, then delete it and its credential.
     RemoveAccount {
         id: String,
+        label: String,
+        alias: String,
     },
-    ConfirmRemoveAccount {
-        id: String,
-    },
-    CancelRemoveAccount,
     SignOut {
         id: String,
     },
@@ -4693,13 +4677,11 @@ enum ProviderAction {
     Configure {
         id: String,
     },
+    /// Ask to remove a provider entry from models.json.
     Remove {
         id: String,
+        name: String,
     },
-    ConfirmRemove {
-        id: String,
-    },
-    CancelRemove,
     SaveKey,
     SaveAccount,
     Restart,
@@ -4784,6 +4766,7 @@ mod ask;
 mod auth_prompt;
 mod bug_report_ui;
 mod composer_ops;
+mod confirm_ui;
 mod dialogs;
 mod events;
 pub(crate) mod format;

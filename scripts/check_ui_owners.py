@@ -53,6 +53,7 @@ TYPES = {
     "FormRow": "ui/field.rs",
     "ModalHeader": "ui/dialog.rs",
     "ModalFocus": "ui/dialog.rs",
+    "ConfirmPrompt": "ui/confirm.rs",
     "Avatar": "ui/avatar.rs",
     "MenuState": "ui/menu.rs",
     "MenuCursor": "ui/menu.rs",

@@ -21,16 +21,6 @@ impl OrbitApp {
     pub(super) fn refresh_account_map(&mut self) {
         self.account_profile_map = self.provider_accounts.all_profiles();
         self.account_store_healthy = self.provider_accounts.is_healthy();
-        if let Some(id) = &self.account_remove_confirm {
-            let exists = self
-                .account_profile_map
-                .values()
-                .flatten()
-                .any(|profile| &profile.id == id);
-            if !exists {
-                self.account_remove_confirm = None;
-            }
-        }
     }
 
     pub(super) fn cached_account_profiles(&self, provider: &str) -> Vec<AccountProfile> {
@@ -98,10 +88,8 @@ impl OrbitApp {
         }
     }
 
-    /// Remove an account after the inline confirmation: its metadata and its
-    /// credential in pi's `auth.json`.
+    /// Remove an account: its metadata and its credential in pi's `auth.json`.
     pub(super) fn account_remove(&mut self, id: String, cx: &mut Context<Self>) {
-        self.account_remove_confirm = None;
         if self.remote.is_some() {
             cx.notify();
             return;
@@ -284,7 +272,6 @@ impl OrbitApp {
     ) -> AnyElement {
         let row_id = format!("provider-account-{}", profile.id);
         let debug_id = row_id.clone();
-        let confirming = self.account_remove_confirm.as_deref() == Some(profile.id.as_str());
 
         let (status, status_color) = match profile.credential {
             Some(CredentialKind::OAuth) => (tr!("accounts.signed_in_oauth"), theme.success),
@@ -320,6 +307,8 @@ impl OrbitApp {
                 this.clone(),
                 ProviderAction::RemoveAccount {
                     id: profile.id.clone(),
+                    label: profile.label.clone(),
+                    alias: profile.alias.clone(),
                 },
             ));
 
@@ -388,53 +377,7 @@ impl OrbitApp {
                 });
             });
 
-        if !confirming {
-            return main.into_any_element();
-        }
-        let id = profile.id.clone();
-        let confirm = div()
-            .w_full()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .px(DynamicSpacing::Base08.px(&theme))
-            .pb(DynamicSpacing::Base06.px(&theme))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(180.))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.error)
-                    .whitespace_normal()
-                    .child(tr!(
-                        "accounts.remove_confirm_live",
-                        name = profile.label.clone()
-                    )),
-            )
-            .child(self.provider_button(
-                format!("provider-account-remove-confirm-{id}"),
-                &tr!("settings.remove"),
-                ButtonVariant::Danger,
-                theme,
-                this.clone(),
-                ProviderAction::ConfirmRemoveAccount { id: id.clone() },
-            ))
-            .child(self.provider_button(
-                format!("provider-account-remove-cancel-{id}"),
-                &tr!("settings.cancel"),
-                ButtonVariant::Secondary,
-                theme,
-                this,
-                ProviderAction::CancelRemoveAccount,
-            ));
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .child(main)
-            .child(confirm)
-            .into_any_element()
+        main.into_any_element()
     }
 
     /// Open the Add-account modal, or the Rename modal when `rename` names an
@@ -449,7 +392,6 @@ impl OrbitApp {
     ) {
         self.provider_key_editor = None;
         self.provider_usage_open = None;
-        self.account_remove_confirm = None;
         let current = rename.as_ref().map(|(_, label)| label.clone());
         let label = cx.new(|cx| {
             let input = ComposerInput::new(cx)
