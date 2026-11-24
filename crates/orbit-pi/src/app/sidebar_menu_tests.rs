@@ -328,10 +328,9 @@ fn row_menus_list_each_entry_once_and_disable_moves_at_the_edges() {
     assert_eq!(ids.len(), items.len());
 }
 
-/// The task menu offers Branch from… beside Clone, above the destructive
-/// Delete (#166), and the project menu offers Rename… (#166).
+/// Clone remains above Delete; branching belongs to the transcript.
 #[test]
-fn task_menu_offers_branch_and_project_menu_offers_rename() {
+fn task_menu_offers_clone_and_project_menu_offers_rename() {
     let menu = SessionMenu {
         path: PathBuf::from("/m/s.jsonl"),
         title: "s".into(),
@@ -348,9 +347,8 @@ fn task_menu_offers_branch_and_project_menu_offers_rename() {
         .map(|(i, _)| i)
         .collect();
     let clone = items.iter().position(|i| *i == RowMenuItem::Clone).unwrap();
-    assert_eq!(items[clone + 1], RowMenuItem::Branch);
+    assert_eq!(items[clone + 1], RowMenuItem::Delete);
     assert_eq!(items.last(), Some(&RowMenuItem::Delete));
-    assert_eq!(RowMenuItem::Branch.id(), "menu-branch");
     assert_eq!(RowMenuItem::RenameProject.id(), "wm-rename");
 }
 

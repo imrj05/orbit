@@ -1504,72 +1504,25 @@ impl OrbitApp {
                 ))
     }
 
-    /// The active model as a settings-style row: label on the left, selector
-    /// flush right, on a raised hairline board. Owns the page's "current
-    /// selection" so the grid below stays purely a catalog.
+    /// The shared new-session default, above the model catalog.
     fn active_model_row(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let control = self.active_model_select(theme, this, cx);
+        let control = self.default_model_select(theme, this, cx);
         // The shared settings board (no `overflow_hidden`: the select's popup
         // anchors inside the row and must escape it).
         self.settings_group(
             theme,
             vec![self.setting_row(
                 theme,
-                &tr!("settings.active_model"),
-                Some(&tr!("settings.active_model_description")),
+                &tr!("settings.default_model"),
+                Some(&tr!("settings.default_model_hint")),
                 None,
                 Some(control),
             )],
-        )
-    }
-
-    /// The active-model selector: a dropdown over the reported catalog that
-    /// sets the session's model directly, so the Models page can both browse
-    /// and switch.
-    pub(super) fn active_model_select(
-        &self,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        if self.available_models.is_empty() {
-            return ChipButton::new("active-model-select", ChipStyle::Outlined { inset: false })
-                .size(SELECT_CHIP_SIZE)
-                .label(tr!("settings.no_models_reported"))
-                .caret(false)
-                .disabled(true)
-                .render(&theme);
-        }
-        let options: Vec<String> = self
-            .available_models
-            .iter()
-            .map(|model| {
-                format!(
-                    "{} · {}",
-                    crate::providers::provider_display_name(&model.provider),
-                    model.name
-                )
-            })
-            .collect();
-        let selected = self
-            .available_models
-            .iter()
-            .position(|model| model.id == self.model_id && model.provider == self.model_provider)
-            .unwrap_or(0);
-        self.select_control(
-            "active-model-select",
-            SettingsSelect::ActiveModel,
-            options[selected].clone(),
-            options,
-            selected,
-            theme,
-            this,
-            cx,
         )
     }
 
@@ -2490,6 +2443,9 @@ impl OrbitApp {
             ));
         }
 
+        // The default remains editable even when the catalog or search is empty.
+        rows.push(self.active_model_row(theme, this.clone(), cx));
+
         // ── providers ──
         if views.is_empty() {
             rows.push(self.empty_resource_card(
@@ -2504,9 +2460,6 @@ impl OrbitApp {
             // on the board — the grouped-surface pattern every settings page
             // uses — and its models open beneath it, so the page reads as one
             // list instead of a wall of uneven cards.
-            if !self.available_models.is_empty() {
-                rows.push(self.active_model_row(theme, this.clone(), cx));
-            }
             let (connected, other): (Vec<&ProviderView>, Vec<&ProviderView>) = views
                 .into_iter()
                 .partition(|view| view.active || view.connected());
@@ -5602,7 +5555,17 @@ impl OrbitApp {
                 })
             })
             .map(|ix| ix + 1)
-            .unwrap_or(0);
+            .unwrap_or_else(|| {
+                if let Some(id) = &slot.model_id {
+                    options.push(match &slot.provider {
+                        Some(provider) => format!("{provider} · {id}"),
+                        None => id.clone(),
+                    });
+                    options.len() - 1
+                } else {
+                    0
+                }
+            });
         self.select_control(
             "default-model-select",
             SettingsSelect::DefaultModel,
@@ -7749,7 +7712,6 @@ impl OrbitApp {
             | SettingsSelect::DefaultModel
             | SettingsSelect::DefaultThinking
             | SettingsSelect::SubagentModel
-            | SettingsSelect::ActiveModel
             | SettingsSelect::RetentionMode
             | SettingsSelect::RetentionDays
             | SettingsSelect::AccessMode
@@ -8357,6 +8319,10 @@ impl OrbitApp {
                 return true;
             }
             SettingsSelect::DefaultModel => {
+                // The trailing unavailable saved model is informational, not a reset.
+                if ix > self.available_models.len() {
+                    return true;
+                }
                 let model = if ix == 0 {
                     None
                 } else {
@@ -8412,13 +8378,6 @@ impl OrbitApp {
                     model.update(cx, |input, cx| input.set_text(value, cx));
                 }
                 cx.notify();
-                return true;
-            }
-            SettingsSelect::ActiveModel => {
-                if let Some(model) = self.available_models.get(ix) {
-                    let (id, provider) = (model.id.clone(), model.provider.clone());
-                    self.set_model(id, provider, cx);
-                }
                 return true;
             }
             SettingsSelect::DarkTheme | SettingsSelect::LightTheme => {
@@ -8495,7 +8454,6 @@ impl OrbitApp {
             | SettingsSelect::DefaultModel
             | SettingsSelect::DefaultThinking
             | SettingsSelect::SubagentModel
-            | SettingsSelect::ActiveModel
             | SettingsSelect::RetentionMode
             | SettingsSelect::RetentionDays
             | SettingsSelect::AccessMode

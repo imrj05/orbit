@@ -213,29 +213,8 @@ fn pointer_from_transcript_to_picker_forks_the_clicked_user_turn(cx: &mut gpui::
     cx.simulate_mouse_move(footer, None, gpui::Modifiers::none());
     draw(cx);
     cx.simulate_click(footer, gpui::Modifiers::none());
-    cx.update(|_, cx| assert!(app.read(cx).rewind_picker.is_some(), "footer click at {footer:?}, viewport {viewport:?} did not open the picker; commands: {}", fake.commands()));
-    pump_until(&app, cx, |app| {
-        app.rewind_picker.is_some() && !app.rewind_fetching
-    });
-    cx.update(|_, cx| {
-        let picker = app.read(cx).rewind_picker.clone().unwrap();
-        assert_eq!(picker.read(cx).highlighted_entry().as_deref(), Some("e2"));
-    });
-    draw(cx);
-    let row = cx
-        .debug_bounds("rewind-row-1")
-        .expect("second fork point")
-        .center();
-    cx.simulate_mouse_move(row, None, gpui::Modifiers::none());
-    draw(cx);
-    cx.simulate_click(row, gpui::Modifiers::none());
-    cx.update(|_, cx| {
-        assert!(
-            app.read(cx).rewind_fork_id.is_some(),
-            "picker row did not send fork; commands: {}",
-            fake.commands()
-        )
-    });
+    pump_until(&app, cx, |app| app.rewind_fork_id.is_some());
+    cx.update(|_, cx| assert!(app.read(cx).rewind_picker.is_none()));
     let forked = fake.forked_session_path();
     pump_until(&app, cx, |app| {
         app.current_session_path.as_deref() == Some(forked.as_path())
@@ -310,13 +289,7 @@ fn process_exit_during_fork_point_fetch_clears_picker_and_reconnects_to_source(
             app.rewind_to_turn(2, window, cx);
         })
     });
-    pump_until(&app, cx, |app| {
-        app.rewind_picker.is_some() && !app.rewind_fetching
-    });
-    cx.update(|_, cx| {
-        let picker = app.read(cx).rewind_picker.clone().unwrap();
-        assert_eq!(picker.read(cx).highlighted_entry().as_deref(), Some("e2"));
-    });
+    pump_until(&app, cx, |_| replacement.commands().contains(r#""entryId":"e2""#));
     let commands = replacement.commands();
     assert!(
         commands.contains("\"type\":\"switch_session\""),
@@ -624,6 +597,48 @@ fn stale_fork_message_replies_do_not_update_current_picker(cx: &mut gpui::TestAp
     pump_until(&app, cx, |app| !app.rewind_fetching);
 }
 
+#[gpui::test]
+fn direct_rewind_restores_focus_after_lookup(cx: &mut gpui::TestAppContext) {
+    let fake = FakePi::start();
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            adopt_fake_pi(app, &fake);
+            app.transcript.load_from(&conversation());
+            window.focus(&app.input.read(cx).focus_handle(cx));
+            app.rewind_to_turn(2, window, cx);
+        });
+    });
+    pump_until(&app, cx, |app| !app.rewind_fetching);
+    cx.update(|window, cx| {
+        assert!(app.read(cx).input.read(cx).focus_handle(cx).is_focused(window));
+    });
+}
+
+#[gpui::test]
+fn running_during_direct_lookup_leaves_a_loaded_picker(cx: &mut gpui::TestAppContext) {
+    let fake = FakePi::start();
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            adopt_fake_pi(app, &fake);
+            app.transcript.load_from(&conversation());
+            app.rewind_to_turn(2, window, cx);
+            app.busy = true;
+        });
+    });
+    pump_until(&app, cx, |app| !app.rewind_fetching);
+    cx.update(|_, cx| {
+        let app = app.read(cx);
+        assert!(app.rewind_fork_id.is_none());
+        let picker = app.rewind_picker.as_ref().expect("picker remains available");
+        assert_eq!(picker.read(cx).highlighted_entry().as_deref(), Some("e2"));
+    });
+    assert!(!fake.commands().contains("\"type\":\"fork\""));
+}
+
 /// Starting from a transcript row chooses that message, not the newest one.
 #[gpui::test]
 fn a_rewind_started_from_a_message_preselects_it(cx: &mut gpui::TestAppContext) {
@@ -640,16 +655,8 @@ fn a_rewind_started_from_a_message_preselects_it(cx: &mut gpui::TestAppContext) 
         });
     });
     pump_until(&app, cx, |app| !app.rewind_fetching);
-    cx.update(|_, cx| {
-        app.update(cx, |app, cx| {
-            let picker = app.rewind_picker.clone().expect("picker open");
-            assert_eq!(
-                picker.read(cx).highlighted_entry().as_deref(),
-                Some("e2"),
-                "the clicked message is preselected"
-            );
-        });
-    });
+    cx.update(|_, cx| assert!(app.read(cx).rewind_picker.is_none()));
+    pump_until(&app, cx, |_| fake.commands().contains(r#""entryId":"e2""#));
 }
 
 #[gpui::test]
@@ -667,10 +674,8 @@ fn a_rewind_from_an_assistant_response_selects_its_user_prompt(cx: &mut gpui::Te
     // Row 3 is the answer to user row 2, not the newest turn.
     cx.update(|window, cx| opener(3, window, cx));
     pump_until(&app, cx, |app| !app.rewind_fetching);
-    cx.update(|_, cx| {
-        let picker = app.read(cx).rewind_picker.clone().expect("picker open");
-        assert_eq!(picker.read(cx).highlighted_entry().as_deref(), Some("e2"));
-    });
+    cx.update(|_, cx| assert!(app.read(cx).rewind_picker.is_none()));
+    pump_until(&app, cx, |_| fake.commands().contains(r#""entryId":"e2""#));
 }
 
 #[gpui::test]
@@ -1600,10 +1605,6 @@ fn rewinding_an_image_prompt_hands_back_text_only(cx: &mut gpui::TestAppContext)
         });
     });
     pump_until(&app, cx, |app| !app.rewind_fetching);
-    let picker = cx.update(|_, cx| app.read(cx).rewind_picker.clone().expect("picker open"));
-    cx.update(|window, cx| {
-        picker.update(cx, |picker, cx| picker.confirm_for_test(window, cx));
-    });
     let forked = fake.forked_session_path();
     pump_until(&app, cx, |app| {
         app.current_session_path.as_deref() == Some(forked.as_path())

@@ -245,7 +245,7 @@ can be born on: `--provider` / `--model` / `--thinking` flags at process spawn
 (`BundledExtensions::spawn`), which cover the first session, and `set_model` /
 `set_thinking_level` RPC for every later `new_session` inside a live process.
 `switch_session` and `clone` deliberately do not override a resumed session. Settings →
-Agent exposes the model plus a thinking-level select whose options are derived from the
+Agent exposes the model plus a thinking-level select; Providers & models exposes the same default model. The thinking options are derived from the
 catalog entry exactly like pi's `getSupportedThinkingLevels` (`reasoning` +
 `thinkingLevelMap`); a model or level pi's catalog does not support is skipped, and a
 malformed file loads as no default. Per-mode defaults were deliberately dropped: mode is a

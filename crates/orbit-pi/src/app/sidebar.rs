@@ -2516,7 +2516,6 @@ pub(crate) enum RowMenuItem {
     Archive,
     CopyPath,
     Clone,
-    Branch,
     Delete,
     ProjectMoveUp,
     ProjectMoveDown,
@@ -2540,7 +2539,6 @@ impl RowMenuItem {
             Self::Archive => "menu-archive",
             Self::CopyPath => "menu-copy-path",
             Self::Clone => "menu-clone",
-            Self::Branch => "menu-branch",
             Self::Delete => "menu-delete",
             Self::ProjectMoveUp => "wm-move-up",
             Self::ProjectMoveDown => "wm-move-down",
@@ -2569,7 +2567,6 @@ pub(super) fn session_menu_items(menu: &SessionMenu) -> Vec<(RowMenuItem, bool)>
         (RowMenuItem::Archive, true),
         (RowMenuItem::CopyPath, true),
         (RowMenuItem::Clone, true),
-        (RowMenuItem::Branch, true),
         (RowMenuItem::Delete, menu.deletable),
     ]);
     items
@@ -2784,15 +2781,6 @@ pub(crate) fn session_menu_popup(
                 false,
                 lit == Some("menu-clone"),
                 |app, cx| app.on_menu_clone_session(cx),
-            ))
-            .child(workspace_menu_item(
-                "menu-branch",
-                "icons/branch.svg",
-                tr!("sidebar.branch_from_message"),
-                theme,
-                this.clone(),
-                lit == Some("menu-branch"),
-                |app, window, cx| app.on_menu_branch_session(window, cx),
             ))
             // Delete is always listed. A session that is open or running
             // cannot be deleted — pi would recreate the file mid-run — but
@@ -4452,38 +4440,6 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// **Branch from…**: start a new task from an earlier message of this
-    /// one (#166). The open session goes straight to the message picker (the
-    /// palette's *Rewind to a message…*, which forks through pi's `fork`); any
-    /// other session is opened first and the picker follows once pi has
-    /// loaded it, the same handshake Rename uses.
-    pub(super) fn on_menu_branch_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(menu) = self.session_menu.take() else {
-            return;
-        };
-        if self.current_session_path.as_ref() == Some(&menu.path) {
-            self.open_rewind_picker(window, cx);
-            cx.notify();
-            return;
-        }
-        let Some(session) = self
-            .sessions
-            .iter()
-            .find(|session| session.path == menu.path)
-            .cloned()
-        else {
-            cx.notify();
-            return;
-        };
-        self.switch_to_session(session, true, cx);
-        // The picker needs pi's view of the session: wait for the switched
-        // process's `get_state` to name this file, which flips the ready flag.
-        if self.current_session_path.as_ref() == Some(&menu.path) && self.runtime_is_live() {
-            self.pending_session_branch = Some(menu.path);
-        }
-        cx.notify();
-    }
-
     pub(super) fn on_menu_copy_path(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = &self.session_menu {
             cx.write_to_clipboard(ClipboardItem::new_string(
@@ -5842,7 +5798,6 @@ impl OrbitApp {
             RowMenuItem::Archive => self.on_menu_toggle_archive(cx),
             RowMenuItem::CopyPath => self.on_menu_copy_path(cx),
             RowMenuItem::Clone => self.on_menu_clone_session(cx),
-            RowMenuItem::Branch => self.on_menu_branch_session(window, cx),
             RowMenuItem::Delete => self.on_menu_delete_request(cx),
             RowMenuItem::ProjectMoveUp | RowMenuItem::ProjectMoveDown => {
                 if let Some(label) = project_label {

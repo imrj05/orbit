@@ -4762,8 +4762,6 @@ enum SettingsSelect {
     /// The model an agent is pinned to (Settings → Subagents). The options are
     /// this machine's models; the leading row inherits the session's.
     SubagentModel,
-    /// The session's active model (Settings → Providers & models).
-    ActiveModel,
     /// The Models page's provider scope filter.
     /// The session-retention action and threshold (Settings → Privacy).
     RetentionMode,

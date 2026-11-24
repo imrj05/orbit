@@ -2,6 +2,29 @@ use super::*;
 
 // ── session-birth default model push ─────────────────────────────────
 
+#[gpui::test]
+fn unavailable_default_option_does_not_clear_saved_or_change_live_model(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.available_models.clear();
+            app.session_default = crate::session_defaults::SessionDefault {
+                provider: Some("saved-provider".into()),
+                model_id: Some("saved-model".into()),
+                thinking: None,
+            };
+            let live = (app.model_provider.clone(), app.model_id.clone());
+            assert!(app.apply_settings_select(SettingsSelect::DefaultModel, 1, cx));
+            assert_eq!(app.session_default.model_id.as_deref(), Some("saved-model"));
+            assert_eq!((app.model_provider.clone(), app.model_id.clone()), live);
+        });
+    });
+}
+
 /// A `set_model` that pi rejects can never complete the session-birth
 /// default push. A lingering armed flag would otherwise re-apply the
 /// configured thinking level the next time the same model goes live,

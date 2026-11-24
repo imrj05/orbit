@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Default model in Providers & models.** The model selector now edits the same persisted new-session default as Settings → Agent instead of changing only the current session. The composer still controls the active session's model.
+
 - **Local sessions follow `PI_CODING_AGENT_DIR`.** The sidebar index, its watcher, the
 usage scan and the onboarding path row all located the store at `~/.pi/agent/sessions`, so a
 pi configured to keep its data elsewhere kept writing sessions Orbit could not see. They now
