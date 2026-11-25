@@ -112,6 +112,7 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 **Explorer and Files**
 
 - Project panel (⌘⇧E, or its own folder button in the top bar) — a gitignore-aware workspace tree with indent guides, expand/collapse, filter, hidden-files toggle, devicons, `M/A/D/R/U` git badges, and keyboard navigation
+- The tree is walked *and* built on a background executor, so opening a very large workspace — including a folder with tens of thousands of files in one directory — never blocks a frame; a workspace switch retires a walk still in flight and its result is never shown over the newer one
 - File operations from the tree: new file, new folder, rename, and delete to Trash, plus open / reveal / copy path actions
 - Files page with a tab strip and an editor for the active workspace: syntax-highlighted editable buffers, Markdown Edit/Preview, images, debounced autosave (and ⌘S) with dirty/saving state, and honest read-only guards for binary, oversized, truncated, and non-UTF-8 files
 

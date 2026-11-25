@@ -342,8 +342,7 @@ impl ProjectPanel {
         self.pending_delete = None;
         self.notice = None;
         self.list.reset(0);
-        self.stale = true;
-        self.ensure_loaded(cx);
+        self.reload(cx);
     }
 
     /// The workspace watcher fired (or a run settled): rebuild off-thread.
@@ -352,6 +351,18 @@ impl ProjectPanel {
             self.stale = true;
             self.ensure_loaded(cx);
         }
+    }
+
+    /// Mark the tree stale for a change of *what* to load — a different
+    /// workspace, or the hidden-files toggle — and rebuild it off-thread.
+    /// Bumping the generation retires a walk already in flight, so its result
+    /// is never published over the newer request. [`Self::mark_stale`] is the
+    /// other case: the watcher firing while a walk runs describes the same
+    /// settings, so that walk may still land and the next one corrects it.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.stale = true;
+        self.generation = self.generation.wrapping_add(1);
+        self.ensure_loaded(cx);
     }
 
     /// Highlight the file the viewer is showing, and reveal it.
@@ -385,7 +396,7 @@ impl ProjectPanel {
         let show_hidden = self.show_hidden;
 
         cx.spawn(async move |this, cx| {
-            let (snapshot, badges) = cx
+            let index = cx
                 .background_executor()
                 .spawn(async move {
                     let snapshot = walk::snapshot(&root, show_hidden);
@@ -397,14 +408,24 @@ impl ProjectPanel {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    (snapshot, badges)
+                    // Building the tree is the expensive half (one insert per
+                    // entry, then a sort per directory), so it belongs on this
+                    // side of the await too: a wide directory used to spend ~1.5 s
+                    // here and freeze the window while it did.
+                    TreeIndex::build(snapshot, badges)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.generation != generation {
+                    // Superseded while this walk ran. The request that
+                    // superseded it could not start — `ensure_loaded` gates on
+                    // `loading` — so hand the slot over here.
+                    this.loading = false;
+                    this.stale = true;
+                    this.ensure_loaded(cx);
                     return;
                 }
-                this.index = TreeIndex::build(snapshot, badges);
+                this.index = index;
                 this.loading = false;
                 this.error = None;
                 this.refresh_rows(cx);
@@ -1123,8 +1144,7 @@ impl ProjectPanel {
                     cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.header_menu_open = false;
                         this.show_hidden = !this.show_hidden;
-                        this.stale = true;
-                        this.ensure_loaded(cx);
+                        this.reload(cx);
                         cx.notify();
                     }),
                 ));
@@ -1719,8 +1739,9 @@ impl Render for ProjectPanel {
             ));
         }
         self.ensure_loaded(cx);
-        // The filter is read here; the observer marks rows dirty on change.
-        self.refresh_rows(cx);
+        // Rows are refreshed by the events that change them (a new index, an
+        // expand/collapse, the filter observer) — re-flattening here would walk
+        // the whole expanded tree on every frame.
         let theme = *theme::get(cx);
         // The dock is the row's last card, so it keeps the card gutter on
         // every open side: beside its neighbour, at the window's right edge
@@ -2105,5 +2126,147 @@ mod tests {
             "the {label} prompt input collapsed to {}px wide",
             f32::from(bounds.size.width)
         );
+    }
+
+    /// A fresh panel over `root`, as a real caller sets it up.
+    fn panel_for(cx: &mut gpui::VisualTestContext, root: &std::path::Path) -> Entity<ProjectPanel> {
+        cx.update(|_, app| app.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let panel = cx.update(|_, app| {
+            app.new(|cx| {
+                ProjectPanel::new(
+                    Rc::new(|_, _, _| {}),
+                    Rc::new(|_, _| {}),
+                    Rc::new(|_| {}),
+                    cx,
+                )
+            })
+        });
+        cx.update(|_, app| {
+            panel.update(app, |panel, cx| {
+                panel.set_workspace(Some(root.to_path_buf()), cx)
+            });
+        });
+        panel
+    }
+    /// Opening a large directory froze the window because the tree was built
+    /// inside the walk's `update` on the foreground executor. The build now
+    /// happens in the background task, so the panel holds no index when the
+    /// request returns and publishes one only after the executor is pumped.
+    ///
+    /// Note what this does *not* prove: GPUI's test dispatcher runs both
+    /// executors on one thread, so a build moved back to the `update` would pass
+    /// it. The placement is checked by reading the code; this test pins the
+    /// observable contract around it (nothing published synchronously, a walk
+    /// reported in flight, and the result landing complete).
+    #[gpui::test]
+    fn setting_a_workspace_publishes_the_tree_asynchronously(cx: &mut gpui::TestAppContext) {
+        let root = std::env::temp_dir().join("orbit-explorer-off-thread");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("README.md"), "# hi\n").unwrap();
+
+        let cx = cx.add_empty_window();
+        let panel = panel_for(cx, &root);
+
+        let entries = cx.update(|_, app| panel.read(app).index.root.children.len());
+        assert_eq!(
+            entries, 0,
+            "the tree must not be built while setting the workspace"
+        );
+        assert!(
+            cx.update(|_, app| panel.read(app).loading),
+            "a walk was kicked off"
+        );
+
+        cx.run_until_parked();
+        cx.update(|_, app| {
+            let panel = panel.read(app);
+            assert!(!panel.loading, "the walk settled");
+            let rows = tree::visible_rows(&panel.index, &panel.expanded, "");
+            assert_eq!(
+                rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+                vec!["src", "README.md"]
+            );
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// `render` no longer re-flattens the tree per frame, so the filter's
+    /// observer is the only thing that turns typing into rows. Pin that: set the
+    /// text and pump, with no `refresh_rows` call and no draw.
+    #[gpui::test]
+    fn the_filter_observer_refreshes_rows_without_a_render(cx: &mut gpui::TestAppContext) {
+        let root = std::env::temp_dir().join("orbit-explorer-filter-observer");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("README.md"), "# hi\n").unwrap();
+
+        let cx = cx.add_empty_window();
+        let panel = panel_for(cx, &root);
+        cx.run_until_parked();
+        assert_eq!(cx.update(|_, app| panel.read(app).rows.len()), 2);
+
+        cx.update(|_, app| {
+            panel.update(app, |panel, cx| {
+                panel
+                    .filter
+                    .update(cx, |input, cx| input.set_text("main", cx));
+            });
+        });
+        assert_eq!(
+            cx.update(|_, app| {
+                panel
+                    .read(app)
+                    .rows
+                    .iter()
+                    .map(|row| row.path.clone())
+                    .collect::<Vec<_>>()
+            }),
+            vec!["src", "src/main.rs"],
+            "the observer alone must rebuild the rows"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A result that arrives after the requested workspace changed must not be
+    /// published, and must not leave the panel stuck in `loading` — the request
+    /// that superseded it was refused while the walk ran.
+    #[gpui::test]
+    fn a_superseded_walk_never_publishes_or_sticks_loading(cx: &mut gpui::TestAppContext) {
+        let old = std::env::temp_dir().join("orbit-explorer-supersede-old");
+        let new = std::env::temp_dir().join("orbit-explorer-supersede-new");
+        for (root, file) in [(&old, "old.rs"), (&new, "new.rs")] {
+            let _ = std::fs::remove_dir_all(root);
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join(file), "\n").unwrap();
+        }
+
+        let cx = cx.add_empty_window();
+        let panel = panel_for(cx, &old);
+        // Switch before the first walk lands: its snapshot describes `old`.
+        cx.update(|_, app| {
+            panel.update(app, |panel, cx| panel.set_workspace(Some(new.clone()), cx));
+        });
+
+        cx.run_until_parked();
+        cx.update(|_, app| {
+            let panel = panel.read(app);
+            assert!(!panel.loading, "a superseded walk must release the slot");
+            assert_eq!(
+                panel.workspace.as_deref(),
+                Some(new.as_path()),
+                "the panel kept the newer workspace"
+            );
+            let rows = tree::visible_rows(&panel.index, &panel.expanded, "");
+            assert_eq!(
+                rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+                vec!["new.rs"],
+                "the stale snapshot from the old workspace was not published"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&old);
+        let _ = std::fs::remove_dir_all(&new);
     }
 }

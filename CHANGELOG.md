@@ -14,6 +14,21 @@ resolve through pi's own agent directory — `PI_CODING_AGENT_DIR`, or `~/.pi/ag
 a leading `~` in the value, which pi expands internally. `PI_CODING_AGENT_SESSION_DIR` and
 `settings.json › sessionDir` still move the store unseen; neither is wired yet.
 
+- **Opening a large folder no longer freezes the window.** The Explorer built its
+whole tree — one insert per entry, then a sort per directory — *after* the
+background walk returned, on the UI thread. A folder holding many files in one
+directory made that quadratic, because every insert scanned the siblings already
+there: 20 000 files in a single folder cost ~1.5 s of the main thread, which is the
+beachball in the report. The build now runs in the same background task as the
+walk and the UI thread only stores the finished index. The insert itself is
+linear — the snapshot is sorted by path component before it is walked, so a
+sibling that already exists is always the last child — which is ~60× faster on a
+wide directory and leaves wide workspaces unaffected. The walk also bumps a
+generation on a workspace switch or the hidden-files toggle, and a superseded
+walk now hands the `loading` slot to the request it superseded instead of
+dropping it (the panel could previously sit on a spinner until another event
+arrived), and `render` no longer re-flattens the whole tree on every frame.
+
 - **Ctrl+Left/Right moves by word on Linux and Windows.** `secondary-left/right` names the
 platform's primary modifier, which off macOS is `ctrl`, so those chords jumped to the ends of
 the line and the standard word movement — already implemented and bound to `alt`-arrow — was
