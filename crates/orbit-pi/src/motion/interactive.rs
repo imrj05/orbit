@@ -136,6 +136,8 @@ impl Hover {
         }
     }
 
+    fn has_treatment(self) -> bool { self.hover_fill.is_some() || self.ink.is_some() }
+
     /// Hold the hovered look at rest while `held` — a menu row under the
     /// keyboard cursor reads exactly as the pointer's hover.
     pub(crate) fn held(self, held: bool) -> Self {
@@ -306,7 +308,7 @@ where
             self.element.extend(self.children);
         }
 
-        if role.duration(&self.theme).is_zero() {
+        if role.duration(&self.theme).is_zero() && hover.has_treatment() {
             // Reduce Motion: the same treatment, applied on the frame the
             // pointer arrives. `.hover` is a style closure, so this costs no
             // state — and `PointerWatch::paint` leaves the registry alone, so

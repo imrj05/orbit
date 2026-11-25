@@ -1200,6 +1200,15 @@ mod tests {
     }
 
     #[test]
+    fn reduced_motion_preserves_swap_hover_variants() {
+        let mut theme = Theme::dark();
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        for variant in [ButtonVariant::Tinted, ButtonVariant::Danger, ButtonVariant::Destructive, ButtonVariant::Glass] {
+            Button::new("swap-hover", variant).render(&theme).into_any_element();
+        }
+    }
+
+    #[test]
     fn only_fill_only_variants_cross_fade() {
         let theme = Theme::dark();
         assert!(ButtonVariant::Primary.fade(&theme).is_some());
