@@ -11,6 +11,7 @@
 
 use super::*;
 use crate::theme::tokens::{DynamicSpacing, IconSize, TextSize};
+use crate::ui::glyph::{icon_tile, TileLook};
 use crate::ui::{confirm::ConfirmPrompt, icon::icon};
 
 /// A destructive action waiting on the user's answer. Each variant owns its
@@ -19,8 +20,10 @@ use crate::ui::{confirm::ConfirmPrompt, icon::icon};
 pub(crate) enum PendingConfirm {
     /// Settings → Skills → Delete: the skill's directory on disk.
     DeleteSkill {
-        /// The skill's folder — what the prompt names, and what it removes.
+        /// The skill's folder — what the prompt removes.
         dir: PathBuf,
+        /// The skill's name, so the prompt names it above the path.
+        name: String,
     },
     /// Settings → Providers & models → Remove: the models.json entry.
     RemoveProvider { id: String, name: String },
@@ -82,64 +85,54 @@ impl PendingConfirm {
         }
     }
 
-    /// The question, naming the object and what happens to it. Reuses the
-    /// existing localized sentence rather than adding a key for a reword.
+    /// The question, kept a question: the object it names is in the target
+    /// block below it, and what happens to it is [`body`](Self::body).
     fn title(&self) -> String {
         match self {
-            Self::DeleteSkill { dir, .. } => tr!(
-                "skills_ui.delete_skill_hint",
-                path = crate::skills::display_path(dir)
-            ),
+            Self::DeleteSkill { .. } => tr!("skills_ui.delete_confirm"),
             Self::DeleteSession { .. } => tr!("sidebar.delete_this_session"),
             Self::DeleteWorkspaceFiles { label, .. } => {
                 tr!("sidebar.delete_project_confirm", name = label)
             }
-            Self::RunSessionRetention => tr!("settings.session_retention_run"),
+            Self::RunSessionRetention => tr!("settings.session_retention_confirm"),
             Self::RemoveProvider { .. } => tr!("settings.remove_this_provider"),
             Self::RemovePlugin { .. } => tr!("settings.remove_this_plugin"),
             Self::RemoveMcpServer { .. } => tr!("mcp.remove_confirm"),
             Self::RemoveRemoteHost { .. } => tr!("remote_hosts.remove_confirm"),
-            Self::RemoveAccount { label, .. } => {
-                tr!("accounts.remove_confirm_live", name = label)
-            }
-            Self::DeleteSubagent {
-                path,
-                name,
-                overrides_builtin,
-            } => {
-                if *overrides_builtin {
-                    tr!(
-                        "subagents_ui.reset_confirm_hint",
-                        path = path.display().to_string(),
-                        name = name
-                    )
-                } else {
-                    tr!(
-                        "subagents_ui.delete_confirm_hint",
-                        path = path.display().to_string()
-                    )
-                }
-            }
+            Self::RemoveAccount { .. } => tr!("accounts.remove_confirm"),
+            Self::DeleteSubagent { .. } => tr!("subagents_ui.delete_confirm"),
         }
     }
 
-    /// Nothing to add: the title already says what goes.
-    fn body(&self) -> Option<String> {
+    /// What happens to it, and whether it can be undone.
+    fn body(&self) -> String {
         match self {
-            Self::DeleteSession { .. } => Some(tr!("sidebar.removes_the_session_file_from_disk")),
-            Self::RunSessionRetention => Some(tr!("settings.session_retention_action_description")),
-            Self::DeleteWorkspaceFiles { .. } => Some(if crate::platform::TRASH_IS_RECOVERABLE {
-                tr!("sidebar.delete_project_body_trash")
-            } else {
-                tr!("sidebar.delete_project_body_permanent")
-            }),
-            Self::DeleteSkill { .. }
-            | Self::RemoveProvider { .. }
-            | Self::RemovePlugin { .. }
-            | Self::RemoveMcpServer { .. }
-            | Self::RemoveRemoteHost { .. }
-            | Self::RemoveAccount { .. }
-            | Self::DeleteSubagent { .. } => None,
+            Self::DeleteSkill { .. } => tr!("skills_ui.delete_confirm_body"),
+            Self::DeleteSession { .. } => tr!("sidebar.removes_the_session_file_from_disk"),
+            Self::DeleteWorkspaceFiles { .. } => {
+                if crate::platform::TRASH_IS_RECOVERABLE {
+                    tr!("sidebar.delete_project_body_trash")
+                } else {
+                    tr!("sidebar.delete_project_body_permanent")
+                }
+            }
+            Self::RunSessionRetention => tr!("settings.session_retention_confirm_body"),
+            Self::RemoveProvider { .. } => tr!("settings.remove_provider_body"),
+            Self::RemovePlugin { .. } => tr!("settings.remove_plugin_body"),
+            Self::RemoveMcpServer { .. } => tr!("mcp.remove_confirm_body"),
+            Self::RemoveRemoteHost { .. } => tr!("remote_hosts.remove_confirm_body"),
+            Self::RemoveAccount { .. } => tr!("accounts.remove_confirm_body"),
+            Self::DeleteSubagent {
+                name,
+                overrides_builtin,
+                ..
+            } => {
+                if *overrides_builtin {
+                    tr!("subagents_ui.reset_confirm_body", name = name)
+                } else {
+                    tr!("subagents_ui.delete_confirm_body")
+                }
+            }
         }
     }
 
@@ -147,7 +140,13 @@ impl PendingConfirm {
     /// question and the target is still readable when a path is long.
     fn target(&self, theme: &Theme) -> Option<AnyElement> {
         match self {
-            Self::DeleteSkill { .. } | Self::RunSessionRetention => None,
+            Self::RunSessionRetention => None,
+            Self::DeleteSkill { dir, name } => Some(object_line(
+                self.id(),
+                name.clone(),
+                Some(crate::skills::display_path(dir)),
+                theme,
+            )),
             Self::DeleteSession { title, cwd, path } => {
                 Some(session_target(title, cwd.as_deref(), path, theme))
             }
@@ -178,7 +177,12 @@ impl PendingConfirm {
                 Some(alias.clone()),
                 theme,
             )),
-            Self::DeleteSubagent { .. } => None,
+            Self::DeleteSubagent { path, name, .. } => Some(object_line(
+                self.id(),
+                name.clone(),
+                Some(path.display().to_string()),
+                theme,
+            )),
         }
     }
 
@@ -199,38 +203,45 @@ impl PendingConfirm {
 
     /// How wide the card is. A prompt naming a path wants more room than one
     /// naming a provider.
-    fn width(&self) -> Pixels {
+    fn width(&self, theme: &Theme) -> Pixels {
         match self {
-            Self::RemoveAccount { .. }
-            | Self::DeleteSubagent { .. }
-            | Self::DeleteSession { .. }
-            | Self::DeleteWorkspaceFiles { .. } => px(480.),
-            _ => px(420.),
+            Self::DeleteSession { .. } | Self::DeleteWorkspaceFiles { .. } => px(480.),
+            _ => theme.rems(20.),
         }
     }
 
     fn prompt(&self, theme: &Theme, session_scroll: &ScrollHandle) -> ConfirmPrompt {
         let mut prompt = ConfirmPrompt::new(self.id(), self.title())
-            .width(self.width())
+            .width(self.width(theme))
             .cancel_label(tr!("view.cancel"))
-            .confirm_label(self.confirm_label());
-        if let Some(body) = self.body() {
-            prompt = prompt.body(body);
-        }
+            .confirm_label(self.confirm_label())
+            .body(self.body())
+            .leading(destructive_mark(theme));
         if let Some(target) = self.target(theme) {
             prompt = prompt.target(target);
         }
         if matches!(self, Self::DeleteSession { .. }) {
-            prompt = prompt
-                .leading(icon(
-                    "icons/trash.svg",
-                    IconSize::Medium.px(theme),
-                    theme.error,
-                ))
-                .scroll_target(session_scroll);
+            prompt = prompt.scroll_target(session_scroll);
         }
         prompt
     }
+}
+
+/// The media every confirmation carries beside its question: the destructive
+/// glyph on the shared danger-washed tile, so the consequence reads before the
+/// sentence does.
+fn destructive_mark(theme: &Theme) -> AnyElement {
+    icon_tile(
+        icon(
+            "icons/trash.svg",
+            IconSize::Custom(1.5).px(theme),
+            theme.error,
+        ),
+        TileLook::Destructive,
+        theme,
+    )
+    .debug_selector(|| "confirm-mark".into())
+    .into_any_element()
 }
 
 fn session_target(title: &str, cwd: Option<&Path>, path: &Path, theme: &Theme) -> AnyElement {
@@ -240,7 +251,6 @@ fn session_target(title: &str, cwd: Option<&Path>, path: &Path, theme: &Theme) -
         .flex()
         .flex_col()
         .gap(DynamicSpacing::Base12.px(theme))
-        .pt(DynamicSpacing::Base12.px(theme))
         .child(
             div()
                 .debug_selector(|| "session-delete-confirm-target-title".into())
@@ -293,6 +303,7 @@ fn session_path_row(
                 .flex_col()
                 .gap(DynamicSpacing::Base02.px(theme))
                 .whitespace_normal()
+                .text_left()
                 .text_size(TextSize::Small.px(theme))
                 .child(
                     div()
@@ -443,6 +454,7 @@ mod tests {
         vec![
             PendingConfirm::DeleteSkill {
                 dir: PathBuf::from("/tmp/skills/notes"),
+                name: "notes".into(),
             },
             PendingConfirm::DeleteSession {
                 path: PathBuf::from("/tmp/sessions/s1.jsonl"),
@@ -693,10 +705,89 @@ mod tests {
         );
     }
 
+    /// A prompt that now carries a consequence line, with no scrollable
+    /// target, still keeps its footer inside the window at the largest UI
+    /// scale — the media and the header grow, the card does not push its
+    /// actions off.
+    #[gpui::test]
+    fn a_described_prompt_keeps_its_actions_at_maximum_scale(cx: &mut gpui::TestAppContext) {
+        let (_, cx) = open_session_modal(
+            cx,
+            theme::UiPrefs {
+                ui_font_size: *theme::FONT_SIZES.last().unwrap(),
+                spacing_density: *theme::SPACING_DENSITIES.last().unwrap(),
+                ..Default::default()
+            },
+            PendingConfirm::RemoveMcpServer {
+                name: "a-very-long-mcp-server-name-that-has-to-wrap-inside-the-card".into(),
+            },
+        );
+        let mut bounds = |id| {
+            cx.debug_bounds(id)
+                .unwrap_or_else(|| panic!("missing {id}"))
+        };
+        let card = bounds("mcp-remove-confirm-card");
+        let header = bounds("mcp-remove-confirm-title");
+        let mark = bounds("confirm-mark");
+        let heading = bounds("mcp-remove-confirm-heading");
+        let body = bounds("mcp-remove-confirm-body");
+        let target = bounds("mcp-remove-confirm-target-title");
+        let actions = bounds("mcp-remove-confirm-actions");
+        let cancel = bounds("mcp-remove-confirm-cancel-button");
+        let confirm = bounds("mcp-remove-confirm-confirm-button");
+        // The media is the alert-dialog proportion (40px holding a 24px
+        // glyph), not a 16px glyph floating beside the paragraph.
+        assert!(
+            mark.size.width >= px(36.),
+            "mark {mark:?} is the size of a row tile, not a dialog media"
+        );
+        // Media and text share the card's center axis without narrowing the copy.
+        assert!(
+            mark.bottom() <= heading.top() + px(1.),
+            "mark {mark:?} sits beside the heading {heading:?} instead of above it"
+        );
+        assert!(
+            heading.size.height > mark.size.height,
+            "heading {heading:?} collapsed under the media"
+        );
+        for item in [mark, heading, target] {
+            assert!((item.center().x - card.center().x).abs() <= px(1.));
+        }
+        assert!((cancel.size.width - confirm.size.width).abs() <= px(1.));
+        assert!(
+            (cancel.left() - actions.left() - (actions.right() - confirm.right())).abs() <= px(1.)
+        );
+        assert!(cancel.right() < confirm.left());
+        assert!(
+            mark.left() >= header.left() && mark.right() < header.right(),
+            "mark {mark:?} runs outside {header:?}"
+        );
+        assert!(
+            header.bottom() <= body.top() + px(1.),
+            "header {header:?} overlaps body {body:?}"
+        );
+        assert!(
+            target.left() >= body.left() && target.right() <= body.right() + px(1.),
+            "target {target:?} runs outside body {body:?}"
+        );
+        assert!(
+            body.bottom() <= actions.top() + px(1.),
+            "body {body:?} overlaps actions {actions:?}"
+        );
+        assert!(actions.bottom() <= card.bottom() + px(1.));
+        assert!(
+            card.top() >= px(0.) && card.bottom() <= px(640.),
+            "{card:?}"
+        );
+    }
+
     /// Each surface owns its prompt id and its own verb, so two armed asks
     /// never paint the same element ids and none falls back to a bare "OK".
+    /// Every card asks a question and says the consequence under it; the
+    /// object it acts on rides in the target block.
     #[test]
     fn each_removal_names_its_object_and_its_own_prompt() {
+        let theme = Theme::for_id(crate::theme::ThemeId::ALL[0]);
         let mut ids = std::collections::HashSet::new();
         for confirm in every_variant() {
             assert!(ids.insert(confirm.id()), "{} is used twice", confirm.id());
@@ -706,10 +797,30 @@ mod tests {
                 confirm.id()
             );
             assert!(
+                !confirm.body().is_empty(),
+                "{} does not say what happens",
+                confirm.id()
+            );
+            assert_ne!(
+                confirm.title(),
+                confirm.body(),
+                "{} asks and answers with one sentence",
+                confirm.id()
+            );
+            assert!(
                 !confirm.confirm_label().is_empty(),
                 "{} has no action label",
                 confirm.id()
             );
+            // Session retention acts on every old session at once; every
+            // other prompt has one object to name.
+            if !matches!(confirm, PendingConfirm::RunSessionRetention) {
+                assert!(
+                    confirm.target(&theme).is_some(),
+                    "{} names no object",
+                    confirm.id()
+                );
+            }
         }
 
         let provider = PendingConfirm::RemoveProvider {
@@ -721,12 +832,18 @@ mod tests {
             tr!("settings.remove_this_provider").to_string()
         );
 
+        // The account's name is the target's title; the card asks the
+        // question and the body carries the sign-out.
         let account = PendingConfirm::RemoveAccount {
             id: "openai~work".into(),
             label: "Work".into(),
             alias: "openai~work".into(),
         };
-        assert!(account.title().contains("Work"), "{}", account.title());
+        assert_eq!(account.title(), tr!("accounts.remove_confirm").to_string());
+        assert_eq!(
+            account.body(),
+            tr!("accounts.remove_confirm_body").to_string()
+        );
 
         // A file that shadows a built-in says the built-in comes back; a
         // plain agent file says Undo can restore it.
@@ -735,17 +852,20 @@ mod tests {
             name: "scout".into(),
             overrides_builtin: false,
         };
-        assert!(plain.title().contains("scout.md"), "{}", plain.title());
         let override_file = PendingConfirm::DeleteSubagent {
             path: PathBuf::from("/tmp/agents/scout.md"),
             name: "scout".into(),
             overrides_builtin: true,
         };
-        assert!(
-            override_file.title().contains("scout"),
-            "{}",
-            override_file.title()
+        assert_eq!(plain.title(), override_file.title());
+        assert_eq!(
+            plain.body(),
+            tr!("subagents_ui.delete_confirm_body").to_string()
         );
-        assert_ne!(plain.title(), override_file.title());
+        assert_eq!(
+            override_file.body(),
+            tr!("subagents_ui.reset_confirm_body", name = "scout").to_string()
+        );
+        assert_ne!(plain.body(), override_file.body());
     }
 }

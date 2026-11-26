@@ -676,9 +676,17 @@ impl OrbitApp {
                 let Some(dir) = selected.as_ref().and_then(|path| path.parent()) else {
                     return;
                 };
+                // The prompt names the skill above its folder; a selected path
+                // that no longer matches the list falls back to the path.
+                let name = selected
+                    .as_ref()
+                    .and_then(|path| self.skills.iter().find(|skill| &skill.file == path))
+                    .map(|skill| skill.name.clone())
+                    .unwrap_or_else(|| skills::display_path(dir));
                 self.request_confirm(
                     super::confirm_ui::PendingConfirm::DeleteSkill {
                         dir: dir.to_path_buf(),
+                        name,
                     },
                     cx,
                 );

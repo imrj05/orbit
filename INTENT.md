@@ -607,7 +607,15 @@ and delete-project-and-files (sidebar), skill / subagent / provider / plugin /
 account / MCP server / remote host removal (Settings), **Clean up now** while
 the retention policy is set to delete, worktree removal, Explorer delete, and
 Git's discard / discard-all / force-push / abort / delete-unmerged-branch. Git's
-prompt-layout guard now measures the shared card. `Hovered` also stopped
+prompt-layout guard now measures the shared card. The alert stacks its optional
+icon, question and consequence on the center axis. An optional target names the
+object and its path or ID without another divider. Long session paths keep a
+left-aligned detail layout. A single hairline separates the footer, where
+outlined Cancel and soft danger actions have equal widths.
+Clean up now used to carry the button's label as its title and
+skills / accounts / subagents put the consequence in the title with no target
+block; all of them now name the object in the target block and say the
+consequence under the question. `Hovered` also stopped
 registering a second hover style when a fade has nothing to fade to, which
 crashed the frame for every `Danger`/`Destructive`/`Tinted`/`Glass` button under
 Reduce Motion. Not converted: the subagent unsaved-edits "discard draft" bar

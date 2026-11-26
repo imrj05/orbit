@@ -708,8 +708,10 @@ the same two pieces (`modal_card`, `modal_scrim` in `ui/dialog.rs`):
   the panel corner, a clipped column, and the UI font. Width and height bounds belong
   to the caller; everything else belongs to the shell.
 - **Anatomy:** header (`modal::header_padding_*`, Small headline) → body → footer, with
-  hairlines between. The footer holds the actions; a destructive action is separated
-  from the primary one.
+  section hairlines. The shared confirmation card is the exception: it centers
+  the optional media, title and description, groups target details with space,
+  and has a single hairline above an inset footer with equal-width outlined
+  Cancel and soft danger buttons.
 - **Keyboard:** Escape cancels dismissible dialogs; the same mandatory or unsafe
   interruption exception applies as for the scrim. The primary action takes Return
   where appropriate, and focus is trapped inside the card until it closes, then

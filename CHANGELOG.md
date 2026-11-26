@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Every confirmation asks a question and says the consequence.** The shared card
+  (`ui/confirm.rs`) was fed unevenly by `app/confirm_ui.rs`: most prompts had no line
+  saying what happens, four carried no mark beside the question, and three put the
+  consequence inside the title. Each prompt now has a question-only title, one
+  consequence line (what is deleted or removed, where from, and whether it can be
+  undone), the affected object in the target block, and the trash glyph on the
+  shared danger-washed icon tile (`TileLook::Destructive`) above the question.
+  Clean up now
+  (session retention) no longer uses the button's label as its title, and
+  removing a remote host, an MCP server, a provider, a plugin or an account now
+  says explicitly what is removed and what is left alone. Skills and subagents
+  name themselves above their file path instead of burying the path in the
+  question. A layout test pins that a prompt with a longer header still keeps its
+  footer in view at the largest UI size.
+
+- **Centered destructive confirmations.** The icon, question and consequence
+  stack on the center axis, with no divider above the target details. A single
+  divider separates the inset footer, which pairs equal-width outlined Cancel
+  and soft danger buttons. Simple prompts are narrower; session and project
+  deletion still have room for long paths.
+
 - **One confirmation prompt for every destructive action.** Deleting a session, a
   project folder, a skill, a subagent, a provider, a plugin, an account, an MCP
   server or a remote host, removing a worktree, deleting a file from Explorer,

@@ -100,6 +100,8 @@ pub(crate) struct ModalHeader {
     leading: Option<gpui::AnyElement>,
     trailing: Option<gpui::AnyElement>,
     divider: bool,
+    centered: bool,
+    heading_selector: Option<SharedString>,
 }
 
 impl ModalHeader {
@@ -112,7 +114,16 @@ impl ModalHeader {
             leading: None,
             trailing: None,
             divider: true,
+            centered: false,
+            heading_selector: None,
         }
+    }
+
+    /// Name the text column for tests: the frame's own selector cannot say
+    /// where the title starts, and a header's alignment is exactly that.
+    pub(crate) fn heading_selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.heading_selector = Some(selector.into());
+        self
     }
 
     /// A quiet line above the title: what is asking ("Question").
@@ -142,6 +153,12 @@ impl ModalHeader {
         self
     }
 
+    /// Stack the media, title and description on the same center axis.
+    pub(crate) fn centered(mut self) -> Self {
+        self.centered = true;
+        self
+    }
+
     /// A control after the text (a close button).
     pub(crate) fn trailing(mut self, trailing: impl gpui::IntoElement) -> Self {
         self.trailing = Some(trailing.into_any_element());
@@ -156,7 +173,7 @@ impl ModalHeader {
     }
 
     pub(crate) fn render(self, theme: &Theme) -> gpui::Div {
-        let text = div()
+        let mut text = div()
             .flex_1()
             .min_w_0()
             .flex()
@@ -198,17 +215,30 @@ impl ModalHeader {
                     .text_color(theme.text_secondary)
                     .child(description)
             }));
-        let frame = div()
-            .px(modal::header_padding_x(theme))
-            .pt(modal::header_padding_top(theme))
-            .pb(modal::header_padding_bottom(theme))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base12.px(theme))
-            .children(self.leading)
-            .child(text)
-            .children(self.trailing);
+        if let Some(selector) = self.heading_selector {
+            text = text.debug_selector(move || selector.to_string());
+        }
+        let frame = div().flex_none().flex();
+        let frame = if self.centered {
+            frame
+                .flex_col()
+                .items_center()
+                .gap(DynamicSpacing::Base16.px(theme))
+                .p(DynamicSpacing::Base16.px(theme))
+                .children(self.leading)
+                .child(text.w_full().flex_none().text_center())
+                .children(self.trailing)
+        } else {
+            frame
+                .px(modal::header_padding_x(theme))
+                .pt(modal::header_padding_top(theme))
+                .pb(modal::header_padding_bottom(theme))
+                .items_center()
+                .gap(DynamicSpacing::Base12.px(theme))
+                .children(self.leading)
+                .child(text)
+                .children(self.trailing)
+        };
         if self.divider {
             frame.border_b_1().border_color(theme.hairline())
         } else {

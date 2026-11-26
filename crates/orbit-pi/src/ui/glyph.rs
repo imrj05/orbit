@@ -26,15 +26,33 @@ pub(crate) enum TileLook {
     /// matches the sidebar's session chips, so HugeIcons with small artwork in
     /// their 24×24 box (the thinking level "minimal" is a dot) still read.
     Raised,
+    /// A square washed with the danger role: the media of a confirmation,
+    /// where the destructive consequence is the whole point. Larger than the
+    /// row tiles (shadcn's alert-dialog media, 40px with a 24px glyph) because
+    /// it stands beside a question, not in a list, so it scales with the UI
+    /// font instead of taking a fixed row edge.
+    Destructive,
 }
 
 impl TileLook {
-    /// The tile's edge. Fixed per look so every row of a kind lines up.
-    pub(crate) fn size(self) -> Pixels {
+    /// The tile's edge. Fixed per look so every row of a kind lines up —
+    /// except the confirmation's media, which stands alone.
+    pub(crate) fn size(self, theme: &Theme) -> Pixels {
         match self {
             Self::Tinted(_) => px(22.),
             Self::Raised => px(28.),
+            Self::Destructive => theme.rems(2.5),
         }
+    }
+}
+
+/// How far a tinted tile's wash carries its tone. Dark palettes need more of
+/// it to read against the raised plane; light palettes need less before it
+/// muddies.
+fn tile_wash(theme: &Theme) -> f32 {
+    match theme.mode {
+        ThemeMode::Dark => 0.16,
+        ThemeMode::Light => 0.12,
     }
 }
 
@@ -43,25 +61,23 @@ impl TileLook {
 /// its corner and its fill.
 pub(crate) fn icon_tile(glyph: impl IntoElement, look: TileLook, theme: &Theme) -> gpui::Div {
     let tile = div()
-        .size(look.size())
+        .size(look.size(theme))
         .flex_none()
         .flex()
         .items_center()
         .justify_center();
     let tile = match look {
-        TileLook::Tinted(tone) => {
-            let wash = match theme.mode {
-                ThemeMode::Dark => 0.16,
-                ThemeMode::Light => 0.12,
-            };
-            tile.rounded(Radius::Medium.px(theme))
-                .bg(tone.opacity(wash))
-        }
+        TileLook::Tinted(tone) => tile
+            .rounded(Radius::Medium.px(theme))
+            .bg(tone.opacity(tile_wash(theme))),
         TileLook::Raised => tile
             .rounded(Radius::Large.px(theme))
             .bg(theme.control_face(theme.surface_elevated))
             .border_1()
             .border_color(theme.hairline()),
+        TileLook::Destructive => tile
+            .rounded(Radius::Large.px(theme))
+            .bg(theme.error.opacity(tile_wash(theme))),
     };
     tile.child(glyph)
 }

@@ -36,7 +36,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window,
 };
 
-use crate::theme::tokens::{modal, ButtonSize, DynamicSpacing, Motion, TextSize};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, Motion, TextSize};
 use crate::theme::Theme;
 use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::dialog::{modal_card, modal_footer, modal_scrim, ModalHeader, ModalWidthExt};
@@ -98,7 +98,7 @@ impl ConfirmPrompt {
         self
     }
 
-    /// An optional mark beside the question.
+    /// An optional media mark centered above the question.
     pub(crate) fn leading(mut self, leading: impl IntoElement) -> Self {
         self.leading = Some(leading.into_any_element());
         self
@@ -170,7 +170,10 @@ impl ConfirmPrompt {
             on_cancel,
         } = self;
 
-        let mut header = ModalHeader::new(title);
+        let mut header = ModalHeader::new(title)
+            .centered()
+            .divider(false)
+            .heading_selector(format!("{id}-heading"));
         if let Some(body) = body {
             header = header.description(body);
         }
@@ -179,18 +182,22 @@ impl ConfirmPrompt {
         }
 
         let cancel = {
-            let mut button = Button::new(format!("{id}-cancel"), ButtonVariant::Secondary)
+            let mut button = Button::new(format!("{id}-cancel"), ButtonVariant::Outline)
                 .label(cancel_label)
                 .size(ButtonSize::Large);
             if let Some(focus) = &cancel_focus {
                 button = button.focus(focus);
             }
             let handler = on_cancel.clone();
-            button.on_click(&theme, move |_, window, cx| {
-                if let Some(handler) = &handler {
-                    handler(window, cx);
-                }
-            })
+            button
+                .on_click(&theme, move |_, window, cx| {
+                    if let Some(handler) = &handler {
+                        handler(window, cx);
+                    }
+                })
+                .debug_selector(|| format!("{id}-cancel-button"))
+                .flex_1()
+                .min_w_0()
         };
         let confirm = {
             let mut button = Button::new(format!("{id}-confirm"), ButtonVariant::Destructive)
@@ -200,11 +207,15 @@ impl ConfirmPrompt {
                 button = button.focus(focus);
             }
             let handler = on_confirm.clone();
-            button.on_click(&theme, move |_, window, cx| {
-                if let Some(handler) = &handler {
-                    handler(window, cx);
-                }
-            })
+            button
+                .on_click(&theme, move |_, window, cx| {
+                    if let Some(handler) = &handler {
+                        handler(window, cx);
+                    }
+                })
+                .debug_selector(|| format!("{id}-confirm-button"))
+                .flex_1()
+                .min_w_0()
         };
 
         let card = modal_card(&theme)
@@ -228,8 +239,9 @@ impl ConfirmPrompt {
                     .w_full()
                     .min_w_0()
                     .overflow_y_scroll()
-                    .px(modal::section_padding_x(&theme, false))
-                    .pb(DynamicSpacing::Base12.px(&theme))
+                    .px(DynamicSpacing::Base16.px(&theme))
+                    .pb(DynamicSpacing::Base16.px(&theme))
+                    .text_center()
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_secondary)
                     .child(target);
@@ -248,6 +260,8 @@ impl ConfirmPrompt {
             }))
             .child(
                 modal_footer(&theme)
+                    .p(DynamicSpacing::Base16.px(&theme))
+                    .bg(theme.overlay)
                     .debug_selector({
                         let id = id.clone();
                         move || format!("{id}-actions")
