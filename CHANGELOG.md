@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Swap-hover buttons render under Reduce Motion.** Tinted, Danger, Destructive and Glass
+buttons carry their one-frame hover swap from `variant_treatment`; under Reduce Motion the
+zero-duration branch of `motion::fade` set a second hover style on the same element, and
+gpui's debug assertion (`hover style already set`) ended the process — Settings → Subagents
+was the reported crash site. The branch now applies its hover closure only when the `Hover`
+carries a fill or ink, so a variant's own swap stays the single hover style and every page
+using these variants renders under Reduce Motion.
+
 - **Local sessions follow `PI_CODING_AGENT_SESSION_DIR`.** pi resolves its session store as
 `--session-dir` > `PI_CODING_AGENT_SESSION_DIR` > `settings.json › sessionDir` >
 `$agentDir/sessions`; Orbit passes no `--session-dir`, so a user who set the environment
@@ -26,13 +34,6 @@ in the composer and the Explorer editor were unbound, so the keystroke did nothi
 action selects to the previous word boundary — the same boundary Ctrl/Alt+Left moves to — and
 deletes through the existing backspace path, so the IME composition guard, the undo stack and
 the empty-selection no-op all hold; the two chords point at one action in both text contexts.
-
-- **Local sessions follow `PI_CODING_AGENT_DIR`.** The sidebar index, its watcher, the
-usage scan and the onboarding path row all located the store at `~/.pi/agent/sessions`, so a
-pi configured to keep its data elsewhere kept writing sessions Orbit could not see. They now
-resolve through pi's own agent directory — `PI_CODING_AGENT_DIR`, or `~/.pi/agent` — including
-a leading `~` in the value, which pi expands internally. `settings.json › sessionDir` still
-moves the store unseen; it is not wired yet.
 
 - **Opening a large folder no longer freezes the window.** The Explorer built its
 whole tree — one insert per entry, then a sort per directory — *after* the
