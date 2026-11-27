@@ -1055,6 +1055,17 @@ pub struct GhPull {
     pub commits: Vec<GhPullCommit>,
     #[serde(default)]
     pub files: Vec<GhPullFile>,
+    /// Present while auto-merge is enabled; only the detail view asks for it.
+    #[serde(rename = "autoMergeRequest", default)]
+    pub auto_merge: Option<GhAutoMerge>,
+}
+
+/// An enabled auto-merge request on a pull request.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct GhAutoMerge {
+    /// `MERGE`, `SQUASH` or `REBASE`.
+    #[serde(rename = "mergeMethod", default)]
+    pub merge_method: String,
 }
 
 impl GhPull {
@@ -1146,7 +1157,7 @@ pub enum MergeMethod {
 }
 
 impl MergeMethod {
-    fn flag(self) -> &'static str {
+    pub(crate) fn flag(self) -> &'static str {
         match self {
             Self::Merge => "--merge",
             Self::Squash => "--squash",
@@ -1172,7 +1183,7 @@ impl ReviewAction {
 }
 
 const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,labels,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,statusCheckRollup,additions,deletions,changedFiles,createdAt,updatedAt,url";
-const PR_VIEW_FIELDS: &str = "number,title,state,isDraft,body,author,labels,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,statusCheckRollup,additions,deletions,changedFiles,createdAt,updatedAt,url,comments,reviews,commits,files";
+const PR_VIEW_FIELDS: &str = "autoMergeRequest,number,title,state,isDraft,body,author,labels,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,statusCheckRollup,additions,deletions,changedFiles,createdAt,updatedAt,url,comments,reviews,commits,files";
 
 /// The repository's pull requests, newest first, under `filter`.
 pub fn list_pulls(cwd: &Path, filter: &PrFilter) -> Result<Vec<GhPull>, String> {
@@ -1290,6 +1301,324 @@ pub fn merge_pull(
     }
     run(cwd, &args)?;
     Ok(tr!("git_panel.gh_pr_merged"))
+}
+
+// ── Publish a local repository ──────────────────────────────────────────
+
+/// Whether `name` is a repository name GitHub accepts: 1–100 of
+/// `[A-Za-z0-9._-]`, and not `.` or `..`.
+pub fn valid_repo_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 100
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// A repository name suggested from a folder name: every character GitHub
+/// rejects becomes `-` (the same thing github.com's own form does).
+pub fn suggested_repo_name(folder: &str) -> String {
+    let name: String = folder
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let name = name.trim_matches('-').to_string();
+    if valid_repo_name(&name) {
+        name
+    } else {
+        String::new()
+    }
+}
+
+/// `gh repo create` argv for publishing the repository in the working
+/// directory as `origin`. `push` sends the current branch and sets its
+/// upstream; it must be off while HEAD is unborn (`gh` refuses to push then).
+pub fn repo_create_args(name: &str, private: bool, push: bool) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "repo".into(),
+        "create".into(),
+        name.into(),
+        "--source".into(),
+        ".".into(),
+        "--remote".into(),
+        "origin".into(),
+        if private { "--private" } else { "--public" }.into(),
+    ];
+    if push {
+        args.push("--push".into());
+    }
+    args
+}
+
+/// Create a GitHub repository under the signed-in account from the local
+/// repository at `cwd`, add it as `origin`, and push the current branch when
+/// there is a commit to push. Returns `gh`'s output (the new repository URL).
+pub fn create_repo(cwd: &Path, name: &str, private: bool, push: bool) -> Result<String, String> {
+    let args = repo_create_args(name, private, push);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(cwd, &refs)
+}
+
+// ── Repository summary ──────────────────────────────────────────────────
+
+/// A `{ "name": … }` object, as `gh` reports a language or a branch ref.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct GhNamed {
+    #[serde(default)]
+    pub name: String,
+}
+
+/// The facts the Git page shows about the repository behind `origin`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct GhRepo {
+    #[serde(rename = "nameWithOwner")]
+    pub name_with_owner: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub url: String,
+    #[serde(rename = "stargazerCount", default)]
+    pub stars: u64,
+    #[serde(rename = "forkCount", default)]
+    pub forks: u64,
+    /// `PUBLIC`, `PRIVATE` or `INTERNAL`.
+    #[serde(default)]
+    pub visibility: String,
+    #[serde(rename = "primaryLanguage", default)]
+    pub language: Option<GhNamed>,
+    #[serde(rename = "defaultBranchRef", default)]
+    pub default_branch: Option<GhNamed>,
+    #[serde(rename = "viewerHasStarred", default)]
+    pub starred: bool,
+}
+
+impl GhRepo {
+    pub fn is_private(&self) -> bool {
+        !self.visibility.eq_ignore_ascii_case("public")
+    }
+
+    /// `(owner, name)` from `owner/name`.
+    pub fn slug(&self) -> Option<(String, String)> {
+        let (owner, name) = self.name_with_owner.split_once('/')?;
+        Some((owner.to_string(), name.to_string()))
+    }
+}
+
+const REPO_VIEW_FIELDS: &str = "nameWithOwner,description,url,stargazerCount,forkCount,visibility,primaryLanguage,defaultBranchRef,viewerHasStarred";
+
+/// The repository the working directory's remote points at.
+pub fn repo_info(cwd: &Path) -> Result<GhRepo, String> {
+    parse_json(&run(cwd, &["repo", "view", "--json", REPO_VIEW_FIELDS])?)
+}
+
+/// A star count the way GitHub abbreviates it: `999`, `1.2k`, `12k`, `1.5m`.
+pub fn compact_count(count: u64) -> String {
+    // Truncate, never round up: 1,999 stars is "1.9k", not "2k".
+    let scaled = |count: u64, unit: u64, suffix: &str| {
+        let tenths = count / (unit / 10);
+        if tenths < 100 && !tenths.is_multiple_of(10) {
+            format!("{}.{}{suffix}", tenths / 10, tenths % 10)
+        } else {
+            format!("{}{suffix}", count / unit)
+        }
+    };
+    match count {
+        0..=999 => count.to_string(),
+        1_000..=999_999 => scaled(count, 1_000, "k"),
+        _ => scaled(count, 1_000_000, "m"),
+    }
+}
+
+// ── The signed-in user's repositories (clone picker) ────────────────────
+
+/// One of the user's repositories, for the clone dialog's list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct GhRepoEntry {
+    #[serde(rename = "nameWithOwner")]
+    pub name_with_owner: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(rename = "isPrivate", default)]
+    pub private: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl GhRepoEntry {
+    /// The repository name without its owner: the clone's folder name.
+    pub fn name(&self) -> &str {
+        self.name_with_owner
+            .rsplit_once('/')
+            .map_or(self.name_with_owner.as_str(), |(_, name)| name)
+    }
+}
+
+/// The signed-in user's own repositories, most recently pushed first.
+pub fn list_my_repos(cwd: &Path) -> Result<Vec<GhRepoEntry>, String> {
+    parse_json(&run(
+        cwd,
+        &[
+            "repo",
+            "list",
+            "--limit",
+            "100",
+            "--json",
+            "nameWithOwner,url,isPrivate,description",
+        ],
+    )?)
+}
+
+/// Repositories whose `owner/name` contains `query` (case-insensitive), at
+/// most `limit` of them. A query that is already a URL or an scp-style
+/// address matches nothing: the user is pasting, not searching.
+pub fn filter_repos<'a>(
+    repos: &'a [GhRepoEntry],
+    query: &str,
+    limit: usize,
+) -> Vec<&'a GhRepoEntry> {
+    let query = query.trim().to_lowercase();
+    if query.contains("://") || query.contains('@') {
+        return Vec::new();
+    }
+    repos
+        .iter()
+        .filter(|repo| query.is_empty() || repo.name_with_owner.to_lowercase().contains(&query))
+        .take(limit)
+        .collect()
+}
+
+// ── The current branch's pull request ───────────────────────────────────
+
+/// The pull request for the checked-out branch, or `None` when the branch
+/// has none. Any other `gh` failure is an error.
+pub fn pull_for_branch(cwd: &Path) -> Result<Option<GhPull>, String> {
+    match run(cwd, &["pr", "view", "--json", PR_LIST_FIELDS]) {
+        Ok(out) => {
+            let mut pull: GhPull = parse_json(&out)?;
+            normalize_pull(&mut pull);
+            Ok(Some(pull))
+        }
+        Err(err) if is_no_pull(&err) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_no_pull(stderr: &str) -> bool {
+    stderr.to_ascii_lowercase().contains("no pull requests found")
+}
+
+// ── Pull request quick actions ──────────────────────────────────────────
+
+/// Mark a draft ready for review (`ready`), or turn it back into a draft.
+pub fn set_pull_ready(cwd: &Path, number: u64, ready: bool) -> Result<String, String> {
+    let number = number.to_string();
+    let mut args = vec!["pr", "ready", number.as_str()];
+    if !ready {
+        args.push("--undo");
+    }
+    run(cwd, &args)?;
+    Ok(if ready {
+        tr!("git_panel.pr_marked_ready")
+    } else {
+        tr!("git_panel.pr_marked_draft")
+    })
+}
+
+/// Turn on auto-merge with `method` (GitHub merges once requirements pass),
+/// or turn it off with `None`.
+pub fn set_auto_merge(
+    cwd: &Path,
+    number: u64,
+    method: Option<MergeMethod>,
+) -> Result<String, String> {
+    let number = number.to_string();
+    match method {
+        Some(method) => {
+            run(cwd, &["pr", "merge", &number, "--auto", method.flag()])?;
+            Ok(tr!("git_panel.pr_auto_merge_on"))
+        }
+        None => {
+            run(cwd, &["pr", "merge", &number, "--disable-auto"])?;
+            Ok(tr!("git_panel.pr_auto_merge_off"))
+        }
+    }
+}
+
+/// Bring the base branch's new commits into the pull request's branch.
+pub fn update_pull_branch(cwd: &Path, number: u64) -> Result<String, String> {
+    let number = number.to_string();
+    run(cwd, &["pr", "update-branch", &number])?;
+    Ok(tr!("git_panel.pr_branch_updated"))
+}
+
+// ── GitHub Actions: re-run and failed logs ──────────────────────────────
+
+/// `(run id, job id)` from a GitHub Actions check link
+/// (`…/actions/runs/<run>/job/<job>`). `None` for checks that are not
+/// Actions runs (an external status, for instance).
+pub fn actions_ids(url: &str) -> Option<(u64, Option<u64>)> {
+    let digits = |text: &str| -> Option<u64> {
+        let end = text
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len());
+        text[..end].parse().ok()
+    };
+    let (_, rest) = url.split_once("/actions/runs/")?;
+    let run = digits(rest)?;
+    let job = rest
+        .split_once("/job/")
+        .and_then(|(_, job)| digits(job));
+    Some((run, job))
+}
+
+/// Re-run only the failed jobs of a workflow run.
+pub fn rerun_failed(cwd: &Path, run_id: u64) -> Result<(), String> {
+    let run_id = run_id.to_string();
+    run(cwd, &["run", "rerun", &run_id, "--failed"]).map(|_| ())
+}
+
+/// The log of a run's (or one job's) failed steps, cut to its last
+/// `max_bytes`: the end of a CI log is where the failure is.
+pub fn failed_log(
+    cwd: &Path,
+    run_id: u64,
+    job_id: Option<u64>,
+    max_bytes: usize,
+) -> Result<String, String> {
+    let run_id = run_id.to_string();
+    let job_id = job_id.map(|job| job.to_string());
+    let mut args = vec!["run", "view", run_id.as_str()];
+    if let Some(job) = job_id.as_deref() {
+        args.push("--job");
+        args.push(job);
+    }
+    args.push("--log-failed");
+    Ok(log_tail(&run(cwd, &args)?, max_bytes))
+}
+
+/// The last `max_bytes` of `log`, cut at a line start so no line is split,
+/// and on a UTF-8 boundary.
+pub fn log_tail(log: &str, max_bytes: usize) -> String {
+    if log.len() <= max_bytes {
+        return log.to_string();
+    }
+    let mut start = log.len() - max_bytes;
+    while !log.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = &log[start..];
+    match tail.find('\n') {
+        Some(newline) if newline + 1 < tail.len() => tail[newline + 1..].to_string(),
+        _ => tail.to_string(),
+    }
 }
 
 /// Close a pull request without merging.
@@ -1533,6 +1862,121 @@ pub fn set_repo_starred(owner: &str, name: &str, starred: bool) -> Result<(), St
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn star_counts_abbreviate_like_github_without_rounding_up() {
+        assert_eq!(super::compact_count(0), "0");
+        assert_eq!(super::compact_count(999), "999");
+        assert_eq!(super::compact_count(1_000), "1k");
+        assert_eq!(super::compact_count(1_050), "1k");
+        assert_eq!(super::compact_count(1_250), "1.2k");
+        assert_eq!(super::compact_count(1_999), "1.9k");
+        assert_eq!(super::compact_count(12_500), "12k");
+        assert_eq!(super::compact_count(999_999), "999k");
+        assert_eq!(super::compact_count(1_500_000), "1.5m");
+    }
+
+    #[test]
+    fn repo_view_json_parses_with_nulls() {
+        let raw = r#"{"nameWithOwner":"imrj05/orbit","description":null,"url":"https://github.com/imrj05/orbit",
+            "stargazerCount":42,"forkCount":3,"visibility":"PUBLIC","primaryLanguage":{"name":"Rust"},
+            "defaultBranchRef":{"name":"main"},"viewerHasStarred":true}"#;
+        let repo: super::GhRepo = serde_json::from_str(raw).unwrap();
+        assert_eq!(repo.stars, 42);
+        assert!(!repo.is_private());
+        assert!(repo.starred);
+        assert_eq!(repo.description, None);
+        assert_eq!(repo.slug(), Some(("imrj05".into(), "orbit".into())));
+        let private: super::GhRepo = serde_json::from_str(
+            r#"{"nameWithOwner":"a/b","visibility":"PRIVATE","primaryLanguage":null,"defaultBranchRef":null}"#,
+        )
+        .unwrap();
+        assert!(private.is_private());
+        assert_eq!(private.language, None);
+    }
+
+    #[test]
+    fn repo_filter_matches_owner_and_name_and_steps_aside_for_urls() {
+        let repo = |name: &str| super::GhRepoEntry {
+            name_with_owner: name.into(),
+            ..Default::default()
+        };
+        let repos = vec![repo("me/orbit"), repo("me/notes"), repo("org/Orbit-site")];
+        let names = |query: &str, limit: usize| -> Vec<String> {
+            super::filter_repos(&repos, query, limit)
+                .into_iter()
+                .map(|r| r.name_with_owner.clone())
+                .collect()
+        };
+        assert_eq!(names("", 2), ["me/orbit", "me/notes"]);
+        assert_eq!(names("ORBIT", 5), ["me/orbit", "org/Orbit-site"]);
+        assert_eq!(names("org/", 5), ["org/Orbit-site"]);
+        assert!(names("https://github.com/me/orbit", 5).is_empty());
+        assert!(names("git@github.com:me/orbit.git", 5).is_empty());
+        assert_eq!(repos[2].name(), "Orbit-site");
+    }
+
+    #[test]
+    fn actions_ids_read_run_and_job_from_check_links() {
+        assert_eq!(
+            super::actions_ids("https://github.com/o/r/actions/runs/123/job/456"),
+            Some((123, Some(456)))
+        );
+        assert_eq!(
+            super::actions_ids("https://github.com/o/r/actions/runs/123?check_suite_focus=true"),
+            Some((123, None))
+        );
+        assert_eq!(super::actions_ids("https://ci.example.com/build/9"), None);
+        assert_eq!(super::actions_ids(""), None);
+    }
+
+    #[test]
+    fn log_tail_keeps_whole_lines_from_the_end() {
+        assert_eq!(super::log_tail("short", 100), "short");
+        let log = "first line\nsecond line\nthird line\n";
+        assert_eq!(super::log_tail(log, 15), "third line\n");
+        // Never splits a multi-byte character.
+        let tail = super::log_tail("ééééé\nend", 6);
+        assert!(tail.ends_with("end"), "{tail}");
+    }
+
+    #[test]
+    fn a_branch_without_a_pull_request_is_not_an_error() {
+        assert!(super::is_no_pull(
+            "no pull requests found for branch \"feature\""
+        ));
+        assert!(!super::is_no_pull("HTTP 401: Bad credentials"));
+    }
+
+    #[test]
+    fn repo_names_follow_githubs_rules() {
+        assert!(super::valid_repo_name("orbit"));
+        assert!(super::valid_repo_name("my_app-2.0"));
+        assert!(!super::valid_repo_name(""));
+        assert!(!super::valid_repo_name("."));
+        assert!(!super::valid_repo_name(".."));
+        assert!(!super::valid_repo_name("has space"));
+        assert!(!super::valid_repo_name("owner/name"));
+        assert!(!super::valid_repo_name(&"a".repeat(101)));
+        assert_eq!(super::suggested_repo_name("My Project"), "My-Project");
+        assert_eq!(super::suggested_repo_name("  app  "), "app");
+        assert_eq!(super::suggested_repo_name("日本"), "");
+    }
+
+    #[test]
+    fn repo_create_args_publish_the_working_directory_as_origin() {
+        assert_eq!(
+            super::repo_create_args("app", true, true),
+            [
+                "repo", "create", "app", "--source", ".", "--remote", "origin", "--private",
+                "--push"
+            ]
+        );
+        assert_eq!(
+            super::repo_create_args("app", false, false),
+            ["repo", "create", "app", "--source", ".", "--remote", "origin", "--public"]
+        );
+    }
+
     #[test]
     fn github_repo_slug_reads_owner_and_name() {
         let slug = |url: &str| super::github_repo_slug(url);

@@ -94,7 +94,10 @@ impl FailureKind {
             // A dirty worktree is a Phase 2 stash action; until then the error
             // text tells the user to commit or stash.
             Self::DirtyWorktree => Vec::new(),
-            Self::RemoteMissing | Self::NotARepo | Self::Generic => Vec::new(),
+            // No usable `origin`: the page hides this when a remote exists
+            // (a wrong URL is not fixed by creating a second repository).
+            Self::RemoteMissing => vec![RecoveryAction::PublishToGithub],
+            Self::NotARepo | Self::Generic => Vec::new(),
         }
     }
 }
@@ -126,6 +129,8 @@ pub enum RecoveryAction {
     Retry,
     /// Push the current branch and set its upstream.
     PublishBranch,
+    /// Create a GitHub repository for this folder and add it as `origin`.
+    PublishToGithub,
 }
 
 /// A failed Git operation, ready to render.
@@ -418,6 +423,19 @@ mod tests {
         assert_eq!(
             error.recovery_actions(),
             vec![RecoveryAction::PublishBranch]
+        );
+    }
+
+    #[test]
+    fn missing_origin_suggests_publishing_to_github() {
+        let error = ActionError::from_raw(
+            "fatal: 'origin' does not appear to be a git repository\n\
+             fatal: Could not read from remote repository.",
+        );
+        assert_eq!(error.kind, FailureKind::RemoteMissing);
+        assert_eq!(
+            error.recovery_actions(),
+            vec![RecoveryAction::PublishToGithub]
         );
     }
 

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Publish to GitHub (#193).** A repository with commits but no remote now
+  shows **Publish to GitHub** in the Git page's commit bar instead of a
+  **Publish branch** that could only fail. It asks for the repository name
+  (prefilled from the folder) and whether it is private (the default), then
+  creates it through your signed-in `gh`, adds it as `origin` and pushes the
+  branch. A push that fails because there is no `origin` offers the same
+  button. **New pull request** now pushes the branch first when it has never
+  been pushed or has new commits, instead of failing in `gh`.
+
+- **GitHub at a glance on the Git page.** The tab bar now names the repository
+  (with a lock when private) and its star count: click the name to open it on
+  GitHub, or the star to star or unstar it. The branch row shows the current
+  branch's pull request as `#123` with its checks and review state, opening it
+  in one click, or **Create PR** when a pushed branch has none.
+
+- **Pull request quick actions.** Drafts get **Ready for review**, and open pull
+  requests get **Back to draft**, **Auto-merge** (merges once checks and reviews
+  pass) and, while behind their base, **Update branch**. When a check fails,
+  **Re-run failed** restarts the failed GitHub Actions jobs and **Fix with
+  agent** starts a task with the end of each failed job's log.
+
+- **Clone your own repositories.** The clone dialog lists your GitHub
+  repositories under the URL field and filters them as you type; picking one
+  fills in the URL and folder name.
+
 ## [0.2.22] - 2026-11-27
 
 - **Plugin notifications keep their level (#173).** A toast an extension raises

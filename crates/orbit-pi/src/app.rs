@@ -959,6 +959,12 @@ pub struct OrbitApp {
     clone_test_parent: Option<PathBuf>,
     clone_parent: Option<PathBuf>,
     clone_operation: Option<CloneOperation>,
+    /// The signed-in user's GitHub repositories, read through `gh` each time
+    /// the clone dialog opens; empty when `gh` is missing or signed out.
+    clone_repos: Vec<crate::gh::GhRepoEntry>,
+    clone_repos_task: Option<gpui::Task<()>>,
+    /// Re-renders the clone dialog's repository list as the URL is typed.
+    _clone_url_sub: Subscription,
     /// Create dialog: worktree name.
     worktree_name_input: Entity<ComposerInput>,
     /// Create dialog: new-branch name.
@@ -2442,6 +2448,11 @@ impl OrbitApp {
                 .with_max_lines(1)
                 .with_wrap(false)
         });
+        let clone_url_sub = cx.observe(&clone_url_input, |this, _, cx| {
+            if matches!(this.worktree_dialog, Some(WorktreeDialog::Clone)) {
+                cx.notify();
+            }
+        });
         let clone_name_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("clone-name-input")
@@ -2754,6 +2765,9 @@ impl OrbitApp {
             clone_test_parent: None,
             clone_parent: None,
             clone_operation: None,
+            clone_repos: Vec::new(),
+            clone_repos_task: None,
+            _clone_url_sub: clone_url_sub,
             worktree_name_input: worktree_name_input.clone(),
             worktree_branch_input: worktree_branch_input.clone(),
             worktree_start_input: worktree_start_input.clone(),

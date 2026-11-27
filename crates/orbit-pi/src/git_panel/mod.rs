@@ -90,6 +90,15 @@ pub type StartGithubTask = std::rc::Rc<dyn Fn(PathBuf, String, &mut Window, &mut
 
 const HISTORY_PAGE: usize = 40;
 
+/// How long the repository summary and the branch's pull request stay fresh.
+/// Tab switches and Git operations re-read them only after this, or when the
+/// branch changed; the refresh button always does.
+const GITHUB_META_TTL: Duration = Duration::from_secs(60);
+/// How much of each failed job's log "Fix with agent" hands the agent (its
+/// tail, where the failure is), and for how many failed jobs at most.
+const FIX_LOG_BYTES: usize = 12 * 1024;
+const MAX_FIX_LOGS: usize = 3;
+
 /// The most changed-file rows a commit/PR detail renders. Beyond this the
 /// list is summarized, so one enormous commit cannot stall a frame.
 const MAX_FILE_ROWS: usize = 300;
@@ -189,13 +198,16 @@ enum RefTarget {
     PrBase,
 }
 
-/// What the branch-name prompt is for.
+/// What the one-field name prompt is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum BranchPrompt {
     /// Create and check out a branch from HEAD.
     New,
     /// Rename the current branch (carries its name).
     Rename(String),
+    /// Create a GitHub repository for this folder (`gh repo create`) and add
+    /// it as `origin`. The field holds the repository name.
+    Publish,
 }
 
 /// Which New form's repository-template picker is open.
@@ -353,6 +365,16 @@ pub struct GitPanel {
     gh_detail: String,
     /// The signed-in account (login + avatar), for the branch row's chip.
     gh_user: Option<gh::GhUser>,
+    /// The GitHub repository behind the remote (stars, forks, visibility),
+    /// for the tab bar's summary. `None` until read, or when it is not one.
+    repo_info: Option<gh::GhRepo>,
+    /// A star / unstar request is in flight.
+    repo_star_busy: bool,
+    /// The checked-out branch's pull request: `None` until read (or when
+    /// GitHub could not answer), `Some(None)` when the branch has none.
+    branch_pull: Option<Option<gh::GhPull>>,
+    /// When the GitHub facts above were last read, and for which branch.
+    github_meta_at: Option<(Instant, Option<String>)>,
     /// Whether the branch row's Sync dropdown is open.
     sync_menu_open: bool,
     /// When the outside-click dismiss last fired. The chevron's click lands
@@ -457,6 +479,11 @@ pub struct GitPanel {
     ahead_behind: Option<(usize, usize)>,
     /// Whether HEAD resolves (drives "Publish branch" on a fresh branch).
     has_commits: bool,
+    /// Whether the repository has any remote. Without one, pushing has
+    /// nowhere to go, so the page offers Publish to GitHub instead.
+    has_remote: bool,
+    /// The Publish to GitHub prompt's visibility choice (private by default).
+    publish_private: bool,
     branches: Vec<git::BranchEntry>,
     /// Branches most recently checked out (from the HEAD reflog), newest
     /// first: the picker's "Recent branches" section.
@@ -679,6 +706,10 @@ impl GitPanel {
             sync_menu_open: false,
             sync_menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
             gh_probed: false,
+            repo_info: None,
+            repo_star_busy: false,
+            branch_pull: None,
+            github_meta_at: None,
             github_new_issues: 0,
             github_new_pulls: 0,
             issues: Vec::new(),
@@ -738,6 +769,10 @@ impl GitPanel {
             branch: None,
             ahead_behind: None,
             has_commits: false,
+            // Assume a remote until the first read says otherwise, so a
+            // repository with one never flashes the Publish action.
+            has_remote: true,
+            publish_private: true,
             branches: Vec::new(),
             recent_branches: Vec::new(),
             branch_menu_open: false,
@@ -923,6 +958,9 @@ impl GitPanel {
             self.pr_template = None;
             self.template_menu = None;
             self.gh_probed = false;
+            self.repo_info = None;
+            self.branch_pull = None;
+            self.github_meta_at = None;
             if self.open {
                 self.refresh_all(cx);
             }
@@ -1330,6 +1368,7 @@ impl GitPanel {
                     git::remote_web(&cwd),
                     git_ops::list_refs(&cwd),
                     git_ops::list_stashes(&cwd),
+                    !git_ops::list_remotes(&cwd).is_empty(),
                 ))
             },
             |panel, result, cx| {
@@ -1342,8 +1381,10 @@ impl GitPanel {
                     remote_web,
                     refs,
                     stashes,
+                    has_remote,
                 )) = result
                 {
+                    panel.has_remote = has_remote;
                     panel.branch = branch;
                     panel.ahead_behind = ahead_behind;
                     panel.branches = branches;
@@ -1352,6 +1393,7 @@ impl GitPanel {
                     panel.remote_web = remote_web;
                     panel.refs = refs;
                     panel.stashes = stashes;
+                    panel.refresh_github_meta(false, cx);
                 }
                 cx.notify();
             },
@@ -1388,9 +1430,209 @@ impl GitPanel {
                     panel.gh_user = user;
                 }
                 panel.gh_probed = true;
+                // A fresh probe (first open, or the refresh button) re-reads
+                // the repository summary and the branch's pull request.
+                panel.refresh_github_meta(true, cx);
                 cx.notify();
             },
         );
+    }
+
+    // ── repository summary + the branch's pull request ─────────────────
+
+    /// Read the repository summary and the checked-out branch's pull request
+    /// through `gh`. Skipped while signed out or without a remote; otherwise
+    /// throttled to [`GITHUB_META_TTL`] per branch unless `force`.
+    fn refresh_github_meta(&mut self, force: bool, cx: &mut Context<Self>) {
+        if !self.gh_authenticated || !self.has_remote {
+            self.repo_info = None;
+            self.branch_pull = None;
+            return;
+        }
+        let fresh = self.github_meta_at.as_ref().is_some_and(|(at, branch)| {
+            at.elapsed() < GITHUB_META_TTL && *branch == self.branch
+        });
+        if fresh && !force {
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        self.github_meta_at = Some((Instant::now(), self.branch.clone()));
+        let need_repo = force || self.repo_info.is_none();
+        self.spawn_data(
+            cx,
+            move || {
+                let repo = need_repo.then(|| gh::repo_info(&cwd).ok()).flatten();
+                Ok((repo, gh::pull_for_branch(&cwd).ok()))
+            },
+            move |panel, result, cx| {
+                if let Ok((repo, pull)) = result {
+                    if need_repo {
+                        panel.repo_info = repo;
+                    }
+                    panel.branch_pull = pull;
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Star or unstar the repository with the user's own `gh` account.
+    fn toggle_repo_star(&mut self, cx: &mut Context<Self>) {
+        if self.repo_star_busy {
+            return;
+        }
+        let Some(repo) = self.repo_info.as_ref() else { return };
+        let Some((owner, name)) = repo.slug() else { return };
+        let target = !repo.starred;
+        self.repo_star_busy = true;
+        cx.notify();
+        self.spawn_data(
+            cx,
+            move || gh::set_repo_starred(&owner, &name, target).map(|()| target),
+            |panel, result, cx| {
+                panel.repo_star_busy = false;
+                match result {
+                    Ok(starred) => {
+                        if let Some(repo) = panel.repo_info.as_mut() {
+                            repo.starred = starred;
+                            repo.stars = if starred {
+                                repo.stars + 1
+                            } else {
+                                repo.stars.saturating_sub(1)
+                            };
+                        }
+                    }
+                    Err(err) => panel.set_failure(err),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Show the Pull requests tab, as clicking its tab does.
+    fn show_pulls_tab(&mut self, cx: &mut Context<Self>) {
+        if self.tab != GitTab::Pulls {
+            self.tab = GitTab::Pulls;
+            self.refresh_all(cx);
+        }
+    }
+
+    /// Open the branch's pull request in the Pull requests tab.
+    fn open_branch_pull(&mut self, number: u64, cx: &mut Context<Self>) {
+        self.show_pulls_tab(cx);
+        self.open_pull(number, cx);
+        cx.notify();
+    }
+
+    /// Start a pull request for the checked-out branch.
+    fn create_branch_pull(&mut self, cx: &mut Context<Self>) {
+        self.show_pulls_tab(cx);
+        self.open_pull_new(cx);
+        cx.notify();
+    }
+
+    // ── pull request quick actions ─────────────────────────────────────
+
+    fn set_pull_ready(&mut self, ready: bool, cx: &mut Context<Self>) {
+        let Some(number) = self.pr_detail.as_ref().map(|pull| pull.number) else {
+            return;
+        };
+        let Some(cwd) = self.cwd() else { return };
+        self.github_meta_at = None;
+        self.run_pr_op(move || gh::set_pull_ready(&cwd, number, ready), cx);
+    }
+
+    fn toggle_auto_merge(&mut self, cx: &mut Context<Self>) {
+        let Some(pull) = self.pr_detail.as_ref() else { return };
+        let number = pull.number;
+        let method = pull.auto_merge.is_none().then_some(self.pr_merge_method);
+        let Some(cwd) = self.cwd() else { return };
+        self.run_pr_op(move || gh::set_auto_merge(&cwd, number, method), cx);
+    }
+
+    fn update_pull_branch(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.pr_detail.as_ref().map(|pull| pull.number) else {
+            return;
+        };
+        let Some(cwd) = self.cwd() else { return };
+        self.run_pr_op(move || gh::update_pull_branch(&cwd, number), cx);
+    }
+
+    // ── CI: re-run and fix with the agent ──────────────────────────────
+
+    /// Re-run the failed jobs of every failed GitHub Actions run on the
+    /// open pull request.
+    fn rerun_failed_checks(&mut self, cx: &mut Context<Self>) {
+        let Some(pull) = self.pr_detail.as_ref() else { return };
+        let mut runs: Vec<u64> = failed_actions(pull)
+            .into_iter()
+            .map(|(_, run, _)| run)
+            .collect();
+        runs.sort_unstable();
+        runs.dedup();
+        if runs.is_empty() {
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        self.run_pr_op(
+            move || {
+                for run in &runs {
+                    gh::rerun_failed(&cwd, *run)?;
+                }
+                Ok(tr!("git_panel.checks_rerun_started"))
+            },
+            cx,
+        );
+    }
+
+    /// Start an agent task that fixes the failing checks, seeded with the
+    /// failed jobs' logs. Only offered while the pull request's branch is
+    /// checked out, so the agent edits the right branch.
+    fn fix_checks_with_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pull) = self.pr_detail.as_ref() else { return };
+        let Some(start) = self.on_start_github_task.clone() else { return };
+        let Some(workspace) = self.workspace.clone() else {
+            self.set_status(tr!("git_panel.status_no_workspace"));
+            cx.notify();
+            return;
+        };
+        let mut jobs = failed_actions(pull);
+        jobs.truncate(MAX_FIX_LOGS);
+        let others: Vec<String> = pull
+            .checks
+            .iter()
+            .filter(|check| check.bucket_kind() == gh::CheckBucket::Failed)
+            .filter(|check| gh::actions_ids(check.link()).is_none())
+            .map(|check| check.label().to_string())
+            .collect();
+        let url = pull.url.clone();
+        let head = pull.head_ref.clone();
+        let cwd = workspace.clone();
+        self.pr_busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let logs = cx
+                .background_executor()
+                .spawn(async move {
+                    jobs.into_iter()
+                        .map(|(name, run, job)| {
+                            let log = gh::failed_log(&cwd, run, job, FIX_LOG_BYTES)
+                                .unwrap_or_else(|err| err);
+                            (name, log)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let prompt = fix_checks_prompt(&url, &head, &logs, &others);
+            let _ = this.update_in(cx, |panel, window, cx| {
+                panel.pr_busy = false;
+                cx.notify();
+                // Deferred: starting a task updates the app, which owns
+                // this panel.
+                window.defer(cx, move |window, cx| start(workspace, prompt, window, cx));
+            });
+        })
+        .detach();
     }
 
     // ── issues ─────────────────────────────────────────────────────────
@@ -2399,11 +2641,20 @@ impl GitPanel {
             .map(|template| template.labels.clone())
             .unwrap_or_default();
         let Some(cwd) = self.cwd() else { return };
+        // `gh pr create` runs without prompts, so it cannot offer to push an
+        // unpublished branch itself: publish (no upstream) or push (ahead)
+        // first. A push failure lands in the failure banner like any push.
+        let needs_push = self.ahead_behind.is_none_or(|(ahead, _)| ahead > 0);
         self.pr_busy = true;
         cx.notify();
         self.spawn_data(
             cx,
-            move || gh::create_pull(&cwd, &title, &body, &base, draft, &labels),
+            move || {
+                if needs_push {
+                    git::push(&cwd)?;
+                }
+                gh::create_pull(&cwd, &title, &body, &base, draft, &labels)
+            },
             |panel, result, cx| {
                 panel.pr_busy = false;
                 match result {
@@ -2421,6 +2672,10 @@ impl GitPanel {
                     Err(err) => panel.set_failure(err),
                 }
                 panel.refresh_pulls(cx);
+                // The push above may have set the upstream or cleared `ahead`,
+                // and the branch now has a pull request to show.
+                panel.github_meta_at = None;
+                panel.refresh_branch(cx);
                 cx.notify();
             },
         );
@@ -3622,6 +3877,9 @@ impl GitPanel {
             RecoveryAction::Merge => self.run_git_action(GitAction::Merge, None, cx),
             RecoveryAction::Rebase => self.run_git_action(GitAction::Rebase, None, cx),
             RecoveryAction::PublishBranch => self.run_git_action(GitAction::Push, None, cx),
+            RecoveryAction::PublishToGithub => {
+                self.open_branch_prompt(BranchPrompt::Publish, window, cx)
+            }
             RecoveryAction::ForceWithLease => {
                 // Force pushing rewrites the remote; always confirm first.
                 self.pending_confirm = Some(PendingConfirm::ForcePush);
@@ -3788,10 +4046,24 @@ impl GitPanel {
         let text = match &prompt {
             BranchPrompt::New => String::new(),
             BranchPrompt::Rename(name) => name.clone(),
+            BranchPrompt::Publish => self
+                .cwd()
+                .and_then(|cwd| cwd.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .map(|folder| gh::suggested_repo_name(&folder))
+                .unwrap_or_default(),
         };
+        let placeholder = match &prompt {
+            BranchPrompt::Publish => "git_panel.repo_name_placeholder",
+            _ => "git_panel.branch_name_placeholder",
+        };
+        if prompt == BranchPrompt::Publish {
+            self.publish_private = true;
+        }
         let len = self.branch_input.read(cx).text().len();
-        self.branch_input
-            .update(cx, |input, cx| input.replace_range(0..len, &text, cx));
+        self.branch_input.update(cx, |input, cx| {
+            input.set_placeholder_key(placeholder, cx);
+            input.replace_range(0..len, &text, cx);
+        });
         self.branch_prompt = Some(prompt);
         self.branch_menu_open = false;
         self.branch_more_open = false;
@@ -3822,6 +4094,24 @@ impl GitPanel {
             ),
             BranchPrompt::Rename(from) => {
                 self.run_operation(move |cwd| git_ops::rename_branch(cwd, &from, &name), cx)
+            }
+            BranchPrompt::Publish => {
+                if !gh::valid_repo_name(&name) {
+                    self.set_failure(tr!("git_panel.repo_name_invalid"));
+                    cx.notify();
+                    return;
+                }
+                let private = self.publish_private;
+                self.run_operation(
+                    move |cwd| {
+                        // `--push` needs a commit; an unborn HEAD publishes
+                        // the empty repository and the first push sets it up.
+                        let push = git::has_commits(cwd);
+                        gh::create_repo(cwd, &name, private, push)?;
+                        Ok(tr!("git_panel.published_github", name = name))
+                    },
+                    cx,
+                )
             }
         }
     }
@@ -4194,6 +4484,7 @@ impl GitPanel {
                 }))
             }))
             .child(div().flex_1())
+            .children(self.repo_summary(theme, cx))
             .into_any_element()
     }
 
@@ -4211,6 +4502,7 @@ impl GitPanel {
             .border_b_1()
             .border_color(theme.hairline())
             .child(self.branch_controls(theme, cx))
+            .children(self.branch_pull_chip(theme, cx))
             .child(div().flex_1())
             .children(
                 self.status
@@ -4230,6 +4522,123 @@ impl GitPanel {
             .child(self.branch_more_controls(theme, cx))
             .child(self.sync_controls(theme, cx))
             .into_any_element()
+    }
+
+    /// The tab bar's repository summary: `owner/name`, which opens the
+    /// repository on GitHub, and its star count, which stars or unstars it.
+    /// Visibility, language, forks, the default branch and the description
+    /// sit in the tooltip, so the strip stays one quiet line.
+    fn repo_summary(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let repo = self.repo_info.as_ref()?;
+        let url = repo.url.clone();
+        let glyph = ButtonSize::Default.icon_size().px(&theme);
+        Some(
+            div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .child(
+                    ChipButton::new("git-repo-chip", ChipStyle::Quiet)
+                        // A link, not a menu: no dropdown caret.
+                        .caret(false)
+                        .leading(icon(
+                            if repo.is_private() {
+                                "icons/lock.svg"
+                            } else {
+                                "icons/github.svg"
+                            },
+                            glyph,
+                            theme.text_muted,
+                        ))
+                        .label(repo.name_with_owner.clone())
+                        .label_max_w(px(220.))
+                        .shrink()
+                        .tip(repo_summary_tip(repo))
+                        .on_click(
+                            &theme,
+                            cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)),
+                        ),
+                )
+                .child(
+                    ChipButton::new("git-repo-star", ChipStyle::Quiet)
+                        .caret(false)
+                        .leading(icon(
+                            "icons/star.svg",
+                            glyph,
+                            if repo.starred {
+                                theme.accent_text
+                            } else {
+                                theme.text_muted
+                            },
+                        ))
+                        .label(gh::compact_count(repo.stars))
+                        .disabled(self.repo_star_busy)
+                        .tip(if repo.starred {
+                            tr!("git_panel.repo_unstar")
+                        } else {
+                            tr!("git_panel.repo_star")
+                        })
+                        .on_click(
+                            &theme,
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_repo_star(cx)),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The branch row's pull-request chip: `#123` with its state, and its
+    /// checks at the trailing edge; the title, checks and review decision in
+    /// the tooltip. A pushed branch without one offers **Create PR** instead.
+    fn branch_pull_chip(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let glyph = ButtonSize::Default.icon_size().px(&theme);
+        match self.branch_pull.as_ref()? {
+            Some(pull) => {
+                let number = pull.number;
+                let (state_glyph, state_color) = pull_state_mark(pull, theme);
+                let checks = pull.checks_summary().map(|bucket| check_status_parts(bucket, theme));
+                let mut tip = vec![pull.title.clone()];
+                tip.extend(checks.as_ref().map(|(label, _, _)| label.clone()));
+                tip.extend(review_decision_label(pull.review_decision.as_deref()));
+                let mut chip = ChipButton::new("git-branch-pull", ChipStyle::Outlined { inset: false })
+                    // Opens the pull request, not a menu: no dropdown caret.
+                    .caret(false)
+                    .leading(icon(state_glyph, glyph, state_color))
+                    .label(format!("#{number}"))
+                    .tip(tip.join(" · "));
+                if let Some((_, color, check_glyph)) = checks {
+                    chip = chip.trailing(icon(check_glyph, glyph, color));
+                }
+                Some(
+                    chip.on_click(
+                        &theme,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.open_branch_pull(number, cx)
+                        }),
+                    )
+                    .into_any_element(),
+                )
+            }
+            None => {
+                let branch = self.branch.as_deref()?;
+                // Only a pushed branch other than the base can open one.
+                if self.ahead_behind.is_none() || branch == self.default_base() {
+                    return None;
+                }
+                Some(
+                    ChipButton::new("git-branch-create-pull", ChipStyle::Quiet)
+                        .caret(false)
+                        .icon("icons/git-pull-request.svg")
+                        .label(tr!("git_panel.create_pr"))
+                        .on_click(
+                            &theme,
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.create_branch_pull(cx)),
+                        )
+                        .into_any_element(),
+                )
+            }
+        }
     }
 
     /// The signed-in GitHub account at the right of the branch row: a quiet
@@ -4506,6 +4915,11 @@ impl GitPanel {
         if self.last_action.is_none() {
             actions.retain(|action| *action != RecoveryAction::Retry);
         }
+        // With a remote configured, "remote not found" means a wrong URL or
+        // missing access; creating another repository would not fix that.
+        if self.has_remote {
+            actions.retain(|action| *action != RecoveryAction::PublishToGithub);
+        }
         let copy = IconButton::new("git-failure-copy", "icons/copy.svg")
             .size(ButtonSize::Compact)
             .ink(theme.text_secondary)
@@ -4704,7 +5118,14 @@ impl GitPanel {
             None => (0, false),
         };
         let behind = self.ahead_behind.map(|(_, behind)| behind).unwrap_or(0);
-        let actions = bar_actions(has_changes, ahead, has_upstream, self.has_commits, behind);
+        let actions = bar_actions(
+            has_changes,
+            ahead,
+            has_upstream,
+            self.has_commits,
+            behind,
+            self.has_remote,
+        );
         let commit_and_push_label = tr!("git_panel.commit_and_push");
         let commit_label = if self.generating {
             tr!("git_panel.generating_short")
@@ -4809,6 +5230,31 @@ impl GitPanel {
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.run_git_action(GitAction::Push, None, cx)
+                    }),
+                )),
+            ),
+            BarActions::PublishGithub => (
+                Some(status_text(tr!("git_panel.no_remote")).into_any_element()),
+                Some(action_button(
+                    "git-publish-github",
+                    &tr!("git_panel.publish_github"),
+                    Some(
+                        icon(
+                            "icons/github.svg",
+                            ButtonSize::Medium.icon_size().px(&theme),
+                            if busy {
+                                theme.text_muted
+                            } else {
+                                theme.action_fg
+                            },
+                        )
+                        .into_any_element(),
+                    ),
+                    true,
+                    busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_branch_prompt(BranchPrompt::Publish, window, cx)
                     }),
                 )),
             ),
@@ -7208,6 +7654,7 @@ impl GitPanel {
                 }
                 checks = checks.child(row);
             }
+            checks = checks.children(self.check_actions(pull, theme, cx));
             content = content.child(checks);
         }
 
@@ -7412,23 +7859,21 @@ impl GitPanel {
                         cx.notify();
                     }),
                 ))
+                .children(pull.auto_merge.is_some().then(|| {
+                    div()
+                        .w_full()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!("git_panel.pr_auto_merge_note"))
+                }))
                 .child(
-                    div().w_full().flex().justify_center().child(action_button(
-                        "git-pr-merge",
-                        &tr!("git_panel.merge_pull"),
-                        Some(
-                            icon(
-                                "icons/git-merge.svg",
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                theme.action_fg,
-                            )
-                            .into_any_element(),
-                        ),
-                        true,
-                        self.pr_busy,
-                        theme,
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.request_merge_pull(cx)),
-                    )),
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_wrap()
+                        .justify_center()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .children(self.merge_actions(pull, theme, cx)),
                 );
             content = content.child(merge_row);
         } else {
@@ -7546,6 +7991,24 @@ impl GitPanel {
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| this.checkout_pull(cx)),
                 ))
+                .children((pull.is_open() && !pull.is_draft).then(|| {
+                    action_button(
+                        "git-pr-to-draft",
+                        &tr!("git_panel.pr_to_draft"),
+                        Some(
+                            icon(
+                                "icons/git-pull-request.svg",
+                                ButtonSize::Medium.icon_size().px(&theme),
+                                theme.text_secondary,
+                            )
+                            .into_any_element(),
+                        ),
+                        false,
+                        self.pr_busy,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.set_pull_ready(false, cx)),
+                    )
+                }))
                 .children(pull.is_open().then(|| {
                     action_button(
                         "git-pr-close",
@@ -7567,6 +8030,125 @@ impl GitPanel {
         );
         github_detail_layout("git-pr-detail-scroll", header, details, content, theme)
             .into_any_element()
+    }
+
+    /// The merge card's buttons. A draft can only become ready for review;
+    /// otherwise **Update branch** (only while behind the base), auto-merge
+    /// on or off with the chosen method, and **Merge**, the primary action.
+    fn merge_actions(
+        &self,
+        pull: &gh::GhPull,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let size = ButtonSize::Medium.icon_size().px(&theme);
+        if pull.is_draft {
+            return vec![action_button(
+                "git-pr-ready",
+                &tr!("git_panel.pr_ready"),
+                Some(icon("icons/eye.svg", size, theme.action_fg).into_any_element()),
+                true,
+                self.pr_busy,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.set_pull_ready(true, cx)),
+            )];
+        }
+        let mut actions = Vec::new();
+        if pull.merge_state_status.as_deref() == Some("BEHIND") {
+            actions.push(action_button(
+                "git-pr-update-branch",
+                &tr!("git_panel.pr_update_branch"),
+                Some(icon("icons/arrow-down.svg", size, theme.text_secondary).into_any_element()),
+                false,
+                self.pr_busy,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.update_pull_branch(cx)),
+            ));
+        }
+        actions.push(action_button(
+            "git-pr-auto-merge",
+            &if pull.auto_merge.is_some() {
+                tr!("git_panel.pr_auto_merge_disable")
+            } else {
+                tr!("git_panel.pr_auto_merge_enable")
+            },
+            Some(icon("icons/clock.svg", size, theme.text_secondary).into_any_element()),
+            false,
+            self.pr_busy,
+            theme,
+            cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_auto_merge(cx)),
+        ));
+        actions.push(action_button(
+            "git-pr-merge",
+            &tr!("git_panel.merge_pull"),
+            Some(icon("icons/git-merge.svg", size, theme.action_fg).into_any_element()),
+            true,
+            self.pr_busy,
+            theme,
+            cx.listener(|this, _: &ClickEvent, _, cx| this.request_merge_pull(cx)),
+        ));
+        actions
+    }
+
+    /// The checks card's footer when a check failed: re-run the failed
+    /// Actions jobs, or hand their logs to the agent. Fixing needs the pull
+    /// request's branch checked out, and says so instead of guessing.
+    fn check_actions(
+        &self,
+        pull: &gh::GhPull,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let failed = pull
+            .checks
+            .iter()
+            .any(|check| check.bucket_kind() == gh::CheckBucket::Failed);
+        if !failed || !pull.is_open() {
+            return None;
+        }
+        let size = ButtonSize::Medium.icon_size().px(&theme);
+        let rerunnable = !failed_actions(pull).is_empty();
+        let on_branch = self.branch.as_deref() == Some(pull.head_ref.as_str());
+        let can_fix = on_branch && self.on_start_github_task.is_some();
+        Some(
+            div()
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
+                .border_t_1()
+                .border_color(theme.hairline_subtle())
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(action_button(
+                    "git-checks-rerun",
+                    &tr!("git_panel.checks_rerun_failed"),
+                    Some(icon("icons/refresh.svg", size, theme.text_secondary).into_any_element()),
+                    false,
+                    self.pr_busy || !rerunnable,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.rerun_failed_checks(cx)),
+                ))
+                .child(action_button(
+                    "git-checks-fix",
+                    &tr!("git_panel.checks_fix_with_agent"),
+                    Some(icon("icons/magic-wand.svg", size, theme.text_secondary).into_any_element()),
+                    false,
+                    self.pr_busy || !can_fix,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.fix_checks_with_agent(window, cx)
+                    }),
+                ))
+                .children((!on_branch).then(|| {
+                    div()
+                        .min_w_0()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!("git_panel.checks_fix_needs_branch"))
+                }))
+                .into_any_element(),
+        )
     }
 
     fn pr_new_view(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -8125,7 +8707,23 @@ impl GitPanel {
                 tr!("git_panel.rename_branch_title"),
                 tr!("git_panel.rename_branch"),
             ),
+            BranchPrompt::Publish => (
+                tr!("git_panel.publish_github_title"),
+                tr!("git_panel.publish"),
+            ),
         };
+        let private_toggle = (*prompt == BranchPrompt::Publish).then(|| {
+            github_check_toggle(
+                "git-publish-private",
+                &tr!("git_panel.publish_private"),
+                self.publish_private,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.publish_private = !this.publish_private;
+                    cx.notify();
+                }),
+            )
+        });
         let card = div()
             .modal_width(px(420.))
             .elevation_2(&theme)
@@ -8146,6 +8744,7 @@ impl GitPanel {
             .child(
                 TextField::new(self.branch_input.clone(), theme.surface_secondary).render(&theme),
             )
+            .children(private_toggle)
             .child(
                 div()
                     .mt(DynamicSpacing::Base02.px(&theme))
@@ -8728,6 +9327,8 @@ enum BarActions {
     Merge { behind: usize },
     /// Clean and in sync: a quiet status label.
     UpToDate,
+    /// Clean with commits but no remote at all: create a GitHub repository.
+    PublishGithub,
 }
 
 fn bar_actions(
@@ -8736,9 +9337,12 @@ fn bar_actions(
     has_upstream: bool,
     has_commits: bool,
     behind: usize,
+    has_remote: bool,
 ) -> BarActions {
     if has_changes {
         BarActions::Commit
+    } else if !has_remote && has_commits {
+        BarActions::PublishGithub
     } else if !has_upstream && has_commits {
         BarActions::Push { publish: true }
     } else if ahead > 0 && behind > 0 {
@@ -8773,6 +9377,9 @@ fn recovery_button(action: RecoveryAction, theme: Theme, cx: &Context<GitPanel>)
         RecoveryAction::Reauthenticate => ("git-recover-reauth", "git_panel.recover_reauth", false),
         RecoveryAction::Retry => ("git-recover-retry", "git_panel.recover_retry", true),
         RecoveryAction::PublishBranch => ("git-recover-publish", "git_panel.recover_publish", true),
+        RecoveryAction::PublishToGithub => {
+            ("git-recover-publish-github", "git_panel.publish_github", true)
+        }
     };
     action_button(
         id,
@@ -9974,6 +10581,91 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
 }
 
 /// A small uppercase section header inside a bordered card.
+/// The glyph and colour that say a pull request's state on the branch chip.
+fn pull_state_mark(pull: &gh::GhPull, theme: Theme) -> (&'static str, Hsla) {
+    if pull.is_merged() {
+        ("icons/git-merge.svg", theme.accent_text)
+    } else if !pull.is_open() {
+        ("icons/circle-x.svg", theme.error)
+    } else if pull.is_draft {
+        ("icons/git-pull-request.svg", theme.text_muted)
+    } else {
+        ("icons/git-pull-request.svg", theme.success)
+    }
+}
+
+/// The review decision in words, for tooltips.
+fn review_decision_label(decision: Option<&str>) -> Option<String> {
+    match decision? {
+        "APPROVED" => Some(tr!("git_panel.review_approved")),
+        "CHANGES_REQUESTED" => Some(tr!("git_panel.review_changes")),
+        "REVIEW_REQUIRED" => Some(tr!("git_panel.review_required")),
+        _ => None,
+    }
+}
+
+/// The repository summary's tooltip: the description, then visibility,
+/// language, forks and default branch on one line.
+fn repo_summary_tip(repo: &gh::GhRepo) -> String {
+    let mut facts = vec![if repo.is_private() {
+        tr!("git_panel.repo_private")
+    } else {
+        tr!("git_panel.repo_public")
+    }];
+    if let Some(language) = repo.language.as_ref().filter(|l| !l.name.is_empty()) {
+        facts.push(language.name.clone());
+    }
+    facts.push(tr!("git_panel.repo_forks", count = repo.forks));
+    if let Some(branch) = repo.default_branch.as_ref().filter(|b| !b.name.is_empty()) {
+        facts.push(tr!("git_panel.repo_default_branch", name = branch.name.clone()));
+    }
+    let line = facts.join(" · ");
+    match repo.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        Some(description) => format!("{description}\n{line}"),
+        None => line,
+    }
+}
+
+/// The failed checks that are GitHub Actions jobs: `(name, run, job)`.
+fn failed_actions(pull: &gh::GhPull) -> Vec<(String, u64, Option<u64>)> {
+    pull.checks
+        .iter()
+        .filter(|check| check.bucket_kind() == gh::CheckBucket::Failed)
+        .filter_map(|check| {
+            gh::actions_ids(check.link()).map(|(run, job)| (check.label().to_string(), run, job))
+        })
+        .collect()
+}
+
+/// The prompt that asks the agent to fix a pull request's failing checks.
+/// Agent prompts stay in English (they go to the model, like "Fix this
+/// issue"); `logs` are `(check, failed-step log tail)`, `others` the failed
+/// checks that are not Actions jobs and have no log to read.
+fn fix_checks_prompt(
+    url: &str,
+    branch: &str,
+    logs: &[(String, String)],
+    others: &[String],
+) -> String {
+    let mut prompt = format!(
+        "Fix the failing CI checks on pull request {url} (branch `{branch}`, which is checked out here).\n\n\
+         Read each failure, find the cause in the code, fix it, and run the relevant check locally when you can."
+    );
+    for (name, log) in logs {
+        prompt.push_str(&format!(
+            "\n\n## Failed check: {name}\n\nEnd of the failed steps' log:\n\n```\n{}\n```",
+            log.trim_end()
+        ));
+    }
+    if !others.is_empty() {
+        prompt.push_str(&format!(
+            "\n\nAlso failing, with no log available here: {}.",
+            others.join(", ")
+        ));
+    }
+    prompt
+}
+
 fn section_label(theme: Theme, label: &str) -> AnyElement {
     div()
         .px(DynamicSpacing::Base12.px(&theme))
@@ -11639,6 +12331,7 @@ mod tests {
             additions: 24,
             deletions: 4,
             changed_files: 1,
+            auto_merge: None,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-02T00:00:00Z".into(),
             url: "https://github.com/orbit/a-repository-with-a-long-name/pull/149".into(),
@@ -11887,6 +12580,7 @@ mod tests {
                         additions: 110,
                         deletions: 108,
                         changed_files: 2,
+                        auto_merge: None,
                         created_at: "2026-01-01T00:00:00Z".into(),
                         updated_at: "2026-01-02T00:00:00Z".into(),
                         url: "https://github.com/imrj05/orbit/pull/121".into(),
@@ -12010,6 +12704,7 @@ mod tests {
                 additions: 93,
                 deletions: 103,
                 changed_files: 2,
+                auto_merge: None,
                 created_at: "2026-01-01T00:00:00Z".into(),
                 updated_at: "2026-01-02T00:00:00Z".into(),
                 url: "https://github.com/orbit/app/pull/113".into(),
@@ -12172,34 +12867,96 @@ mod tests {
     }
 
     #[test]
+    fn fix_checks_prompt_carries_each_failed_log_and_the_rest_by_name() {
+        let prompt = super::fix_checks_prompt(
+            "https://github.com/o/r/pull/7",
+            "feat/x",
+            &[("build".into(), "error[E0308]: mismatched types\n".into())],
+            &["external-ci".into()],
+        );
+        assert!(prompt.contains("https://github.com/o/r/pull/7"));
+        assert!(prompt.contains("`feat/x`"));
+        assert!(prompt.contains("## Failed check: build"));
+        assert!(prompt.contains("```\nerror[E0308]: mismatched types\n```"));
+        assert!(prompt.contains("no log available here: external-ci."));
+        let no_others = super::fix_checks_prompt("u", "b", &[], &[]);
+        assert!(!no_others.contains("no log available"));
+    }
+
+    #[test]
+    fn repo_summary_tip_puts_the_description_above_the_facts() {
+        let repo = gh::GhRepo {
+            name_with_owner: "o/r".into(),
+            description: Some("  A workbench  ".into()),
+            visibility: "PRIVATE".into(),
+            forks: 2,
+            language: Some(gh::GhNamed { name: "Rust".into() }),
+            default_branch: Some(gh::GhNamed { name: "main".into() }),
+            ..Default::default()
+        };
+        let tip = super::repo_summary_tip(&repo);
+        let (description, facts) = tip.split_once('\n').expect("two lines");
+        assert_eq!(description, "A workbench");
+        assert!(facts.contains("Rust"), "{facts}");
+        assert!(facts.contains("main"), "{facts}");
+        let bare = gh::GhRepo {
+            visibility: "PUBLIC".into(),
+            ..Default::default()
+        };
+        assert!(!super::repo_summary_tip(&bare).contains('\n'));
+    }
+
+    #[test]
+    fn review_decisions_have_words() {
+        assert!(super::review_decision_label(Some("APPROVED")).is_some());
+        assert!(super::review_decision_label(Some("CHANGES_REQUESTED")).is_some());
+        assert!(super::review_decision_label(Some("REVIEW_REQUIRED")).is_some());
+        assert_eq!(super::review_decision_label(Some("")), None);
+        assert_eq!(super::review_decision_label(None), None);
+    }
+
+    #[test]
     fn bar_actions_follow_git_state() {
         // Uncommitted changes → commit actions (regardless of unpushed commits).
-        assert_eq!(bar_actions(true, 0, true, true, 0), BarActions::Commit);
-        assert_eq!(bar_actions(true, 3, true, true, 0), BarActions::Commit);
+        assert_eq!(bar_actions(true, 0, true, true, 0, true), BarActions::Commit);
+        assert_eq!(bar_actions(true, 3, true, true, 0, true), BarActions::Commit);
         // Clean with unpushed commits → Push.
         assert_eq!(
-            bar_actions(false, 2, true, true, 0),
+            bar_actions(false, 2, true, true, 0, true),
             BarActions::Push { publish: false }
         );
         // Clean, no upstream, has commits → Publish branch.
         assert_eq!(
-            bar_actions(false, 0, false, true, 0),
+            bar_actions(false, 0, false, true, 0, true),
             BarActions::Push { publish: true }
         );
         // Clean, in sync → up to date.
-        assert_eq!(bar_actions(false, 0, true, true, 0), BarActions::UpToDate);
+        assert_eq!(bar_actions(false, 0, true, true, 0, true), BarActions::UpToDate);
         // Clean, behind → Pull with the behind count.
         assert_eq!(
-            bar_actions(false, 0, true, true, 4),
+            bar_actions(false, 0, true, true, 4, true),
             BarActions::Pull { behind: 4 }
         );
         // Clean but diverged (ahead and behind) → Merge, not a doomed push.
         assert_eq!(
-            bar_actions(false, 2, true, true, 3),
+            bar_actions(false, 2, true, true, 3, true),
             BarActions::Merge { behind: 3 }
         );
         // Empty repo (no commits, no upstream) is not a publish.
-        assert_eq!(bar_actions(false, 0, false, false, 0), BarActions::UpToDate);
+        assert_eq!(bar_actions(false, 0, false, false, 0, true), BarActions::UpToDate);
+        // Clean with commits but no remote at all → Publish to GitHub, never a
+        // push to an `origin` that does not exist.
+        assert_eq!(
+            bar_actions(false, 0, false, true, 0, false),
+            BarActions::PublishGithub
+        );
+        // Uncommitted changes still lead with Commit; an empty repository with
+        // no remote has nothing to publish yet.
+        assert_eq!(bar_actions(true, 0, false, true, 0, false), BarActions::Commit);
+        assert_eq!(
+            bar_actions(false, 0, false, false, 0, false),
+            BarActions::UpToDate
+        );
     }
 
     #[test]

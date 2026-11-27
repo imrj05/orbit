@@ -29,12 +29,73 @@ removal, moving, locking, pruning — lives on the Worktrees page
 The Issues and Pull requests tabs only appear when `gh` is installed. A missing
 `gh` or a signed-out CLI renders an honest setup state instead of an empty tab.
 
+## GitHub at a glance
+
+With `gh` signed in and a remote set, two quiet chips carry what GitHub knows:
+
+- **Repository summary** (right end of the tab bar): `owner/name`, with a lock
+  when private, opens the repository; the star count beside it stars or unstars it
+  with the user's own `gh` account. Visibility, language, forks, default branch and
+  the description are in the tooltip. Read with `gh repo view --json`.
+- **Branch pull request** (branch row, after the branch chip): `#123` tinted by its
+  state, with the checks' status at the trailing edge and the title, checks and
+  review decision in the tooltip. Clicking it opens the PR in the Pull requests tab.
+  A pushed branch that is not the base and has no PR shows **Create PR** instead.
+  Read with `gh pr view` (no number: the current branch).
+
+Both are read when the page opens, on the refresh button, and when the branch
+changes; tab switches and Git operations re-read them at most once a minute
+(`GITHUB_META_TTL`). Without `gh`, signed out, or with no remote, neither shows.
+
+## Pull request quick actions
+
+The merge card follows the PR's state: a draft offers only **Ready for review**
+(`gh pr ready`); an open PR offers **Update branch** while GitHub says it is behind
+its base (`gh pr update-branch`), **Auto-merge** / **Cancel auto-merge** with the
+chosen merge method (`gh pr merge --auto` / `--disable-auto`, with a note while it
+is on), and **Merge**. **Back to draft** (`gh pr ready --undo`) sits with Checkout
+and Close in the quiet utility row.
+
+When a check failed, the checks card adds **Re-run failed** (`gh run rerun
+--failed` for each failed GitHub Actions run) and **Fix with agent**. The latter
+reads the end of each failed job's log (`gh run view --job … --log-failed`, the
+last 12 KiB of at most three jobs) and starts an agent task with the PR, its branch
+and those logs; checks that are not Actions jobs are named without a log. It is
+enabled only while the PR's branch is checked out, and says so otherwise, so the
+agent never edits the wrong branch.
+
+## Cloning your repositories
+
+The clone dialog (Worktrees page) lists up to five of the signed-in user's
+repositories under the URL field (`gh repo list`, read each time the dialog opens),
+filtered by what the field holds; picking one fills the URL and folder name. The
+list steps aside once the field holds a URL, and without `gh` the dialog is the
+plain URL form.
+
 ## Commit bar
 
 The action cluster follows Git state: uncommitted changes → **Commit** /
 **Commit and push**; clean with unpushed commits → **Push** (**Publish branch**
 when there is no upstream); clean and behind → **Pull**; diverged → **Merge**;
-otherwise a quiet "Up to date". Push/pull never touch the message. A blank
+otherwise a quiet "Up to date". A repository with commits but **no remote at
+all** shows **Publish to GitHub** instead of a push with nowhere to go.
+
+### Publish to GitHub
+
+**Publish to GitHub** opens the one-field name prompt (the branch prompt's): the
+repository name, prefilled from the folder name with characters GitHub rejects
+turned into `-`, and a **Private repository** toggle that is on by default. It
+runs `gh repo create <name> --source . --remote origin --private|--public`, plus
+`--push` when HEAD has a commit, through the user's signed-in `gh` under their own
+account. A failed push whose error is "remote not found" offers the same button in
+the failure banner, but only while no remote is configured: with a remote set, the
+error means a wrong URL or missing access, which a new repository would not fix.
+`gh` errors (name taken, signed out, missing scope) show in the banner as `gh`
+wrote them.
+
+**New pull request** pushes the branch first, publishing it when it has no
+upstream and pushing when it is ahead, because `gh pr create` runs without
+prompts and cannot offer to push an unpublished branch itself. Push/pull never touch the message. A blank
 Commit message auto-generates through `commit_message.rs`
 (`pi -p --no-tools --no-session --no-skills --no-context-files --no-approve`,
 falling back to a local `type(scope): …` heuristic that the failure banner
