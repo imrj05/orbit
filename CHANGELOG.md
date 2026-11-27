@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-11-27
+
 - **Plugin notifications keep their level (#173).** A toast an extension raises
   with `ctx.ui.notify` now shows as a warning or an error when the extension
   said so — tinted, and on screen longer — instead of every one arriving as an
@@ -3198,7 +3200,7 @@ not asked on every turn.
 - In-transcript find (⌘F) and a full-window image lightbox.
 - Native macOS app bundle, Developer-ID signed and notarizable.
 
-[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.21...HEAD
+[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.22...HEAD
 [0.0.1]: https://github.com/imrj05/orbit/releases/tag/v0.0.1
 [0.0.2]: https://github.com/imrj05/orbit/releases/tag/v0.0.2
 [0.0.3]: https://github.com/imrj05/orbit/releases/tag/v0.0.3
@@ -3240,3 +3242,4 @@ not asked on every turn.
 [0.2.19]: https://github.com/imrj05/orbit/releases/tag/v0.2.19
 [0.2.20]: https://github.com/imrj05/orbit/releases/tag/v0.2.20
 [0.2.21]: https://github.com/imrj05/orbit/releases/tag/v0.2.21
+[0.2.22]: https://github.com/imrj05/orbit/releases/tag/v0.2.22
