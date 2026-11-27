@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Plugin notifications keep their level (#173).** A toast an extension raises
+  with `ctx.ui.notify` now shows as a warning or an error when the extension
+  said so — tinted, and on screen longer — instead of every one arriving as an
+  info card. The In-app toasts switch in Settings → General still turns them
+  all off.
+
 - **Default thinking level on Providers & models.** The default-model card on
   Settings → Providers & models now has a **Thinking level** row under the
   model, offering that model's own levels. It edits the same new-session

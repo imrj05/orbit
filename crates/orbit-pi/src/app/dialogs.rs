@@ -1,4 +1,5 @@
 use super::*;
+use crate::toast::ToastKind;
 
 impl OrbitApp {
     /// Route an `extension_ui_request` from pi.
@@ -40,14 +41,18 @@ impl OrbitApp {
                     self.open_dialog(request, cx);
                 }
             }
-            // `notify` is a user-facing toast — render it as one, and follow
-            // the In-app toasts switch the way the run-finished toast does:
-            // with the switch off, no card is pushed. `setStatus` stays on the
-            // quiet transient status line.
+            // `notify` is a user-facing toast — render it as one, at the level
+            // the extension sent (`notifyType`), and follow the In-app toasts
+            // switch the way the run-finished toast does: with the switch off,
+            // no card is pushed. `setStatus` stays on the quiet transient
+            // status line.
             "notify" => {
                 if let Some(message) = value.get("message").and_then(Value::as_str) {
                     if self.notification_prefs.toasts {
-                        self.toast_info(message.to_owned());
+                        let kind = ToastKind::from_notify_type(
+                            value.get("notifyType").and_then(Value::as_str),
+                        );
+                        self.push_toast(kind, message.to_owned(), None);
                         cx.notify();
                     }
                 }
@@ -459,6 +464,26 @@ mod tests {
             app.notification_prefs.toasts = true;
             extension_notify(app, "3 plans", cx);
             assert_eq!(app.toasts.items()[0].title, "3 plans");
+        });
+    }
+
+    /// An extension's warning or error keeps its level (and with it the
+    /// longer reading time) instead of arriving as one more info card (#173).
+    #[gpui::test]
+    fn extension_notify_keeps_its_warning_and_error_level(cx: &mut gpui::TestAppContext) {
+        let app = cx.update(|cx| cx.new(OrbitApp::new));
+        app.update(cx, |app, cx| {
+            app.notification_prefs.toasts = true;
+            for (message, level) in [("Blocked", "warning"), ("Failed", "error")] {
+                app.handle_extension_ui_request(
+                    "n1".into(),
+                    "notify",
+                    &serde_json::json!({ "message": message, "notifyType": level }),
+                    cx,
+                );
+            }
+            let kinds: Vec<_> = app.toasts.items().iter().map(|t| t.kind).collect();
+            assert_eq!(kinds, [ToastKind::Warning, ToastKind::Error]);
         });
     }
 }

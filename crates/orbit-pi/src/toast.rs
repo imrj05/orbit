@@ -43,6 +43,17 @@ impl ToastKind {
             Self::Error => Duration::from_secs(8),
         }
     }
+
+    /// The card for an extension `notify`'s `notifyType` (pi's
+    /// `rpc-extension-ui.md`: `info`, `warning` or `error`, info when omitted).
+    /// Anything else stays info — an extension never earns a success card.
+    pub fn from_notify_type(notify_type: Option<&str>) -> Self {
+        match notify_type {
+            Some("warning") => Self::Warning,
+            Some("error") => Self::Error,
+            _ => Self::Info,
+        }
+    }
 }
 
 /// One queued card.
@@ -219,6 +230,16 @@ impl Toasts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_extension_notify_type_picks_the_card_kind() {
+        assert_eq!(ToastKind::from_notify_type(Some("warning")), ToastKind::Warning);
+        assert_eq!(ToastKind::from_notify_type(Some("error")), ToastKind::Error);
+        assert_eq!(ToastKind::from_notify_type(Some("info")), ToastKind::Info);
+        // pi defaults an omitted type to info; an unknown one is not promoted.
+        assert_eq!(ToastKind::from_notify_type(None), ToastKind::Info);
+        assert_eq!(ToastKind::from_notify_type(Some("success")), ToastKind::Info);
+    }
 
     #[test]
     fn repeat_push_refreshes_instead_of_stacking() {

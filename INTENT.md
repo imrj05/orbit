@@ -637,6 +637,14 @@ legacy app today:
   running window (`FindWindowW` on the app's title), restores and raises it,
   and exits, so two agents never share one session store (#173).
 
+- **Extension notifications keep their level (#173).** An extension's
+  `ctx.ui.notify` arrives as `extension_ui_request` `notify`; its `notifyType`
+  now picks the toast kind (`warning` / `error`, otherwise info — pi's own
+  default), so a plugin's warning or error is tinted and stays up for its
+  kind's longer TTL instead of passing as one more info card. The In-app
+  toasts switch still governs all of them. pi sends no extension identity
+  with a `notify`, so there is no per-plugin mute or label to offer.
+
 Every destructive action asks the same way. `ui/confirm.rs` owns one
 `ConfirmPrompt` — a blocking card whose header carries the question and the
 consequence, an optional target block naming what goes, and a Cancel /
