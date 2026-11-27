@@ -1535,28 +1535,42 @@ impl OrbitApp {
                 ))
     }
 
-    /// The shared new-session default, above the model catalog.
-    fn active_model_row(
+    /// The shared new-session default, above the model catalog: the model
+    /// and its thinking level, the same two rows (and the same persisted
+    /// `session-defaults.json`) as Settings → Agent, so either page edits one
+    /// setting. The thinking row follows the model: until one is picked it is
+    /// a disabled `pi default` chip, and its options are that model's levels.
+    fn default_model_card(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let control = self.default_model_select(theme, this, cx);
-        // The shared settings board (no `overflow_hidden`: the select's popup
-        // anchors inside the row and must escape it).
+        let model = self.default_model_select(theme, this.clone(), cx);
+        let thinking = self.default_thinking_select(theme, this, cx);
+        // The shared settings board (no `overflow_hidden`: the selects' popups
+        // anchor inside their rows and must escape it).
         div()
             .w_full()
             .debug_selector(|| "default-model-card".to_string())
             .child(self.settings_group(
                 theme,
-                vec![self.setting_row(
-                    theme,
-                    &tr!("settings.default_model"),
-                    Some(&tr!("settings.default_model_hint")),
-                    None,
-                    Some(control),
-                )],
+                vec![
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.default_model"),
+                        Some(&tr!("settings.default_model_hint")),
+                        None,
+                        Some(model),
+                    ),
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.default_thinking"),
+                        Some(&tr!("settings.default_thinking_hint")),
+                        None,
+                        Some(thinking),
+                    ),
+                ],
             ))
             .into_any_element()
     }
@@ -2482,7 +2496,7 @@ impl OrbitApp {
         }
 
         // The default remains editable even when the catalog or search is empty.
-        rows.push(self.active_model_row(theme, this.clone(), cx));
+        rows.push(self.default_model_card(theme, this.clone(), cx));
 
         // ── providers ──
         if views.is_empty() {
@@ -5592,6 +5606,7 @@ impl OrbitApp {
         let Some(model) = self.default_model_entry() else {
             return ChipButton::new("default-thinking-select", ChipStyle::Outlined { inset: false })
                 .size(SELECT_CHIP_SIZE)
+                .selector("default-thinking-select")
                 .label(tr!("settings.pi_default"))
                 .caret(false)
                 .disabled(true)

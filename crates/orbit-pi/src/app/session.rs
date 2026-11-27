@@ -78,7 +78,7 @@ const HIDDEN_CARD_DIM: f32 = 0.6;
 pub(super) const SESSION_DETAILS_W: f32 = 320.;
 pub(super) const SESSION_DETAILS_GUTTER: f32 = 12.;
 /// The details card's header row, matching the Explorer's header height.
-const SESSION_DETAILS_HEADER_H: f32 = 40.;
+pub(super) const SESSION_DETAILS_HEADER_H: f32 = 40.;
 /// One inspector row in the details panel (a minimum: rows grow with the UI
 /// font instead of clipping).
 const SESSION_DETAILS_ROW_H: f32 = 28.;
@@ -1930,6 +1930,7 @@ impl OrbitApp {
     /// Explorer, so opening it closes both.
     pub(super) fn open_session_details(&mut self, cx: &mut Context<Self>) {
         self.session_details_open = true;
+        self.subagent_dock_open = false;
         // The quota popover floats over the dock; do not leave it hanging.
         self.quota_popup_open = false;
         // One right dock at a time.
@@ -2112,6 +2113,7 @@ impl OrbitApp {
         self.usage_open = false;
         self.worktrees_open = false;
         self.session_details_open = false;
+        self.subagent_dock_open = false;
         // Files is another main-area feature; leave it for the Git card.
         self.close_files(cx);
         // Review owns the right dock and would otherwise show beside the Git
@@ -2178,6 +2180,7 @@ impl OrbitApp {
         self.close_git_for_review(cx);
         // One right dock at a time.
         self.session_details_open = false;
+        self.subagent_dock_open = false;
         self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
     }
 
@@ -2187,6 +2190,7 @@ impl OrbitApp {
         self.git_open = false;
         self.worktrees_open = false;
         self.session_details_open = false;
+        self.subagent_dock_open = false;
         // Files is another main-area feature; leave it for the Usage card.
         self.close_files(cx);
         self.usage.update(cx, |page, cx| page.open(cx));
@@ -3737,6 +3741,7 @@ impl OrbitApp {
             self.close_git_for_review(cx);
             // One right dock at a time.
             self.session_details_open = false;
+            self.subagent_dock_open = false;
         }
         self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
         cx.notify();
@@ -3840,6 +3845,7 @@ impl OrbitApp {
             // docks: opening the tree closes Review — and the session details.
             self.sidepane.update(cx, |pane, cx| pane.close(cx));
             self.session_details_open = false;
+            self.subagent_dock_open = false;
         }
         cx.notify();
     }

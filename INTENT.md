@@ -246,7 +246,9 @@ can be born on: `--provider` / `--model` / `--thinking` flags at process spawn
 (`BundledExtensions::spawn`), which cover the first session, and `set_model` /
 `set_thinking_level` RPC for every later `new_session` inside a live process.
 `switch_session` and `clone` deliberately do not override a resumed session. Settings →
-Agent exposes the model plus a thinking-level select; Providers & models exposes the same default model. The thinking options are derived from the
+Agent and Providers & models both expose the model plus a thinking-level select, on one
+board each and over the same persisted default, so either page edits one setting; the
+thinking select stays a disabled `pi default` chip until a model is picked. The thinking options are derived from the
 catalog entry exactly like pi's `getSupportedThinkingLevels` (`reasoning` +
 `thinkingLevelMap`); a model or level pi's catalog does not support is skipped, and a
 malformed file loads as no default. Per-mode defaults were deliberately dropped: mode is a
@@ -568,6 +570,22 @@ removed when a run starts.
 while the event log only grows at its end and needs no new parser — the app already turns those
 exact events into a transcript.
 
+### D25 — Subagents are their own right dock, not tabs on Review
+
+**Choice:** a delegated child opened from its card ("Open in Subagents") lands in a **Subagents**
+dock of its own (`RightDock::Subagents`): a header with the count, one entry row per opened child
+(state mark, name, elapsed, close), then the selected child's transcript. It shares the right-dock
+slot with Review, the Explorer and session details — one at a time, opening any one closes the
+others — and borrows Review's docked width (`SidePane::docked_width`), so trading the two never
+moves the chat's edge. The entries (`right_dock.rs`) still ride on the session's `Transcript`;
+whether the dock shows is the app-wide `subagent_dock_open` flag, set only by a card's open control
+or the top-bar Subagents chip, which appears once the session has an entry.
+
+**Consequence:** Review is the diff and nothing else; it no longer paints a tab strip, and the
+`DockHeader` callback that injected one is gone. A subagent's response is never filed under the
+review section (#190). Closing the last entry hides the dock instead of falling back to Review.
+Supersedes the tabbed right pane described in the D24-era status notes.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -764,14 +782,19 @@ Modelled on monocode's window glass, but on Orbit's contrast floors instead of
 fixed alphas. Unit tests cover the mode, the floors and the opaque fallbacks; the
 see-through window itself has not been looked at in the running app.
 
-The right pane is tabbed: **Review** first, then one tab per delegated child
-the reader opens from its card ("Open in side pane"). The tabs (`right_dock.rs`)
-ride on the session's `Transcript`, so parking a session parks them; whether
-the pane is *shown* stays the app-wide `SidePane` flag, and only that click sets
-it. Returning to a session therefore restores its tabs without popping a hidden
-pane open — the rule upstream needed `aafd644f` to patch in. Review paints its
-own strip through a `DockHeader` callback it asks on every paint; a subagent
-tab paints in the same `dock_shell` frame (width, resize handle, card) with
+Delegated children have their own **Subagents** right dock (D25, #190), apart
+from Review: one entry row per child the reader opens from its card ("Open in
+Subagents") — state mark, name (numbered when two share it), elapsed, close —
+under a header with the count, and the selected child's response below. The
+entries (`right_dock.rs`) ride on the session's `Transcript`, so parking a
+session parks them; whether the dock is *shown* is the app-wide
+`subagent_dock_open` flag, set only by that click or the top-bar Subagents chip
+(shown once the session has an entry). Returning to a session therefore
+restores its entries without popping a hidden dock open — the rule upstream
+needed `aafd644f` to patch in. Review, the Explorer, session details and
+Subagents trade one right-dock slot; Subagents borrows Review's docked width.
+Closing the last entry hides the dock. The selected child paints in the shared
+`dock_shell` frame (width, resize handle, card) with
 `transcript_view::render_subagent_panel`: a header (state mark, name, status
 badge, elapsed · tools · tokens · cost, a live "now" line), error and blocked
 banners, then the full task, setup and tool badges, steps and report in inset
@@ -783,8 +806,11 @@ optional `subagent/1` fields the bundled extension adds (additive per D-L),
 display only, never sent to the parent model. This is
 Orbit's own `subagent/1` delegation data, not upstream's dock, which reads the
 third-party `pi-subagents` async protocol. Covered by model tests, controller
-tests (open, hide-then-return, reload, close-last) and GPUI tests for the strip,
-the subagent view and the card's button; not yet tried by hand in the app.
+tests (open, hide-then-return, reload, close-last, Review trading the slot, the
+chip) and GPUI tests for the dock, its entries, Review without entries and the
+card's button; exercised by hand in the app (open two children, switch to Review
+and back with the chip, close an entry, close the dock). Gap: entry rows are
+pointer-driven; they are not yet keyboard stops.
 
 Transcript text selection counts its own clicks (Pi TUI's `getClickCount`:
 same block, visual line and word within 500 ms, cycling 1 → 2 → 3 → 1)
@@ -979,10 +1005,10 @@ reset to builtin. A builtin has no file of its own, so saving one writes the use
 takes precedence; the form's primary button says Create for a draft and Save for anything that
 already has a file, stays disabled until the form differs from what was loaded, and carries the
 override path in its tooltip. Leaving the page or switching settings sections with unsaved edits
-holds the navigation and names the destination it was going to before the edits are dropped. A child's side-pane tab is its live transcript (D24): the child's own pi
+holds the navigation and names the destination it was going to before the edits are dropped. A child's Subagents entry shows its live transcript (D24): the child's own pi
 events, read from the extension's event log and painted with the chat's rows, under a one-line
-status (state mark, status, elapsed); each tab wears the child's state mark, and two tabs for the
-same agent are numbered. Without a readable local log the tab keeps the summary panel. Covered by
+status (state mark, status); each entry wears the child's state mark and elapsed time, and two
+entries for the same agent are numbered. Without a readable local log the entry keeps the summary panel. Covered by
 `node --test` (log module, the tee end to end), `subagent_log` unit tests and a GPUI test for the
 transcript, the fallback and the numbered tabs; not yet tried by hand with a real delegation.
 

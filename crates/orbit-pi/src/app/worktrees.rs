@@ -61,6 +61,7 @@ impl OrbitApp {
             self.close_usage(cx);
         }
         self.session_details_open = false;
+        self.subagent_dock_open = false;
         self.settings_open = false;
         self.close_files(cx);
         self.sidepane.update(cx, |pane, cx| pane.close(cx));

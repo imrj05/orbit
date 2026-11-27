@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Default thinking level on Providers & models.** The default-model card on
+  Settings → Providers & models now has a **Thinking level** row under the
+  model, offering that model's own levels. It edits the same new-session
+  default as Settings → Agent, so the two pages never disagree; until a default
+  model is picked the row stays a disabled *pi default*.
+
+- **Subagents get their own dock, not Review's (#190).** A delegated agent
+  opened from its card ("Open in Subagents") now lands in a **Subagents** panel
+  of its own instead of a tab on the Review pane: one entry per subagent with
+  its state, name and elapsed time, and the selected one's response below. Review
+  shows the diff and nothing else. The two trade the right side at the same
+  width, a top-bar chip brings Subagents back, closing an entry falls to its
+  neighbour, and closing the last one hides the panel.
+
 - **Quote a transcript passage into the composer (#187).** Select text in the
   transcript and choose **Quote in Composer** from its right-click menu (first
   item, keyboard-reachable like the rest). The passage becomes a quote above the

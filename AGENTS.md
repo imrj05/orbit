@@ -137,8 +137,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         the layer painted from the app root, and the request/cancel/run
                         entry points every destructive surface asks through
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
-  src/app/right_dock_ui.rs  the right pane's tabs: Review + delegated subagents opened from a card
-                        (strip, controller, the subagent view in the shared `dock_shell` frame)
+  src/app/right_dock_ui.rs  the Subagents dock (D25): one entry per delegated subagent opened from
+                        a card, the selected child's view in the shared `dock_shell` frame, the
+                        top-bar chip and the controller; its own right dock, never a tab on Review
   src/app/git_activity_ui.rs  the sidebar Git button's GitHub half: the background `gh` check
                         (every 5 min + window activation), marking Issues / Pull requests seen
                         on arrival, the Settings → Privacy switch and the button's tooltip
@@ -181,8 +182,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/workspace_mark.rs per-workspace sidebar mark: curated HugeIcons + semantic tints, persisted in workspaces.json
   src/worktree.rs       Git worktree lifecycle: `WorktreeManager` (list/create/remove/move/lock/unlock/prune/repair), porcelain parsing, name validation, worktree root + `.orbit/worktree.json`
   src/worktree_setup.rs optional worktree setup script: resolution, `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, captured stdout/stderr/exit code (async host in app/worktrees.rs)
-  src/right_dock.rs     the right pane's tab model (Review + subagent tabs), per session on the
-                        transcript; never decides whether the pane is shown
+  src/right_dock.rs     the Subagents dock's entry model (no Review entry), per session on the
+                        transcript; never decides whether the dock is shown
   src/sessions.rs       reads pi's session store (PI_CODING_AGENT_SESSION_DIR, else <agent dir>/sessions; + debounced watcher)
   src/watch.rs          shared debounced fs watching (workspace tree for Review/Git)
   src/explorer/         workspace file tree + file editor
@@ -242,7 +243,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/subagents.rs      the Orbit-only half of an agent: `~/.orbit-pi/subagents.json` (enabled, pinned workflow mode, limits), lenient + atomic, preserved for unknown entry fields
   src/subagent_log.rs   a delegated child's live transcript: tails the extension's event log
                         (`~/.orbit-pi/subagent-logs/`, trusted paths only) off the UI thread and
-                        feeds pi's own events into a second `Transcript` for its side-pane tab (D24)
+                        feeds pi's own events into a second `Transcript` for its Subagents entry (D24)
   src/subagent.rs       the delegation card's pure half: parses the `subagent/1` details payload leniently and exposes the run's facts (live activity, counts, usage, elapsed); unknown shapes degrade to the generic activity card
   src/bundled_extensions.rs  materializes the bundled pi extensions (quota bridge + access guard + auto-title + workflow + subagents) under `~/.orbit-pi/`, spawns every session with `--extension`, and exports the entry points as `ORBIT_BUNDLED_EXTENSIONS` for child sessions
   src/commit_message.rs one-shot, tool-free `pi -p` conventional-commit generation
@@ -328,7 +329,7 @@ contrib/orbit-subagents-extension/  Orbit's bundled pi extension (loaded with
                         what the session mode permits; resources.js forwards the
                         inherited guardrail extensions; log.js tees each child's
                         event lines into `~/.orbit-pi/subagent-logs/` for its live
-                        tab (D24). All `node --test` covered
+                        Subagents entry (D24). All `node --test` covered
 assets/icons/           logo-icon.png app-icon source + icon.icns / icon.ico / icon.png
                         + alpha-logo.png / alpha-logo.icns (macOS debug builds)
 PRODUCT.md  INTENT.md  README.md  AGENTS.md  PRIVACY.md

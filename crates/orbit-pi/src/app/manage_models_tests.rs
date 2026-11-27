@@ -468,3 +468,64 @@ fn extra_accounts_are_their_own_rows_beside_their_provider(cx: &mut gpui::TestAp
         "an account row has no accounts panel of its own"
     );
 }
+
+/// Providers & models edits the same new-session default as Settings → Agent:
+/// the default card carries the thinking level beside the model. With no
+/// default model it is the disabled `pi default` chip; with one, it offers
+/// that model's levels. Render-only: picking a level writes the user's real
+/// `~/.orbit-pi/session-defaults.json`, so the shared select path is covered
+/// by the Agent page's controls, not exercised here.
+#[gpui::test]
+fn the_providers_default_card_carries_the_thinking_level(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let window = cx.add_empty_window();
+    let app = window.update(|_, cx| {
+        let app = test_app_in(cx);
+        app.update(cx, |app, _| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Providers;
+            app.session_default = crate::session_defaults::SessionDefault::default();
+        });
+        app
+    });
+    let draw = |window: &mut gpui::VisualTestContext| {
+        let _ = window.draw(
+            gpui::point(gpui::px(0.), gpui::px(0.)),
+            gpui::size(gpui::px(1200.), gpui::px(900.)),
+            |_, _| app.clone(),
+        );
+    };
+    let inside = |card: gpui::Bounds<gpui::Pixels>, chip: gpui::Bounds<gpui::Pixels>| {
+        chip.top() >= card.top() && chip.bottom() <= card.bottom()
+    };
+
+    draw(window);
+    let card = window.debug_bounds("default-model-card").expect("default card");
+    let model = window.debug_bounds("default-model-select").expect("model select");
+    let thinking = window
+        .debug_bounds("default-thinking-select")
+        .expect("thinking select, disabled until a model is picked");
+    assert!(inside(card, model) && inside(card, thinking), "both rows on one card");
+    assert!(thinking.top() > model.top(), "the thinking row follows the model row");
+
+    // A default model with levels: the row now offers that model's levels.
+    window.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.available_models[0].thinking_levels = vec!["low".into(), "high".into()];
+            let model = &app.available_models[0];
+            app.session_default = crate::session_defaults::SessionDefault {
+                provider: Some(model.provider.clone()),
+                model_id: Some(model.id.clone()),
+                thinking: Some("high".into()),
+            };
+            let entry = app.default_model_entry().expect("the default resolves");
+            assert_eq!(entry.thinking_levels, ["low", "high"]);
+        });
+    });
+    draw(window);
+    let card = window.debug_bounds("default-model-card").expect("default card");
+    let thinking = window
+        .debug_bounds("default-thinking-select")
+        .expect("thinking select");
+    assert!(inside(card, thinking));
+}

@@ -96,11 +96,6 @@ pub struct SidePaneResize;
 /// actions.
 pub type FileActions = std::rc::Rc<dyn Fn(&review::File, Theme) -> Option<AnyElement>>;
 
-/// The right pane's tab strip, asked for each time the pane paints so it is
-/// never stale: `None` while the session has no subagent tabs (plain Review,
-/// no strip). Installed once by the app, which owns the tabs.
-pub type DockHeader = std::rc::Rc<dyn Fn(Theme, &gpui::App) -> Option<AnyElement>>;
-
 /// Callback an embedded host installs so a grouped section's strip carries
 /// its own bulk action (the Git page's Stage all on Changes, Unstage all on
 /// Staged). It is called during render with the section's label and whether
@@ -126,8 +121,6 @@ const MAX_TURN_EXTRAS_BYTES: usize = 8 * 1024 * 1024;
 pub struct SidePane {
     /// Whether the pane is shown at all (toggled from the top bar).
     open: bool,
-    /// The app's tab strip for the docked pane (see [`DockHeader`]).
-    dock_header: Option<DockHeader>,
     /// Render as an embedded review browser instead of a docked pane: the
     /// chrome (width, resize handle, and the full-width/close controls) is
     /// dropped and width decisions use [`SidePane::available_width`], so the
@@ -239,7 +232,6 @@ impl SidePane {
             .max(PANE_MIN_W));
         Self {
             open: false,
-            dock_header: None,
             embedded: false,
             width,
             available_width: width,
@@ -304,9 +296,17 @@ impl SidePane {
         self.open
     }
 
-    /// Install the docked pane's tab strip (see [`DockHeader`]).
-    pub(crate) fn set_dock_header(&mut self, header: DockHeader) {
-        self.dock_header = Some(header);
+    /// The pane's docked width, even while Review is at Full width: the
+    /// width the Subagents dock borrows, so the two docks share one edge
+    /// and Review's Full width never spills into the other dock.
+    pub(crate) fn docked_width(&self) -> Pixels {
+        if self.full_width {
+            self.restore_width
+                .max(px(PANE_MIN_W))
+                .min(self.available_width)
+        } else {
+            self.width
+        }
     }
 
     /// Mark this instance as an embedded review browser rather than the docked
@@ -2805,22 +2805,6 @@ impl Render for SidePane {
         // leave an empty frame travelling to zero.
         let theme = *theme::get(cx);
         let body = self.body(window, theme, cx);
-        let header = self
-            .dock_header
-            .as_ref()
-            .and_then(|header| header(theme, cx));
-        let body = match header {
-            Some(header) => div()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .flex()
-                .flex_col()
-                .child(header)
-                .child(div().flex_1().min_h_0().w_full().flex().flex_col().child(body))
-                .into_any_element(),
-            None => body,
-        };
         dock_shell("side-pane", self.width, theme, body)
             .children(self.source_menu(theme, cx))
             .on_action(cx.listener(Self::on_filter_cancel))
@@ -2829,8 +2813,9 @@ impl Render for SidePane {
 }
 
 /// The docked right pane's frame: its width, the resize handle on its left
-/// edge, and the rounded card the content sits in. Review and a subagent tab
-/// share it, so switching tabs never moves an edge.
+/// edge, and the rounded card the content sits in. Review and the Subagents
+/// dock share it (and its width), so trading one for the other never moves
+/// an edge.
 pub(crate) fn dock_shell(
     id: &'static str,
     width: Pixels,

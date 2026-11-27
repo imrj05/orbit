@@ -21,7 +21,7 @@
   "rewind_picker.rs": 1,
   "sidepane.rs": 4,
   "transcript_view.rs": 6,
-  "ui/button.rs": 11,
+  "ui/button.rs": 10,
   "ui/chip.rs": 2,
   "ui/choice.rs": 1,
   "ui/rail.rs": 1,

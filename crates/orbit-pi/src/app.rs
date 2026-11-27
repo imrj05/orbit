@@ -330,6 +330,8 @@ pub(crate) enum RightDock {
     Explorer,
     Review,
     Details,
+    /// The Subagents dock: one entry per opened delegated child (#190).
+    Subagents,
 }
 
 pub(crate) use crate::ui::dialog::{ModalFocus, ReturnFocus};
@@ -1155,6 +1157,10 @@ pub struct OrbitApp {
     refreshing: bool,
     /// Whether the session-details panel is open in the right dock.
     session_details_open: bool,
+    /// Whether the Subagents dock is open in the right dock. App-wide, like
+    /// the other docks; its entries ride on the session's transcript, so the
+    /// dock shows only while the current session has one.
+    subagent_dock_open: bool,
     /// Whether the session rename dialog is open.
     session_name_editing: bool,
     session_rename_focus: ModalFocus,
@@ -1215,7 +1221,7 @@ pub struct OrbitApp {
     file_viewer: Entity<crate::explorer::FileViewer>,
     /// Bottom panel — an integrated shell (cmd-j).
     terminal_panel: Entity<TerminalPanel>,
-    /// The right pane's tab strip scroller (Review + subagent tabs).
+    /// The Subagents dock's entry list scroller.
     right_dock_scroll: ScrollHandle,
     /// Delegated children's live transcripts, keyed by their event log
     /// (see `crate::subagent_log`). Filled as the reader opens their tabs.
@@ -2289,22 +2295,13 @@ impl OrbitApp {
 
         // Right side pane: Review (git diff).
         let sidepane = cx.new(SidePane::new);
-        // The Review pane draws the session's dock tabs above itself. It asks
-        // on every paint, so a session switch or reload never leaves it stale.
-        {
-            let dock_app = cx.weak_entity();
-            sidepane.update(cx, |pane, _| {
-                pane.set_dock_header(Rc::new(move |theme, cx| {
-                    let app = dock_app.upgrade()?;
-                    app.read(cx).dock_tab_strip(&app, theme, cx)
-                }));
-            });
-        }
         let sidepane_sub = cx.observe(&sidepane, |this, pane, cx| {
-            // Review and the Explorer are mutually exclusive right docks.
-            // Catch every path that opens Review, not just the top-bar toggle.
+            // Review, the Explorer and the Subagents dock are mutually
+            // exclusive right docks. Catch every path that opens Review, not
+            // just the top-bar toggle.
             if pane.read(cx).is_open() {
                 this.project_panel.update(cx, |panel, cx| panel.close(cx));
+                this.subagent_dock_open = false;
             }
             // A full-width Review pane hides the terminal's chat column.
             this.sync_terminal_active(cx);
@@ -2360,7 +2357,12 @@ impl OrbitApp {
         // the next launch lands in the same shape. The store compares first, so
         // an unrelated notify (a terminal tab, a tree refresh) costs nothing.
         let layout_subs = vec![
-            cx.observe(&project_panel, |app: &mut Self, _, cx| {
+            cx.observe(&project_panel, |app: &mut Self, panel, cx| {
+                // The Explorer takes the right dock from the Subagents dock,
+                // whichever path opened it.
+                if panel.read(cx).is_open() {
+                    app.subagent_dock_open = false;
+                }
                 app.record_arrangement(cx);
             }),
             cx.observe(&sidepane, |app: &mut Self, _, cx| {
@@ -2830,6 +2832,7 @@ impl OrbitApp {
             host,
             refreshing: false,
             session_details_open: false,
+            subagent_dock_open: false,
             session_name_editing: false,
             session_rename_focus: ModalFocus::default(),
             session_rename_target: None,

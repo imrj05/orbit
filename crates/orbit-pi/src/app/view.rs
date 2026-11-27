@@ -557,9 +557,13 @@ impl Render for OrbitApp {
         // the Explorer; opening any one of them closes the others.
         let details_visible = self.session_details_visible(cx);
         let details_width = self.session_details_width(cx);
+        // ── Subagents (right dock) ── one entry per delegated child; it takes
+        // the slot Review would, and borrows Review's width.
+        let subagents_visible = self.subagent_dock_visible(cx);
+        let subagents_width = self.subagent_dock_width(cx);
         // A dock is always the row's last card and keeps the window's right
         // gutter itself; a page card beside it must not add a second one.
-        let dock_visible = explorer_visible || pane_visible || details_visible;
+        let dock_visible = explorer_visible || pane_visible || details_visible || subagents_visible;
         // The pane's ceiling is the window minus the sidebar and the Explorer;
         // Full width expands to it and collapses the chat column. The Explorer
         // is closed whenever the pane opens, so this is usually the sidebar's
@@ -613,7 +617,8 @@ impl Render for OrbitApp {
         // The top bar spans the whole main area, so the docks do not squeeze
         // it — compact only when the main area itself is tight.
         let compact_chrome =
-            f32::from(main_width + explorer_width + pane_width + details_width) < 720.;
+            f32::from(main_width + explorer_width + pane_width + details_width + subagents_width)
+                < 720.;
         // While a feature card is open, its title moves up into the shared top
         // bar (see `GitPanel::top_bar_leading` / `UsagePage::top_bar_leading`);
         // the card's own chrome (branch selector, filters) stays with the view
@@ -659,6 +664,9 @@ impl Render for OrbitApp {
             top_controls = top_controls.children(perf_recording_chip(&theme));
         }
         top_controls = top_controls.children(self.render_open_in_control(cx));
+        // Subagents dock — appears once this session has opened a delegated
+        // child, beside Review rather than inside it (#190).
+        top_controls = top_controls.children(self.render_subagents_control(theme, cx));
         top_controls = top_controls
             // Review dock — the side-panel toggle and the working tree's
             // change counts folded into one chip
@@ -3037,7 +3045,8 @@ impl OrbitApp {
             }
             - explorer_width
             - pane_width
-            - self.session_details_width(cx))
+            - self.session_details_width(cx)
+            - self.subagent_dock_width(cx))
         .max(px(0.))
     }
 
@@ -3050,6 +3059,29 @@ impl OrbitApp {
             && !self.settings_open
             && !self.sidepane.read(cx).is_open()
             && !self.project_panel.read(cx).is_open()
+            && !self.subagent_dock_visible(cx)
+    }
+
+    /// Whether the Subagents dock takes the right dock this frame: it is
+    /// open, this session has an entry to show, and neither Review nor the
+    /// Explorer holds the slot (opening either closes it anyway). Hidden
+    /// while Settings owns the window, like the other docks.
+    pub(super) fn subagent_dock_visible(&self, cx: &App) -> bool {
+        self.subagent_dock_open
+            && !self.transcript.dock_tabs().is_empty()
+            && !self.settings_open
+            && !self.sidepane.read(cx).is_open()
+            && !self.project_panel.read(cx).is_open()
+    }
+
+    /// The width the Subagents dock takes from the main area: Review's docked
+    /// width, so trading one dock for the other never moves the chat's edge.
+    pub(super) fn subagent_dock_width(&self, cx: &App) -> Pixels {
+        if self.subagent_dock_visible(cx) {
+            self.sidepane.read(cx).docked_width()
+        } else {
+            px(0.)
+        }
     }
 
     /// Whether there is a session to describe. The new-task page (no
@@ -3072,7 +3104,7 @@ impl OrbitApp {
 
     /// The right dock's slot, sliding.
     ///
-    /// Review (or a subagent tab), the Explorer and session details all live in
+    /// Review, the Subagents dock, the Explorer and session details all live in
     /// this one slot — `*_visible` makes them mutually exclusive — so they share
     /// one slide, one width and one edge. `DESIGN.md` §Motion System names the
     /// animated property for a panel's open and close as *the panel's own
@@ -3103,12 +3135,15 @@ impl OrbitApp {
             && self.dependencies_ready()
             && self.remote.is_none();
         let details_visible = self.session_details_visible(cx);
-        let open = explorer_visible || pane_visible || details_visible;
+        let subagents_visible = self.subagent_dock_visible(cx);
+        let open = explorer_visible || pane_visible || details_visible || subagents_visible;
 
         let slot = if explorer_visible {
             RightDock::Explorer
         } else if pane_visible {
             RightDock::Review
+        } else if subagents_visible {
+            RightDock::Subagents
         } else if details_visible {
             RightDock::Details
         } else {
@@ -3126,6 +3161,7 @@ impl OrbitApp {
             RightDock::Explorer => self.project_panel.read(cx).width(),
             RightDock::Review => self.sidepane.read(cx).width(),
             RightDock::Details => px(SESSION_DETAILS_GUTTER + SESSION_DETAILS_W),
+            RightDock::Subagents => self.sidepane.read(cx).docked_width(),
             RightDock::None => px(0.),
         };
 
@@ -3142,14 +3178,12 @@ impl OrbitApp {
             &theme,
             || match slot {
                 RightDock::Explorer => self.project_panel.clone().into_any_element(),
-                // A subagent tab paints in the same frame as Review; Review
-                // paints itself, with the tab strip.
-                RightDock::Review => match self.transcript.dock_tabs().active() {
-                    crate::right_dock::DockTab::Subagent(_) => {
-                        self.render_subagent_dock(theme, window.viewport_size().height, cx)
-                    }
-                    crate::right_dock::DockTab::Review => self.sidepane.clone().into_any_element(),
-                },
+                // Review is the diff and only the diff; a subagent's response
+                // has its own dock (#190).
+                RightDock::Review => self.sidepane.clone().into_any_element(),
+                RightDock::Subagents => {
+                    self.render_subagent_dock(theme, window.viewport_size().height, cx)
+                }
                 RightDock::Details => self.render_session_details_panel(cx),
                 RightDock::None => div().into_any_element(),
             },
