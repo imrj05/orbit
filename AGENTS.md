@@ -183,7 +183,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/worktree_setup.rs optional worktree setup script: resolution, `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, captured stdout/stderr/exit code (async host in app/worktrees.rs)
   src/right_dock.rs     the right pane's tab model (Review + subagent tabs), per session on the
                         transcript; never decides whether the pane is shown
-  src/sessions.rs       reads ~/.pi/agent/sessions (+ debounced session-store watcher)
+  src/sessions.rs       reads pi's session store (PI_CODING_AGENT_SESSION_DIR, else <agent dir>/sessions; + debounced watcher)
   src/watch.rs          shared debounced fs watching (workspace tree for Review/Git)
   src/explorer/         workspace file tree + file editor
     walk.rs             gitignore-aware background snapshot (`ignore` crate)
@@ -535,7 +535,7 @@ stack is gone; do not resurrect it.
 | Area | Source | Current behavior |
 |---|---|---|
 | Shell | `app.rs`, `view.rs` | Native desktop shell with sidebar, top bar, transcript, composer, status bar, contextual panes, and platform window chrome. |
-| Sessions | `sessions.rs`, `app/session.rs` | Reads pi sessions from `~/.pi/agent/sessions/`; supports new/open/switch/clone, workspace grouping, parked background processes, and session persistence. |
+| Sessions | `sessions.rs`, `app/session.rs` | Reads pi sessions from `PI_CODING_AGENT_SESSION_DIR` or `<agent dir>/sessions/`; supports new/open/switch/clone, workspace grouping, parked background processes, and session persistence. |
 | RPC | `crates/orbit-rpc/` | One `pi --mode rpc` child per live session, JSONL over stdio, permissive event parsing, typed commands for the currently used protocol surface. |
 | Transcript | `transcript.rs`, `transcript_view.rs`, `message_scroller.rs` | Virtualized streaming transcript with tail-following, jump-to-latest, tool activity, markdown/code rendering, find, and error states. |
 | Composer | `composer.rs`, `app/composer_ops.rs` | Multiline input, commands, file mentions, image attachments, queued follow-ups, steer, abort, and access/workflow controls. |

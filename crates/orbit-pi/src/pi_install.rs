@@ -172,7 +172,7 @@ pub fn agent_dir() -> PathBuf {
 /// `PI_CODING_AGENT_DIR=~/pi` against the home directory, so reading the value
 /// verbatim would look for a directory literally named `~` and quietly find an
 /// empty store while pi keeps writing to the real one.
-fn expand_tilde(path: PathBuf) -> PathBuf {
+pub(crate) fn expand_tilde(path: PathBuf) -> PathBuf {
     match path.strip_prefix("~") {
         Ok(rest) => crate::platform::home_dir().join(rest),
         Err(_) => path,

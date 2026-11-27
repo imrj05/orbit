@@ -111,8 +111,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 usage scan and the onboarding path row all located the store at `~/.pi/agent/sessions`, so a
 pi configured to keep its data elsewhere kept writing sessions Orbit could not see. They now
 resolve through pi's own agent directory — `PI_CODING_AGENT_DIR`, or `~/.pi/agent` — including
-a leading `~` in the value, which pi expands internally. `PI_CODING_AGENT_SESSION_DIR` and
-`settings.json › sessionDir` still move the store unseen; neither is wired yet.
+a leading `~` in the value, which pi expands internally. `PI_CODING_AGENT_SESSION_DIR` takes
+precedence (below); `settings.json › sessionDir` still moves the store unseen.
+
+- **Swap-hover buttons render under Reduce Motion.** Tinted, Danger, Destructive and Glass
+buttons carry their one-frame hover swap from `variant_treatment`; under Reduce Motion the
+zero-duration branch of `motion::fade` set a second hover style on the same element, and
+gpui's debug assertion (`hover style already set`) ended the process — Settings → Subagents
+was the reported crash site. The branch now applies its hover closure only when the `Hover`
+carries a fill or ink, so a variant's own swap stays the single hover style and every page
+using these variants renders under Reduce Motion.
+
+- **Local sessions follow `PI_CODING_AGENT_SESSION_DIR`.** pi resolves its session store as
+`--session-dir` > `PI_CODING_AGENT_SESSION_DIR` > `settings.json › sessionDir` >
+`$agentDir/sessions`; Orbit passes no `--session-dir`, so a user who set the environment
+variable still got an empty sidebar after the agent-directory fix. The session index, its
+watcher, the retention scan, Usage and the Settings path row now prefer
+`PI_CODING_AGENT_SESSION_DIR` (a leading `~` expanded, empty values ignored) and fall back to
+the agent directory's `sessions/`. `settings.json › sessionDir` remains unwired.
+
+- **Selecting back rightward shrinks a leftward word selection.** After Ctrl/Alt+Shift+Left
+selected words leftward, Ctrl/Alt+Shift+Right started from the selection's right end and the
+whole leftward selection was dropped. `select_word_right` now starts from the caret end
+(`cursor_offset()`), so selecting back shrinks the selection toward the anchor the way a
+native text field does.
+- **Ctrl/Alt+Backspace deletes a word.** Ctrl+Backspace (Linux/Windows) and ⌥Backspace (macOS)
+in the composer and the Explorer editor were unbound, so the keystroke did nothing. A new
+`DeleteWordBackward`
+action selects to the previous word boundary — the same boundary Ctrl/Alt+Left moves to — and
+deletes through the existing backspace path, so the IME composition guard, the undo stack and
+the empty-selection no-op all hold; the two chords point at one action in both text contexts.
+
+- **Opening a large folder no longer freezes the window.** The Explorer built its
+whole tree — one insert per entry, then a sort per directory — *after* the
+background walk returned, on the UI thread. A folder holding many files in one
+directory made that quadratic, because every insert scanned the siblings already
+there: 20 000 files in a single folder cost ~1.5 s of the main thread, which is the
+beachball in the report. The build now runs in the same background task as the
+walk and the UI thread only stores the finished index. The insert itself is
+linear — the snapshot is sorted by path component before it is walked, so a
+sibling that already exists is always the last child — which is ~60× faster on a
+wide directory and leaves wide workspaces unaffected. The walk also bumps a
+generation on a workspace switch or the hidden-files toggle, and a superseded
+walk now hands the `loading` slot to the request it superseded instead of
+dropping it (the panel could previously sit on a spinner until another event
+arrived), and `render` no longer re-flattens the whole tree on every frame.
 
 - **Ctrl+Left/Right moves by word on Linux and Windows.** `secondary-left/right` names the
 platform's primary modifier, which off macOS is `ctrl`, so those chords jumped to the ends of

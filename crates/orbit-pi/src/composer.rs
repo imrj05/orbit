@@ -26,7 +26,7 @@ use crate::ui::style::control::ControlExt;
 use crate::{
     highlight::{self, Lang},
     mentions::{detect_trigger, tokenize_mentions, MentionKind, SharedAutocomplete, Trigger},
-    theme, Backspace, Copy, Cut, Delete, Down, End, Home, Left, LineLeft, LineRight, Newline,
+    theme, Backspace, Copy, Cut, Delete, DeleteWordBackward, Down, End, Home, Left, LineLeft, LineRight, Newline,
     Paste, Redo, Right, SelectAll, SelectLeft, SelectLineLeft, SelectLineRight, SelectRight,
     SelectWordLeft, SelectWordRight, Undo, Up, WordLeft, WordRight,
 };
@@ -1035,7 +1035,7 @@ impl ComposerInput {
         if self.is_composing() {
             return;
         }
-        self.select_to(self.next_word_boundary(self.selected_range.end), cx)
+        self.select_to(self.next_word_boundary(self.cursor_offset()), cx)
     }
 
     /// Cmd+Left / Cmd+Right: jump to the start/end of the wrapped row the
@@ -1208,6 +1208,13 @@ impl ComposerInput {
             self.select_to(self.next_boundary(self.cursor_offset()), cx)
         }
         self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete_word_backward(&mut self, _: &DeleteWordBackward, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.previous_word_boundary(self.cursor_offset()), cx)
+        }
+        self.backspace(&Backspace, window, cx)
     }
 
     fn on_mouse_down(
@@ -2841,6 +2848,7 @@ impl Render for ComposerInput {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_backward))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::up))

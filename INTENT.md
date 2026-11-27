@@ -17,7 +17,8 @@ the same architecture as Waku, scoped to pi only — with **every current featur
 - no browser, no webview, no Node.js daemon anywhere in the app
 - UI rendered by GPUI (the framework Zed is built on) on Metal
 - the pi CLI (`pi --mode rpc`) as the only agent runtime, spoken to over stdio JSONL
-- same sessions as the terminal (`~/.pi/agent/sessions/`), pi's own catalog, thinking levels, and persistence
+- same sessions as the terminal (pi's session store: `PI_CODING_AGENT_SESSION_DIR`, else the
+  agent directory — `PI_CODING_AGENT_DIR` or `~/.pi/agent` — plus `sessions/`), pi's own catalog, thinking levels, and persistence
 
 ## Decisions
 
@@ -1459,6 +1460,28 @@ keep Tab for themselves. `secondary` chords replaced the macOS-only `cmd-`
 bindings (Editor clipboard/undo/save, Files close, Git tabs), so Windows and
 Linux get the same shortcuts, and the dead ⌘. abort chord was fixed (gpui's key
 name is `.`, not `period`).
+
+The Explorer builds its tree off the UI thread and in linear time. The walk was
+already on the background executor, but `TreeIndex::build` — one insert per entry,
+then a sort per directory — ran inside the `update` that published the result,
+so it ran on the main thread; and each insert scanned the siblings already there,
+which made a folder holding many files quadratic. 20 000 files in one directory
+cost ~1.5 s of the main thread and froze the window. The build now happens in the
+same background task as the walk, with the UI thread only storing the finished
+index. The insert is linear because the snapshot is sorted by *path component*
+before it is walked, so a sibling that already exists is always the last child:
+the key is the path with `/` replaced by NUL, which cannot occur in a path, so
+ordinary byte order becomes component order (`/` otherwise sorts after `-` and
+`.`, putting `a/b-c` before `a/b/d`). A workspace switch or the hidden-files
+toggle now bumps a walk generation, and a superseded walk hands the `loading`
+slot to the request it superseded instead of dropping it — the panel could
+previously sit on a spinner until another event arrived. `render` no longer
+re-flattens the whole tree every frame; the filter observer and the row-changing
+events already do that. Measured in one process, best of seven: 1.568 s → 27.5 ms
+on a single 20 000-file directory (57×) and 161 ms → 42 ms on a realistic 22 000-
+entry tree (3.9×). Covered by `tree.rs` tests for the insert order and the
+directory/file tie, and by `panel.rs` tests for the asynchronous publish and the
+superseded walk.
 
 Open: migrating the remaining surfaces (the settings page's toolbars / cards / controls, transcript inner content, the modal bodies' inner text, the remaining sub-10px / 17px+ type, and off-scale radii) onto the D11 tokens; drawn scrollbars (gpui 0.2.2 draws none); on-device scroll-perf measurement; stream veil + an explicit ≤8.3 Hz streaming commit pipeline; screen-reader labeling (gpui 0.2.2 exposes no accessibility tree); richer per-tool renderers (bash/thinking are dedicated, the rest generic).
 
