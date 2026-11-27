@@ -290,6 +290,8 @@ impl OrbitApp {
                             None,
                             None,
                             None,
+                            // A subagent's log has no composer of its own.
+                            None,
                             None,
                             None,
                             cx,

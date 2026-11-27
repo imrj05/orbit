@@ -241,10 +241,6 @@ impl Render for OrbitApp {
             self.layout_restored = true;
             self.apply_stored_arrangement(window, cx);
         }
-        if self.session_rename_ready {
-            self.session_rename_ready = false;
-            self.begin_session_rename(window, cx);
-        }
         if self.session_branch_ready {
             self.session_branch_ready = false;
             self.open_rewind_picker(window, cx);
@@ -770,6 +766,7 @@ impl Render for OrbitApp {
             self.server_clone_focus.closed(self.server_clone.is_some()),
             self.project_rename_focus
                 .closed(self.project_rename.is_some()),
+            self.session_rename_focus.closed(self.session_name_editing),
             self.remote_password_focus
                 .closed(self.remote_password_prompt.is_some()),
             self.project_trust_modal_focus
@@ -779,6 +776,8 @@ impl Render for OrbitApp {
             self.return_focus(opener, window, cx);
         }
         if self.composer_focus_pending
+            && !self.session_name_editing
+            && self.project_rename.is_none()
             && self.remote_password_prompt.is_none()
             && self.project_trust_prompt.is_none()
         {
@@ -1423,6 +1422,7 @@ impl Render for OrbitApp {
                                 Some(self.rewind_opener(cx)),
                                 Some(self.regenerate_opener(cx)),
                                 Some(self.response_exporter(cx)),
+                                Some(self.quote_opener(cx)),
                                 self.search_hits(),
                                 self.search_active(),
                                 cx,
@@ -1601,6 +1601,7 @@ impl Render for OrbitApp {
                                                             MouseButton::Left,
                                                             cx.listener(Self::on_composer_click),
                                                         )
+                                                        .children(self.annotations_row(cx))
                                                         .children(self.attachments_row(cx))
                                                         .child(self.input.clone())
                                                         .child(self.composer_row(
@@ -1871,8 +1872,9 @@ impl Render for OrbitApp {
             // ── Add to a server — the clone dialog; under the password prompt
             // its connection check may raise.
             .children(self.server_clone_layer(theme, cx.entity(), cx))
-            // ── project rename — the sidebar header menu's Rename….
-            .children(self.project_rename_layer(theme, cx.entity(), cx))
+            // ── project and session rename dialogs.
+            .children(self.project_rename_layer(theme, cx))
+            .children(self.session_rename_layer(theme, cx))
             .children(self.remote_password_layer(theme, cx.entity(), cx))
             // ── workspace trust — Orbit's own decision before pi loads
             // project-local code, settings, skills or MCP servers.
@@ -2001,6 +2003,7 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_copy_last_response))
+            .on_action(cx.listener(Self::on_open_selection_menu))
             .on_action(cx.listener(Self::on_prev_turn))
             .on_action(cx.listener(Self::on_next_turn))
             .on_action(cx.listener(Self::on_open_settings))
@@ -2106,6 +2109,7 @@ impl OrbitApp {
                     || self.busy
                     || !self.input.read(cx).text().is_empty()
                     || self.attachment_slots_used() > 0
+                    || !self.annotations.is_empty()
                 {
                     continue;
                 }
@@ -2267,6 +2271,7 @@ impl OrbitApp {
             && !self.busy
             && self.input.read(cx).text().is_empty()
             && self.attachment_slots_used() == 0
+            && self.annotations.is_empty()
             && self
                 .extension_widgets
                 .iter()
@@ -4616,6 +4621,9 @@ impl OrbitApp {
         if let Some(rename) = &self.project_rename {
             return Some(vec![rename.input.clone()]);
         }
+        if self.session_name_editing {
+            return Some(vec![self.session_name_input.clone()]);
+        }
         // The rest are painted by the Settings page, so they own the keyboard
         // only while it is open.
         if !self.settings_open {
@@ -4689,8 +4697,26 @@ impl OrbitApp {
                 .iter()
                 .map(|field| field.read(cx).focus_handle(cx))
                 .collect();
+            let session_rename = fields.first() == Some(&self.session_name_input);
+            if session_rename
+                && self.session_rename_target.is_none()
+                && self.title_generation.is_none()
+                && self.can_generate_title()
+            {
+                stops.push(self.rename_generate_focus.clone());
+            }
             stops.push(self.modal_cancel_focus.clone());
-            stops.push(self.modal_confirm_focus.clone());
+            if !session_rename
+                || self.session_rename_target.is_some()
+                || self.title_generation.is_none()
+            {
+                stops.push(self.modal_confirm_focus.clone());
+            }
+            if self.pending_confirm.is_none()
+                && (self.session_name_editing || self.project_rename.is_some())
+            {
+                stops.push(self.rename_close_focus.clone());
+            }
             crate::ui::dialog::focus_ring(&stops, backwards, window);
             cx.notify();
         }
@@ -4757,10 +4783,12 @@ impl OrbitApp {
     }
 
     /// Whether the composer holds anything a send would deliver: typed text,
-    /// an image, a file, or a collapsed paste. The one rule the control's
-    /// enabled state reads, so it can never disagree with `submit_as`.
+    /// an image, a file, a collapsed paste, or a quote. The one rule the
+    /// control's enabled state reads, so it can never disagree with `submit_as`.
     pub(super) fn send_has_payload(&self, cx: &Context<Self>) -> bool {
-        !self.input.read(cx).text().trim().is_empty() || self.attachment_slots_used() > 0
+        !self.input.read(cx).text().trim().is_empty()
+            || self.attachment_slots_used() > 0
+            || !self.annotations.is_empty()
     }
 
     /// How many messages are waiting behind the live turn — a quiet count of

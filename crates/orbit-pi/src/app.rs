@@ -679,6 +679,11 @@ pub struct OrbitApp {
     settings_nav_focus: FocusHandle,
     settings_nav_cursor: usize,
     settings_nav_scroll: ScrollHandle,
+    /// The section body's scroll position. A section is a new page, so it
+    /// starts at its top; without this the stable `settings-content` element
+    /// id carried the previous page's offset over and the new page opened
+    /// scrolled down, with its first card clipped under the pinned toolbar.
+    settings_content_scroll: ScrollHandle,
     settings_return_focus: crate::ui::dialog::ReturnFocus,
     /// Settings → Appearance → "Your backgrounds": the pictures in the
     /// library folder, as last listed off-thread.
@@ -1041,6 +1046,9 @@ pub struct OrbitApp {
     files: Vec<AttachedFile>,
     /// Long pasted text collapsed into pills (sent as prompt text).
     pasted_texts: Vec<PastedText>,
+    /// Transcript passages quoted into the composer, oldest first; each leads
+    /// the prompt as a `>` block with its optional comment (issue #187).
+    annotations: Vec<annotations::Annotation>,
     /// Unsent composer drafts, keyed by session file. Saved when a session is
     /// parked, restored when it is re-opened — switching sessions never
     /// carries one task's half-written prompt into another.
@@ -1147,22 +1155,21 @@ pub struct OrbitApp {
     refreshing: bool,
     /// Whether the session-details panel is open in the right dock.
     session_details_open: bool,
-    /// Whether the panel's name row is in edit mode (the rename field and its
-    /// Update / Cancel buttons) rather than showing the title as text.
+    /// Whether the session rename dialog is open.
     session_name_editing: bool,
-    /// A row-menu rename waiting for the target session's state to load.
-    pending_session_rename: Option<PathBuf>,
-    session_rename_ready: bool,
+    session_rename_focus: ModalFocus,
+    /// A sidebar row whose session is not loaded yet, retained while editing.
+    session_rename_target: Option<SessionInfo>,
+    /// A saved name waiting for pi to confirm that it loaded the target file.
+    pending_session_rename: Option<SessionRename>,
     /// A row-menu **Branch from…** waiting for the target session to load,
     /// and the flag that opens the message picker once it has (#166).
     pending_session_branch: Option<PathBuf>,
     session_branch_ready: bool,
-    /// A popover-triggered title generation is in flight; the next
-    /// `session_info_changed` seeds the rename field from its result.
-    title_generating: bool,
-    /// When the last successful session rename committed, so the popover's
-    /// Update button can flash its check before reverting to the label. The
-    /// stamp lets a second click extend the flash instead of clearing early.
+    /// The title command in flight, with the draft it may update.
+    title_generation: Option<TitleGeneration>,
+    /// When the last session rename committed, for the brief check beside the
+    /// updated title in the details dock.
     rename_saved_at: Option<Instant>,
     /// Whether the top-bar provider-quota popover is open.
     quota_popup_open: bool,
@@ -1371,6 +1378,9 @@ pub struct OrbitApp {
     plugin_install_project: bool,
     /// Description of the plugin operation in flight, if any.
     plugin_action: Option<String>,
+    /// The outcome of the last plugin operation, shown in the page's own
+    /// toolbar line instead of a corner toast.
+    plugin_result: Option<String>,
     /// Actionable update notice for installed npm/Git packages.
     plugin_update_prompt: Option<Vec<PluginUpdate>>,
     /// Workspace whose project-scoped packages were checked.
@@ -1498,6 +1508,10 @@ pub struct OrbitApp {
     /// shows at a time, so every footer shares these two handles.
     modal_cancel_focus: FocusHandle,
     modal_confirm_focus: FocusHandle,
+    /// The top-right close button on either rename dialog.
+    rename_close_focus: FocusHandle,
+    /// The wand in the session rename dialog.
+    rename_generate_focus: FocusHandle,
     /// Focus handle carrying the `McpList` key context while the MCP page is
     /// open (↑/↓ move the row cursor, Enter edits, Space toggles).
     mcp_list_focus: FocusHandle,
@@ -1658,6 +1672,7 @@ struct ComposerDraft {
     attachments: Vec<Attachment>,
     files: Vec<AttachedFile>,
     pasted_texts: Vec<PastedText>,
+    annotations: Vec<annotations::Annotation>,
 }
 
 impl ComposerDraft {
@@ -1666,6 +1681,7 @@ impl ComposerDraft {
             && self.attachments.is_empty()
             && self.files.is_empty()
             && self.pasted_texts.is_empty()
+            && self.annotations.is_empty()
     }
 }
 
@@ -2088,13 +2104,12 @@ impl OrbitApp {
         });
         let mcp_filter_sub = cx.observe(&mcp_filter, |_, _, cx| cx.notify());
 
-        // Session-details panel: rename field. Default `Composer` key context
-        // keeps real text editing (selection, clipboard, arrows); Enter routes
-        // to Submit, which commits the name instead of the composer while this
-        // field holds focus (see `on_submit`).
+        // The rename dialog's field keeps editing keys while the surrounding
+        // Picker context handles Enter and Escape.
         let session_name_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("session-name-input")
+                .with_key_context("Composer Picker")
                 .with_placeholder_key("app.session_name")
                 .with_max_lines(1)
                 .with_wrap(false)
@@ -2621,6 +2636,7 @@ impl OrbitApp {
             settings_nav_focus: cx.focus_handle().tab_stop(true),
             settings_nav_cursor: 0,
             settings_nav_scroll: ScrollHandle::new(),
+            settings_content_scroll: ScrollHandle::new(),
             settings_return_focus: crate::ui::dialog::ReturnFocus::default(),
             git_accounts_snapshot: None,
             git_accounts_loading: false,
@@ -2774,6 +2790,7 @@ impl OrbitApp {
             attachments: Vec::new(),
             files: Vec::new(),
             pasted_texts: Vec::new(),
+            annotations: Vec::new(),
             drafts: HashMap::new(),
             new_task_draft: None,
             composer_is_new_task: true,
@@ -2814,11 +2831,12 @@ impl OrbitApp {
             refreshing: false,
             session_details_open: false,
             session_name_editing: false,
+            session_rename_focus: ModalFocus::default(),
+            session_rename_target: None,
             pending_session_rename: None,
             pending_session_branch: None,
             session_branch_ready: false,
-            session_rename_ready: false,
-            title_generating: false,
+            title_generation: None,
             rename_saved_at: None,
             quota_popup_open: false,
             quota_popup_tab: mcp_ui::QuotaPopupTab::default(),
@@ -2912,6 +2930,7 @@ impl OrbitApp {
             plugin_source_input: plugin_source_input.clone(),
             plugin_install_project: false,
             plugin_action: None,
+            plugin_result: None,
             plugin_update_prompt: None,
             plugin_update_workspace: None,
             plugin_updates_checking: false,
@@ -2936,6 +2955,8 @@ impl OrbitApp {
             mcp_editor_focus: ModalFocus::default(),
             modal_cancel_focus: cx.focus_handle(),
             modal_confirm_focus: cx.focus_handle(),
+            rename_close_focus: cx.focus_handle(),
+            rename_generate_focus: cx.focus_handle(),
             mcp_list_focus: cx.focus_handle(),
             mcp_focus_pending: false,
             remote_hosts: Vec::new(),
@@ -4300,6 +4321,17 @@ struct SessionMenu {
     cursor: crate::ui::menu::MenuCursor,
 }
 
+struct SessionRename {
+    path: PathBuf,
+    name: String,
+}
+
+struct TitleGeneration {
+    request_id: String,
+    /// The rename field the user asked to replace. Never overwrite later edits.
+    rename_draft: Option<String>,
+}
+
 /// State of the row-actions popup on a workspace group header: which
 /// workspace it belongs to (by group label + cwd).
 #[derive(Clone, PartialEq)]
@@ -4762,6 +4794,7 @@ enum SettingsSelect {
 // `app.rs` keeps the `OrbitApp` model, the shared types, and the controller
 // wiring. Rendering and feature-specific logic live in child modules; they
 // are descendants of `app`, so they reach private fields/methods directly.
+mod annotations;
 mod ask;
 mod auth_prompt;
 mod bug_report_ui;
@@ -4799,6 +4832,8 @@ mod search;
 mod session;
 mod session_status;
 mod settings;
+#[cfg(test)]
+mod settings_header_layout_tests;
 mod sidebar;
 mod skills_ui;
 mod subagents_ui;
@@ -4808,6 +4843,8 @@ mod updater_ui;
 mod view;
 mod worktrees;
 
+#[cfg(test)]
+mod annotation_tests;
 #[cfg(test)]
 mod attachment_tray_tests;
 #[cfg(test)]

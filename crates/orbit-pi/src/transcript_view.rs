@@ -118,6 +118,11 @@ pub(crate) type RewindOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub(crate) type RegenerateOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// Saves the exact response text selected by its footer.
 pub(crate) type ResponseExporter = Rc<dyn Fn(String, bool, usize, &mut Window, &mut App)>;
+/// Quotes a transcript selection into the composer (issue #187). Handed down
+/// like [`RewindOpener`]; `None` (a subagent's log, tests) leaves the text
+/// menu's Quote in Composer disabled.
+pub(crate) type QuoteOpener =
+    Rc<dyn Fn(crate::annotation::Quote, crate::annotation::QuoteSource, &mut Window, &mut App)>;
 
 /// The transcript content column's max width.
 /// Normal message content keeps this centered measure. Assistant tables
@@ -378,6 +383,8 @@ pub(crate) struct TranscriptView {
     pub regenerate: Option<RegenerateOpener>,
     /// Opens the native save dialog for an assistant response.
     pub export_response: Option<ResponseExporter>,
+    /// Quotes the transcript selection into the composer.
+    pub quote: Option<QuoteOpener>,
     /// Message indices matching the open find query; `None` when find is
     /// closed. Rows get a quiet wash.
     pub search_hits: Option<Rc<RefCell<HashSet<usize>>>>,
@@ -413,6 +420,8 @@ struct TextBlock {
 struct SelectedBlock {
     key: ElementId,
     text: SharedString,
+    /// Message the block rendered from — which side a quote came from.
+    message_ix: usize,
 }
 
 /// One endpoint of a selection: index into [`Selection::blocks`] plus a byte
@@ -463,8 +472,20 @@ impl Selection {
     }
 }
 
-/// The right-click menu over transcript text: `Copy Selection` reads the live
-/// selection, `Copy Message` carries the message text captured on open.
+/// How the text menu was opened, which decides who owns the keyboard and the
+/// next press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextMenuKind {
+    /// Right-click or Shift+F10: the menu takes the keyboard until it closes,
+    /// and the next press only dismisses it.
+    Context,
+    /// Shown when a selection finishes: the keyboard stays where it was, and
+    /// the next press in the transcript starts a new selection.
+    Toolbar,
+}
+
+/// The menu over transcript text: `Copy Selection` reads the live selection,
+/// `Copy Message` carries the message text captured on open.
 #[derive(Clone)]
 struct TextMenu {
     position: gpui::Point<Pixels>,
@@ -478,21 +499,188 @@ struct TextMenu {
     /// has moved it (a pointer-opened menu stays quiet).
     highlight: crate::ui::menu::MenuState,
     keyed: bool,
+    /// Which side the selection starts on, captured on open: the selection
+    /// cannot change while the menu is open.
+    quote_source: Option<crate::annotation::QuoteSource>,
+    kind: TextMenuKind,
+}
+
+/// Open the text menu at the selection's end from the keyboard (Shift+F10),
+/// taking the keyboard with the cursor on the first item that can act.
+/// `false` when there is no selection on screen to anchor to.
+pub(crate) fn open_selection_menu_from_keyboard(
+    state: &TextSelectionState,
+    messages: &RefCell<Vec<ChatMessage>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    let (anchor, restore, can_quote) = {
+        let state = state.borrow();
+        let Some(anchor) = state.selection_end_anchor() else {
+            return false;
+        };
+        // A menu opened over the right-click menu keeps its opener; over the
+        // toolbar (which never took the keyboard) the opener is what has it.
+        let restore = match state.menu.as_ref() {
+            Some(menu) if menu.kind == TextMenuKind::Context => menu.restore.clone(),
+            _ => window.focused(cx),
+        };
+        (anchor, restore, state.quote.is_some())
+    };
+    let focus = cx.focus_handle();
+    let Some(mut menu) = selection_menu(
+        &state.borrow(),
+        &messages.borrow(),
+        anchor,
+        TextMenuKind::Context,
+        focus.clone(),
+        restore,
+    ) else {
+        return false;
+    };
+    menu.keyed = true;
+    menu.highlight
+        .first(TextMenuItem::ALL.len(), |ix| TextMenuItem::ALL[ix].enabled(true, can_quote));
+    window.focus(&focus);
+    state.borrow_mut().menu = Some(menu);
+    window.refresh();
+    true
+}
+
+/// Close the text menu when it is the selection toolbar, keeping the
+/// selection. `false` (and nothing closed) for any other state.
+pub(crate) fn close_selection_toolbar(state: &TextSelectionState, window: &mut Window) -> bool {
+    let toolbar = state
+        .borrow()
+        .menu
+        .as_ref()
+        .is_some_and(|menu| menu.kind == TextMenuKind::Toolbar);
+    if toolbar {
+        close_text_menu(state, window);
+    }
+    toolbar
+}
+
+/// Test hook: select all of `text` (one block of message 0) and show the
+/// toolbar over it, as a finished drag would.
+#[cfg(test)]
+pub(crate) fn test_open_toolbar(state: &TextSelectionState, text: &str, cx: &mut App) {
+    let mut guard = state.borrow_mut();
+    guard.selection = Some(Selection {
+        blocks: vec![SelectedBlock {
+            key: ElementId::Name("test-block".into()),
+            text: text.to_string().into(),
+            message_ix: 0,
+        }],
+        anchor: SelectPoint { block: 0, offset: 0 },
+        focus: SelectPoint {
+            block: 0,
+            offset: text.len(),
+        },
+        granularity: SelectGranularity::Character,
+        initial: None,
+    });
+    guard.menu = Some(TextMenu {
+        position: point(px(0.), px(0.)),
+        message_text: text.to_string(),
+        focus: cx.focus_handle(),
+        restore: None,
+        highlight: crate::ui::menu::MenuState::default(),
+        keyed: false,
+        quote_source: None,
+        kind: TextMenuKind::Toolbar,
+    });
+}
+
+/// Test hook: whether the selection toolbar is showing.
+#[cfg(test)]
+pub(crate) fn test_toolbar_open(state: &TextSelectionState) -> bool {
+    state
+        .borrow()
+        .menu
+        .as_ref()
+        .is_some_and(|menu| menu.kind == TextMenuKind::Toolbar)
+}
+
+/// Where the toolbar opens relative to the release: below and right of the
+/// pointer, so the release never lands on an item and the pointer does not
+/// cover the first label.
+const TOOLBAR_OFFSET_X: f32 = 4.;
+const TOOLBAR_OFFSET_Y: f32 = 12.;
+
+/// The menu for the live selection, its message and side read from the
+/// selection's first block. `None` without a selection.
+fn selection_menu(
+    state: &TextSelection,
+    messages: &[ChatMessage],
+    position: gpui::Point<Pixels>,
+    kind: TextMenuKind,
+    focus: gpui::FocusHandle,
+    restore: Option<gpui::FocusHandle>,
+) -> Option<TextMenu> {
+    state.selected_text()?;
+    let message = messages.get(state.selected_message_ix()?)?;
+    Some(TextMenu {
+        position,
+        message_text: message.text(),
+        focus,
+        restore,
+        highlight: crate::ui::menu::MenuState::default(),
+        keyed: false,
+        quote_source: Some(quote_source(message)),
+        kind,
+    })
+}
+
+fn quote_source(message: &ChatMessage) -> crate::annotation::QuoteSource {
+    if message.user {
+        crate::annotation::QuoteSource::User
+    } else {
+        crate::annotation::QuoteSource::Assistant
+    }
+}
+
+/// Show the toolbar for a drag that just ended at `release`. It never takes
+/// the keyboard: it is an offer, not a mode.
+fn open_selection_toolbar(
+    state: &TextSelectionState,
+    messages: &RefCell<Vec<ChatMessage>>,
+    release: gpui::Point<Pixels>,
+    cx: &mut App,
+) {
+    let position = point(
+        release.x + px(TOOLBAR_OFFSET_X),
+        release.y + px(TOOLBAR_OFFSET_Y),
+    );
+    let menu = selection_menu(
+        &state.borrow(),
+        &messages.borrow(),
+        position,
+        TextMenuKind::Toolbar,
+        cx.focus_handle(),
+        None,
+    );
+    if let Some(menu) = menu {
+        state.borrow_mut().menu = Some(menu);
+    }
 }
 
 /// The text menu's actions, top to bottom: one list for pointer and keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextMenuItem {
+    QuoteSelection,
     CopySelection,
     CopyMessage,
 }
 
 impl TextMenuItem {
-    const ALL: [Self; 2] = [Self::CopySelection, Self::CopyMessage];
+    const ALL: [Self; 3] = [Self::QuoteSelection, Self::CopySelection, Self::CopyMessage];
 
-    /// Copy Selection only acts while there is a selection.
-    fn enabled(self, has_selection: bool) -> bool {
+    /// The selection items only act while there is a selection; quoting also
+    /// needs a composer to quote into.
+    fn enabled(self, has_selection: bool, can_quote: bool) -> bool {
         match self {
+            Self::QuoteSelection => has_selection && can_quote,
             Self::CopySelection => has_selection,
             Self::CopyMessage => true,
         }
@@ -515,9 +703,33 @@ fn run_text_menu_item(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if item == TextMenuItem::QuoteSelection {
+        let quote = {
+            let state = state.borrow();
+            let source = state
+                .menu
+                .as_ref()
+                .and_then(|menu| menu.quote_source)
+                .unwrap_or(crate::annotation::QuoteSource::Assistant);
+            state
+                .selected_text()
+                .as_deref()
+                .and_then(crate::annotation::normalize_quote)
+                .zip(state.quote.clone())
+                .map(|(quote, opener)| (quote, source, opener))
+        };
+        // Close first: the menu hands focus back, then the composer takes it
+        // for the new quote's comment.
+        close_text_menu(state, window);
+        if let Some((quote, source, opener)) = quote {
+            opener(quote, source, window, cx);
+        }
+        return;
+    }
     let text = {
         let state = state.borrow();
         match item {
+            TextMenuItem::QuoteSelection => None,
             TextMenuItem::CopySelection => state.selected_text(),
             TextMenuItem::CopyMessage => state.menu.as_ref().map(|menu| menu.message_text.clone()),
         }
@@ -537,8 +749,11 @@ fn text_menu_key(state: &TextSelectionState, key: &str, window: &mut Window, cx:
         close_text_menu(state, window);
         return;
     }
-    let has_selection = state.borrow().selected_text().is_some();
-    let enabled = |ix: usize| TextMenuItem::ALL[ix].enabled(has_selection);
+    let (has_selection, can_quote) = {
+        let state = state.borrow();
+        (state.selected_text().is_some(), state.quote.is_some())
+    };
+    let enabled = |ix: usize| TextMenuItem::ALL[ix].enabled(has_selection, can_quote);
     let len = TextMenuItem::ALL.len();
     let run = {
         let mut guard = state.borrow_mut();
@@ -606,6 +821,9 @@ pub(crate) struct TextSelection {
     last_click: Option<LastClick>,
     menu: Option<TextMenu>,
     stream_fades: HashMap<ElementId, StreamFade>,
+    /// Where Quote in Composer sends a selection; set by every transcript
+    /// render from [`TranscriptView::quote`].
+    quote: Option<QuoteOpener>,
 }
 
 /// One text press remembered long enough to recognize a double- or triple-click.
@@ -635,6 +853,7 @@ impl TextSelection {
             last_click: None,
             menu: None,
             stream_fades: HashMap::new(),
+            quote: None,
         }
     }
 
@@ -773,6 +992,7 @@ impl TextSelection {
             .map(|block| SelectedBlock {
                 key: block.key.clone(),
                 text: block.text.clone(),
+                message_ix: block.message_ix,
             })
             .collect()
     }
@@ -1018,6 +1238,36 @@ impl TextSelection {
         } else {
             Some(parts.join("\n"))
         }
+    }
+}
+
+impl TextSelection {
+    /// The message the selection starts in (its first block, in visual order).
+    fn selected_message_ix(&self) -> Option<usize> {
+        let selection = self.selection.as_ref()?;
+        let (start, end) = selection.normalized();
+        if start == end {
+            return None;
+        }
+        selection.blocks.get(start.block).map(|block| block.message_ix)
+    }
+
+    /// Just under the selection's last character, in window space — where the
+    /// keyboard opens the menu. `None` without a selection, or when its end
+    /// is not painted (scrolled out of the virtualized list).
+    fn selection_end_anchor(&self) -> Option<gpui::Point<Pixels>> {
+        let selection = self.selection.as_ref()?;
+        let (start, end) = selection.normalized();
+        if start == end {
+            return None;
+        }
+        let key = &selection.blocks.get(end.block)?.key;
+        let block = self.blocks.iter().find(|block| &block.key == key)?;
+        let offset = byte_boundary(&block.text, end.offset);
+        Some(match block.layout.position_for_index(offset) {
+            Some(caret) => point(caret.x, caret.y + block.layout.line_height()),
+            None => block.bounds.bottom_left(),
+        })
     }
 }
 
@@ -1518,16 +1768,23 @@ fn register_text_selection(
 ) {
     window.on_mouse_event({
         let state = state.clone();
+        let messages = messages.clone();
         move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Capture || !hitbox.is_hovered(window) {
                 return;
             }
-            let menu_open = state.borrow().menu.is_some();
+            let context_menu_open = state
+                .borrow()
+                .menu
+                .as_ref()
+                .is_some_and(|menu| menu.kind == TextMenuKind::Context);
             match event.button {
                 MouseButton::Left => {
-                    // The open menu owns the next press; its outside-click
-                    // handler dismisses it without disturbing the selection.
-                    if menu_open {
+                    // An open right-click menu owns the next press; its
+                    // outside-click handler dismisses it without disturbing
+                    // the selection. The toolbar does not: the press starts a
+                    // new selection, which closes it.
+                    if context_menu_open {
                         return;
                     }
                     // The selection counts clicks itself (1 caret, 2 word,
@@ -1547,13 +1804,16 @@ fn register_text_selection(
                         .unwrap_or_default();
                     let focus = cx.focus_handle();
                     // A menu re-opened over an open one keeps the original
-                    // opener to return to.
-                    let restore = state
+                    // opener to return to; the toolbar never took the
+                    // keyboard, so over it the opener is what has focus.
+                    let restore = match state.borrow().menu.as_ref() {
+                        Some(menu) if menu.kind == TextMenuKind::Context => menu.restore.clone(),
+                        _ => window.focused(cx),
+                    };
+                    let quote_source = state
                         .borrow()
-                        .menu
-                        .as_ref()
-                        .map(|menu| menu.restore.clone())
-                        .unwrap_or_else(|| window.focused(cx));
+                        .selected_message_ix()
+                        .and_then(|ix| messages.borrow().get(ix).map(quote_source));
                     window.focus(&focus);
                     state.borrow_mut().menu = Some(TextMenu {
                         position: event.position,
@@ -1562,6 +1822,8 @@ fn register_text_selection(
                         restore,
                         highlight: crate::ui::menu::MenuState::default(),
                         keyed: false,
+                        quote_source,
+                        kind: TextMenuKind::Context,
                     });
                     window.refresh();
                 }
@@ -1581,19 +1843,38 @@ fn register_text_selection(
     });
     window.on_mouse_event({
         let state = state.clone();
+        let messages = messages.clone();
         move |event: &MouseUpEvent, phase, window, cx| {
             if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
                 return;
             }
-            let url = state.borrow_mut().finish_selection(event.position);
+            let (was_dragging, url) = {
+                let mut state = state.borrow_mut();
+                let was_dragging = state.dragging;
+                (was_dragging, state.finish_selection(event.position))
+            };
             if let Some(url) = url {
                 if let Some(value) = url.strip_prefix("orbit-color-copy:") {
                     cx.write_to_clipboard(ClipboardItem::new_string(value.to_owned()));
                 } else {
                     cx.open_url(&url);
                 }
+            } else if was_dragging {
+                // A press that began in the transcript and left text selected
+                // (a drag, a double or triple click) offers the toolbar.
+                open_selection_toolbar(&state, &messages, event.position, cx);
             }
             window.refresh();
+        }
+    });
+    // Scrolling moves the text out from under the toolbar; close it rather
+    // than leave it over the wrong words.
+    window.on_mouse_event({
+        let state = state.clone();
+        move |_: &gpui::ScrollWheelEvent, phase, window, _| {
+            if phase == DispatchPhase::Capture {
+                close_selection_toolbar(&state, window);
+            }
         }
     });
     window.on_mouse_event({
@@ -1617,13 +1898,21 @@ fn register_text_selection(
 /// selector's picker shell, like every other dropdown in the app.
 fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme) -> AnyElement {
     let theme = theme.for_floating();
-    let has_selection = state.borrow().selected_text().is_some();
+    let (has_selection, can_quote) = {
+        let state = state.borrow();
+        (state.selected_text().is_some(), state.quote.is_some())
+    };
     let highlighted = menu
         .keyed
         .then(|| menu.highlight.selected(TextMenuItem::ALL.len()))
         .flatten();
     let items = TextMenuItem::ALL.iter().enumerate().map(|(ix, item)| {
         let (id, icon_path, label) = match item {
+            TextMenuItem::QuoteSelection => (
+                "transcript-quote-selection",
+                "icons/compose.svg",
+                tr!("transcript.quote_in_composer"),
+            ),
             TextMenuItem::CopySelection => (
                 "transcript-copy-selection",
                 "icons/copy.svg",
@@ -1641,7 +1930,7 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
             id,
             icon_path,
             label,
-            item.enabled(has_selection),
+            item.enabled(has_selection, can_quote),
             highlighted == Some(ix),
             theme,
             move |window, cx| {
@@ -1779,6 +2068,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     {
         let mut selection = text_selection.borrow_mut();
         selection.begin_frame();
+        selection.quote = view.quote.clone();
         if view.streaming.get().is_none() || theme.reduce_motion() {
             selection.stream_fades.clear();
         }
@@ -2693,9 +2983,12 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
     // tray uses — while the typed prose stays prose. The split is read back
     // from the text itself, so a session reloaded from pi shows exactly what
     // the live send showed.
-    let (body, attached) = match OrbitApp::split_attached_files(&text) {
+    // Quotes lead the prompt (issue #187); read them off first, so the file
+    // block is still the tail of what remains.
+    let (quotes, after_quotes) = crate::annotation::split(&text);
+    let (body, attached) = match OrbitApp::split_attached_files(after_quotes) {
         Some((body, paths)) => (body, paths),
-        None => (text.as_str(), Vec::new()),
+        None => (after_quotes, Vec::new()),
     };
     div()
         .w_full()
@@ -2704,6 +2997,13 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
         .flex_col()
         .items_end()
         .gap(DynamicSpacing::Base04.px(&theme))
+        // The passages this message quoted, oldest first, above what was typed.
+        .children(
+            quotes
+                .iter()
+                .enumerate()
+                .map(|(quote_ix, quote)| user_quote_card(quote, ix, quote_ix, theme)),
+        )
         // Attachment tiles (images queued with the prompt). Cover-cropped
         // squares; wrap when a message carries several.
         .when(!message.images.is_empty(), |column| {
@@ -2797,6 +3097,67 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
             None,
             None,
         ))
+}
+
+/// One quote a sent message carried: a small "Quoted" label, the passage in
+/// the transcript's blockquote treatment (clamped; all of it on hover), and
+/// the comment sent with it.
+fn user_quote_card(
+    quote: &crate::annotation::SentQuote,
+    ix: usize,
+    quote_ix: usize,
+    theme: Theme,
+) -> AnyElement {
+    let id = (ix as u64) << 16 | quote_ix as u64;
+    div()
+        .id(ElementId::NamedInteger("user-quote".into(), id))
+        .debug_selector(move || format!("user-quote-{ix}-{quote_ix}"))
+        .max_w(px(USER_BUBBLE_MAX_WIDTH))
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .items_end()
+        .gap(DynamicSpacing::Base02.px(&theme))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_muted)
+                .child(crate::ui::prelude::icon(
+                    "icons/compose.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.text_muted,
+                ))
+                .child(tr!("transcript.annotation_indicator")),
+        )
+        .child(
+            div()
+                .id(ElementId::NamedInteger("user-quote-text".into(), id))
+                .min_w_0()
+                .border_l_2()
+                .border_color(theme.text_muted)
+                .bg(theme.overlay)
+                .rounded_r(Radius::Large.px(&theme))
+                .pl(DynamicSpacing::Base12.px(&theme))
+                .pr(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base06.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_secondary)
+                .whitespace_normal()
+                .line_clamp(4)
+                .child(quote.quote.clone())
+                .tip(quote.quote.clone()),
+        )
+        .children(quote.comment.clone().map(|comment| {
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_primary)
+                .whitespace_normal()
+                .child(comment)
+        }))
+        .into_any_element()
 }
 
 fn user_message_bubble(body: &str, theme: Theme, column_width: Option<Pixels>) -> gpui::Div {
@@ -13327,6 +13688,84 @@ mod tests {
         }
     }
 
+    /// Quote in Composer leads the text menu and is the first item the
+    /// keyboard lands on once there is a selection and a composer to quote
+    /// into. Enter hands the opener the plain selected text and the side of
+    /// the conversation it came from, and closes the menu.
+    #[gpui::test]
+    fn quote_in_composer_sends_the_plain_selection_to_the_opener(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::annotation::{Quote, QuoteSource};
+        let cx = cx.add_empty_window();
+        let mut state = selection_over(&["hello world", "second paragraph"], (0, 6), (1, 6));
+        let quoted: Rc<RefCell<Vec<(Quote, QuoteSource)>>> = Rc::default();
+        let sink = quoted.clone();
+        state.quote = Some(Rc::new(move |quote, source, _, _| {
+            sink.borrow_mut().push((quote, source));
+        }));
+        let selection = Rc::new(RefCell::new(state));
+        cx.update(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            selection.borrow_mut().menu = Some(TextMenu {
+                position: gpui::point(px(10.), px(10.)),
+                message_text: "the whole message".to_string(),
+                focus,
+                restore: None,
+                highlight: crate::ui::menu::MenuState::default(),
+                keyed: false,
+                quote_source: Some(QuoteSource::User),
+                kind: TextMenuKind::Context,
+            });
+            text_menu_key(&selection, "down", window, cx);
+            let menu = selection.borrow().menu.clone().expect("still open");
+            assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(0));
+            text_menu_key(&selection, "enter", window, cx);
+        });
+        assert!(selection.borrow().menu.is_none());
+        let quoted = quoted.borrow();
+        assert_eq!(quoted.len(), 1);
+        assert_eq!(quoted[0].0.text, "world\nsecond");
+        assert_eq!(quoted[0].1, QuoteSource::User);
+    }
+
+    /// Without a composer to quote into (a subagent's log), Quote in Composer
+    /// stays disabled even over a selection.
+    #[test]
+    fn quote_in_composer_needs_an_opener_and_a_selection() {
+        assert!(TextMenuItem::QuoteSelection.enabled(true, true));
+        assert!(!TextMenuItem::QuoteSelection.enabled(true, false));
+        assert!(!TextMenuItem::QuoteSelection.enabled(false, true));
+        assert_eq!(TextMenuItem::ALL[0], TextMenuItem::QuoteSelection);
+    }
+
+    /// A quote is the rendered text, not its Markdown source: selecting over
+    /// `**bold**` quotes `bold` (the bug openai/codex#35426 shipped).
+    #[test]
+    fn a_quote_over_markdown_carries_no_delimiters() {
+        let theme = Theme::dark();
+        let spans = parse_inline("make it **bold** and `code` and [a link](https://pi.dev)");
+        let (body, _, _, _) = inline_runs(&spans, FontWeight::NORMAL, theme.text_primary, theme);
+        let state = selection_over(&[body.as_ref()], (0, 0), (0, body.len()));
+        let quote = crate::annotation::normalize_quote(&state.selected_text().unwrap()).unwrap();
+        assert_eq!(quote.text, "make it bold and code and a link");
+    }
+
+    /// The selection reports the message it starts in, whichever way the
+    /// drag ran.
+    #[test]
+    fn the_selection_reports_the_message_it_starts_in() {
+        let mut state = selection_over(&["one", "two"], (1, 2), (0, 1));
+        if let Some(selection) = state.selection.as_mut() {
+            selection.blocks[0].message_ix = 4;
+            selection.blocks[1].message_ix = 5;
+        }
+        assert_eq!(state.selected_message_ix(), Some(4));
+        let state = selection_over(&["one"], (0, 1), (0, 1));
+        assert_eq!(state.selected_message_ix(), None);
+    }
+
     /// The right-click text menu has a keyboard path: with nothing selected
     /// the cursor skips the disabled Copy Selection, Enter copies the message,
     /// and closing hands focus back to whatever held it.
@@ -13346,6 +13785,8 @@ mod tests {
                 restore: Some(opener.clone()),
                 highlight: crate::ui::menu::MenuState::default(),
                 keyed: false,
+                quote_source: None,
+                kind: TextMenuKind::Context,
             });
             opener
         });
@@ -13358,12 +13799,12 @@ mod tests {
             let menu = selection.borrow().menu.clone().expect("still open");
             assert_eq!(
                 menu.highlight.selected(TextMenuItem::ALL.len()),
-                Some(1),
-                "Copy Selection is disabled without a selection"
+                Some(2),
+                "Quote and Copy Selection are disabled without a selection"
             );
             text_menu_key(&selection, "up", window, cx);
             let menu = selection.borrow().menu.clone().expect("still open");
-            assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(1));
+            assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(2));
             text_menu_key(&selection, "enter", window, cx);
         });
         assert!(
@@ -13686,6 +14127,7 @@ mod tests {
             .map(|(ix, text)| SelectedBlock {
                 key: ElementId::Name(format!("block-{ix}").into()),
                 text: (*text).to_string().into(),
+                message_ix: 0,
             })
             .collect();
         let mut state = TextSelection::new();
@@ -13877,6 +14319,7 @@ mod tests {
             rewind: None,
             regenerate: None,
             export_response: None,
+            quote: None,
             search_hits: None,
             search_active: None,
         }
@@ -16660,6 +17103,222 @@ mod tests {
         assert!(!state.borrow().dragging);
     }
 
+
+    /// A drawn transcript, a focus handle standing in for the composer, and
+    /// the points of "bravo" and "charlie" in its first paragraph.
+    struct ToolbarFixture {
+        view: gpui::Entity<SelectTestView>,
+        state: TextSelectionState,
+        messages: Rc<RefCell<Vec<ChatMessage>>>,
+        composer: gpui::FocusHandle,
+        bravo: gpui::Point<Pixels>,
+        charlie: gpui::Point<Pixels>,
+    }
+
+    fn toolbar_fixture(cx: &mut gpui::VisualTestContext) -> ToolbarFixture {
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller: scroller.clone(),
+                main_width: px(900.),
+                open_work: false,
+                live: false,
+            })
+        });
+        let composer = cx.update(|window, cx| {
+            let composer = cx.focus_handle();
+            window.focus(&composer);
+            composer
+        });
+        toolbar_paint(cx, &view);
+        let (bravo, charlie) = {
+            let state = state.borrow();
+            let block = state
+                .blocks
+                .iter()
+                .find(|block| block.text.contains("Alpha bravo"))
+                .expect("the fixture paragraph");
+            let at = |word: &str| {
+                let start = block.text.find(word).unwrap();
+                let caret = block.layout.position_for_index(start + 1).unwrap();
+                point(caret.x, caret.y + block.layout.line_height() * 0.5)
+            };
+            (at("bravo"), at("charlie"))
+        };
+        ToolbarFixture {
+            view,
+            state,
+            messages,
+            composer,
+            bravo,
+            charlie,
+        }
+    }
+
+    fn toolbar_paint(cx: &mut gpui::VisualTestContext, view: &gpui::Entity<SelectTestView>) {
+        let view = view.clone();
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            move |_, _| view,
+        );
+    }
+
+    /// Press at `from`, drag to `to`, release — painting between events, as
+    /// the standalone window only re-registers listeners when painted.
+    fn toolbar_drag(
+        cx: &mut gpui::VisualTestContext,
+        fixture: &ToolbarFixture,
+        from: gpui::Point<Pixels>,
+        to: gpui::Point<Pixels>,
+    ) {
+        cx.simulate_event(MouseDownEvent {
+            position: from,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: gpui::Modifiers::none(),
+            first_mouse: false,
+        });
+        toolbar_paint(cx, &fixture.view);
+        if from != to {
+            cx.simulate_event(gpui::MouseMoveEvent {
+                position: to,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: gpui::Modifiers::none(),
+            });
+            toolbar_paint(cx, &fixture.view);
+        }
+        cx.simulate_event(MouseUpEvent {
+            position: to,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: gpui::Modifiers::none(),
+        });
+        toolbar_paint(cx, &fixture.view);
+    }
+
+    fn menu_kind(state: &TextSelectionState) -> Option<TextMenuKind> {
+        state.borrow().menu.as_ref().map(|menu| menu.kind)
+    }
+
+    /// Finishing a drag over text shows the selection toolbar beside the
+    /// release point, and the keyboard stays where it was: someone mid-way
+    /// through a message keeps typing into it.
+    #[gpui::test]
+    fn a_finished_selection_opens_the_toolbar_without_taking_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        let fixture = toolbar_fixture(cx);
+        toolbar_drag(cx, &fixture, fixture.bravo, fixture.charlie);
+        assert!(fixture.state.borrow().selected_text().is_some());
+        assert_eq!(menu_kind(&fixture.state), Some(TextMenuKind::Toolbar));
+        let position = fixture.state.borrow().menu.as_ref().unwrap().position;
+        assert!(
+            position.y > fixture.charlie.y,
+            "the toolbar opens clear of the release point"
+        );
+        cx.update(|window, _| assert!(fixture.composer.is_focused(window)));
+    }
+
+    /// A plain click selects nothing, so it shows no toolbar.
+    #[gpui::test]
+    fn a_plain_click_opens_no_toolbar(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let fixture = toolbar_fixture(cx);
+        toolbar_drag(cx, &fixture, fixture.bravo, fixture.bravo);
+        assert!(fixture.state.borrow().selected_text().is_none());
+        assert_eq!(menu_kind(&fixture.state), None);
+    }
+
+    /// With the toolbar up, the next press in the transcript starts a new
+    /// selection at once; it is not spent dismissing the toolbar.
+    #[gpui::test]
+    fn a_press_with_the_toolbar_open_starts_a_new_selection(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let fixture = toolbar_fixture(cx);
+        toolbar_drag(cx, &fixture, fixture.bravo, fixture.charlie);
+        assert_eq!(menu_kind(&fixture.state), Some(TextMenuKind::Toolbar));
+        toolbar_drag(cx, &fixture, fixture.charlie, fixture.charlie);
+        assert_eq!(menu_kind(&fixture.state), None);
+        assert!(
+            fixture.state.borrow().selected_text().is_none(),
+            "the press replaced the old selection with a caret"
+        );
+    }
+
+    /// Escape (routed here by the app) closes the toolbar and keeps the
+    /// selection; it leaves a right-click menu to its own key handling.
+    #[gpui::test]
+    fn escape_closes_the_toolbar_and_keeps_the_selection(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let fixture = toolbar_fixture(cx);
+        toolbar_drag(cx, &fixture, fixture.bravo, fixture.charlie);
+        let closed = cx.update(|window, _| close_selection_toolbar(&fixture.state, window));
+        assert!(closed);
+        assert_eq!(menu_kind(&fixture.state), None);
+        assert!(fixture.state.borrow().selected_text().is_some());
+        let again = cx.update(|window, _| close_selection_toolbar(&fixture.state, window));
+        assert!(!again, "nothing left to close");
+    }
+
+    /// Scrolling moves the text out from under the toolbar, so the toolbar
+    /// closes rather than float over the wrong words.
+    #[gpui::test]
+    fn scrolling_closes_the_toolbar(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let fixture = toolbar_fixture(cx);
+        toolbar_drag(cx, &fixture, fixture.bravo, fixture.charlie);
+        assert_eq!(menu_kind(&fixture.state), Some(TextMenuKind::Toolbar));
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: fixture.bravo,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-40.))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        assert_eq!(menu_kind(&fixture.state), None);
+        assert!(fixture.state.borrow().selected_text().is_some());
+    }
+
+    /// Shift+F10 opens the menu at the selection's end with the keyboard: it
+    /// takes focus, its cursor sits on the first item that can act, and
+    /// closing hands focus back. Without a selection it does nothing.
+    #[gpui::test]
+    fn the_keyboard_opens_the_menu_at_the_selection(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let fixture = toolbar_fixture(cx);
+        let opened = cx.update(|window, cx| {
+            open_selection_menu_from_keyboard(&fixture.state, &fixture.messages, window, cx)
+        });
+        assert!(!opened, "no selection, nothing to open");
+        assert_eq!(menu_kind(&fixture.state), None);
+
+        toolbar_drag(cx, &fixture, fixture.bravo, fixture.charlie);
+        let opened = cx.update(|window, cx| {
+            open_selection_menu_from_keyboard(&fixture.state, &fixture.messages, window, cx)
+        });
+        assert!(opened);
+        let menu = fixture.state.borrow().menu.clone().expect("menu open");
+        assert_eq!(menu.kind, TextMenuKind::Context);
+        assert!(menu.keyed, "a keyboard-opened menu shows its cursor");
+        // No composer in this view, so Quote is disabled and Copy Selection
+        // is the first item that acts.
+        assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(1));
+        assert!(
+            (menu.position.y - fixture.charlie.y).abs() < px(30.),
+            "anchored at the selection's end, not the window corner"
+        );
+        cx.update(|window, cx| {
+            assert!(menu.focus.is_focused(window));
+            text_menu_key(&fixture.state, "escape", window, cx);
+            assert!(fixture.composer.is_focused(window), "focus returns on close");
+        });
+    }
 
     #[gpui::test]
     fn transcript_triple_click_selects_the_line_then_a_fourth_clears(cx: &mut gpui::TestAppContext) {

@@ -442,6 +442,7 @@ impl OrbitApp {
                 && self.attachments.is_empty()
                 && self.files.is_empty()
                 && self.pasted_texts.is_empty()
+                && self.annotations.is_empty()
         };
 
         self.execution = SessionExecution::default();

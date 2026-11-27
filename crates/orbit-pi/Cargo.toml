@@ -199,6 +199,10 @@ windows-sys = { version = "0.61", features = [
     # `GetModuleHandleW` for the tray icon's helper window (`tray::windows`).
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
+    # `CreateMutexW` for the one-instance guard (`platform`); its signature
+    # names `SECURITY_ATTRIBUTES`, which lives behind `Win32_Security`.
+    "Win32_Security",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

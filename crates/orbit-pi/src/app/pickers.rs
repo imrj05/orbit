@@ -651,6 +651,9 @@ impl OrbitApp {
             CommandId::CopyLastResponse => {
                 self.on_copy_last_response(&crate::CopyLastResponse, window, cx)
             }
+            CommandId::OpenSelectionMenu => {
+                self.on_open_selection_menu(&crate::OpenSelectionMenu, window, cx)
+            }
             CommandId::ToggleUsage => self.on_toggle_usage(&crate::ToggleUsage, window, cx),
             CommandId::ReviewChanges => {
                 self.open_review(cx);

@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Quote a transcript passage into the composer (#187).** Select text in the
+  transcript and choose **Quote in Composer** from its right-click menu (first
+  item, keyboard-reachable like the rest). The passage becomes a quote above the
+  input with an optional one-line comment; Enter keeps the comment, Escape undoes
+  it, and Backspace in an empty comment removes the quote. Sending — or steering
+  a live run — leads the prompt with each quote as a `>` block and its comment,
+  then your text, and the sent message shows the quotes above the bubble, live
+  and after a reload. Quotes carry the rendered text, so `**bold**` quotes as
+  `bold`. Up to eight per message, 4,000 characters each; they survive switching
+  sessions and a failed send.
+
+- **A toolbar for transcript selections.** Selecting text (a drag, or a double or
+  triple click) shows the text menu beside the selection — Quote in Composer,
+  Copy Selection, Copy Message — without taking the keyboard from the composer.
+  Escape or a scroll closes it and keeps the selection, and the next press starts
+  a new selection straight away. **Shift+F10** opens the same menu at the
+  selection's end from the keyboard (the sidebar keeps Shift+F10 for its row menu).
+
+- **A settings page opens at its top, and its pinned header stays above it.**
+  Two layout faults made the Providers & models page look cut off: a section kept the
+  previous page's scroll offset (so it opened scrolled down, its first card shaved off
+  under the toolbar), and the header's wrapping description was measured as one line
+  while it painted as several — the header then came out short and its toolbar painted
+  over the first card. The description is now one line with the full sentence on hover,
+  the scroll offset resets per section, and both faults have layout tests.
+
+- **Cleaner Providers & models and plugin cards.** The Models page's count line under
+  the toolbar ("N providers · N active · …") is gone, and a plugin card ends at its
+  badges instead of repeating the package's install path.
+
+- **Plugin page round-out.** A configured-but-missing package can be installed
+  from its card again, disabled packages sort below the active ones with a line
+  saying what "disabled" means, plugin results report in the page's own status
+  line instead of a corner toast, and **Restart pi** sits beside Refresh so a
+  package change loads without leaving the page.
+
+- **New projects are named where they are created.** Creating a project opens
+  the rename dialog seeded with the folder's name, so it can be given a display
+  name immediately instead of hunting for the header menu.
+
+- **One Orbit instance on Windows.** A second launch (a desktop shortcut, a
+  double-clicked exe) raises the running window and exits instead of starting a
+  second app and a second agent.
+
+- **Per-plugin enable/disable toggle.** Each installed plugin on the Settings →
+  Plugins page now carries a switch that flips pi's own `autoload: false` form
+  in `settings.json`. A disabled package stops loading on pi's next start or
+  `/reload`, and the switch reflects the on-disk state — never a decorative
+  toggle.
+
+- **Sidebar session rename opens immediately.** Clicking Rename no longer
+  opens the conversation first. Only saving a changed name loads the target
+  session; Cancel and unchanged names leave the current conversation in place.
+
+- **Generate a title from Rename Session.** The dialog now offers the same
+  wand as Session Details. It applies the generated title immediately and
+  keeps any edits typed while generation was in flight.
+
+- **Consistent rename dialogs.** Sessions and projects now share a compact form
+  with a full-width name field, close control, and a dedicated Cancel / Save
+  changes footer. Renaming a session no longer opens or rearranges the details
+  dock. Project renames still change only the sidebar display name.
+
 - **Every confirmation asks a question and says the consequence.** The shared card
   (`ui/confirm.rs`) was fed unevenly by `app/confirm_ui.rs`: most prompts had no line
   saying what happens, four carried no mark beside the question, and three put the

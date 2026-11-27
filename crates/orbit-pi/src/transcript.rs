@@ -1438,6 +1438,33 @@ impl Transcript {
 
     /// The current transcript text selection, if any — the keyboard copy
     /// path (`cmd-c`) reads it without stealing the composer's own copy.
+    /// Shift+F10: open the text menu at the selection, with the keyboard.
+    /// `false` when nothing is selected on screen.
+    pub fn open_selection_menu(&self, window: &mut gpui::Window, cx: &mut gpui::App) -> bool {
+        transcript_view::open_selection_menu_from_keyboard(
+            &self.text_selection,
+            &self.messages,
+            window,
+            cx,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_open_selection_toolbar(&self, text: &str, cx: &mut gpui::App) {
+        transcript_view::test_open_toolbar(&self.text_selection, text, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_selection_toolbar_open(&self) -> bool {
+        transcript_view::test_toolbar_open(&self.text_selection)
+    }
+
+    /// Escape: close the selection toolbar, keeping the selection. `false`
+    /// when the toolbar is not open.
+    pub fn close_selection_toolbar(&self, window: &mut gpui::Window) -> bool {
+        transcript_view::close_selection_toolbar(&self.text_selection, window)
+    }
+
     pub fn selected_text(&self) -> Option<String> {
         self.text_selection.borrow().selected_text()
     }
@@ -3313,6 +3340,7 @@ impl Transcript {
         rewind: Option<crate::transcript_view::RewindOpener>,
         regenerate: Option<crate::transcript_view::RegenerateOpener>,
         export_response: Option<crate::transcript_view::ResponseExporter>,
+        quote: Option<crate::transcript_view::QuoteOpener>,
         search_hits: Option<HashSet<usize>>,
         search_active: Option<usize>,
         cx: &gpui::App,
@@ -3386,6 +3414,7 @@ impl Transcript {
                 rewind,
                 regenerate,
                 export_response,
+                quote,
                 search_hits: search_hits.map(|hits| Rc::new(RefCell::new(hits))),
                 search_active: search_active.map(|ix| Rc::new(Cell::new(Some(ix)))),
             },

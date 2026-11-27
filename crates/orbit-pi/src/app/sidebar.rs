@@ -4253,10 +4253,8 @@ impl OrbitApp {
         let Some(menu) = self.session_menu.take() else {
             return;
         };
-        if self.current_session_path.as_ref() == Some(&menu.path) {
-            if self.pending_session_rename.is_none() {
-                self.begin_session_rename(window, cx);
-            }
+        if self.current_session_path.as_ref() == Some(&menu.path) && self.session_id.is_some() {
+            self.begin_session_rename(window, cx);
             cx.notify();
             return;
         }
@@ -4269,11 +4267,7 @@ impl OrbitApp {
             cx.notify();
             return;
         };
-        self.switch_to_session(session, true, cx);
-        // A cold switch must finish before pi can safely accept a rename.
-        if self.runtime_is_live() {
-            self.pending_session_rename = Some(menu.path);
-        }
+        self.open_session_rename(Some(session), window, cx);
         cx.notify();
     }
 
@@ -6740,50 +6734,58 @@ mod tests {
     }
 
     #[gpui::test]
-    fn row_rename_waits_for_the_target_session_state(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit));
-            let app = cx.new(OrbitApp::new);
+    fn row_rename_opens_and_focusses_before_switching_sessions(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                let path = PathBuf::from("/tmp/rename-target.jsonl");
-                app.current_session_path = Some(path.clone());
-                app.pending_session_rename = Some(path);
-                let mut refresh = false;
-                app.on_response(
-                    "get_state",
-                    true,
-                    Some(&serde_json::json!({"sessionFile": "/tmp/other.jsonl"})),
-                    None,
-                    "test",
-                    &mut refresh,
-                    cx,
+                let current = PathBuf::from("/tmp/current.jsonl");
+                let target = PathBuf::from("/tmp/rename-target.jsonl");
+                app.current_session_path = Some(current.clone());
+                app.session_id = Some("current".into());
+                app.session_name = Some("Current title".into());
+                app.sessions.push(SessionInfo {
+                    path: target.clone(),
+                    id: "target".into(),
+                    cwd: PathBuf::from("/tmp"),
+                    title: "Target title".into(),
+                    first_message: String::new(),
+                    modified: std::time::SystemTime::UNIX_EPOCH,
+                });
+                let menu = SessionMenu {
+                    path: target.clone(),
+                    title: "Target title".into(),
+                    deletable: true,
+                    at: None,
+                    reorderable: false,
+                    can_move_up: false,
+                    can_move_down: false,
+                    cursor: Default::default(),
+                };
+                app.session_menu = Some(menu.clone());
+                app.on_menu_rename_session(window, cx);
+                assert!(app.session_name_editing);
+                assert_eq!(
+                    app.session_rename_target.as_ref().map(|row| &row.path),
+                    Some(&target)
                 );
-                assert!(!app.session_rename_ready);
-                assert!(app.pending_session_rename.is_some());
-            });
-        });
-    }
+                let field = app.session_name_input.read(cx);
+                assert_eq!(field.text(), "Target title");
+                assert!(field.focus_handle(cx).is_focused(window));
+                assert_eq!(app.current_session_path.as_ref(), Some(&current));
+                assert!(app.pending_session_rename.is_none());
 
-    #[gpui::test]
-    fn row_rename_opens_after_target_session_state_arrives(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit));
-            let app = cx.new(OrbitApp::new);
-            app.update(cx, |app, cx| {
-                let path = PathBuf::from("/tmp/rename-target.jsonl");
-                app.current_session_path = Some(path.clone());
-                app.pending_session_rename = Some(path);
-                let mut refresh = false;
-                app.on_response(
-                    "get_state",
-                    true,
-                    Some(&serde_json::json!({"sessionFile": "/tmp/rename-target.jsonl"})),
-                    None,
-                    "test",
-                    &mut refresh,
-                    cx,
-                );
-                assert!(app.session_rename_ready);
+                app.cancel_session_name_edit(cx);
+                assert!(!app.session_name_editing);
+                assert!(app.session_rename_target.is_none());
+                assert_eq!(app.current_session_path.as_ref(), Some(&current));
+
+                app.session_menu = Some(menu);
+                app.on_menu_rename_session(window, cx);
+                app.rename_session(cx); // Saving the untouched sidebar preview is a no-op.
+                assert!(!app.session_name_editing);
+                assert_eq!(app.current_session_path.as_ref(), Some(&current));
                 assert!(app.pending_session_rename.is_none());
             });
         });
@@ -6795,7 +6797,10 @@ mod tests {
             cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit));
             let app = cx.new(OrbitApp::new);
             app.update(cx, |app, cx| {
-                app.pending_session_rename = Some(PathBuf::from("/tmp/rename-target.jsonl"));
+                app.pending_session_rename = Some(SessionRename {
+                    path: PathBuf::from("/tmp/rename-target.jsonl"),
+                    name: "Saved title".into(),
+                });
                 let mut refresh = false;
                 app.on_response(
                     "switch_session",
@@ -6807,7 +6812,7 @@ mod tests {
                     cx,
                 );
                 assert!(app.pending_session_rename.is_none());
-                assert!(!app.session_rename_ready);
+                assert!(!app.session_name_editing);
             });
         });
     }

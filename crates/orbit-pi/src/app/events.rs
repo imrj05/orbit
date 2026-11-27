@@ -243,26 +243,19 @@ impl OrbitApp {
                     cx.notify();
                 }
                 Event::SessionInfoChanged { name } => {
-                    // pi renamed the session (its own auto-title, the popover's
-                    // Generate title, or the rename field echoing back).
+                    // pi renamed the session (automatic title, Generate title,
+                    // or the rename field echoing back).
                     // `session_name` wins over `current_title` in the header,
                     // so both move together or a re-title would not show.
                     match name {
                         Some(name) => {
                             self.current_title = Some(name.clone());
-                            // Seed the rename field from the new name, unless
-                            // the user is mid-edit; a manual generation owns
-                            // the field it asked to refresh.
-                            let seed = self.session_name.is_none() || self.title_generating;
                             self.session_name = Some(name.clone());
-                            if seed {
-                                self.session_name_input
-                                    .update(cx, |input, cx| input.set_text(name, cx));
-                            }
+                            self.seed_session_name_input(cx);
+                            self.apply_title_to_rename_draft(name, cx);
                         }
                         None => self.session_name = None,
                     }
-                    self.title_generating = false;
                     refresh_sessions = true;
                 }
                 Event::Auth(event) => {
@@ -349,9 +342,6 @@ impl OrbitApp {
                         hook = hook,
                         error = error
                     ));
-                    // A failed title command never sends its
-                    // `session_info_changed`, so drop the in-flight flag here.
-                    self.title_generating = false;
                 }
                 Event::AgentSettled { aborted } => {
                     // A remote session joins its server's sidebar list once
@@ -440,7 +430,6 @@ impl OrbitApp {
                 Event::ProcessExited => {
                     let fork_interrupted = self.take_pending_fork();
                     self.pending_session_rename = None;
-                    self.session_rename_ready = false;
                     self.pending_session_branch = None;
                     self.session_branch_ready = false;
                     self.busy = false;
@@ -467,7 +456,7 @@ impl OrbitApp {
                     self.custom_ui.clear();
                     self.custom_ui_focus_pending = false;
                     self.is_compacting = false;
-                    self.title_generating = false;
+                    self.title_generation = None;
                     self.runtime.alive = false;
                     self.runtime.exited = true;
                     self.abort_requested = false;
@@ -1048,13 +1037,23 @@ impl OrbitApp {
                 self.context_stats_pending = false;
             }
         }
+        // pi answers the title command after the extension returns, even
+        // when it did not find a title or emit `session_info_changed`.
+        if command == "prompt"
+            && self
+                .title_generation
+                .as_ref()
+                .is_some_and(|request| request.request_id == id)
+        {
+            self.title_generation = None;
+            cx.notify();
+        }
         // Error handling (docs #error-handling): a failed command carries an
         // `error` string. Surface it, unwind command-specific optimistic
         // state, and stop — success paths below assume `data` is valid.
         if !success {
             if matches!(command, "switch_session" | "get_state") {
                 self.pending_session_rename = None;
-                self.session_rename_ready = false;
                 self.pending_session_branch = None;
                 self.session_branch_ready = false;
             }
@@ -1268,9 +1267,7 @@ impl OrbitApp {
                 match &state.session_name {
                     Some(name) if self.session_name.as_deref() != Some(name.as_str()) => {
                         self.session_name = Some(name.clone());
-                        let name = name.clone();
-                        self.session_name_input
-                            .update(cx, |input, cx| input.set_text(name, cx));
+                        self.seed_session_name_input(cx);
                     }
                     None if self.session_name.is_some() => {
                         self.session_name = None;
@@ -1287,12 +1284,15 @@ impl OrbitApp {
                                 .is_some_and(|file| std::path::Path::new(file) == path)
                     })
                 };
-                let rename_loaded = loaded(self.pending_session_rename.as_ref());
+                let rename_loaded = self
+                    .pending_session_rename
+                    .as_ref()
+                    .is_some_and(|rename| loaded(Some(&rename.path)) && self.session_id.is_some());
                 let branch_loaded = loaded(self.pending_session_branch.as_ref());
                 if rename_loaded {
-                    self.pending_session_rename = None;
-                    self.session_rename_ready = true;
-                    cx.notify();
+                    if let Some(rename) = self.pending_session_rename.take() {
+                        self.apply_session_rename(rename.name, cx);
+                    }
                 }
                 if branch_loaded {
                     self.pending_session_branch = None;
@@ -1428,6 +1428,9 @@ impl OrbitApp {
                 }
             }
             "switch_session" => {
+                if data.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                    self.pending_session_rename = None;
+                }
                 if success {
                     // A resumed session keeps the model in its file (D-D).
                     self.default_model_armed = false;

@@ -54,8 +54,19 @@ pub(super) enum PluginAction {
         project: bool,
         name: String,
     },
+    /// Install a package that is configured but missing from disk.
+    InstallOne { source: String, project: bool },
+    /// Flip a package's `autoload` state so it stops loading (or loads
+    /// again) on pi's next start or `/reload`.
+    ToggleEnabled {
+        source: String,
+        project: bool,
+        enabled: bool,
+    },
     SetScope { project: bool },
     Refresh,
+    /// Restart pi so a package change loads now.
+    RestartPi,
 }
 
 /// Toolbar vs. card button geometry. Settings' pinned toolbars size their
@@ -964,10 +975,8 @@ impl OrbitApp {
                     .w_full()
                     .max_w(px(CONTENT_MAX_W))
                     .mx_auto()
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_col()
-                    .child(
+                    .flex_none()
+                            .child(
                         div()
                             .w_full()
                             .px(DynamicSpacing::Base24.px(&theme))
@@ -996,6 +1005,7 @@ impl OrbitApp {
                     .max_w(px(CONTENT_MAX_W))
                     .mx_auto()
                     .overflow_y_scroll()
+                    .track_scroll(&self.settings_content_scroll)
                     .child(
                         div()
                             .w_full()
@@ -1211,11 +1221,29 @@ impl OrbitApp {
                         line.child(crate::ui::chip::experimental_badge(&theme))
                     }),
             )
+            // One line: the description sits in the pinned header, and a
+            // wrapped sentence there is measured as a single line while it
+            // paints as several, which under-sized the header and let the
+            // toolbar paint over the first card. The full sentence is on
+            // hover.
+            // One line: a sentence that wraps here is measured as a single
+            // line while it paints as several, so the pinned header came out
+            // short and its toolbar painted over the first card. The full
+            // sentence is on hover.
             .child(
                 div()
+                    .id("settings-section-description")
                     .text_size(TextSize::Default.px(&theme))
                     .text_color(theme.text_secondary)
-                    .child(subtitle.to_string()),
+                    .line_clamp(1)
+                    .tooltip({
+                        let subtitle = subtitle.clone();
+                        move |_, cx| {
+                            cx.new(|_| crate::ui::tooltip::Tooltip::new(subtitle.clone()))
+                                .into()
+                        }
+                    })
+                    .child(subtitle),
             )
             // What "Experimental" means here, said once on the page itself.
             .when(self.settings_section == SettingsSection::RemoteHosts, |header| {
@@ -1424,35 +1452,35 @@ impl OrbitApp {
         }
     }
 
-    /// The pinned toolbar for the active section (Providers search + add,
-    /// Plugins install + refresh). `None` on sections without one.
+    /// The pinned toolbar rows for the active section (Providers search + add,
+    /// Plugins install + refresh). Empty on sections without one.
+    ///
+    /// The rows are returned flat rather than wrapped in one column: the pinned
+    /// header already stacks them, and a nested auto-height column here measured
+    /// shorter than the row it held — the toolbar then painted over the card
+    /// below it.
     pub(super) fn settings_toolbar(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> Vec<AnyElement> {
         match self.settings_section {
-            SettingsSection::Providers => Some(match self.providers_remote_host() {
-                Some(host) => self.remote_provider_toolbar(&host, theme, this),
+            SettingsSection::Providers => match self.providers_remote_host() {
+                Some(host) => vec![self.remote_provider_toolbar(&host, theme, this)],
                 None => match self.providers_machine_selector(theme, this.clone()) {
                     // The selector sits above this Mac's own toolbar.
-                    Some(selector) => div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .child(selector)
-                        .child(self.provider_toolbar(theme, this, cx))
-                        .into_any_element(),
-                    None => self.provider_toolbar(theme, this, cx),
+                    Some(selector) => {
+                        vec![selector, self.provider_toolbar(theme, this, cx)]
+                    }
+                    None => vec![self.provider_toolbar(theme, this, cx)],
                 },
-            }),
-            SettingsSection::Plugins => Some(self.plugin_toolbar(theme, this, cx)),
-            SettingsSection::Mcp => Some(self.mcp_toolbar(theme, this, cx)),
-            SettingsSection::RemoteHosts => Some(self.remote_hosts_toolbar(theme, this)),
-            SettingsSection::GitAccounts => Some(self.git_accounts_toolbar(theme, this)),
-            _ => None,
+            },
+            SettingsSection::Plugins => vec![self.plugin_toolbar(theme, this, cx)],
+            SettingsSection::Mcp => vec![self.mcp_toolbar(theme, this, cx)],
+            SettingsSection::RemoteHosts => vec![self.remote_hosts_toolbar(theme, this)],
+            SettingsSection::GitAccounts => vec![self.git_accounts_toolbar(theme, this)],
+            _ => Vec::new(),
         }
     }
 
@@ -1517,16 +1545,20 @@ impl OrbitApp {
         let control = self.default_model_select(theme, this, cx);
         // The shared settings board (no `overflow_hidden`: the select's popup
         // anchors inside the row and must escape it).
-        self.settings_group(
-            theme,
-            vec![self.setting_row(
+        div()
+            .w_full()
+            .debug_selector(|| "default-model-card".to_string())
+            .child(self.settings_group(
                 theme,
-                &tr!("settings.default_model"),
-                Some(&tr!("settings.default_model_hint")),
-                None,
-                Some(control),
-            )],
-        )
+                vec![self.setting_row(
+                    theme,
+                    &tr!("settings.default_model"),
+                    Some(&tr!("settings.default_model_hint")),
+                    None,
+                    Some(control),
+                )],
+            ))
+            .into_any_element()
     }
 
     /// Flip the Models page's favorites-only filter.
@@ -1712,6 +1744,20 @@ impl OrbitApp {
                     .into_any_element(),
             );
         }
+        // Say what a disabled package is, once, and only when one is on the
+        // page: the switch is the only place this could be guessed at.
+        if self.plugins.iter().any(|package| !package.enabled) {
+            rows.push(
+                div()
+                    .debug_selector(|| "plugins-disabled-hint".to_string())
+                    .w_full()
+                    .px(DynamicSpacing::Base04.px(&theme))
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!("settings.plugin_disabled_hint"))
+                    .into_any_element(),
+            );
+        }
         let mut cards = Vec::new();
         for package in visible {
             cards.push(self.plugin_card(package, theme, this.clone()));
@@ -1764,6 +1810,14 @@ impl OrbitApp {
                 theme,
             ));
         }
+        if !package.enabled {
+            badges = badges.child(self.provider_badge(
+                &tr!("settings.plugin_disabled_badge"),
+                theme.text_muted,
+                theme.overlay_strong,
+                theme,
+            ));
+        }
 
         let actions: AnyElement = {
             let mut actions = div()
@@ -1771,10 +1825,34 @@ impl OrbitApp {
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base08.px(&theme));
+            // One switch per package: the id keys the transition, so two rows
+            // sharing one id would share a knob.
+            let toggle_this = this.clone();
+            let toggle_source = source.clone();
+            let toggle_enabled = package.enabled;
+            actions = actions.child(switch(
+                format!("plugin-toggle-{source}"),
+                package.enabled,
+                &theme,
+                move |_, cx| {
+                    toggle_this.update(cx, |app, cx| {
+                        app.apply_plugin_action(
+                            PluginAction::ToggleEnabled {
+                                source: toggle_source.clone(),
+                                project,
+                                enabled: !toggle_enabled,
+                            },
+                            cx,
+                        );
+                    });
+                },
+            ));
+            // A configured package whose install directory is gone has one
+            // fix: install it. Update and Remove only make sense on disk.
             if package.installed {
                 actions = actions.child(self.plugin_button(
                     format!("plugin-update-{source}"),
-                    "Update",
+                    &tr!("settings.update"),
                     false,
                     PluginButtonSize::Compact,
                     Some("icons/refresh.svg"),
@@ -1785,10 +1863,25 @@ impl OrbitApp {
                         source: source.clone(),
                     },
                 ));
+            } else {
+                actions = actions.child(self.plugin_button(
+                    format!("plugin-reinstall-{source}"),
+                    &tr!("settings.install"),
+                    false,
+                    PluginButtonSize::Compact,
+                    Some("icons/plus.svg"),
+                    false,
+                    theme,
+                    this.clone(),
+                    PluginAction::InstallOne {
+                        source: source.clone(),
+                        project,
+                    },
+                ));
             }
             actions = actions.child(self.plugin_button(
                 format!("plugin-remove-{source}"),
-                "Remove",
+                &tr!("settings.remove"),
                 false,
                 PluginButtonSize::Compact,
                 Some("icons/trash.svg"),
@@ -1860,17 +1953,6 @@ impl OrbitApp {
                     .child(actions),
             )
             .child(badges)
-            .when(!package.install_path.as_os_str().is_empty(), |row| {
-                row.child(
-                    div()
-                        .pl(DynamicSpacing::Base40.px(&theme))
-                        .font_family(theme::code_font_family())
-                        .text_size(theme.code_px(10.5))
-                        .text_color(theme.text_muted)
-                        .truncate()
-                        .child(package.install_path.to_string_lossy().into_owned()),
-                )
-            })
             .into_any_element()
     }
 
@@ -1918,7 +2000,7 @@ impl OrbitApp {
 
         let install = self.plugin_button(
             "plugin-install".to_string(),
-            "Install",
+            &tr!("settings.install"),
             true,
             PluginButtonSize::Toolbar,
             Some("icons/plus.svg"),
@@ -1930,15 +2012,31 @@ impl OrbitApp {
 
         let refresh = self.plugin_button(
             "plugin-refresh".to_string(),
-            "Refresh",
+            &tr!("settings.refresh"),
             false,
             PluginButtonSize::Toolbar,
             Some("icons/refresh.svg"),
             self.plugin_refresh_spin_until.is_some(),
             theme,
-            this,
+            this.clone(),
             PluginAction::Refresh,
         );
+
+        // A plugin edit only takes effect when pi next starts. Restart it
+        // here rather than sending the reader to another page.
+        let restart = self.client.is_some().then(|| {
+            self.plugin_button(
+                "plugin-restart-pi".to_string(),
+                &tr!("settings.restart_pi"),
+                false,
+                PluginButtonSize::Toolbar,
+                Some("icons/refresh.svg"),
+                false,
+                theme,
+                this.clone(),
+                PluginAction::RestartPi,
+            )
+        });
 
         let plugin_spinner: AnyElement = crate::ui::prelude::spinner(
             "plugin-action-spin",
@@ -1958,13 +2056,25 @@ impl OrbitApp {
                 .child(plugin_spinner)
                 .child(action.clone())
                 .into_any_element(),
-            None => div()
-                .flex_1()
-                .min_w_0()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_muted)
-                .child(tr!("settings.n_packages", count = self.plugins.len()))
-                .into_any_element(),
+            // The outcome of the last operation stays here, where the action
+            // was taken, instead of a toast in the corner.
+            None => match &self.plugin_result {
+                Some(result) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
+                    .child(result.clone())
+                    .into_any_element(),
+                None => div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!("settings.n_packages", count = self.plugins.len()))
+                    .into_any_element(),
+            },
         };
 
         let search = search_field(self.plugins_filter.clone(), &theme).w_full();
@@ -1994,6 +2104,7 @@ impl OrbitApp {
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
                     .child(status)
+                    .children(restart)
                     .child(refresh),
             )
             .into_any_element()
@@ -2113,27 +2224,8 @@ impl OrbitApp {
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
     ) -> AnyElement {
-        let all = self.provider_views();
-        let active = all.iter().filter(|view| view.active).count();
-        let connected = all.iter().filter(|view| view.connected()).count();
-        let needle = self.provider_filter.read(cx).text().trim().to_lowercase();
-        let favorites = crate::favorites::all();
-        let favorite_count = self
-            .available_models
-            .iter()
-            .filter(|model| favorites.contains(&model.provider, &model.id))
-            .count();
-        let shown_models = self
-            .available_models
-            .iter()
-            .filter(|model| {
-                model_visible(model, &needle, self.models_favorites_only, &favorites, None)
-            })
-            .count();
-        let filtered = self.models_favorites_only || !needle.is_empty();
-
         let search = search_field(self.provider_filter.clone(), &theme).w_full();
 
         let refresh_icon = refresh_glyph(
@@ -2193,35 +2285,13 @@ impl OrbitApp {
                     .child(add_button),
             );
 
-        let summary = div()
-            .w_full()
-            .px(DynamicSpacing::Base04.px(&theme))
-            .truncate()
-            .text_size(TextSize::Small.px(&theme))
-            .text_color(theme.text_muted)
-            .child(format!(
-                "{} · {}",
-                tr!(
-                    "settings.providers_active_connected",
-                    all = all.len(),
-                    active = active,
-                    connected = connected
-                ),
-                model_count_label(
-                    self.available_models.len(),
-                    shown_models,
-                    favorite_count,
-                    filtered
-                )
-            ));
-
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme))
+            .debug_selector(|| "providers-toolbar".to_string())
             .child(controls)
-            .child(summary)
             .into_any_element()
     }
 
@@ -6023,7 +6093,9 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
-        if self.pending_session_rename.is_some() {
+        if self.pending_session_rename.is_some()
+            || (self.session_rename_target.is_none() && self.title_generation.is_some())
+        {
             return;
         }
         // Enter while an IME candidate window is open confirms the candidate;
@@ -6038,6 +6110,29 @@ impl OrbitApp {
             cx.notify();
             return;
         }
+        if let Some(session) = self.session_rename_target.take() {
+            // The sidebar may shorten a title. Confirming the prefill unchanged
+            // must not replace the full persisted name with that preview.
+            if name == session.title.trim() {
+                self.cancel_session_name_edit(cx);
+                return;
+            }
+            if self.current_session_path.as_ref() != Some(&session.path)
+                || self.session_id.is_none()
+            {
+                let path = session.path.clone();
+                self.cancel_session_name_edit(cx);
+                self.switch_to_session(session, true, cx);
+                if self.current_session_path.as_ref() == Some(&path) && self.runtime_is_live() {
+                    self.pending_session_rename = Some(SessionRename { path, name });
+                }
+                return;
+            }
+        }
+        self.apply_session_rename(name, cx);
+    }
+
+    pub(super) fn apply_session_rename(&mut self, name: String, cx: &mut Context<Self>) {
         if !self.send(
             CommandBody::SetSessionName { name: name.clone() },
             "set_session_name",
@@ -6053,13 +6148,11 @@ impl OrbitApp {
                 session.title = name;
             }
         }
-        // Flash a check on the Update button so a successful commit reads as
-        // done rather than a silent no-op. Only the timer for this exact stamp
-        // clears it, so a second click extends the flash instead of cutting it
-        // short when the first timer lands.
+        // Flash a check beside the updated title in the details dock. Only
+        // the timer for this exact stamp clears the confirmation.
         let saved_at = Instant::now();
         self.rename_saved_at = Some(saved_at);
-        // The committed name is the title now; the row goes back to text.
+        // The committed name is the title now; close the rename dialog.
         self.session_name_editing = false;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(RENAME_FEEDBACK).await;
@@ -8607,6 +8700,10 @@ impl OrbitApp {
             self.subagent_editor = None;
         }
         self.settings_section = section;
+        // A section is a new page: open it at its top, not at wherever the
+        // previous page happened to be scrolled to.
+        self.settings_content_scroll
+            .set_offset(point(px(0.), px(0.)));
         if let Some(index) = SETTINGS_SECTIONS.iter().position(|entry| entry.0 == section) {
             self.settings_nav_cursor = index;
             self.settings_nav_scroll.scroll_to_item(index);
@@ -8640,7 +8737,10 @@ impl OrbitApp {
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Subagents => self.refresh_subagents(cx),
             SettingsSection::Permissions => self.refresh_permissions(cx),
-            SettingsSection::Plugins => self.refresh_plugins(cx),
+            SettingsSection::Plugins => {
+                self.plugin_result = None;
+                self.refresh_plugins(cx);
+            }
             SettingsSection::Mcp => self.mcp_section_opened(cx),
             SettingsSection::RemoteHosts => self.remote_hosts_section_opened(cx),
             _ => {}
@@ -8689,6 +8789,66 @@ impl OrbitApp {
         self.plugin_run(PluginOp::Remove, source, project, cx);
     }
 
+    /// Enable or disable one package by editing pi's settings file, then
+    /// reload the list. The edit is a local file write, but it still runs off
+    /// the UI thread so a slow disk never stalls a frame; pi applies the
+    /// change on its next start or `/reload`.
+    pub(super) fn plugin_toggle_enabled(
+        &mut self,
+        source: String,
+        project: bool,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.plugin_action.is_some() {
+            return;
+        }
+        let scope = if project {
+            crate::plugins::PackageScope::Project
+        } else {
+            crate::plugins::PackageScope::User
+        };
+        let verb = if enabled {
+            tr!("settings.verb_enabling")
+        } else {
+            tr!("settings.verb_disabling")
+        };
+        self.plugin_action = Some(tr!(
+            "settings.plugin_progress",
+            verb = verb,
+            source = source
+        ));
+        // The toast needs its own copy: `source` moves into the background
+        // task below, while this clone outlives it for the result string.
+        let toast_source = source.clone();
+        let workspace = self.workspace_dir();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::plugins::set_enabled(&source, scope, enabled, &workspace)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.plugin_action = None;
+                match result {
+                    Ok(()) => {
+                        app.plugin_result = Some(if enabled {
+                            tr!("settings.plugin_enabled", source = toast_source)
+                        } else {
+                            tr!("settings.plugin_disabled", source = toast_source)
+                        });
+                        app.refresh_plugins(cx);
+                    }
+                    Err(err) => app.set_error(err),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Run a plugin operation off the UI thread, then reload the list.
     fn plugin_run(&mut self, op: PluginOp, source: String, project: bool, cx: &mut Context<Self>) {
         if self.plugin_action.is_some() {
@@ -8704,6 +8864,8 @@ impl OrbitApp {
             verb = verb,
             source = source
         ));
+        self.plugin_result = None;
+        // The fallback outcome, for the rare run whose output has no line.
         let done = tr!(
             "settings.plugin_progress_plain",
             verb = verb,
@@ -8725,13 +8887,16 @@ impl OrbitApp {
                 app.plugin_action = None;
                 match result {
                     Ok(output) => {
-                        let last = output
-                            .lines()
-                            .rev()
-                            .find(|line| !line.trim().is_empty())
-                            .map(str::to_string);
-                        app.toast_success(
-                            last.unwrap_or_else(|| tr!("settings.plugin_done", done = done)),
+                        // The outcome lands on the page, in the toolbar's own
+                        // status line: the user is looking here, and a corner
+                        // toast for an in-place edit is noise.
+                        app.plugin_result = Some(
+                            output
+                                .lines()
+                                .rev()
+                                .find(|line| !line.trim().is_empty())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| tr!("settings.plugin_done", done = done)),
                         );
                         app.refresh_plugins(cx);
                     }
@@ -8765,11 +8930,23 @@ impl OrbitApp {
                     cx,
                 );
             }
+            PluginAction::InstallOne { source, project } => {
+                self.plugin_run(PluginOp::Install, source, project, cx);
+            }
+            PluginAction::ToggleEnabled {
+                source,
+                project,
+                enabled,
+            } => {
+                self.plugin_toggle_enabled(source, project, enabled, cx);
+            }
             PluginAction::SetScope { project } => {
                 self.plugin_install_project = project;
                 cx.notify();
             }
+            PluginAction::RestartPi => self.provider_apply_credentials(cx),
             PluginAction::Refresh => {
+                self.plugin_result = None;
                 self.refresh_plugins(cx);
                 self.check_plugin_updates_now(cx);
                 self.toast_info(tr!("settings.reloaded_installed_plugins"));
@@ -9747,29 +9924,6 @@ fn model_visible(
         || model.provider.to_lowercase().contains(needle)
 }
 
-/// The Models toolbar's count line: the catalog total, or "shown of total"
-/// while a search or the favorites filter is narrowing the grid.
-fn model_count_label(total: usize, shown: usize, favorites: usize, filtered: bool) -> String {
-    if total == 0 {
-        return tr!("settings.no_models_reported_by_runtime");
-    }
-    let favorites = tr!("settings.n_favorites", count = favorites);
-    if filtered {
-        tr!(
-            "settings.count_of_shown",
-            shown = shown,
-            total = total,
-            favorites = favorites
-        )
-    } else {
-        tr!(
-            "settings.count_models",
-            total = total,
-            favorites = favorites
-        )
-    }
-}
-
 /// The position among `visible` that `dir` moves the settings dropdown's
 /// keyboard cursor to: the current position ± 1, clamped at the ends. A
 /// highlight the query filtered away lands on the first match going down,
@@ -9974,7 +10128,7 @@ mod theme_catalog_tests {
 
 #[cfg(test)]
 mod model_filter_tests {
-    use super::{model_count_label, model_visible, ModelEntry};
+    use super::{model_visible, ModelEntry};
     use crate::favorites::Favorites;
 
     fn entry(provider: &str, id: &str, name: &str) -> ModelEntry {
@@ -10055,26 +10209,6 @@ mod model_filter_tests {
         ));
         // `None` means every provider.
         assert!(model_visible(&gpt, "", false, &favorites, None));
-    }
-
-    #[test]
-    fn count_label_reflects_the_active_filters() {
-        assert_eq!(
-            model_count_label(0, 0, 0, false),
-            "No models reported by the runtime"
-        );
-        assert_eq!(
-            model_count_label(236, 236, 12, false),
-            "236 models · 12 favorite(s)"
-        );
-        assert_eq!(
-            model_count_label(236, 1, 12, true),
-            "1 of 236 shown · 12 favorite(s)"
-        );
-        assert_eq!(
-            model_count_label(3, 3, 1, false),
-            "3 models · 1 favorite(s)"
-        );
     }
 }
 

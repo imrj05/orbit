@@ -236,6 +236,7 @@ impl OrbitApp {
             attachments: std::mem::take(&mut self.attachments),
             files: std::mem::take(&mut self.files),
             pasted_texts: std::mem::take(&mut self.pasted_texts),
+            annotations: std::mem::take(&mut self.annotations),
         };
         let draft = (!draft.is_empty()).then_some(draft);
         match self
@@ -269,6 +270,7 @@ impl OrbitApp {
                 self.attachments = draft.attachments;
                 self.files = draft.files;
                 self.pasted_texts = draft.pasted_texts;
+                self.annotations = draft.annotations;
                 self.input
                     .update(cx, |input, cx| input.set_text(draft.text, cx));
             }
@@ -276,6 +278,7 @@ impl OrbitApp {
                 self.attachments.clear();
                 self.files.clear();
                 self.pasted_texts.clear();
+                self.annotations.clear();
                 self.input.update(cx, |input, cx| input.clear(cx));
             }
         }

@@ -591,6 +591,33 @@ legacy app today:
 
 ### Implementation status (living)
 
+- **Quote a transcript selection into the composer (#187).** The transcript's
+  text menu leads with **Quote in Composer**: the selected passage (the
+  rendered text, never its Markdown source) becomes a quote card above the
+  input with a one-line comment field, and a message can hold eight. Sending
+  leads the prompt with each quote as a `>` block, its comment on a
+  `Comment:` line beneath, then the typed text (`annotation.rs`); the sent
+  message reads the blocks back out of its own text and shows them as quotes
+  above the bubble. Quotes ride the session draft and come back on a failed
+  send. The same menu also opens as a **selection toolbar** when a drag (or a
+  double or triple click) leaves text selected: beside the release point,
+  without taking the keyboard, closed by Escape (which then stops — it does not
+  go on to abort a run), by scrolling, or by the next press, which starts a new
+  selection at once. **Shift+F10** opens it at the selection's end with the
+  keyboard; the sidebar keeps the key for its row menu. **More Details** is not
+  built: Orbit has no side chat for it to open.
+
+- **Plugins enable/disable.** Settings → Plugins gives each configured package
+  a switch that flips pi's own `autoload: false` form in `settings.json`, so a
+  disabled package stops loading on pi's next start or `/reload`. The switch
+  reads the on-disk entry (`autoload: false` with no resource filters), so it
+  reflects real state and is never decorative.
+
+- **One instance per session (Windows).** `platform::claim_single_instance`
+  takes a named mutex before the window opens; a second launch finds the
+  running window (`FindWindowW` on the app's title), restores and raises it,
+  and exits, so two agents never share one session store (#173).
+
 Every destructive action asks the same way. `ui/confirm.rs` owns one
 `ConfirmPrompt` — a blocking card whose header carries the question and the
 consequence, an optional target block naming what goes, and a Cancel /
@@ -880,12 +907,25 @@ when their row squeezes them. #166 also adds a project display name (`WorkspaceM
 stored as `name` in `workspaces.json` beside icon and tint, edited from the
 header menu's **Rename…** in `app/project_rename_ui.rs`): the group's identity
 stays the folder label, so a rename moves no collapsed state, order or pin.
+Project and session renames share a one-field form dialog using the shared
+form header, scrollable body, and inset Cancel / Save changes footer in
+`ui/dialog.rs`. The palette,
+session row menu, and details pencil open the session form without changing
+the dock. A sidebar rename opens immediately, without loading the target;
+Cancel and unchanged names leave the current session on screen. Saving a
+changed name for another session loads it and sends pi's `set_session_name`
+only after `get_state` confirms the target file. The field takes focus and Tab
+stays in the form.
+The session form also offers the details dock's **Generate title** wand when
+pi advertises it. Generation applies immediately; the form reflects the result
+unless the user has edited the draft since asking. The command's own reply
+releases its loading state, even when no title is produced.
 **Delete session…** is enabled for any session without a run in flight
 (`session_delete_blocked`); confirming on the open session first hands the
 window to a new task (which parks it), then drops the parked process before
 removing the file. The session menu's **Branch from a message…** opens the
-rewind picker, switching to the session first and waiting for its `get_state`
-like Rename. A launch with no remembered folder uses `first_launch_workspace`:
+rewind picker, switching to the session first and waiting for its `get_state`.
+A launch with no remembered folder uses `first_launch_workspace`:
 the process cwd unless it is a filesystem root or inside the executable's
 directory, otherwise the home folder. The **Work in** picker groups its rows
 under two section labels painted inside the first row of each section
@@ -1103,6 +1143,28 @@ is why a reloaded session shows the same thing as the live send — the presenta
 derived from the message, not from local-only metadata. All three kinds share the
 eight-item `MAX_ATTACHMENTS` budget, which the composer's send button, the drain paths,
 and the pickers all read through one predicate.
+
+Transcript quotes (issue #187) sit above that tray, one card each
+(`annotations_row` in `app/annotations.rs`): the passage on one line, all of it and the
+side it came from on hover, a remove control, and a one-line comment field. The field
+takes the keyboard when the quote is added; Enter keeps the comment, Escape undoes the
+edit (never the quote), and Backspace in an empty field removes the quote — a binding in
+the `AnnotationComment` context, since GPUI runs bindings before key listeners. Quotes
+travel the way files do: in the prompt text, because the text is all pi keeps.
+`annotation::fold` leads the prompt with one `>` block per quote, oldest first, with an
+optional `Comment:` line (a parse marker, never translated), and `annotation::split`
+reads them back off the front of a sent message, so a reloaded session shows the same
+quote cards as the live send. A typed message that itself opens with `>` lines reads back
+as a quote — the same trade `split_attached_files` makes. Quotes are capped at 4,000
+characters (cut with `…`) and eight per message, outside the attachment budget.
+
+The transcript's text menu has two kinds (`TextMenuKind` in `transcript_view.rs`). The
+right-click menu (and Shift+F10, the `OpenSelectionMenu` command) is `Context`: it takes
+the keyboard, hands it back on close, and owns the next press, which only dismisses it.
+The selection toolbar is `Toolbar`: a finished drag opens it below and right of the
+release, it never takes the keyboard (someone mid-way through a message keeps typing),
+the next press in the transcript starts a new selection, and a scroll closes it. Because
+it has no focus, its Escape arrives at the app's abort chain, which closes it first.
 
 Session metadata is cached per file (`sessions.rs`) keyed on the file's
 `(mtime, length)`, so a turn settle or watcher reload re-reads only the session

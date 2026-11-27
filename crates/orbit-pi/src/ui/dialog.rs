@@ -5,7 +5,7 @@
 
 use gpui::{
     div, App, FocusHandle, FontWeight, InteractiveElement, MouseButton, ParentElement, Pixels,
-    SharedString, Styled, Window,
+    SharedString, StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::theme::{
@@ -261,6 +261,73 @@ pub(crate) fn modal_footer(theme: &Theme) -> gpui::Div {
         .gap(modal::footer_gap(theme))
         .border_t_1()
         .border_color(theme.hairline())
+}
+
+/// A form's left-aligned heading, with no rule between its copy and fields.
+/// The optional close control stays at the top right even when the copy wraps.
+pub(crate) fn form_dialog_header(
+    theme: &Theme,
+    title: impl Into<SharedString>,
+    subtitle: Option<ModalSubtitle>,
+    close: Option<gpui::AnyElement>,
+) -> gpui::Div {
+    let inset = DynamicSpacing::Base16.px(theme);
+    let header = ModalHeader::new(title).divider(false);
+    let header = match subtitle {
+        Some(ModalSubtitle::Text(description)) => header.description(description),
+        Some(id @ ModalSubtitle::Id(_)) => header.subtitle(id),
+        None => header,
+    };
+    let close_width = if close.is_some() {
+        crate::theme::tokens::ButtonSize::Medium.height(theme)
+    } else {
+        gpui::px(0.)
+    };
+    header
+        .render(theme)
+        .relative()
+        .pl(inset)
+        .pr(inset + close_width)
+        .pt(inset)
+        .pb_0()
+        .children(close)
+}
+
+/// The form's top-right dismiss control, backed by the same action as Cancel.
+pub(crate) fn form_dialog_close(
+    id: impl Into<gpui::ElementId>,
+    theme: &Theme,
+    handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> crate::motion::Hovered<gpui::Stateful<gpui::Div>> {
+    let inset = DynamicSpacing::Base08.px(theme);
+    crate::ui::button::IconButton::new(id, "icons/x.svg")
+        .size(crate::theme::tokens::ButtonSize::Medium)
+        .tip(tr!("common.close"))
+        .on_click(theme, handler)
+        .absolute()
+        .top(inset)
+        .right(inset)
+}
+
+/// Scroll only the fields, keeping the header and actions outside the viewport.
+pub(crate) fn form_dialog_body(
+    theme: &Theme,
+    id: impl Into<gpui::ElementId>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .min_w_0()
+        .min_h_0()
+        .overflow_y_scroll()
+        .p(DynamicSpacing::Base16.px(theme))
+}
+
+/// The inset action band used by editable forms, not by destructive alerts.
+pub(crate) fn form_dialog_footer(theme: &Theme) -> gpui::Div {
+    modal_footer(theme)
+        .p(DynamicSpacing::Base16.px(theme))
+        .bg(theme.overlay)
+        .flex_wrap()
 }
 
 /// A modal footer's button as a keyboard stop: a [`Button`] tracking `focus`,

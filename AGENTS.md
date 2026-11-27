@@ -93,6 +93,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/session.rs    prompt/queue/turn lifecycle, abort, session switching + navigation
   src/app/pickers.rs    model, command-palette, branch, and new-task workspace pickers
   src/app/composer_ops.rs autocomplete, attachments, "+" add-menu, model/thinking chips
+  src/app/annotations.rs transcript quotes in the composer (#187): the text menu's
+                        Quote in Composer opener, the quote cards and their comment fields
+  src/annotation.rs     the prompt shape a quote travels in: normalize, `fold`, `split`
   src/app/sidebar.rs    sidebar rows + session/workspace row menus; project-list prefs
                         and reordering (header and session-row drag, menu Move
                         up/down, ⌥↑/⌥↓)
@@ -667,6 +670,8 @@ These compiled and ran against the pinned version. When in doubt, check
 | `enter` / `escape` / `up` / `down` / `home` / `end` / `right` | Open / close / move / first / last / open the Existing worktrees flyout | `WorkInMenu` (worktree "Work in" picker); inside the flyout its search field takes `Composer Picker` keys (↑/↓/Enter, Escape back to the picker) |
 | `enter` / `escape` / `up` / `down` / `home` / `end` | Confirm / cancel / move / first / last | `DialogSelect` (extension select dialog) |
 | `enter` / `escape` / `up` / `down` | Confirm / deny / move | `Approval` (inline access-guard bar) |
+| `enter` / `escape` / `backspace` | Keep the comment / undo the edit / remove the quote when the comment is empty | `AnnotationComment` (a quote's comment field above the composer) |
+| `shift-f10` | Open the transcript selection's menu at the selection (Quote in Composer, copy) | global (registry; the `Sidebar` row menu wins inside the sidebar) |
 | `enter` / `space` | Fold / unfold the focused transcript activity summary, tool row or thought row | `ActivityToggle` |
 | `alt-up` / `alt-down` | Move the row under the cursor in the sidebar — a project group, or a session inside its project (the pointer twin is dragging a header or a session row) | `Sidebar` |
 | `pageup` / `pagedown` | Scroll the session preview while it is showing — the pointer's, or the one the cursor paints — because the arrows are already moving the row cursor. A no-op with no preview on screen | `Sidebar` |

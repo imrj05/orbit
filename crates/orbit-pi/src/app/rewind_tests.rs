@@ -1794,6 +1794,73 @@ fn a_pending_fork_refuses_model_thinking_and_compaction(cx: &mut gpui::TestAppCo
     assert!(!commands.contains("\"type\":\"compact\""), "{commands}");
 }
 
+#[gpui::test]
+fn saving_a_row_rename_waits_for_the_selected_session_file(cx: &mut gpui::TestAppContext) {
+    let fake = FakePi::start();
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    let target = fake.dir.join("rename-target.jsonl");
+    let current = fake.dir.join("current.jsonl");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            adopt_fake_pi(app, &fake);
+            app.current_session_path = Some(target.clone());
+            app.mcp_stamp = app.mcp.fingerprint_for(Some(&fake.dir));
+            app.park_active_session();
+            app.current_session_path = Some(current.clone());
+            app.session_id = Some("current".into());
+            app.open_session_rename(
+                Some(SessionInfo {
+                    path: target.clone(),
+                    cwd: fake.dir.clone(),
+                    id: "target".into(),
+                    title: "Original".into(),
+                    first_message: String::new(),
+                    modified: std::time::SystemTime::UNIX_EPOCH,
+                }),
+                window,
+                cx,
+            );
+            assert_eq!(app.current_session_path.as_ref(), Some(&current));
+            app.session_name_input
+                .update(cx, |input, cx| input.set_text("Saved title", cx));
+            app.rename_session(cx);
+            assert!(!app.session_name_editing);
+            let rename = app.pending_session_rename.as_ref().unwrap();
+            assert_eq!(
+                (&rename.path, rename.name.as_str()),
+                (&target, "Saved title")
+            );
+
+            let mut refresh = false;
+            for (file, expected_pending) in [(&current, true), (&target, false)] {
+                app.on_response(
+                    "get_state",
+                    true,
+                    Some(&serde_json::json!({"sessionFile": file, "sessionId": "target"})),
+                    None,
+                    "test",
+                    &mut refresh,
+                    cx,
+                );
+                assert_eq!(app.pending_session_rename.is_some(), expected_pending);
+            }
+            assert_eq!(app.current_session_path.as_ref(), Some(&target));
+            assert_eq!(app.session_name.as_deref(), Some("Saved title"));
+        });
+    });
+    pump_until(&app, cx, |_| {
+        fake.commands().contains(r#""type":"set_session_name""#)
+    });
+    let commands = fake.commands();
+    assert_eq!(
+        commands.matches(r#""type":"set_session_name""#).count(),
+        1,
+        "{commands}"
+    );
+    assert!(commands.contains(r#""name":"Saved title""#), "{commands}");
+}
+
 /// Rename and title generation both rewrite the session the fork reply is
 /// about to replace; both wait for the fork instead.
 #[gpui::test]
@@ -1818,7 +1885,7 @@ fn a_pending_fork_refuses_rename_and_title_generation(cx: &mut gpui::TestAppCont
             assert_eq!(app.rewind_fork_id.as_deref(), Some("fork-id"));
             assert!(app.pending_session_rename.is_none());
             assert!(app.session_name.is_none(), "no optimistic rename");
-            assert!(!app.title_generating);
+            assert!(app.title_generation.is_none());
             assert!(
                 app.toasts
                     .items()
