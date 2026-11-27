@@ -138,7 +138,7 @@ fn a_dead_process_is_not_running_anything(cx: &mut gpui::TestAppContext) {
 
     app.update(cx, |app, _| {
         assert!(!app.is_compacting, "compaction died with the process");
-        assert!(!app.title_generating, "so did the title command");
+        assert!(app.title_generation.is_none(), "so did the title command");
         assert!(
             !app.is_running(),
             "nothing runs on a dead process; the composer must offer Send again"

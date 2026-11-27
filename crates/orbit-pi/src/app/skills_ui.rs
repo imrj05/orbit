@@ -20,11 +20,8 @@ pub(super) enum SkillAction {
     Open,
     Reveal,
     CopyPath,
-    /// The Delete button: show the inline confirmation.
+    /// The Delete button: ask through the confirm prompt.
     AskDelete,
-    /// The confirmation's Delete: actually remove the skill.
-    ConfirmDelete,
-    CancelDelete,
 }
 
 impl OrbitApp {
@@ -416,7 +413,7 @@ impl OrbitApp {
                 self.skill_value(theme, &skill_age(&skill)),
             ));
 
-        let actions = self.skill_actions(&skill, theme, this.clone());
+        let actions = self.skill_actions(theme, this.clone());
 
         let content: AnyElement = match &self.skill_content {
             Some(body) if !body.trim().is_empty() => div()
@@ -532,50 +529,7 @@ impl OrbitApp {
         })
     }
 
-    fn skill_actions(&self, skill: &Skill, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let confirming = self
-            .skill_delete_confirm
-            .as_deref()
-            .is_some_and(|dir| Some(dir) == skill.dir());
-
-        if confirming {
-            return div()
-                .w_full()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.error)
-                        .child(tr!(
-                            "skills_ui.delete_skill_hint",
-                            path = skills::display_path(skill.dir().unwrap_or(&skill.file))
-                        )),
-                )
-                .child(self.skill_button(
-                    "skill-delete-confirm".into(),
-                    &tr!("sidebar.delete"),
-                    true,
-                    Some("icons/trash.svg"),
-                    theme,
-                    this.clone(),
-                    SkillAction::ConfirmDelete,
-                ))
-                .child(self.skill_button(
-                    "skill-delete-cancel".into(),
-                    &tr!("git_panel.cancel"),
-                    false,
-                    None,
-                    theme,
-                    this,
-                    SkillAction::CancelDelete,
-                ))
-                .into_any_element();
-        }
-
+    fn skill_actions(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
         div()
             .w_full()
             .flex()
@@ -661,7 +615,6 @@ impl OrbitApp {
         if !still_there {
             self.selected_skill = self.skills.first().map(|skill| skill.file.clone());
         }
-        self.skill_delete_confirm = None;
         self.load_selected_skill();
         cx.notify();
     }
@@ -669,7 +622,6 @@ impl OrbitApp {
     /// Select a skill and cache its rendered body.
     pub(super) fn select_skill(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.selected_skill = Some(path);
-        self.skill_delete_confirm = None;
         self.load_selected_skill();
         cx.notify();
     }
@@ -721,22 +673,36 @@ impl OrbitApp {
                 }
             }
             SkillAction::AskDelete => {
-                if let Some(path) = selected {
-                    self.skill_delete_confirm = path.parent().map(Path::to_path_buf);
-                }
+                let Some(dir) = selected.as_ref().and_then(|path| path.parent()) else {
+                    return;
+                };
+                // The prompt names the skill above its folder; a selected path
+                // that no longer matches the list falls back to the path.
+                let name = selected
+                    .as_ref()
+                    .and_then(|path| self.skills.iter().find(|skill| &skill.file == path))
+                    .map(|skill| skill.name.clone())
+                    .unwrap_or_else(|| skills::display_path(dir));
+                self.request_confirm(
+                    super::confirm_ui::PendingConfirm::DeleteSkill {
+                        dir: dir.to_path_buf(),
+                        name,
+                    },
+                    cx,
+                );
             }
-            SkillAction::ConfirmDelete => self.delete_selected_skill(cx),
-            SkillAction::CancelDelete => self.skill_delete_confirm = None,
         }
         cx.notify();
     }
 
-    /// Remove the selected skill's directory, then reload the list.
-    fn delete_selected_skill(&mut self, cx: &mut Context<Self>) {
+    /// Remove a skill's directory, by path: the confirm prompt may have been
+    /// armed before the selection moved. Reloads the list afterwards.
+    pub(super) fn delete_skill_dir(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
         let Some(skill) = self
-            .selected_skill
-            .clone()
-            .and_then(|path| self.skills.iter().find(|skill| skill.file == path).cloned())
+            .skills
+            .iter()
+            .find(|skill| skill.dir() == Some(dir.as_path()))
+            .cloned()
         else {
             return;
         };

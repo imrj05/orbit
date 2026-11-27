@@ -93,6 +93,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/session.rs    prompt/queue/turn lifecycle, abort, session switching + navigation
   src/app/pickers.rs    model, command-palette, branch, and new-task workspace pickers
   src/app/composer_ops.rs autocomplete, attachments, "+" add-menu, model/thinking chips
+  src/app/annotations.rs transcript quotes in the composer (#187): the text menu's
+                        Quote in Composer opener, the quote cards and their comment fields
+  src/annotation.rs     the prompt shape a quote travels in: normalize, `fold`, `split`
   src/app/sidebar.rs    sidebar rows + session/workspace row menus; project-list prefs
                         and reordering (header and session-row drag, menu Move
                         up/down, ⌥↑/⌥↓)
@@ -129,9 +132,14 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/remote_hosts.rs   `~/.orbit-pi/remote-hosts.json`: lenient host list, validated ssh targets,
                         surgical upsert/remove, `~/.ssh/config` alias discovery, the read-only probe
   docs/remote-sessions.md  agent-only SSH sessions: launch script, safety, what is off while remote
+  src/app/confirm_ui.rs the workbench's one confirmation prompt: the `PendingConfirm`
+                        variants (each owns its wording and the call that finally runs),
+                        the layer painted from the app root, and the request/cancel/run
+                        entry points every destructive surface asks through
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
-  src/app/right_dock_ui.rs  the right pane's tabs: Review + delegated subagents opened from a card
-                        (strip, controller, the subagent view in the shared `dock_shell` frame)
+  src/app/right_dock_ui.rs  the Subagents dock (D25): one entry per delegated subagent opened from
+                        a card, the selected child's view in the shared `dock_shell` frame, the
+                        top-bar chip and the controller; its own right dock, never a tab on Review
   src/app/git_activity_ui.rs  the sidebar Git button's GitHub half: the background `gh` check
                         (every 5 min + window activation), marking Issues / Pull requests seen
                         on arrival, the Settings → Privacy switch and the button's tooltip
@@ -174,8 +182,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/workspace_mark.rs per-workspace sidebar mark: curated HugeIcons + semantic tints, persisted in workspaces.json
   src/worktree.rs       Git worktree lifecycle: `WorktreeManager` (list/create/remove/move/lock/unlock/prune/repair), porcelain parsing, name validation, worktree root + `.orbit/worktree.json`
   src/worktree_setup.rs optional worktree setup script: resolution, `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, captured stdout/stderr/exit code (async host in app/worktrees.rs)
-  src/right_dock.rs     the right pane's tab model (Review + subagent tabs), per session on the
-                        transcript; never decides whether the pane is shown
+  src/right_dock.rs     the Subagents dock's entry model (no Review entry), per session on the
+                        transcript; never decides whether the dock is shown
   src/sessions.rs       reads pi's session store (PI_CODING_AGENT_SESSION_DIR, else <agent dir>/sessions; + debounced watcher)
   src/watch.rs          shared debounced fs watching (workspace tree for Review/Git)
   src/explorer/         workspace file tree + file editor
@@ -201,7 +209,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         named components come from their module. `ui/style/` control states,
                         press, material (`card_surface`) and text (`num_font`, `text_width`);
                         `ui/button.rs` `Button`/`IconButton`/`ButtonGroup`/`LinkButton`;
-                        `ui/chip.rs` `ChipButton`/`Badge`/`Pill`; `ui/banner.rs` `Banner`;
+                        `ui/confirm.rs` `ConfirmPrompt` (the one blocking question before a
+                        destructive action); `ui/chip.rs` `ChipButton`/`Badge`/`Pill`;
+                        `ui/banner.rs` `Banner`;
                         `ui/feedback.rs` empty/error/spinner/progress/skeleton; `ui/field.rs`
                         `TextField`/`FormRow`/`search_field`; `ui/menu.rs` `MenuState`/`MenuCursor`;
                         `ui/popover.rs` `dropdown_below/above`, `column_menu`, dismissal;
@@ -233,7 +243,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/subagents.rs      the Orbit-only half of an agent: `~/.orbit-pi/subagents.json` (enabled, pinned workflow mode, limits), lenient + atomic, preserved for unknown entry fields
   src/subagent_log.rs   a delegated child's live transcript: tails the extension's event log
                         (`~/.orbit-pi/subagent-logs/`, trusted paths only) off the UI thread and
-                        feeds pi's own events into a second `Transcript` for its side-pane tab (D24)
+                        feeds pi's own events into a second `Transcript` for its Subagents entry (D24)
   src/subagent.rs       the delegation card's pure half: parses the `subagent/1` details payload leniently and exposes the run's facts (live activity, counts, usage, elapsed); unknown shapes degrade to the generic activity card
   src/bundled_extensions.rs  materializes the bundled pi extensions (quota bridge + access guard + auto-title + workflow + subagents) under `~/.orbit-pi/`, spawns every session with `--extension`, and exports the entry points as `ORBIT_BUNDLED_EXTENSIONS` for child sessions
   src/commit_message.rs one-shot, tool-free `pi -p` conventional-commit generation
@@ -319,7 +329,7 @@ contrib/orbit-subagents-extension/  Orbit's bundled pi extension (loaded with
                         what the session mode permits; resources.js forwards the
                         inherited guardrail extensions; log.js tees each child's
                         event lines into `~/.orbit-pi/subagent-logs/` for its live
-                        tab (D24). All `node --test` covered
+                        Subagents entry (D24). All `node --test` covered
 assets/icons/           logo-icon.png app-icon source + icon.icns / icon.ico / icon.png
                         + alpha-logo.png / alpha-logo.icns (macOS debug builds)
 PRODUCT.md  INTENT.md  README.md  AGENTS.md  PRIVACY.md
@@ -661,6 +671,8 @@ These compiled and ran against the pinned version. When in doubt, check
 | `enter` / `escape` / `up` / `down` / `home` / `end` / `right` | Open / close / move / first / last / open the Existing worktrees flyout | `WorkInMenu` (worktree "Work in" picker); inside the flyout its search field takes `Composer Picker` keys (↑/↓/Enter, Escape back to the picker) |
 | `enter` / `escape` / `up` / `down` / `home` / `end` | Confirm / cancel / move / first / last | `DialogSelect` (extension select dialog) |
 | `enter` / `escape` / `up` / `down` | Confirm / deny / move | `Approval` (inline access-guard bar) |
+| `enter` / `escape` / `backspace` | Keep the comment / undo the edit / remove the quote when the comment is empty | `AnnotationComment` (a quote's comment field above the composer) |
+| `shift-f10` | Open the transcript selection's menu at the selection (Quote in Composer, copy) | global (registry; the `Sidebar` row menu wins inside the sidebar) |
 | `enter` / `space` | Fold / unfold the focused transcript activity summary, tool row or thought row | `ActivityToggle` |
 | `alt-up` / `alt-down` | Move the row under the cursor in the sidebar — a project group, or a session inside its project (the pointer twin is dragging a header or a session row) | `Sidebar` |
 | `pageup` / `pagedown` | Scroll the session preview while it is showing — the pointer's, or the one the cursor paints — because the arrows are already moving the row cursor. A no-op with no preview on screen | `Sidebar` |
@@ -678,7 +690,7 @@ D
 - **Provider authentication:** `auth.*` is a first-class RPC namespace. The client reducer is `orbit-pi/src/auth.rs`; the wire types are in `orbit-rpc/src/types.rs`; the server contract (which pi must implement by reusing its provider OAuth + `auth.json`) is `crates/orbit-rpc/docs/auth-rpc.md`. Tokens never cross RPC or GPUI state. **Stock pi 0.85.1 has no server side** — without it Orbit falls back to `pi /login` in Terminal. To get browser OAuth on an installed pi now, run `node contrib/pi-auth-rpc/apply.mjs` (idempotent; `--revert` restores the backup) and restart the agent. `auth_fake_pi.rs` covers the round trip against a scripted server.
 - **Provider accounts:** more than one credential per provider, all usable at once. Each extra account is an alias provider (`<provider>~<slug>`) registered by the bundled `contrib/orbit-accounts-extension/` from `~/.orbit-pi/accounts.json`; pi keys credentials by provider id, so each alias signs in through the ordinary `auth.*` flow and is stored in pi's own `auth.json`. Nothing is selected per session; the old per-session routing (`ORBIT_AUTH_PROFILE_ROUTES`, `contrib/pi-auth-profiles/`) always carries an empty selection now. See `crates/orbit-pi/docs/provider-accounts.md` (D21).
 - **Provider quota:** `quota.list` is the account-usage sibling of `auth.*`. The client reducer is `orbit-pi/src/quota.rs`; the wire types (`QuotaReport`/`QuotaWindow`/`QuotaBalance`/`QuotaKind`) are in `orbit-rpc/src/types.rs`; the server contract is `crates/orbit-rpc/docs/quota-rpc.md`. pi resolves the credential, verifies the provider origin, rejects redirects, and returns only normalized percentages/counts/resets/amounts — no token, key, or account id. Coverage follows `@narumitw/pi-usage`'s verified reference: Anthropic, ChatGPT Codex, GitHub Copilot, Kimi, MiniMax, Z.AI, OpenCode Go, OpenRouter, Vercel AI Gateway, DeepSeek, Moonshot, xAI, Fireworks, Baseten. Google/Gemini is registered explicitly as `unsupported` (no account-quota API — AI Studio-only). **Ollama Cloud** has a real adapter for both billing generations: the current monthly-credit model via `GET https://ollama.com/api/usage` plus `GET https://ollama.com/api/balance` (included and purchased balances, the latter additive so a balance outage never blanks the meters) with a user-supplied cloud API key, and the legacy 5-hour/weekly model via the authenticated `ollama.com/settings` page parsed behind an isolated `OllamaCloudParser`; that page needs a session cookie, which Orbit no longer collects in the app (a hand-written `ollama_cloud_session` entry in `auth.json` is still read). Credentials are explicit (`auth.json`, 0600; type `api_key`), entered in Settings → Providers → Ollama; the local `models.json` placeholder is never sent to ollama.com and browser cookies are never auto-extracted. Every other provider reports `unsupported`. Reports are per-provider cached 60 s (these endpoints rate-limit). **The default path needs no patch:** `bundled_extensions.rs` materializes the bundled `contrib/orbit-quota-extension/` under `~/.orbit-pi/quota-extension/` and every session process is spawned with `pi --extension <index.js>`; the extension fetches through pi's `ctx.modelRegistry`, appends one `orbit:quota` custom entry **only when the snapshot changes** (never in LLM context), and the app polls `get_entries` with a per-session `since` cursor (60 s, plus `agent_settled`, throttled by `QUOTA_ENTRY_POLL_INTERVAL`). Entry ids are per-session: the cursor resets on a `sessionId` change, a dead cursor is dropped and re-read, and bridge data never flips `QuotaSupport` (so a patched pi is still probed). `node contrib/pi-quota-rpc/apply.mjs` remains available for the `quota.list` server side; `quota_fake_pi.rs` covers the round trip and `--extension` forwarding, and `contrib/orbit-quota-extension/*.test.mjs` (run `node --test`) covers the bridge end to end offline, and `contrib/pi-quota-rpc/quota-handler.test.mjs` covers the patch adapters.
-- **User interaction:** `extension_ui_request` (`select`/`confirm`/`input`/`editor`; also fire-and-forget `notify`/`setStatus`/`setWidget`/`setTitle`) on stdout; answer with `extension_ui_response` on stdin. `dialog.rs` + `app/dialogs.rs` render the dialog methods as a blocking modal card and reply (`cancelled` on Escape/scrim). `notify` renders as an in-app toast, `setStatus` surfaces on the status bar, and `set_editor_text` seeds the composer; `setWidget`/`setTitle` are terminal chrome and ignored. `ask_user_question`'s multi-select arrives as an `input` of comma-separated option numbers (pi's RPC fallback), so it is selectable too.
+- **User interaction:** `extension_ui_request` (`select`/`confirm`/`input`/`editor`; also fire-and-forget `notify`/`setStatus`/`setWidget`/`setTitle`) on stdout; answer with `extension_ui_response` on stdin. `dialog.rs` + `app/dialogs.rs` render the dialog methods as a blocking modal card and reply (`cancelled` on Escape/scrim). `notify` renders as an in-app toast whose kind follows `notifyType` (`warning`/`error`, else info), `setStatus` surfaces on the status bar, and `set_editor_text` seeds the composer; `setWidget`/`setTitle` are terminal chrome and ignored. `ask_user_question`'s multi-select arrives as an `input` of comma-separated option numbers (pi's RPC fallback), so it is selectable too.
 - Envelopes parse **loosely**; unknown shapes flow through as raw JSON so protocol additions don't crash the client.
 - **Access guard (resolved without the protocol):** pi has no built-in per-tool permission surface in RPC mode and no sandbox (`pi docs/security.md`); its only tool gate is an extension's `tool_call` hook. Orbit ships one (`contrib/orbit-guard-extension/`) that prompts for mutating calls through `ctx.ui.select` — Allow once / Always allow this tool / Deny — which *does* surface over RPC as an `extension_ui_request` and renders as Orbit's inline approval bar. `--approve`/`--no-approve` remain **project trust** (load project-local settings/extensions/skills), a separate concern not yet wired to the access chip. There is no "Auto" approval mode: the installed pi exposes no `modelRegistry.streamSimple` for extensions, so shipping one would be fake.
 

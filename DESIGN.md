@@ -230,7 +230,7 @@ does today, so this section never describes a surface that has not shipped.
 | Density over air: 28px rows, 13–14px body | `ButtonSize::Medium` 28px, `list_item` rows, `TextSize::Default` | Shipped |
 | Accent and action are separate roles | `accent` marks identity; primary fills read `action`, which a palette may key to the accent | Shipped |
 | Restrained UI type, 400–600 | `TextSize` 11–16 at default settings; a separate monospace family serves code | Shipped |
-| Motion is fast and decelerating | `Motion` roles (`Interaction` / `Layout` / `Travel`) plus `motion::hover` · `fade` · `control` · `state` · `enter` · `slide` · `disclosure_chevron` · `switch` | Shipped in §Motion System; the hover fade covers the whole sidebar (rows, workspace headers, group rows, menu entries, every control), the Settings back/search/action controls, the transcript copy button and its three block toggles, the changelog link and the caption buttons; the sessions sidebar and the right dock (Review, a subagent tab, the Explorer, session details) ease their own width, and the bottom terminal strip its own height, through one slide (`motion/panel.rs`); a feature page and a Settings section fade their content in on `Layout` (`motion::arrive`) |
+| Motion is fast and decelerating | `Motion` roles (`Interaction` / `Layout` / `Travel`) plus `motion::hover` · `fade` · `control` · `state` · `enter` · `slide` · `disclosure_chevron` · `switch` | Shipped in §Motion System; the hover fade covers the whole sidebar (rows, workspace headers, group rows, menu entries, every control), the Settings back/search/action controls, the transcript copy button and its three block toggles, the changelog link and the caption buttons; the sessions sidebar and the right dock (Review, Subagents, the Explorer, session details) ease their own width, and the bottom terminal strip its own height, through one slide (`motion/panel.rs`); a feature page and a Settings section fade their content in on `Layout` (`motion::arrive`) |
 | Interactive surfaces share state treatments | `interaction::InteractionState` resolves colours; `motion::hover` fades them | Primitives shipped and press treatments adopted; every button and icon button in the app, the Explorer and review tree rows, the header controls, the sidebar rows and part of Settings fade their hovers; leaf surfaces in Git, MCP, Worktrees, Subagents and the pickers still swap on one frame (see §The interaction layer) |
 | Keyboard is a first-class path | Command registry + palette; every chip has a `command()` route | Shipped |
 
@@ -708,8 +708,10 @@ the same two pieces (`modal_card`, `modal_scrim` in `ui/dialog.rs`):
   the panel corner, a clipped column, and the UI font. Width and height bounds belong
   to the caller; everything else belongs to the shell.
 - **Anatomy:** header (`modal::header_padding_*`, Small headline) → body → footer, with
-  hairlines between. The footer holds the actions; a destructive action is separated
-  from the primary one.
+  section hairlines. The shared confirmation card is the exception: it centers
+  the optional media, title and description, groups target details with space,
+  and has a single hairline above an inset footer with equal-width outlined
+  Cancel and soft danger buttons.
 - **Keyboard:** Escape cancels dismissible dialogs; the same mandatory or unsafe
   interruption exception applies as for the scrim. The primary action takes Return
   where appropriate, and focus is trapped inside the card until it closes, then

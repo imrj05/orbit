@@ -330,6 +330,8 @@ pub(crate) enum RightDock {
     Explorer,
     Review,
     Details,
+    /// The Subagents dock: one entry per opened delegated child (#190).
+    Subagents,
 }
 
 pub(crate) use crate::ui::dialog::{ModalFocus, ReturnFocus};
@@ -679,6 +681,11 @@ pub struct OrbitApp {
     settings_nav_focus: FocusHandle,
     settings_nav_cursor: usize,
     settings_nav_scroll: ScrollHandle,
+    /// The section body's scroll position. A section is a new page, so it
+    /// starts at its top; without this the stable `settings-content` element
+    /// id carried the previous page's offset over and the new page opened
+    /// scrolled down, with its first card clipped under the pinned toolbar.
+    settings_content_scroll: ScrollHandle,
     settings_return_focus: crate::ui::dialog::ReturnFocus,
     /// Settings → Appearance → "Your backgrounds": the pictures in the
     /// library folder, as last listed off-thread.
@@ -1041,6 +1048,9 @@ pub struct OrbitApp {
     files: Vec<AttachedFile>,
     /// Long pasted text collapsed into pills (sent as prompt text).
     pasted_texts: Vec<PastedText>,
+    /// Transcript passages quoted into the composer, oldest first; each leads
+    /// the prompt as a `>` block with its optional comment (issue #187).
+    annotations: Vec<annotations::Annotation>,
     /// Unsent composer drafts, keyed by session file. Saved when a session is
     /// parked, restored when it is re-opened — switching sessions never
     /// carries one task's half-written prompt into another.
@@ -1147,22 +1157,25 @@ pub struct OrbitApp {
     refreshing: bool,
     /// Whether the session-details panel is open in the right dock.
     session_details_open: bool,
-    /// Whether the panel's name row is in edit mode (the rename field and its
-    /// Update / Cancel buttons) rather than showing the title as text.
+    /// Whether the Subagents dock is open in the right dock. App-wide, like
+    /// the other docks; its entries ride on the session's transcript, so the
+    /// dock shows only while the current session has one.
+    subagent_dock_open: bool,
+    /// Whether the session rename dialog is open.
     session_name_editing: bool,
-    /// A row-menu rename waiting for the target session's state to load.
-    pending_session_rename: Option<PathBuf>,
-    session_rename_ready: bool,
+    session_rename_focus: ModalFocus,
+    /// A sidebar row whose session is not loaded yet, retained while editing.
+    session_rename_target: Option<SessionInfo>,
+    /// A saved name waiting for pi to confirm that it loaded the target file.
+    pending_session_rename: Option<SessionRename>,
     /// A row-menu **Branch from…** waiting for the target session to load,
     /// and the flag that opens the message picker once it has (#166).
     pending_session_branch: Option<PathBuf>,
     session_branch_ready: bool,
-    /// A popover-triggered title generation is in flight; the next
-    /// `session_info_changed` seeds the rename field from its result.
-    title_generating: bool,
-    /// When the last successful session rename committed, so the popover's
-    /// Update button can flash its check before reverting to the label. The
-    /// stamp lets a second click extend the flash instead of clearing early.
+    /// The title command in flight, with the draft it may update.
+    title_generation: Option<TitleGeneration>,
+    /// When the last session rename committed, for the brief check beside the
+    /// updated title in the details dock.
     rename_saved_at: Option<Instant>,
     /// Whether the top-bar provider-quota popover is open.
     quota_popup_open: bool,
@@ -1208,7 +1221,7 @@ pub struct OrbitApp {
     file_viewer: Entity<crate::explorer::FileViewer>,
     /// Bottom panel — an integrated shell (cmd-j).
     terminal_panel: Entity<TerminalPanel>,
-    /// The right pane's tab strip scroller (Review + subagent tabs).
+    /// The Subagents dock's entry list scroller.
     right_dock_scroll: ScrollHandle,
     /// Delegated children's live transcripts, keyed by their event log
     /// (see `crate::subagent_log`). Filled as the reader opens their tabs.
@@ -1256,8 +1269,6 @@ pub struct OrbitApp {
     /// account store while painting. Refreshed by the Settings controller.
     account_profile_map:
         std::collections::BTreeMap<String, Vec<crate::provider_accounts::AccountProfile>>,
-    /// The profile whose inline "Remove?" confirmation is showing.
-    account_remove_confirm: Option<String>,
     /// Whether the account store could be read on the last refresh. A corrupt
     /// store is shown as unavailable, never as "no accounts".
     account_store_healthy: bool,
@@ -1342,8 +1353,6 @@ pub struct OrbitApp {
     account_editor_focus: ModalFocus,
     /// The open provider editor (add or edit), if any.
     provider_editor: Option<ProviderEditor>,
-    /// Provider id awaiting inline remove confirmation.
-    provider_remove_confirm: Option<String>,
     /// Provider id whose usage/quota popup is open.
     provider_usage_open: Option<String>,
     /// Refresh button spin state on the Providers page.
@@ -1375,6 +1384,9 @@ pub struct OrbitApp {
     plugin_install_project: bool,
     /// Description of the plugin operation in flight, if any.
     plugin_action: Option<String>,
+    /// The outcome of the last plugin operation, shown in the page's own
+    /// toolbar line instead of a corner toast.
+    plugin_result: Option<String>,
     /// Actionable update notice for installed npm/Git packages.
     plugin_update_prompt: Option<Vec<PluginUpdate>>,
     /// Workspace whose project-scoped packages were checked.
@@ -1386,8 +1398,6 @@ pub struct OrbitApp {
     /// Manual-refresh feedback: the toolbar button turns until this instant,
     /// so an instant reload still acknowledges the click.
     plugin_refresh_spin_until: Option<Instant>,
-    /// Plugin source awaiting inline remove confirmation.
-    plugin_remove_confirm: Option<String>,
     /// Re-render the toolbar as the install field is typed.
     _plugin_source_sub: Subscription,
     /// Search filter for the installed-plugin list.
@@ -1400,8 +1410,13 @@ pub struct OrbitApp {
     selected_skill: Option<PathBuf>,
     /// Cached `SKILL.md` body for the selected skill.
     skill_content: Option<String>,
-    /// A skill directory awaiting delete confirmation.
-    skill_delete_confirm: Option<PathBuf>,
+    /// A destructive action waiting on the confirm prompt. One at a time:
+    /// the prompt is modal, so a second ask replaces the first.
+    pending_confirm: Option<confirm_ui::PendingConfirm>,
+    session_delete_scroll: ScrollHandle,
+    /// Whether the last frame showed the confirm prompt, so opening it can
+    /// hand the keyboard to Cancel and closing can give it back.
+    confirm_showing: bool,
     /// Re-render the skill list as the filter is typed.
     _skills_filter_sub: Subscription,
     /// Settings → Subagents: filter field for the agent list.
@@ -1423,8 +1438,6 @@ pub struct OrbitApp {
     subagent_status_task: Option<gpui::Task<()>>,
     /// A user agent deleted this session; Undo restores its exact bytes.
     subagent_undo: Option<subagents_ui::SubagentUndo>,
-    /// The Delete button has been pressed once.
-    subagent_delete_confirm: bool,
     /// A Select / New / Duplicate held back because it would throw away
     /// unsaved edits; the header asks before running it.
     subagent_discard_pending: Option<subagents_ui::SubagentAction>,
@@ -1501,23 +1514,24 @@ pub struct OrbitApp {
     /// shows at a time, so every footer shares these two handles.
     modal_cancel_focus: FocusHandle,
     modal_confirm_focus: FocusHandle,
+    /// The top-right close button on either rename dialog.
+    rename_close_focus: FocusHandle,
+    /// The wand in the session rename dialog.
+    rename_generate_focus: FocusHandle,
     /// Focus handle carrying the `McpList` key context while the MCP page is
     /// open (↑/↓ move the row cursor, Enter edits, Space toggles).
     mcp_list_focus: FocusHandle,
     /// Focus the MCP list on the next paint (`set_settings_section` has no
     /// window to focus with).
     mcp_focus_pending: bool,
-    /// Server name awaiting inline remove confirmation.
-    mcp_remove_confirm: Option<String>,
     /// Settings → Remote hosts: the hosts in `remote-hosts.json`, the
-    /// entries it skipped (with reasons), the open add/edit form, the row
-    /// awaiting a remove confirmation, and each host's last connection check.
+    /// entries it skipped (with reasons), the open add/edit form, and each
+    /// host's last connection check.
     remote_hosts: Vec<crate::remote_hosts::RemoteHost>,
     remote_hosts_skipped: Vec<String>,
     remote_host_editor: Option<remote_hosts_ui::RemoteHostEditor>,
     /// Hands focus back to whatever opened `remote_host_editor` once it closes.
     remote_host_editor_focus: ModalFocus,
-    remote_host_remove_confirm: Option<String>,
     /// The host card whose ⋯ menu is open.
     remote_host_menu: Option<String>,
     /// Settings → Providers & models: the machine shown (`None` = this
@@ -1664,6 +1678,7 @@ struct ComposerDraft {
     attachments: Vec<Attachment>,
     files: Vec<AttachedFile>,
     pasted_texts: Vec<PastedText>,
+    annotations: Vec<annotations::Annotation>,
 }
 
 impl ComposerDraft {
@@ -1672,6 +1687,7 @@ impl ComposerDraft {
             && self.attachments.is_empty()
             && self.files.is_empty()
             && self.pasted_texts.is_empty()
+            && self.annotations.is_empty()
     }
 }
 
@@ -2094,13 +2110,12 @@ impl OrbitApp {
         });
         let mcp_filter_sub = cx.observe(&mcp_filter, |_, _, cx| cx.notify());
 
-        // Session-details panel: rename field. Default `Composer` key context
-        // keeps real text editing (selection, clipboard, arrows); Enter routes
-        // to Submit, which commits the name instead of the composer while this
-        // field holds focus (see `on_submit`).
+        // The rename dialog's field keeps editing keys while the surrounding
+        // Picker context handles Enter and Escape.
         let session_name_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("session-name-input")
+                .with_key_context("Composer Picker")
                 .with_placeholder_key("app.session_name")
                 .with_max_lines(1)
                 .with_wrap(false)
@@ -2280,22 +2295,13 @@ impl OrbitApp {
 
         // Right side pane: Review (git diff).
         let sidepane = cx.new(SidePane::new);
-        // The Review pane draws the session's dock tabs above itself. It asks
-        // on every paint, so a session switch or reload never leaves it stale.
-        {
-            let dock_app = cx.weak_entity();
-            sidepane.update(cx, |pane, _| {
-                pane.set_dock_header(Rc::new(move |theme, cx| {
-                    let app = dock_app.upgrade()?;
-                    app.read(cx).dock_tab_strip(&app, theme, cx)
-                }));
-            });
-        }
         let sidepane_sub = cx.observe(&sidepane, |this, pane, cx| {
-            // Review and the Explorer are mutually exclusive right docks.
-            // Catch every path that opens Review, not just the top-bar toggle.
+            // Review, the Explorer and the Subagents dock are mutually
+            // exclusive right docks. Catch every path that opens Review, not
+            // just the top-bar toggle.
             if pane.read(cx).is_open() {
                 this.project_panel.update(cx, |panel, cx| panel.close(cx));
+                this.subagent_dock_open = false;
             }
             // A full-width Review pane hides the terminal's chat column.
             this.sync_terminal_active(cx);
@@ -2351,7 +2357,12 @@ impl OrbitApp {
         // the next launch lands in the same shape. The store compares first, so
         // an unrelated notify (a terminal tab, a tree refresh) costs nothing.
         let layout_subs = vec![
-            cx.observe(&project_panel, |app: &mut Self, _, cx| {
+            cx.observe(&project_panel, |app: &mut Self, panel, cx| {
+                // The Explorer takes the right dock from the Subagents dock,
+                // whichever path opened it.
+                if panel.read(cx).is_open() {
+                    app.subagent_dock_open = false;
+                }
                 app.record_arrangement(cx);
             }),
             cx.observe(&sidepane, |app: &mut Self, _, cx| {
@@ -2627,6 +2638,7 @@ impl OrbitApp {
             settings_nav_focus: cx.focus_handle().tab_stop(true),
             settings_nav_cursor: 0,
             settings_nav_scroll: ScrollHandle::new(),
+            settings_content_scroll: ScrollHandle::new(),
             settings_return_focus: crate::ui::dialog::ReturnFocus::default(),
             git_accounts_snapshot: None,
             git_accounts_loading: false,
@@ -2780,6 +2792,7 @@ impl OrbitApp {
             attachments: Vec::new(),
             files: Vec::new(),
             pasted_texts: Vec::new(),
+            annotations: Vec::new(),
             drafts: HashMap::new(),
             new_task_draft: None,
             composer_is_new_task: true,
@@ -2819,12 +2832,14 @@ impl OrbitApp {
             host,
             refreshing: false,
             session_details_open: false,
+            subagent_dock_open: false,
             session_name_editing: false,
+            session_rename_focus: ModalFocus::default(),
+            session_rename_target: None,
             pending_session_rename: None,
             pending_session_branch: None,
             session_branch_ready: false,
-            session_rename_ready: false,
-            title_generating: false,
+            title_generation: None,
             rename_saved_at: None,
             quota_popup_open: false,
             quota_popup_tab: mcp_ui::QuotaPopupTab::default(),
@@ -2862,7 +2877,6 @@ impl OrbitApp {
             project_trust_apply_pending: None,
             provider_accounts: crate::provider_accounts::ProviderAccounts::load(),
             account_profile_map: std::collections::BTreeMap::new(),
-            account_remove_confirm: None,
             account_store_healthy: true,
             account_clone_pending: false,
             account_switching: false,
@@ -2894,7 +2908,6 @@ impl OrbitApp {
             account_editor: None,
             account_editor_focus: ModalFocus::default(),
             provider_editor: None,
-            provider_remove_confirm: None,
             provider_usage_open: None,
             providers_refreshing: false,
             provider_filter: provider_filter.clone(),
@@ -2912,7 +2925,6 @@ impl OrbitApp {
             subagent_status: None,
             subagent_status_task: None,
             subagent_undo: None,
-            subagent_delete_confirm: false,
             subagent_discard_pending: None,
             subagent_limits_open: false,
             subagent_error: None,
@@ -2921,19 +2933,21 @@ impl OrbitApp {
             plugin_source_input: plugin_source_input.clone(),
             plugin_install_project: false,
             plugin_action: None,
+            plugin_result: None,
             plugin_update_prompt: None,
             plugin_update_workspace: None,
             plugin_updates_checking: false,
             plugin_update_skips: crate::plugins::load_skipped_updates(),
             plugin_refresh_spin_until: None,
-            plugin_remove_confirm: None,
             _plugin_source_sub: plugin_source_sub,
             plugins_filter: plugins_filter.clone(),
             _plugins_filter_sub: plugins_filter_sub,
             skills_filter: skills_filter.clone(),
             selected_skill: None,
             skill_content: None,
-            skill_delete_confirm: None,
+            pending_confirm: None,
+            session_delete_scroll: ScrollHandle::new(),
+            confirm_showing: false,
             _skills_filter_sub: skills_filter_sub,
             subagents_filter: subagents_filter.clone(),
             _subagents_filter_sub: subagents_filter_sub,
@@ -2944,14 +2958,14 @@ impl OrbitApp {
             mcp_editor_focus: ModalFocus::default(),
             modal_cancel_focus: cx.focus_handle(),
             modal_confirm_focus: cx.focus_handle(),
+            rename_close_focus: cx.focus_handle(),
+            rename_generate_focus: cx.focus_handle(),
             mcp_list_focus: cx.focus_handle(),
             mcp_focus_pending: false,
-            mcp_remove_confirm: None,
             remote_hosts: Vec::new(),
             remote_hosts_skipped: Vec::new(),
             remote_host_editor: None,
             remote_host_editor_focus: ModalFocus::default(),
-            remote_host_remove_confirm: None,
             remote_host_menu: None,
             providers_machine: None,
             providers_machine_menu: false,
@@ -4293,8 +4307,6 @@ struct SessionMenu {
     /// Sessions with a live pi process (active or parked) must not be
     /// deleted — the process would recreate the file mid-run.
     deletable: bool,
-    /// The popup is showing the delete confirmation instead of the menu.
-    confirm_delete: bool,
     /// Right-click origin in window coordinates: the popup floats at the
     /// pointer, context-menu style. `None` anchors it below the row's `…`
     /// button (the pointer-triggered path).
@@ -4312,6 +4324,17 @@ struct SessionMenu {
     cursor: crate::ui::menu::MenuCursor,
 }
 
+struct SessionRename {
+    path: PathBuf,
+    name: String,
+}
+
+struct TitleGeneration {
+    request_id: String,
+    /// The rename field the user asked to replace. Never overwrite later edits.
+    rename_draft: Option<String>,
+}
+
 /// State of the row-actions popup on a workspace group header: which
 /// workspace it belongs to (by group label + cwd).
 #[derive(Clone, PartialEq)]
@@ -4322,8 +4345,6 @@ struct WorkspaceMenu {
     at: Option<Point<Pixels>>,
     /// The menu is showing the icon/tint picker instead of the action list.
     picker: bool,
-    /// The menu is showing the **Delete project & files** confirmation.
-    confirm_delete: bool,
     /// Whether the group has a neighbour above / below in the displayed order,
     /// resolved when the menu opens (issue #143). A move that cannot happen is
     /// painted disabled instead of quietly doing nothing.
@@ -4675,14 +4696,12 @@ enum ProviderAction {
         id: String,
         label: String,
     },
-    /// Ask to remove a profile (inline confirmation).
+    /// Ask to remove a profile, then delete it and its credential.
     RemoveAccount {
         id: String,
+        label: String,
+        alias: String,
     },
-    ConfirmRemoveAccount {
-        id: String,
-    },
-    CancelRemoveAccount,
     SignOut {
         id: String,
     },
@@ -4693,13 +4712,11 @@ enum ProviderAction {
     Configure {
         id: String,
     },
+    /// Ask to remove a provider entry from models.json.
     Remove {
         id: String,
+        name: String,
     },
-    ConfirmRemove {
-        id: String,
-    },
-    CancelRemove,
     SaveKey,
     SaveAccount,
     Restart,
@@ -4762,8 +4779,6 @@ enum SettingsSelect {
     /// The model an agent is pinned to (Settings → Subagents). The options are
     /// this machine's models; the leading row inherits the session's.
     SubagentModel,
-    /// The session's active model (Settings → Providers & models).
-    ActiveModel,
     /// The Models page's provider scope filter.
     /// The session-retention action and threshold (Settings → Privacy).
     RetentionMode,
@@ -4782,10 +4797,12 @@ enum SettingsSelect {
 // `app.rs` keeps the `OrbitApp` model, the shared types, and the controller
 // wiring. Rendering and feature-specific logic live in child modules; they
 // are descendants of `app`, so they reach private fields/methods directly.
+mod annotations;
 mod ask;
 mod auth_prompt;
 mod bug_report_ui;
 mod composer_ops;
+mod confirm_ui;
 mod dialogs;
 mod events;
 pub(crate) mod format;
@@ -4818,6 +4835,8 @@ mod search;
 mod session;
 mod session_status;
 mod settings;
+#[cfg(test)]
+mod settings_header_layout_tests;
 mod sidebar;
 mod skills_ui;
 mod subagents_ui;
@@ -4827,6 +4846,8 @@ mod updater_ui;
 mod view;
 mod worktrees;
 
+#[cfg(test)]
+mod annotation_tests;
 #[cfg(test)]
 mod attachment_tray_tests;
 #[cfg(test)]

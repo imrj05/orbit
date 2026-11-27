@@ -241,10 +241,6 @@ impl Render for OrbitApp {
             self.layout_restored = true;
             self.apply_stored_arrangement(window, cx);
         }
-        if self.session_rename_ready {
-            self.session_rename_ready = false;
-            self.begin_session_rename(window, cx);
-        }
         if self.session_branch_ready {
             self.session_branch_ready = false;
             self.open_rewind_picker(window, cx);
@@ -561,9 +557,13 @@ impl Render for OrbitApp {
         // the Explorer; opening any one of them closes the others.
         let details_visible = self.session_details_visible(cx);
         let details_width = self.session_details_width(cx);
+        // ── Subagents (right dock) ── one entry per delegated child; it takes
+        // the slot Review would, and borrows Review's width.
+        let subagents_visible = self.subagent_dock_visible(cx);
+        let subagents_width = self.subagent_dock_width(cx);
         // A dock is always the row's last card and keeps the window's right
         // gutter itself; a page card beside it must not add a second one.
-        let dock_visible = explorer_visible || pane_visible || details_visible;
+        let dock_visible = explorer_visible || pane_visible || details_visible || subagents_visible;
         // The pane's ceiling is the window minus the sidebar and the Explorer;
         // Full width expands to it and collapses the chat column. The Explorer
         // is closed whenever the pane opens, so this is usually the sidebar's
@@ -617,7 +617,8 @@ impl Render for OrbitApp {
         // The top bar spans the whole main area, so the docks do not squeeze
         // it — compact only when the main area itself is tight.
         let compact_chrome =
-            f32::from(main_width + explorer_width + pane_width + details_width) < 720.;
+            f32::from(main_width + explorer_width + pane_width + details_width + subagents_width)
+                < 720.;
         // While a feature card is open, its title moves up into the shared top
         // bar (see `GitPanel::top_bar_leading` / `UsagePage::top_bar_leading`);
         // the card's own chrome (branch selector, filters) stays with the view
@@ -663,6 +664,9 @@ impl Render for OrbitApp {
             top_controls = top_controls.children(perf_recording_chip(&theme));
         }
         top_controls = top_controls.children(self.render_open_in_control(cx));
+        // Subagents dock — appears once this session has opened a delegated
+        // child, beside Review rather than inside it (#190).
+        top_controls = top_controls.children(self.render_subagents_control(theme, cx));
         top_controls = top_controls
             // Review dock — the side-panel toggle and the working tree's
             // change counts folded into one chip
@@ -770,6 +774,7 @@ impl Render for OrbitApp {
             self.server_clone_focus.closed(self.server_clone.is_some()),
             self.project_rename_focus
                 .closed(self.project_rename.is_some()),
+            self.session_rename_focus.closed(self.session_name_editing),
             self.remote_password_focus
                 .closed(self.remote_password_prompt.is_some()),
             self.project_trust_modal_focus
@@ -779,6 +784,8 @@ impl Render for OrbitApp {
             self.return_focus(opener, window, cx);
         }
         if self.composer_focus_pending
+            && !self.session_name_editing
+            && self.project_rename.is_none()
             && self.remote_password_prompt.is_none()
             && self.project_trust_prompt.is_none()
         {
@@ -1423,6 +1430,7 @@ impl Render for OrbitApp {
                                 Some(self.rewind_opener(cx)),
                                 Some(self.regenerate_opener(cx)),
                                 Some(self.response_exporter(cx)),
+                                Some(self.quote_opener(cx)),
                                 self.search_hits(),
                                 self.search_active(),
                                 cx,
@@ -1601,6 +1609,7 @@ impl Render for OrbitApp {
                                                             MouseButton::Left,
                                                             cx.listener(Self::on_composer_click),
                                                         )
+                                                        .children(self.annotations_row(cx))
                                                         .children(self.attachments_row(cx))
                                                         .child(self.input.clone())
                                                         .child(self.composer_row(
@@ -1859,6 +1868,10 @@ impl Render for OrbitApp {
                     .iter()
                     .map(|ui| crate::custom_ui::layer(ui.clone()).into_any_element()),
             )
+            // ── the confirm prompt — one blocking question above Settings
+            // and the pages; armed by a delete/remove/discard that cannot be
+            // undone, and the only place one is asked.
+            .children(self.confirm_layer(theme, window, cx))
             // ── worktrees dialog — create / rename / move / remove,
             // opened from the page and its row menus.
             .children(self.worktree_dialog_layer(theme, cx.entity(), cx))
@@ -1867,8 +1880,9 @@ impl Render for OrbitApp {
             // ── Add to a server — the clone dialog; under the password prompt
             // its connection check may raise.
             .children(self.server_clone_layer(theme, cx.entity(), cx))
-            // ── project rename — the sidebar header menu's Rename….
-            .children(self.project_rename_layer(theme, cx.entity(), cx))
+            // ── project and session rename dialogs.
+            .children(self.project_rename_layer(theme, cx))
+            .children(self.session_rename_layer(theme, cx))
             .children(self.remote_password_layer(theme, cx.entity(), cx))
             // ── workspace trust — Orbit's own decision before pi loads
             // project-local code, settings, skills or MCP servers.
@@ -1997,6 +2011,7 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_copy_last_response))
+            .on_action(cx.listener(Self::on_open_selection_menu))
             .on_action(cx.listener(Self::on_prev_turn))
             .on_action(cx.listener(Self::on_next_turn))
             .on_action(cx.listener(Self::on_open_settings))
@@ -2102,6 +2117,7 @@ impl OrbitApp {
                     || self.busy
                     || !self.input.read(cx).text().is_empty()
                     || self.attachment_slots_used() > 0
+                    || !self.annotations.is_empty()
                 {
                     continue;
                 }
@@ -2263,6 +2279,7 @@ impl OrbitApp {
             && !self.busy
             && self.input.read(cx).text().is_empty()
             && self.attachment_slots_used() == 0
+            && self.annotations.is_empty()
             && self
                 .extension_widgets
                 .iter()
@@ -3028,7 +3045,8 @@ impl OrbitApp {
             }
             - explorer_width
             - pane_width
-            - self.session_details_width(cx))
+            - self.session_details_width(cx)
+            - self.subagent_dock_width(cx))
         .max(px(0.))
     }
 
@@ -3041,6 +3059,29 @@ impl OrbitApp {
             && !self.settings_open
             && !self.sidepane.read(cx).is_open()
             && !self.project_panel.read(cx).is_open()
+            && !self.subagent_dock_visible(cx)
+    }
+
+    /// Whether the Subagents dock takes the right dock this frame: it is
+    /// open, this session has an entry to show, and neither Review nor the
+    /// Explorer holds the slot (opening either closes it anyway). Hidden
+    /// while Settings owns the window, like the other docks.
+    pub(super) fn subagent_dock_visible(&self, cx: &App) -> bool {
+        self.subagent_dock_open
+            && !self.transcript.dock_tabs().is_empty()
+            && !self.settings_open
+            && !self.sidepane.read(cx).is_open()
+            && !self.project_panel.read(cx).is_open()
+    }
+
+    /// The width the Subagents dock takes from the main area: Review's docked
+    /// width, so trading one dock for the other never moves the chat's edge.
+    pub(super) fn subagent_dock_width(&self, cx: &App) -> Pixels {
+        if self.subagent_dock_visible(cx) {
+            self.sidepane.read(cx).docked_width()
+        } else {
+            px(0.)
+        }
     }
 
     /// Whether there is a session to describe. The new-task page (no
@@ -3063,7 +3104,7 @@ impl OrbitApp {
 
     /// The right dock's slot, sliding.
     ///
-    /// Review (or a subagent tab), the Explorer and session details all live in
+    /// Review, the Subagents dock, the Explorer and session details all live in
     /// this one slot — `*_visible` makes them mutually exclusive — so they share
     /// one slide, one width and one edge. `DESIGN.md` §Motion System names the
     /// animated property for a panel's open and close as *the panel's own
@@ -3094,12 +3135,15 @@ impl OrbitApp {
             && self.dependencies_ready()
             && self.remote.is_none();
         let details_visible = self.session_details_visible(cx);
-        let open = explorer_visible || pane_visible || details_visible;
+        let subagents_visible = self.subagent_dock_visible(cx);
+        let open = explorer_visible || pane_visible || details_visible || subagents_visible;
 
         let slot = if explorer_visible {
             RightDock::Explorer
         } else if pane_visible {
             RightDock::Review
+        } else if subagents_visible {
+            RightDock::Subagents
         } else if details_visible {
             RightDock::Details
         } else {
@@ -3117,6 +3161,7 @@ impl OrbitApp {
             RightDock::Explorer => self.project_panel.read(cx).width(),
             RightDock::Review => self.sidepane.read(cx).width(),
             RightDock::Details => px(SESSION_DETAILS_GUTTER + SESSION_DETAILS_W),
+            RightDock::Subagents => self.sidepane.read(cx).docked_width(),
             RightDock::None => px(0.),
         };
 
@@ -3133,14 +3178,12 @@ impl OrbitApp {
             &theme,
             || match slot {
                 RightDock::Explorer => self.project_panel.clone().into_any_element(),
-                // A subagent tab paints in the same frame as Review; Review
-                // paints itself, with the tab strip.
-                RightDock::Review => match self.transcript.dock_tabs().active() {
-                    crate::right_dock::DockTab::Subagent(_) => {
-                        self.render_subagent_dock(theme, window.viewport_size().height, cx)
-                    }
-                    crate::right_dock::DockTab::Review => self.sidepane.clone().into_any_element(),
-                },
+                // Review is the diff and only the diff; a subagent's response
+                // has its own dock (#190).
+                RightDock::Review => self.sidepane.clone().into_any_element(),
+                RightDock::Subagents => {
+                    self.render_subagent_dock(theme, window.viewport_size().height, cx)
+                }
                 RightDock::Details => self.render_session_details_panel(cx),
                 RightDock::None => div().into_any_element(),
             },
@@ -4595,6 +4638,11 @@ impl OrbitApp {
     /// ring. `None` when no such modal is open. Only fields that are on screen
     /// are listed: focusing a hidden one would drop the keyboard.
     pub(super) fn modal_fields(&self) -> Option<Vec<Entity<crate::composer::ComposerInput>>> {
+        // The confirm prompt has no fields: its Tab ring is the two footer
+        // buttons `modal_focus_step` appends.
+        if self.pending_confirm.is_some() {
+            return Some(Vec::new());
+        }
         if self.project_trust_prompt.is_some() {
             return Some(Vec::new());
         }
@@ -4606,6 +4654,9 @@ impl OrbitApp {
         }
         if let Some(rename) = &self.project_rename {
             return Some(vec![rename.input.clone()]);
+        }
+        if self.session_name_editing {
+            return Some(vec![self.session_name_input.clone()]);
         }
         // The rest are painted by the Settings page, so they own the keyboard
         // only while it is open.
@@ -4680,8 +4731,26 @@ impl OrbitApp {
                 .iter()
                 .map(|field| field.read(cx).focus_handle(cx))
                 .collect();
+            let session_rename = fields.first() == Some(&self.session_name_input);
+            if session_rename
+                && self.session_rename_target.is_none()
+                && self.title_generation.is_none()
+                && self.can_generate_title()
+            {
+                stops.push(self.rename_generate_focus.clone());
+            }
             stops.push(self.modal_cancel_focus.clone());
-            stops.push(self.modal_confirm_focus.clone());
+            if !session_rename
+                || self.session_rename_target.is_some()
+                || self.title_generation.is_none()
+            {
+                stops.push(self.modal_confirm_focus.clone());
+            }
+            if self.pending_confirm.is_none()
+                && (self.session_name_editing || self.project_rename.is_some())
+            {
+                stops.push(self.rename_close_focus.clone());
+            }
             crate::ui::dialog::focus_ring(&stops, backwards, window);
             cx.notify();
         }
@@ -4691,7 +4760,8 @@ impl OrbitApp {
     /// A keyboard-modal surface owns the input while it is open; Tab must not
     /// walk the focus out from under it.
     fn focus_traversal_blocked(&self) -> bool {
-        self.command_palette.is_some()
+        self.pending_confirm.is_some()
+            || self.command_palette.is_some()
             || self.model_selector.is_some()
             || self.branch_picker.is_some()
             || self.workspace_picker.is_some()
@@ -4747,10 +4817,12 @@ impl OrbitApp {
     }
 
     /// Whether the composer holds anything a send would deliver: typed text,
-    /// an image, a file, or a collapsed paste. The one rule the control's
-    /// enabled state reads, so it can never disagree with `submit_as`.
+    /// an image, a file, a collapsed paste, or a quote. The one rule the
+    /// control's enabled state reads, so it can never disagree with `submit_as`.
     pub(super) fn send_has_payload(&self, cx: &Context<Self>) -> bool {
-        !self.input.read(cx).text().trim().is_empty() || self.attachment_slots_used() > 0
+        !self.input.read(cx).text().trim().is_empty()
+            || self.attachment_slots_used() > 0
+            || !self.annotations.is_empty()
     }
 
     /// How many messages are waiting behind the live turn — a quiet count of

@@ -21,16 +21,16 @@ use gpui::{
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
-use crate::ui::button::{Button, ButtonVariant};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
 use crate::theme::tokens::{
-    context_menu, input, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize,
+    context_menu, input, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::ui::banner::{Banner, BannerTone};
 use crate::ui::button::IconButton;
+use crate::ui::confirm::ConfirmPrompt;
 use crate::ui::list::virtual_list;
 use crate::ui::menu::menu_hint;
 use crate::ui::popover::PopoverExt;
@@ -225,6 +225,10 @@ pub struct ProjectPanel {
     entry: Option<EntryEditor>,
     /// A pending delete confirmation, if any.
     pending_delete: Option<DeleteConfirm>,
+    /// The delete prompt's two footer stops: Cancel takes the keyboard when
+    /// the prompt opens, and Tab reaches the destructive one.
+    delete_cancel_focus: FocusHandle,
+    delete_confirm_focus: FocusHandle,
     /// A background file-op failure, shown above the tree.
     notice: Option<String>,
     /// The app's file-open callback.
@@ -279,6 +283,8 @@ impl ProjectPanel {
             header_menu_dismissed_at: crate::ui::popover::DismissGuard::default(),
             entry: None,
             pending_delete: None,
+            delete_cancel_focus: cx.focus_handle().tab_stop(true),
+            delete_confirm_focus: cx.focus_handle().tab_stop(true),
             notice: None,
             on_open,
             on_file_op,
@@ -681,7 +687,7 @@ impl ProjectPanel {
         match item {
             MenuItem::Delete => {
                 // The confirmation replaces the menu; it dismisses itself.
-                self.request_delete(relative, is_dir, cx);
+                self.request_delete(relative, is_dir, window, cx);
                 return;
             }
             _ => self.dismiss_menu(cx),
@@ -907,19 +913,29 @@ impl ProjectPanel {
         self.cancel_entry(window, cx);
     }
 
-    fn request_delete(&mut self, path: String, is_dir: bool, cx: &mut Context<Self>) {
+    fn request_delete(
+        &mut self,
+        path: String,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
         self.menu = None;
         self.pending_delete = Some(DeleteConfirm { path, name, is_dir });
+        // The prompt opens with the safe choice focused, so a stray Enter
+        // cancels instead of deleting.
+        window.focus(&self.delete_cancel_focus);
         cx.notify();
     }
 
-    fn confirm_delete(&mut self, cx: &mut Context<Self>) {
+    fn confirm_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = self.pending_delete.take() else {
             return;
         };
         let handler = self.on_file_op.clone();
         self.notice = None;
+        window.focus(&self.focus);
         cx.notify();
         handler(
             FileOpRequest::Delete {
@@ -930,8 +946,9 @@ impl ProjectPanel {
         );
     }
 
-    fn cancel_delete(&mut self, cx: &mut Context<Self>) {
+    fn cancel_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending_delete.take().is_some() {
+            window.focus(&self.focus);
             cx.notify();
         }
     }
@@ -1550,7 +1567,6 @@ impl ProjectPanel {
     /// [`platform::TRASH_IS_RECOVERABLE`] so it never promises a restore the
     /// platform cannot deliver.
     fn delete_prompt(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let theme = theme.for_floating();
         let target = self.pending_delete.as_ref()?;
         let body_key = match (target.is_dir, platform::TRASH_IS_RECOVERABLE) {
             (true, true) => "explorer.delete_body_dir_trash",
@@ -1558,87 +1574,27 @@ impl ProjectPanel {
             (false, true) => "explorer.delete_body_file_trash",
             (false, false) => "explorer.delete_body_file_permanent",
         };
-        let card = div()
-            .w_full()
-            .max_w(px(250.))
-            .elevation_2(&theme)
-            .p(px(14.))
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .dismiss_on_outside(
-                cx.listener(|this, _: &MouseDownEvent, _, cx| this.cancel_delete(cx)),
-            )
-            .child(
-                div()
-                    .text_size(TextSize::Default.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(tr!("explorer.delete_title", name = target.name.clone())),
-            )
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .line_height(theme.ui_px(16.))
-                    .whitespace_normal()
-                    .text_color(theme.text_secondary)
-                    .child(crate::i18n::translate(body_key)),
-            )
-            .child(
-                div()
-                    .mt(px(2.))
-                    .flex()
-                    .justify_end()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .child(prompt_button(
-                        theme,
-                        "explorer-delete-cancel",
-                        tr!("explorer.cancel"),
-                        false,
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_delete(cx)),
-                    ))
-                    .child(prompt_button(
-                        theme,
-                        "explorer-delete-confirm",
-                        tr!("explorer.delete"),
-                        true,
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.confirm_delete(cx)),
-                    )),
-            );
+        let this = cx.entity();
+        let cancel = this.clone();
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .px(px(10.))
-                .bg(theme.surface.opacity(0.72))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(card)
-                .into_any_element(),
+            ConfirmPrompt::new(
+                "explorer-delete",
+                tr!("explorer.delete_title", name = target.name.clone()),
+            )
+            .body(crate::i18n::translate(body_key))
+            .cancel_label(tr!("explorer.cancel"))
+            .confirm_label(tr!("explorer.delete"))
+            .focus(&self.delete_cancel_focus, &self.delete_confirm_focus)
+            .on_confirm(move |window, cx| {
+                this.update(cx, |panel, cx| panel.confirm_delete(window, cx))
+            })
+            .on_cancel(move |window, cx| {
+                cancel.update(cx, |panel, cx| panel.cancel_delete(window, cx))
+            })
+            .layer(&theme)
+            .into_any_element(),
         )
     }
-}
-
-/// A small prompt button — quiet by default, `crit` for a destructive action.
-fn prompt_button(
-    theme: Theme,
-    id: &'static str,
-    label: String,
-    destructive: bool,
-    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    // The prompt's confirm is the irreversible step (Delete); the other
-    // choice is the quiet way out.
-    let variant = if destructive {
-        ButtonVariant::Destructive
-    } else {
-        ButtonVariant::Outline
-    };
-    Button::new(id, variant)
-        .label(label)
-        .on_click(&theme, listener)
-        .into_any_element()
 }
 
 /// A header/toolbar ghost icon control: a Default icon button, hover fill

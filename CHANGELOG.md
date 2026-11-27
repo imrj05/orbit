@@ -7,6 +7,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Plugin notifications keep their level (#173).** A toast an extension raises
+  with `ctx.ui.notify` now shows as a warning or an error when the extension
+  said so — tinted, and on screen longer — instead of every one arriving as an
+  info card. The In-app toasts switch in Settings → General still turns them
+  all off.
+
+- **Default thinking level on Providers & models.** The default-model card on
+  Settings → Providers & models now has a **Thinking level** row under the
+  model, offering that model's own levels. It edits the same new-session
+  default as Settings → Agent, so the two pages never disagree; until a default
+  model is picked the row stays a disabled *pi default*.
+
+- **Subagents get their own dock, not Review's (#190).** A delegated agent
+  opened from its card ("Open in Subagents") now lands in a **Subagents** panel
+  of its own instead of a tab on the Review pane: one entry per subagent with
+  its state, name and elapsed time, and the selected one's response below. Review
+  shows the diff and nothing else. The two trade the right side at the same
+  width, a top-bar chip brings Subagents back, closing an entry falls to its
+  neighbour, and closing the last one hides the panel.
+
+- **Quote a transcript passage into the composer (#187).** Select text in the
+  transcript and choose **Quote in Composer** from its right-click menu (first
+  item, keyboard-reachable like the rest). The passage becomes a quote above the
+  input with an optional one-line comment; Enter keeps the comment, Escape undoes
+  it, and Backspace in an empty comment removes the quote. Sending — or steering
+  a live run — leads the prompt with each quote as a `>` block and its comment,
+  then your text, and the sent message shows the quotes above the bubble, live
+  and after a reload. Quotes carry the rendered text, so `**bold**` quotes as
+  `bold`. Up to eight per message, 4,000 characters each; they survive switching
+  sessions and a failed send.
+
+- **A toolbar for transcript selections.** Selecting text (a drag, or a double or
+  triple click) shows the text menu beside the selection — Quote in Composer,
+  Copy Selection, Copy Message — without taking the keyboard from the composer.
+  Escape or a scroll closes it and keeps the selection, and the next press starts
+  a new selection straight away. **Shift+F10** opens the same menu at the
+  selection's end from the keyboard (the sidebar keeps Shift+F10 for its row menu).
+
+- **A settings page opens at its top, and its pinned header stays above it.**
+  Two layout faults made the Providers & models page look cut off: a section kept the
+  previous page's scroll offset (so it opened scrolled down, its first card shaved off
+  under the toolbar), and the header's wrapping description was measured as one line
+  while it painted as several — the header then came out short and its toolbar painted
+  over the first card. The description is now one line with the full sentence on hover,
+  the scroll offset resets per section, and both faults have layout tests.
+
+- **Cleaner Providers & models and plugin cards.** The Models page's count line under
+  the toolbar ("N providers · N active · …") is gone, and a plugin card ends at its
+  badges instead of repeating the package's install path.
+
+- **Plugin page round-out.** A configured-but-missing package can be installed
+  from its card again, disabled packages sort below the active ones with a line
+  saying what "disabled" means, plugin results report in the page's own status
+  line instead of a corner toast, and **Restart pi** sits beside Refresh so a
+  package change loads without leaving the page.
+
+- **New projects are named where they are created.** Creating a project opens
+  the rename dialog seeded with the folder's name, so it can be given a display
+  name immediately instead of hunting for the header menu.
+
+- **One Orbit instance on Windows.** A second launch (a desktop shortcut, a
+  double-clicked exe) raises the running window and exits instead of starting a
+  second app and a second agent.
+
+- **Per-plugin enable/disable toggle.** Each installed plugin on the Settings →
+  Plugins page now carries a switch that flips pi's own `autoload: false` form
+  in `settings.json`. A disabled package stops loading on pi's next start or
+  `/reload`, and the switch reflects the on-disk state — never a decorative
+  toggle.
+
+- **Sidebar session rename opens immediately.** Clicking Rename no longer
+  opens the conversation first. Only saving a changed name loads the target
+  session; Cancel and unchanged names leave the current conversation in place.
+
+- **Generate a title from Rename Session.** The dialog now offers the same
+  wand as Session Details. It applies the generated title immediately and
+  keeps any edits typed while generation was in flight.
+
+- **Consistent rename dialogs.** Sessions and projects now share a compact form
+  with a full-width name field, close control, and a dedicated Cancel / Save
+  changes footer. Renaming a session no longer opens or rearranges the details
+  dock. Project renames still change only the sidebar display name.
+
+- **Every confirmation asks a question and says the consequence.** The shared card
+  (`ui/confirm.rs`) was fed unevenly by `app/confirm_ui.rs`: most prompts had no line
+  saying what happens, four carried no mark beside the question, and three put the
+  consequence inside the title. Each prompt now has a question-only title, one
+  consequence line (what is deleted or removed, where from, and whether it can be
+  undone), the affected object in the target block, and the trash glyph on the
+  shared danger-washed icon tile (`TileLook::Destructive`) above the question.
+  Clean up now
+  (session retention) no longer uses the button's label as its title, and
+  removing a remote host, an MCP server, a provider, a plugin or an account now
+  says explicitly what is removed and what is left alone. Skills and subagents
+  name themselves above their file path instead of burying the path in the
+  question. A layout test pins that a prompt with a longer header still keeps its
+  footer in view at the largest UI size.
+
+- **Centered destructive confirmations.** The icon, question and consequence
+  stack on the center axis, with no divider above the target details. A single
+  divider separates the inset footer, which pairs equal-width outlined Cancel
+  and soft danger buttons. Simple prompts are narrower; session and project
+  deletion still have room for long paths.
+
+- **One confirmation prompt for every destructive action.** Deleting a session, a
+  project folder, a skill, a subagent, a provider, a plugin, an account, an MCP
+  server or a remote host, removing a worktree, deleting a file from Explorer,
+  discarding changes in Git, and Clean up now (session retention) all ask through
+  the same blocking card (`ui/confirm.rs` + `app/confirm_ui.rs`). The question,
+  what happens, and the object affected are on the card; Cancel takes the
+  keyboard when it opens, Escape cancels, Tab reaches the destructive button, and
+  focus returns to the composer on close. Replaces seven inline row/menu confirm
+  states and three hand-rolled cards, most of which had no keyboard route. Also
+  fixed: a `Danger`/`Destructive`/`Tinted`/`Glass` button panicked the frame under
+  Reduce Motion. Delete Session now shows the full title and the session file
+  and workspace paths (when known). Long details scroll without hiding the
+  actions, and Enter respects the focused button instead of always confirming.
+
+- **Default model in Providers & models.** The model selector now edits the same persisted new-session default as Settings → Agent instead of changing only the current session. The composer still controls the active session's model.
+
+- **Local sessions follow `PI_CODING_AGENT_DIR`.** The sidebar index, its watcher, the
+usage scan and the onboarding path row all located the store at `~/.pi/agent/sessions`, so a
+pi configured to keep its data elsewhere kept writing sessions Orbit could not see. They now
+resolve through pi's own agent directory — `PI_CODING_AGENT_DIR`, or `~/.pi/agent` — including
+a leading `~` in the value, which pi expands internally. `PI_CODING_AGENT_SESSION_DIR` takes
+precedence (below); `settings.json › sessionDir` still moves the store unseen.
+
 - **Swap-hover buttons render under Reduce Motion.** Tinted, Danger, Destructive and Glass
 buttons carry their one-frame hover swap from `variant_treatment`; under Reduce Motion the
 zero-duration branch of `motion::fade` set a second hover style on the same element, and

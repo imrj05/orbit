@@ -136,7 +136,12 @@ impl Hover {
         }
     }
 
-    fn has_treatment(self) -> bool { self.hover_fill.is_some() || self.ink.is_some() }
+    /// Whether this treatment changes anything at all. A control that swaps
+    /// its own hover (a destructive button) fades nothing, and must not have a
+    /// second hover style registered on top of the one it already carries.
+    pub(crate) fn is_none(&self) -> bool {
+        self.rest_fill.is_none() && self.hover_fill.is_none() && self.ink.is_none()
+    }
 
     /// Hold the hovered look at rest while `held` — a menu row under the
     /// keyboard cursor reads exactly as the pointer's hover.
@@ -308,20 +313,19 @@ where
             self.element.extend(self.children);
         }
 
-        if role.duration(&self.theme).is_zero() && hover.has_treatment() {
+        if role.duration(&self.theme).is_zero() {
             // Reduce Motion: the same treatment, applied on the frame the
             // pointer arrives. `.hover` is a style closure, so this costs no
             // state — and `PointerWatch::paint` leaves the registry alone, so
             // no transition is ever created.
-            return PointerWatch {
-                tracked: false,
-                name: self.name,
-                pump: None,
-                theme: self.theme,
-                role,
-                baked: 0.0,
-                child: self
-                    .element
+            //
+            // Nothing to fade means nothing to register: a control whose
+            // variant swaps its own hover already set one, and a second would
+            // panic the frame.
+            let child = if hover.is_none() {
+                self.element.into_any_element()
+            } else {
+                self.element
                     .hover(move |style| {
                         let (fill, ink) = hover.at(1.0);
                         let style = match fill {
@@ -333,7 +337,16 @@ where
                             None => style,
                         }
                     })
-                    .into_any_element(),
+                    .into_any_element()
+            };
+            return PointerWatch {
+                tracked: false,
+                name: self.name,
+                pump: None,
+                theme: self.theme,
+                role,
+                baked: 0.0,
+                child,
             };
         }
 

@@ -21,6 +21,7 @@ use gpui::{AnyElement, MouseDownEvent, MouseUpEvent};
 use super::*;
 use crate::ui::chip::{ChipButton, ChipStyle};
 use crate::ui::button::{IconButton, IconButtonVariant};
+use crate::ui::confirm::ConfirmPrompt;
 use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::popover::row_menu;
 use crate::motion::Hover;
@@ -60,6 +61,7 @@ impl OrbitApp {
             self.close_usage(cx);
         }
         self.session_details_open = false;
+        self.subagent_dock_open = false;
         self.settings_open = false;
         self.close_files(cx);
         self.sidepane.update(cx, |pane, cx| pane.close(cx));
@@ -2182,6 +2184,12 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let dialog = self.worktree_dialog.as_ref()?;
+        // Removing a worktree is a confirmation, not a form: it goes through
+        // the shared prompt rather than the dialog card the other variants
+        // fill in.
+        if let WorktreeDialog::Remove { path, dirty } = dialog {
+            return Some(self.remove_worktree_layer(path, *dirty, theme, cx));
+        }
         let body: AnyElement = match dialog {
             WorktreeDialog::Clone => self.clone_dialog_body(theme, this.clone()),
             WorktreeDialog::Create => self.create_worktree_dialog_body(theme, this.clone(), cx),
@@ -2194,15 +2202,15 @@ impl OrbitApp {
             WorktreeDialog::Move { path } => {
                 self.move_worktree_dialog_body(path, theme, this.clone())
             }
-            WorktreeDialog::Remove { path, dirty } => {
-                self.remove_worktree_dialog_body(path, *dirty, theme, this.clone())
-            }
             WorktreeDialog::BranchInUse { branch, path } => {
                 self.branch_in_use_dialog_body(branch, path, theme, this.clone())
             }
             WorktreeDialog::Unavailable { path, local } => {
                 self.worktree_unavailable_dialog_body(path, local.as_deref(), theme, this.clone())
             }
+            // Returned above, through the shared confirmation prompt; an
+            // empty element rather than a panic keeps the render path total.
+            WorktreeDialog::Remove { .. } => div().into_any_element(),
         };
         Some(
             modal_scrim(&theme)
@@ -2773,14 +2781,13 @@ impl OrbitApp {
         )
     }
 
-    fn remove_worktree_dialog_body(
+    fn remove_worktree_layer(
         &self,
         path: &Path,
         dirty: bool,
         theme: Theme,
-        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
     ) -> AnyElement {
-        let theme = theme.for_floating();
         let worktree = self.listed_worktree(path);
         let name = worktree
             .map(|worktree| worktree.name.clone())
@@ -2796,61 +2803,51 @@ impl OrbitApp {
         } else {
             tr!("worktree.remove.remove")
         };
-        let footer = worktree_dialog_footer(
-            theme,
-            tr!("view.cancel"),
-            confirm_label,
-            this,
-            |app, cx| app.cancel_worktree_dialog(cx),
-            |app, cx| app.confirm_worktree_dialog(cx),
-        );
-        self.worktree_dialog_card(
+        let this = cx.entity();
+        let cancel = this.clone();
+        ConfirmPrompt::new(
+            "worktree-remove",
             tr!("worktree.remove.title"),
-            theme,
+        )
+        .body(body)
+        .target(
             div()
                 .flex()
                 .flex_col()
-                .gap(DynamicSpacing::Base12.px(&theme))
+                .gap(DynamicSpacing::Base02.px(&theme))
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap(DynamicSpacing::Base02.px(&theme))
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_primary)
-                                .child(name),
-                        )
-                        .child(
-                            div()
-                                .font_family(theme::code_font_family())
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(branch),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font_family(theme::code_font_family())
-                                .text_size(TextSize::XSmall.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(shorten_home(path)),
-                        ),
+                        .text_size(TextSize::Default.px(&theme))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_primary)
+                        .child(name),
                 )
                 .child(
                     div()
+                        .font_family(theme::code_font_family())
                         .text_size(TextSize::Small.px(&theme))
-                        .text_color(if dirty {
-                            theme.error
-                        } else {
-                            theme.text_secondary
-                        })
-                        .child(body),
+                        .text_color(theme.text_muted)
+                        .child(branch),
                 )
-                .child(footer)
-                .into_any_element(),
+                .child(
+                    div()
+                        .truncate()
+                        .font_family(theme::code_font_family())
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(shorten_home(path)),
+                ),
         )
+        .width(px(480.))
+        .cancel_label(tr!("view.cancel"))
+        .confirm_label(confirm_label)
+        .focus(&self.modal_cancel_focus, &self.modal_confirm_focus)
+        .on_confirm(move |_, cx| {
+            this.update(cx, |app, cx| app.confirm_worktree_dialog(cx))
+        })
+        .on_cancel(move |_, cx| cancel.update(cx, |app, cx| app.cancel_worktree_dialog(cx)))
+        .layer(&theme)
+        .into_any_element()
     }
 
     /// The session's workspace is gone; show where it pointed and offer the

@@ -78,7 +78,7 @@ const HIDDEN_CARD_DIM: f32 = 0.6;
 pub(super) const SESSION_DETAILS_W: f32 = 320.;
 pub(super) const SESSION_DETAILS_GUTTER: f32 = 12.;
 /// The details card's header row, matching the Explorer's header height.
-const SESSION_DETAILS_HEADER_H: f32 = 40.;
+pub(super) const SESSION_DETAILS_HEADER_H: f32 = 40.;
 /// One inspector row in the details panel (a minimum: rows grow with the UI
 /// font instead of clipping).
 const SESSION_DETAILS_ROW_H: f32 = 28.;
@@ -248,11 +248,15 @@ impl OrbitApp {
         self.drain_pasted_images(cx);
         self.drain_pasted_texts(cx);
         let text = Self::fold_pasted_texts(text.trim(), &self.pasted_texts);
+        // Quotes lead the prompt, ahead of everything typed (issue #187).
+        let annotations = std::mem::take(&mut self.annotations);
+        let text = Self::fold_annotations(&text, &annotations, cx);
         // Files are folded as `@path` mentions, so a message may be nothing
         // but attachments.
         // A tray filled before the session went remote (a parked draft) is
         // held back the same way `push_file` refuses new files.
         if self.refuse_files_for_remote(self.files.len()) {
+            self.annotations = annotations;
             cx.notify();
             return;
         }
@@ -263,6 +267,7 @@ impl OrbitApp {
             // mention above, so the tray was empty too — put it back anyway,
             // so no future fold can silently swallow an attachment.
             self.files = files;
+            self.annotations = annotations;
             return;
         }
         // pi's `follow_up`, `steer`, and `prompt` all carry images, so
@@ -280,6 +285,7 @@ impl OrbitApp {
             self.attachments = attachments;
             self.files = files;
             self.pasted_texts = pasted_texts;
+            self.annotations = annotations;
             cx.notify();
             return;
         };
@@ -865,17 +871,6 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The session-details rename field shares the `Composer` key context;
-        // Enter there commits the name instead of reaching the main composer.
-        if self
-            .session_name_input
-            .read(cx)
-            .focus_handle(cx)
-            .is_focused(window)
-        {
-            self.rename_session(cx);
-            return;
-        }
         // Enter in the worktree rename/move field is the dialog's primary
         // button.
         if self
@@ -983,6 +978,20 @@ impl OrbitApp {
             cx.notify();
             return;
         }
+        // The selection toolbar never takes the keyboard, so its Escape
+        // arrives here; it closes before anything underneath.
+        if self.transcript.close_selection_toolbar(window) {
+            cx.notify();
+            return;
+        }
+        if self.session_name_editing {
+            self.cancel_session_name_edit(cx);
+            return;
+        }
+        if self.project_rename.is_some() {
+            self.project_rename_cancel(cx);
+            return;
+        }
         if self.transcript_search.is_some() {
             self.close_search(cx);
             return;
@@ -1084,19 +1093,6 @@ impl OrbitApp {
         if self.context_popup != ContextPopup::None {
             self.context_popup = ContextPopup::None;
             cx.notify();
-            return;
-        }
-        // The session-details panel stays docked, but its rename field can hold
-        // keyboard focus: Escape cancels the edit and hands focus back to the
-        // composer before it falls through to aborting a run.
-        if self.session_details_open
-            && self
-                .session_name_input
-                .read(cx)
-                .focus_handle(cx)
-                .is_focused(window)
-        {
-            self.cancel_session_name_edit(window, cx);
             return;
         }
         // The Review pane's source menu is closed by Escape before the key
@@ -1254,7 +1250,6 @@ impl OrbitApp {
     pub(super) fn close_surfaces_for_new_task(&mut self, cx: &mut Context<Self>) {
         self.cancel_new_task_settle();
         self.pending_session_rename = None;
-        self.session_rename_ready = false;
         self.pending_session_branch = None;
         self.session_branch_ready = false;
         self.settings_open = false;
@@ -1333,6 +1328,7 @@ impl OrbitApp {
                 || !self.attachments.is_empty()
                 || !self.files.is_empty()
                 || !self.pasted_texts.is_empty()
+                || !self.annotations.is_empty()
                 || !input.pasted_files.is_empty()
                 || input.has_pasted_images()
                 || input.has_pasted_texts()
@@ -1566,7 +1562,15 @@ impl OrbitApp {
             let Some(folder) = folder else {
                 return;
             };
-            let _ = this.update(cx, |app, cx| app.add_project(folder, cx));
+            // Name it while the folder is still the thing on screen: the
+            // dialog is seeded with the folder's own name, so accepting it
+            // unchanged keeps today's behaviour (#173).
+            this.update_in(cx, |app, window, cx| {
+                let label = sessions::workspace_label(&folder);
+                app.add_project(folder.clone(), cx);
+                app.open_project_rename(folder, label, window, cx);
+            })
+            .ok();
         })
         .detach();
     }
@@ -1612,7 +1616,6 @@ impl OrbitApp {
             return;
         }
         self.pending_session_rename = None;
-        self.session_rename_ready = false;
         self.pending_session_branch = None;
         self.session_branch_ready = false;
         // Opening a session means viewing the chat: leave whichever full-page
@@ -1927,6 +1930,7 @@ impl OrbitApp {
     /// Explorer, so opening it closes both.
     pub(super) fn open_session_details(&mut self, cx: &mut Context<Self>) {
         self.session_details_open = true;
+        self.subagent_dock_open = false;
         // The quota popover floats over the dock; do not leave it hanging.
         self.quota_popup_open = false;
         // One right dock at a time.
@@ -1966,7 +1970,6 @@ impl OrbitApp {
 
     /// Close the session-details panel.
     pub(super) fn close_session_details(&mut self, cx: &mut Context<Self>) {
-        self.session_name_editing = false;
         if self.session_details_open {
             self.session_details_open = false;
             cx.notify();
@@ -1980,15 +1983,22 @@ impl OrbitApp {
     /// than a dropped click. Hidden when the running pi did not expose the
     /// extension's command, so a stray `/generate-title` can never be sent as
     /// an ordinary user prompt.
-    fn generate_title_button(&self, theme: Theme, this: Entity<OrbitApp>) -> Option<AnyElement> {
+    pub(super) fn generate_title_button(
+        &self,
+        id: &'static str,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        focus: Option<&FocusHandle>,
+    ) -> Option<AnyElement> {
         if !self.can_generate_title() {
             return None;
         }
-        let generating = self.title_generating;
+        let generating = self.title_generation.is_some();
+        let in_rename = focus.is_some();
         let size = ButtonSize::Default;
         let glyph = if generating {
             crate::ui::prelude::spinner(
-                "sess-generate-title-spinner",
+                SharedString::from(format!("{id}-spinner")),
                 size.icon_size().px(&theme),
                 theme.accent_text,
                 theme,
@@ -2001,7 +2011,7 @@ impl OrbitApp {
             )
             .into_any_element()
         };
-        let button = IconButton::glyph("sess-generate-title", glyph).size(size);
+        let button = IconButton::glyph(id, glyph).size(size);
         Some(if generating {
             // In flight: a held face behind the spinner, nothing to press.
             button
@@ -2013,15 +2023,23 @@ impl OrbitApp {
             button
                 .tip(tr!("session.generate_title"))
                 .faded(&theme, |el| {
-                    el.on_click(move |_, _, cx| {
-                        this.update(cx, |app, cx| app.generate_session_title(cx));
-                    })
+                    el.debug_selector(|| id.into())
+                        .when_some(focus, |el, focus| el.track_focus(focus))
+                        .on_click(move |_, window, cx| {
+                            this.update(cx, |app, cx| {
+                                if in_rename {
+                                    app.generate_title_in_rename(window, cx);
+                                } else {
+                                    app.generate_session_title(cx);
+                                }
+                            });
+                        })
                 })
         })
     }
 
     /// Whether the bundled title extension registered its command with pi.
-    fn can_generate_title(&self) -> bool {
+    pub(super) fn can_generate_title(&self) -> bool {
         self.slash_commands
             .iter()
             .any(|command| command.name == "generate-title")
@@ -2037,21 +2055,55 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
-        if self.session_id.is_none() || !self.can_generate_title() {
+        if self.session_id.is_none()
+            || self.session_rename_target.is_some()
+            || self.title_generation.is_some()
+            || !self.can_generate_title()
+        {
             return;
         }
-        self.title_generating = true;
-        if !self.send(
-            CommandBody::Prompt {
-                message: "/generate-title".into(),
-                images: None,
-                streaming_behavior: None,
-            },
-            "generate_title",
-        ) {
-            self.title_generating = false;
+        let input = self.session_name_input.read(cx);
+        if self.session_name_editing && input.is_composing() {
+            return;
         }
+        let rename_draft = self.session_name_editing.then(|| input.text());
+        self.title_generation = self
+            .send_tracked(
+                CommandBody::Prompt {
+                    message: "/generate-title".into(),
+                    images: None,
+                    streaming_behavior: None,
+                },
+                "generate_title",
+            )
+            .map(|request_id| TitleGeneration {
+                request_id,
+                rename_draft,
+            });
         cx.notify();
+    }
+
+    pub(super) fn generate_title_in_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.generate_session_title(cx);
+        // The wand becomes a spinner while the command runs.
+        self.session_name_input.read(cx).focus(window);
+    }
+
+    /// Mirror a generated title only in the draft that requested it and only
+    /// if the user hasn't typed or started IME composition since asking.
+    pub(super) fn apply_title_to_rename_draft(&mut self, name: &str, cx: &mut Context<Self>) {
+        let draft = self
+            .title_generation
+            .as_mut()
+            .and_then(|request| request.rename_draft.take());
+        let input = self.session_name_input.read(cx);
+        if self.session_name_editing
+            && !input.is_composing()
+            && draft.as_deref().is_some_and(|draft| draft == input.text())
+        {
+            self.session_name_input
+                .update(cx, |input, cx| input.set_text(name, cx));
+        }
     }
 
     /// Open the Git card (Changes / History / Graph) and load it.
@@ -2061,6 +2113,7 @@ impl OrbitApp {
         self.usage_open = false;
         self.worktrees_open = false;
         self.session_details_open = false;
+        self.subagent_dock_open = false;
         // Files is another main-area feature; leave it for the Git card.
         self.close_files(cx);
         // Review owns the right dock and would otherwise show beside the Git
@@ -2127,6 +2180,7 @@ impl OrbitApp {
         self.close_git_for_review(cx);
         // One right dock at a time.
         self.session_details_open = false;
+        self.subagent_dock_open = false;
         self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
     }
 
@@ -2136,6 +2190,7 @@ impl OrbitApp {
         self.git_open = false;
         self.worktrees_open = false;
         self.session_details_open = false;
+        self.subagent_dock_open = false;
         // Files is another main-area feature; leave it for the Usage card.
         self.close_files(cx);
         self.usage.update(cx, |page, cx| page.open(cx));
@@ -2220,15 +2275,18 @@ impl OrbitApp {
     /// new or switched session before `get_state` arrives.
     pub(super) fn reset_session_name(&mut self, cx: &mut Context<Self>) {
         self.session_name = None;
-        self.title_generating = false;
+        self.title_generation = None;
+        self.session_name_editing = false;
+        self.session_rename_target = None;
         self.session_name_input
             .update(cx, |input, cx| input.set_text(String::new(), cx));
     }
 
-    /// Fill the rename field from the live title. Used when the popover
-    /// opens, and when switching sessions, so the input matches the header
-    /// instead of a stale (or empty) `sessionName`.
+    /// Fill the idle rename field from the live title without overwriting a draft.
     pub(super) fn seed_session_name_input(&mut self, cx: &mut Context<Self>) {
+        if self.session_name_editing {
+            return;
+        }
         let text = self
             .session_name
             .as_deref()
@@ -2249,32 +2307,46 @@ impl OrbitApp {
         }
     }
 
-    /// The command palette's Rename Session: open the details panel (it owns
-    /// the rename field) and put the caret in it.
+    /// Open the active session's rename dialog from the palette or details pencil.
     pub(super) fn begin_session_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending_session_rename.is_some() {
-            return;
+        if self.session_id.is_some() {
+            self.open_session_rename(None, window, cx);
         }
-        self.open_session_details(cx);
-        self.begin_session_name_edit(window, cx);
     }
 
-    /// Switch the panel's name row to the rename field, seeded with the live
-    /// title and focused, so typing replaces nothing until the user edits.
-    pub(super) fn begin_session_name_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// A sidebar row can be edited before its session process has loaded.
+    pub(super) fn open_session_rename(
+        &mut self,
+        target: Option<SessionInfo>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_session_rename.is_some()
+            || self.session_name_editing
+            || self.project_rename.is_some()
+        {
+            return;
+        }
+        if let Some(session) = &target {
+            self.session_name_input
+                .update(cx, |input, cx| input.set_text(session.title.clone(), cx));
+        } else {
+            self.seed_session_name_input(cx);
+        }
+        self.session_rename_target = target;
         self.session_name_editing = true;
-        self.seed_session_name_input(cx);
         let handle = self.session_name_input.read(cx).focus_handle(cx);
-        window.focus(&handle);
+        self.session_rename_focus.open(&handle, window, cx);
         cx.notify();
     }
 
-    /// Leave the rename field without committing: the field is reseeded from
-    /// the live title and focus returns to the composer.
-    pub(super) fn cancel_session_name_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn cancel_session_name_edit(&mut self, cx: &mut Context<Self>) {
         self.session_name_editing = false;
+        self.session_rename_target = None;
+        if let Some(request) = &mut self.title_generation {
+            request.rename_draft = None;
+        }
         self.seed_session_name_input(cx);
-        self.input.read(cx).focus(window);
         cx.notify();
     }
 
@@ -2371,10 +2443,8 @@ impl OrbitApp {
                 .child(tr!("session.no_active"))
         });
 
-        // pi owns the name. At rest the row shows the title as text with an
-        // edit button (and Generate title); editing swaps in the rename field
-        // with Update / Cancel. Enter or Update commits (`set_session_name`),
-        // Escape or Cancel leaves it unchanged.
+        // pi owns the name. The title stays in the dock while the edit button
+        // opens the shared rename dialog.
         let name_block = (!session_id.is_empty()).then(|| {
             let row = div()
                 .px(DynamicSpacing::Base12.px(&theme))
@@ -2383,93 +2453,57 @@ impl OrbitApp {
                 .items_center()
                 .gap(DynamicSpacing::Base04.px(&theme))
                 .text_size(TextSize::Small.px(&theme));
-            if self.session_name_editing {
-                row.child(
-                    input_field_frame(div(), &theme)
-                        .flex_1()
-                        .min_w_0()
-                        // The panel's controls are one size: the field takes
-                        // the Default button height and the row's small type,
-                        // so all three scale together with the UI font size.
-                        .min_h(ButtonSize::Default.height(&theme))
-                        .h(ButtonSize::Default.height(&theme))
-                        .py(px(0.))
-                        .px(DynamicSpacing::Base06.px(&theme))
-                        .text_size(TextSize::Small.px(&theme))
-                        .overflow_hidden()
-                        .child(self.session_name_input.clone()),
-                )
-                .child(Self::name_action_button(
-                    "sess-rename",
-                    tr!("session.update"),
-                    true,
-                    theme,
-                    {
-                        let this = this.clone();
-                        move |_, cx| this.update(cx, |app, cx| app.rename_session(cx))
-                    },
-                ))
-                .child(Self::name_action_button(
-                    "sess-rename-cancel",
-                    tr!("settings.cancel"),
-                    false,
-                    theme,
-                    {
-                        let this = this.clone();
-                        move |window, cx| {
-                            this.update(cx, |app, cx| app.cancel_session_name_edit(window, cx))
-                        }
-                    },
-                ))
-            } else {
-                let title = self
-                    .session_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .or_else(|| {
-                        self.current_title
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|title| !title.is_empty())
+
+            let title = self
+                .session_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .or_else(|| {
+                    self.current_title
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|title| !title.is_empty())
+                })
+                .map(str::to_owned);
+            let untitled = title.is_none();
+            row.child(
+                div()
+                    .id("sess-title")
+                    .debug_selector(|| "sess-title".into())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if untitled {
+                        theme.text_muted
+                    } else {
+                        theme.text_primary
                     })
-                    .map(str::to_owned);
-                let untitled = title.is_none();
-                row.child(
-                    div()
-                        .id("sess-title")
-                        .debug_selector(|| "sess-title".into())
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(if untitled {
-                            theme.text_muted
-                        } else {
-                            theme.text_primary
-                        })
-                        .when_some(title.clone(), |el, title| el.tip(title))
-                        .child(title.unwrap_or_else(|| tr!("app.session_name"))),
-                )
-                // A committed rename confirms itself with a check that pops in
-                // beside the new title.
-                .children(rename_saved.then(|| Self::rename_check(theme, cx)))
-                .children(self.generate_title_button(theme, this.clone()))
-                .child(
-                    IconButton::new("sess-edit-title", "icons/pencil.svg")
-                        .tip(tr!("explorer.rename"))
-                        .faded(&theme, |el| {
-                            let this = this.clone();
-                            el.debug_selector(|| "sess-edit-title".into()).on_click(
-                                move |_, window, cx| {
-                                    this.update(cx, |app, cx| {
-                                        app.begin_session_name_edit(window, cx)
-                                    });
-                                },
-                            )
-                        }),
-                )
-            }
+                    .when_some(title.clone(), |el, title| el.tip(title))
+                    .child(title.unwrap_or_else(|| tr!("app.session_name"))),
+            )
+            // A committed rename confirms itself with a check that pops in
+            // beside the new title.
+            .children(rename_saved.then(|| Self::rename_check(theme, cx)))
+            .children(self.generate_title_button(
+                "sess-generate-title",
+                theme,
+                this.clone(),
+                None,
+            ))
+            .child(
+                IconButton::new("sess-edit-title", "icons/pencil.svg")
+                    .tip(tr!("explorer.rename"))
+                    .faded(&theme, |el| {
+                        let this = this.clone();
+                        el.debug_selector(|| "sess-edit-title".into()).on_click(
+                            move |_, window, cx| {
+                                this.update(cx, |app, cx| app.begin_session_rename(window, cx));
+                            },
+                        )
+                    }),
+            )
         });
 
         // ── Environment ── where this session runs: the machine, the folder
@@ -3501,33 +3535,6 @@ impl OrbitApp {
             )
     }
 
-    /// The rename row's text buttons at the panel's one control size:
-    /// `primary` takes the action fill (Update), the other is the quiet
-    /// bordered secondary (Cancel).
-    fn name_action_button(
-        id: &'static str,
-        label: String,
-        primary: bool,
-        theme: Theme,
-        on_click: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> AnyElement {
-        let variant = if primary {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Outline
-        };
-        Button::new(id, variant)
-            .size(ButtonSize::Default)
-            .label(label)
-            .faded(&theme, move |button| {
-                button
-                    .debug_selector(move || id.to_string())
-                    .flex_none()
-                    .text_size(TextSize::Small.px(&theme))
-                    .on_click(move |_, window, cx| on_click(window, cx))
-            })
-    }
-
     /// One titled group of the session-details panel. `rule` draws the
     /// quiet hairline that separates it from the group above.
     fn details_section(title: String, rule: bool, theme: Theme) -> Div {
@@ -3734,6 +3741,7 @@ impl OrbitApp {
             self.close_git_for_review(cx);
             // One right dock at a time.
             self.session_details_open = false;
+            self.subagent_dock_open = false;
         }
         self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
         cx.notify();
@@ -3837,6 +3845,7 @@ impl OrbitApp {
             // docks: opening the tree closes Review — and the session details.
             self.sidepane.update(cx, |pane, cx| pane.close(cx));
             self.session_details_open = false;
+            self.subagent_dock_open = false;
         }
         cx.notify();
     }

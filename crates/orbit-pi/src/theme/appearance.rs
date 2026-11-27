@@ -201,7 +201,8 @@ pub(crate) fn with_accent(mut theme: Theme, base: gpui::Hsla) -> Theme {
     theme
 }
 
-fn contrast(a: gpui::Hsla, b: gpui::Hsla) -> f32 {
+/// WCAG contrast for two opaque colors.
+pub(crate) fn contrast(a: gpui::Hsla, b: gpui::Hsla) -> f32 {
     let luminance = |color: gpui::Hsla| {
         let color = gpui::Rgba::from(color);
         let linear = |v: f32| {

@@ -82,6 +82,10 @@ pub(crate) struct PluginPackage {
     pub installed: bool,
     /// `version` from the installed package's `package.json`, when readable.
     pub version: Option<String>,
+    /// Whether the package loads its resources. A package recorded as
+    /// `{"source": …, "autoload": false}` with no resource filters is
+    /// disabled; every other entry is enabled.
+    pub enabled: bool,
 }
 
 /// One installed npm or Git package whose upstream has moved ahead.
@@ -122,13 +126,20 @@ pub(crate) fn discover(workspace: &Path) -> (Vec<PluginPackage>, Option<String>)
         }
     }
 
+    sort_for_page(&mut packages);
+    (packages, error)
+}
+
+/// What loads first: enabled packages by name, then the disabled ones. A
+/// disabled plugin is still listed (it is installed and reversible) but it
+/// sits below the ones doing work.
+fn sort_for_page(packages: &mut [PluginPackage]) {
     packages.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
+        b.enabled
+            .cmp(&a.enabled)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             .then_with(|| a.scope.label().cmp(b.scope.label()))
     });
-    (packages, error)
 }
 
 /// Install `source` via `pi install`, optionally into project scope.
@@ -157,6 +168,123 @@ fn package_args(action: &str, source: &str, project: bool) -> Vec<String> {
 pub(crate) fn update(source: &str, workspace: &Path) -> Result<String, String> {
     let args = vec!["update".to_string(), source.to_string()];
     run_pi(&args, workspace)
+}
+
+/// Enable or disable one configured package by editing Pi's settings file in
+/// place. Disabling writes the same shape `pi config` writes —
+/// `{"source": …, "autoload": false}` — which loads none of the package's
+/// resources; enabling restores the plain string form, which loads everything
+/// the package declares. Pi picks the change up on its next start or
+/// `/reload`, like any other `packages` edit.
+pub(crate) fn set_enabled(
+    source: &str,
+    scope: PackageScope,
+    enabled: bool,
+    workspace: &Path,
+) -> Result<(), String> {
+    edit_settings(&settings_path(scope, workspace), source, enabled)
+}
+
+/// The settings file a package of this scope is recorded in.
+fn settings_path(scope: PackageScope, workspace: &Path) -> PathBuf {
+    match scope {
+        PackageScope::User => agent_dir().join("settings.json"),
+        PackageScope::Project => workspace.join(".pi").join("settings.json"),
+    }
+}
+
+/// Read → mutate → atomically rewrite one settings file, replacing only the
+/// entry that matches `source`. A malformed file is never partially written.
+fn edit_settings(path: &Path, source: &str, enabled: bool) -> Result<(), String> {
+    let existing = fs::read_to_string(path).map_err(|err| {
+        tr!(
+            "errors.could_not_read",
+            path = path.display().to_string(),
+            error = err
+        )
+    })?;
+    let mut doc: Value = if existing.trim().is_empty() {
+        Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_str(&existing).map_err(|err| {
+            tr!(
+                "errors.not_valid_json",
+                path = path.display().to_string(),
+                error = err
+            )
+        })?
+    };
+    let root = doc.as_object_mut().ok_or_else(|| {
+        tr!(
+            "errors.not_valid_json",
+            path = path.display().to_string(),
+            error = "settings.json root is not an object".to_string()
+        )
+    })?;
+    let packages = root
+        .entry("packages")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let packages = packages.as_array_mut().ok_or_else(|| {
+        tr!(
+            "errors.not_valid_json",
+            path = path.display().to_string(),
+            error = "packages is not an array".to_string()
+        )
+    })?;
+    let mut found = false;
+    for entry in packages.iter_mut() {
+        let matches = match entry {
+            Value::String(text) => text == source,
+            Value::Object(map) => map.get("source").and_then(Value::as_str) == Some(source),
+            _ => false,
+        };
+        if matches {
+            *entry = if enabled {
+                Value::String(source.to_string())
+            } else {
+                serde_json::json!({ "source": source, "autoload": false })
+            };
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err(tr!("errors.plugin_not_found", source = source.to_string()));
+    }
+    let indent = detect_indent(&existing);
+    let text = serialize_settings(&doc, &indent)?;
+    crate::subagent_file::write_atomic(path, text.as_bytes())
+}
+
+/// Serialize with the file's own indentation (Pi does the same), so a
+/// hand-formatted file is not reformatted just because Orbit touched one
+/// entry.
+fn serialize_settings(doc: &Value, indent: &[u8]) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(indent);
+    let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, formatter);
+    serde::Serialize::serialize(doc, &mut serializer).map_err(|err| {
+        tr!("errors.could_not_serialize_settings", error = err)
+    })?;
+    bytes.push(b'\n');
+    String::from_utf8(bytes)
+        .map_err(|err| tr!("errors.could_not_serialize_settings", error = err))
+}
+
+/// The indentation of the first indented line: tabs win as-is, spaces are
+/// copied verbatim. Defaults to two spaces.
+fn detect_indent(text: &str) -> Vec<u8> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.len() == line.len() {
+            continue;
+        }
+        let indent = &line[..line.len() - trimmed.len()];
+        if indent.chars().all(|c| c == ' ' || c == '\t') {
+            return indent.as_bytes().to_vec();
+        }
+    }
+    b"  ".to_vec()
 }
 
 /// Check installed npm and Git packages for newer upstream versions. Local
@@ -447,32 +575,58 @@ fn read_packages(
             error = err
         )
     })?;
-    Ok(package_sources(&root)
+    Ok(package_entries(&root)
         .into_iter()
-        .map(|source| resolve(&source, scope, workspace))
+        .map(|(source, enabled)| resolve(&source, scope, workspace, enabled))
         .collect())
 }
 
-/// Pull the package source strings out of a settings document. Entries are
-/// strings (`"npm:foo"`) or objects with a `source` field.
-fn package_sources(root: &Value) -> Vec<String> {
+/// Pull the configured package sources out of a settings document, paired with
+/// whether each is enabled. Entries are strings (`"npm:foo"`) or objects with
+/// a `source` field; an object with `autoload: false` and no resource filters
+/// is the on-disk form of a disabled package.
+fn package_entries(root: &Value) -> Vec<(String, bool)> {
     let Some(list) = root.get("packages").and_then(Value::as_array) else {
         return Vec::new();
     };
     list.iter()
         .filter_map(|entry| match entry {
-            Value::String(source) if !source.trim().is_empty() => Some(source.clone()),
-            Value::Object(map) => map
-                .get("source")
-                .and_then(Value::as_str)
-                .filter(|source| !source.trim().is_empty())
-                .map(str::to_string),
+            Value::String(source) if !source.trim().is_empty() => Some((source.clone(), true)),
+            Value::Object(map) => {
+                let source = map
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .filter(|source| !source.trim().is_empty())?;
+                Some((source.to_string(), !package_disabled(map)))
+            }
             _ => None,
         })
         .collect()
 }
 
-fn resolve(source: &str, scope: PackageScope, workspace: &Path) -> PluginPackage {
+/// Whether an object-form package entry loads nothing: `autoload: false` with
+/// no resource filters (or all-empty filters) is a disabled package. A package
+/// that still lists a non-empty filter under `autoload: false` loads a delta
+/// and reads as enabled.
+fn package_disabled(map: &serde_json::Map<String, Value>) -> bool {
+    if map.get("autoload").and_then(Value::as_bool) != Some(false) {
+        return false;
+    }
+    ["extensions", "skills", "prompts", "themes"]
+        .iter()
+        .all(|key| match map.get(*key) {
+            None => true,
+            Some(Value::Array(items)) => items.is_empty(),
+            Some(_) => false,
+        })
+}
+
+fn resolve(
+    source: &str,
+    scope: PackageScope,
+    workspace: &Path,
+    enabled: bool,
+) -> PluginPackage {
     let parsed = parse_source(source);
     let install_path = parsed.install_path(scope, workspace);
     let installed = install_path.exists();
@@ -489,6 +643,7 @@ fn resolve(source: &str, scope: PackageScope, workspace: &Path) -> PluginPackage
         install_path,
         installed,
         version,
+        enabled,
     }
 }
 
@@ -830,12 +985,125 @@ mod tests {
     }
 
     #[test]
-    fn reads_string_and_object_packages() {
-        let raw = r#"{"packages":["npm:a",{"source":"git:github.com/x/y"},42,"  "]}"#;
+    fn reads_string_and_object_packages_and_disabled_state() {
+        let raw = r#"{"packages":["npm:a",{"source":"git:github.com/x/y"},42,"  ",{"source":"npm:off","autoload":false},{"source":"npm:filtered","autoload":false,"extensions":["*.ts"]}]}"#;
         let value: Value = serde_json::from_str(raw).unwrap();
         assert_eq!(
-            package_sources(&value),
-            vec!["npm:a".to_string(), "git:github.com/x/y".to_string()]
+            package_entries(&value),
+            vec![
+                ("npm:a".to_string(), true),
+                ("git:github.com/x/y".to_string(), true),
+                ("npm:off".to_string(), false),
+                // A non-empty filter under `autoload: false` still loads a
+                // delta, so it reads as enabled.
+                ("npm:filtered".to_string(), true),
+            ]
         );
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-plugins-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn disabled_packages_sort_below_the_enabled_ones() {
+        let mut packages = vec![
+            package("npm:zeta", false),
+            package("npm:beta", true),
+            package("npm:alpha", true),
+        ];
+        sort_for_page(&mut packages);
+        let order: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(order, vec!["alpha", "beta", "zeta"]);
+    }
+
+    fn package(name: &str, enabled: bool) -> PluginPackage {
+        PluginPackage {
+            source: name.to_string(),
+            name: name.trim_start_matches("npm:").to_string(),
+            scope: PackageScope::User,
+            kind: PackageKind::Npm,
+            install_path: PathBuf::from("/tmp").join(name),
+            installed: true,
+            version: None,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn read_packages_reports_disabled_state() {
+        let dir = temp_dir("read-disabled");
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"packages":["npm:on",{"source":"npm:off","autoload":false}]}"#,
+        )
+        .unwrap();
+        let packages = read_packages(&path, PackageScope::User, Path::new("/tmp")).unwrap();
+        let on = packages.iter().find(|p| p.source == "npm:on").unwrap();
+        let off = packages.iter().find(|p| p.source == "npm:off").unwrap();
+        assert!(on.enabled);
+        assert!(!off.enabled);
+    }
+
+    #[test]
+    fn disabling_and_reenabling_a_package_is_surgical() {
+        let dir = temp_dir("toggle");
+        let workspace = dir.join("work");
+        fs::create_dir_all(workspace.join(".pi")).unwrap();
+        let settings = workspace.join(".pi").join("settings.json");
+        fs::write(
+            &settings,
+            "{\n  \"packages\": [\n    \"npm:keep\",\n    \"npm:target\"\n  ],\n  \"otherKey\": true\n}\n",
+        )
+        .unwrap();
+
+        set_enabled("npm:target", PackageScope::Project, false, &workspace).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        let packages = doc["packages"].as_array().unwrap();
+        assert_eq!(packages[0], "npm:keep");
+        assert_eq!(packages[1]["source"], "npm:target");
+        assert_eq!(packages[1]["autoload"], false);
+        assert_eq!(doc["otherKey"], true);
+
+        set_enabled("npm:target", PackageScope::Project, true, &workspace).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        let packages = doc["packages"].as_array().unwrap();
+        assert_eq!(packages[0], "npm:keep");
+        assert_eq!(packages[1], "npm:target");
+        assert_eq!(doc["otherKey"], true);
+    }
+
+    #[test]
+    fn toggling_a_missing_source_is_an_error_and_leaves_the_file_untouched() {
+        let dir = temp_dir("missing");
+        let path = dir.join("settings.json");
+        fs::write(&path, r#"{"packages":["npm:a"]}"#).unwrap();
+        let err = edit_settings(&path, "npm:nope", false).unwrap_err();
+        assert!(err.contains("nope"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            r#"{"packages":["npm:a"]}"#
+        );
+    }
+
+    #[test]
+    fn indentation_is_preserved_on_toggle() {
+        let dir = temp_dir("indent");
+        let path = dir.join("settings.json");
+        fs::write(&path, "{\n\t\"packages\": [\n\t\t\"npm:a\"\n\t]\n}\n").unwrap();
+        edit_settings(&path, "npm:a", false).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\t\"packages\""), "{text}");
+        assert!(text.contains("\t\t\"autoload\""), "{text}");
     }
 }

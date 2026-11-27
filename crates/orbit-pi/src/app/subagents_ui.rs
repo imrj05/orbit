@@ -52,7 +52,6 @@ pub(super) enum SubagentAction {
     ShowLimits,
     AskDelete,
     ConfirmDelete,
-    CancelDelete,
     UndoDelete,
     /// Run the held-back Select / New / Duplicate and drop the edits.
     ConfirmDiscard,
@@ -1560,52 +1559,7 @@ impl OrbitApp {
                     }),
             );
 
-        let confirming = self.subagent_delete_confirm;
-        let actions: AnyElement = if confirming {
-            let hint = if overrides_builtin {
-                tr!(
-                    "subagents_ui.reset_confirm_hint",
-                    path = path.display().to_string(),
-                    name = self.selected_subagent.clone().unwrap_or_default()
-                )
-            } else {
-                tr!(
-                    "subagents_ui.delete_confirm_hint",
-                    path = path.display().to_string()
-                )
-            };
-            div()
-                .px(DynamicSpacing::Base16.px(theme))
-                .py(DynamicSpacing::Base12.px(theme))
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(DynamicSpacing::Base08.px(theme))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(160.))
-                        .text_size(TextSize::Small.px(theme))
-                        .text_color(theme.error)
-                        .whitespace_normal()
-                        .child(hint),
-                )
-                .child(self.subagent_danger_button(
-                    "subagents-delete",
-                    tr!("subagents_ui.delete"),
-                    *theme,
-                    this.clone(),
-                    SubagentAction::ConfirmDelete,
-                ))
-                .child(self.subagent_secondary_button(
-                    "subagents-cancel",
-                    tr!("subagents_ui.cancel"),
-                    *theme,
-                    this.clone(),
-                    SubagentAction::CancelDelete,
-                ))
-                .into_any_element()
-        } else {
+        let actions: AnyElement = {
             div()
                 .px(DynamicSpacing::Base16.px(theme))
                 .py(DynamicSpacing::Base12.px(theme))
@@ -2344,7 +2298,6 @@ impl OrbitApp {
     fn start_new_subagent(&mut self, cx: &mut Context<Self>) {
         self.selected_subagent = None;
         self.subagent_error = None;
-        self.subagent_delete_confirm = false;
         self.subagent_editor = Some(self.make_editor(
             cx,
             "",
@@ -2378,7 +2331,6 @@ impl OrbitApp {
         }
         self.selected_subagent = None;
         self.subagent_error = None;
-        self.subagent_delete_confirm = false;
         let mode = match self.subagent_config.agent_mode(agent.name()) {
             "plan" => "plan",
             "build" => "build",
@@ -2414,7 +2366,6 @@ impl OrbitApp {
                 .as_ref()
                 .is_some_and(|editor| editor.has_unsaved_edits(cx))
         {
-            self.subagent_delete_confirm = false;
             self.subagent_discard_pending = Some(action);
             self.settings_search.update(cx, |input, cx| input.clear(cx));
             cx.notify();
@@ -2480,7 +2431,6 @@ impl OrbitApp {
                     return;
                 }
             }
-            self.subagent_delete_confirm = false;
             self.subagent_discard_pending = Some(action);
             cx.notify();
             return;
@@ -2503,7 +2453,6 @@ impl OrbitApp {
             SubagentAction::Select(name) => {
                 self.subagent_limits_open = false;
                 self.selected_subagent = Some(name);
-                self.subagent_delete_confirm = false;
                 self.rebuild_subagent_editor(cx);
             }
             SubagentAction::OpenPlugins => {
@@ -2641,8 +2590,27 @@ impl OrbitApp {
                 }
                 self.persist_subagents();
             }
-            SubagentAction::AskDelete => self.subagent_delete_confirm = true,
-            SubagentAction::CancelDelete => self.subagent_delete_confirm = false,
+            SubagentAction::AskDelete => {
+                let Some(path) = self
+                    .subagent_editor
+                    .as_ref()
+                    .and_then(|editor| editor.path.clone())
+                else {
+                    return;
+                };
+                let name = self.selected_subagent.clone().unwrap_or_default();
+                let overrides_builtin = subagent_file::builtin_agents()
+                    .iter()
+                    .any(|builtin| builtin.name() == name.as_str());
+                self.request_confirm(
+                    super::confirm_ui::PendingConfirm::DeleteSubagent {
+                        path,
+                        name,
+                        overrides_builtin,
+                    },
+                    cx,
+                );
+            }
             SubagentAction::ConfirmDelete => self.delete_subagent(cx),
             SubagentAction::UndoDelete => {
                 self.subagent_limits_open = false;
@@ -2747,7 +2715,6 @@ impl OrbitApp {
         let Some(editor) = self.subagent_editor.as_ref() else {
             return;
         };
-        self.subagent_delete_confirm = false;
         let Some(path) = editor.path.clone() else {
             // A builtin has no file: "Delete" is not on offer, but disabling is.
             return;
@@ -3060,7 +3027,7 @@ mod tests {
             .expect("the detail column rendered");
         assert!(detail.size.width > px(0.), "{detail:?}");
 
-        // A new-agent draft, and the delete confirmation with its extra button.
+        // A new-agent draft, then a saved agent with an error beside it.
         cx.update(|_, cx| {
             app.update(cx, |app, cx| {
                 app.start_new_subagent(cx);
@@ -3073,7 +3040,6 @@ mod tests {
             app.update(cx, |app, cx| {
                 app.selected_subagent = Some("worker".into());
                 app.rebuild_subagent_editor(cx);
-                app.subagent_delete_confirm = true;
                 app.subagent_error = Some("the file changed on disk".into());
                 cx.notify();
             });

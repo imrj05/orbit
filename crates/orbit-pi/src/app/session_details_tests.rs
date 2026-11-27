@@ -302,11 +302,10 @@ fn the_changes_section_offers_commit_only_when_dirty(cx: &mut gpui::TestAppConte
     );
 }
 
-/// The name row shows the title as text until the edit button switches it to
-/// the rename field; Cancel (or Escape) goes back without committing, and
-/// closing the panel never leaves a half-edit behind for the next open.
+/// Opening the rename dialog doesn't replace the details row or lose the
+/// title draft to a background title update.
 #[gpui::test]
-fn the_title_row_switches_between_text_and_the_rename_field(cx: &mut gpui::TestAppContext) {
+fn session_rename_dialog_preserves_the_details_and_the_draft(cx: &mut gpui::TestAppContext) {
     let (app, cx) = new_app(cx);
     let viewport = cx.update(|window, _| window.viewport_size());
 
@@ -330,61 +329,184 @@ fn the_title_row_switches_between_text_and_the_rename_field(cx: &mut gpui::TestA
         "with an edit button"
     );
     assert!(
-        cx.debug_bounds("sess-rename").is_none(),
-        "and no Update button"
+        cx.debug_bounds("session-rename-card").is_none(),
+        "and no rename dialog"
     );
 
     cx.update(|window, cx| {
-        app.update(cx, |app, cx| app.begin_session_name_edit(window, cx));
+        app.update(cx, |app, cx| app.begin_session_rename(window, cx));
     });
     let _ = cx.draw(gpui::point(px(0.), px(0.)), viewport, |_, _| app.clone());
-    // `debug_bounds` keeps the previous manual draw's entries, so the text's
-    // absence is asserted through the state that gates it.
-    assert!(
-        cx.update(|_, cx| app.read(cx).session_name_editing),
-        "editing replaces the text"
-    );
-    assert!(
-        cx.debug_bounds("sess-rename").is_some(),
-        "Update while editing"
-    );
-    assert!(
-        cx.debug_bounds("sess-rename-cancel").is_some(),
-        "Cancel too"
-    );
+    assert!(cx.update(|_, cx| app.read(cx).session_name_editing));
+    assert!(cx.debug_bounds("session-rename-card").is_some());
+    assert!(cx.debug_bounds("session-rename-field").is_some());
+    assert!(cx.debug_bounds("session-rename-actions").is_some());
+    assert!(cx.debug_bounds("session-rename-generate-title").is_none());
+    assert!(cx.update(|_, cx| app.read(cx).session_details_open));
     assert_eq!(
         cx.update(|_, cx| app.read(cx).session_name_input.read(cx).text().to_string()),
         "Fix the sidebar",
         "the field starts from the live title"
     );
 
-    cx.update(|window, cx| {
-        app.update(cx, |app, cx| app.cancel_session_name_edit(window, cx));
-    });
-    assert!(!cx.update(|_, cx| app.read(cx).session_name_editing));
-
-    cx.update(|window, cx| {
+    cx.update(|_, cx| {
         app.update(cx, |app, cx| {
-            app.begin_session_name_edit(window, cx);
-            app.close_session_details(cx);
-            app.open_session_details(cx);
+            app.session_name_input
+                .update(cx, |field, cx| field.set_text("Draft", cx));
+            app.session_name = Some("New live title".into());
+            app.seed_session_name_input(cx);
+            assert_eq!(app.session_name_input.read(cx).text(), "Draft");
+            app.cancel_session_name_edit(cx);
+            assert_eq!(app.session_name_input.read(cx).text(), "New live title");
+            assert!(!app.session_name_editing);
         });
     });
-    assert!(
-        !cx.update(|_, cx| app.read(cx).session_name_editing),
-        "a reopened panel shows the title, not a stale edit"
-    );
 }
 
-/// The palette's Rename Session lands straight in the rename field.
 #[gpui::test]
-fn palette_rename_opens_the_panel_in_edit_mode(cx: &mut gpui::TestAppContext) {
+fn palette_rename_focusses_the_dialog_without_opening_the_dock(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(theme::ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let (app, cx) = cx.add_window_view(|_, cx| {
+        let mut app = OrbitApp::new(cx);
+        app.session_id = Some("abc".into());
+        app.session_name = Some("Original title".into());
+        app
+    });
+    cx.run_until_parked();
+    app.update_in(cx, |app, window, cx| {
+        app.input.read(cx).focus(window);
+        app.begin_session_rename(window, cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(!app.session_details_open);
+        assert!(app
+            .session_name_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window));
+    });
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| app.read(cx).modal_cancel_focus.is_focused(window)));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let app = app.read(cx);
+        assert!(!app.session_name_editing);
+        assert_eq!(app.session_name.as_deref(), Some("Original title"));
+        assert!(app.input.read(cx).focus_handle(cx).is_focused(window));
+    });
+
+    app.update_in(cx, |app, window, cx| {
+        app.slash_commands.push(SlashCommand {
+            name: "generate-title".into(),
+            description: String::new(),
+            scope: crate::mentions::CommandScope::Orbit,
+        });
+        app.begin_session_rename(window, cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("session-rename-generate-title").is_some());
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| app.read(cx).rename_generate_focus.is_focused(window)));
+    cx.simulate_keystrokes("shift-tab shift-tab");
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| app.read(cx).rename_close_focus.is_focused(window)));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(!cx.update(|_, cx| app.read(cx).session_name_editing));
+}
+
+#[gpui::test]
+fn session_rename_generation_refreshes_only_the_unchanged_draft(cx: &mut gpui::TestAppContext) {
     let (app, cx) = new_app(cx);
     cx.update(|window, cx| {
-        app.update(cx, |app, cx| app.begin_session_rename(window, cx));
+        app.update(cx, |app, cx| {
+            app.session_id = Some("abc".into());
+            app.session_name = Some("Original".into());
+            app.begin_session_rename(window, cx);
+            app.title_generation = Some(TitleGeneration {
+                request_id: "title-request".into(),
+                rename_draft: Some("Original".into()),
+            });
+            app.apply_title_to_rename_draft("Generated title", cx);
+            assert_eq!(app.session_name_input.read(cx).text(), "Generated title");
+
+            app.title_generation.as_mut().unwrap().rename_draft = Some("Generated title".into());
+            app.session_name_input
+                .update(cx, |input, cx| input.set_text("New draft", cx));
+            app.apply_title_to_rename_draft("Another generated title", cx);
+            assert_eq!(app.session_name_input.read(cx).text(), "New draft");
+
+            let mut refresh = false;
+            app.on_response("prompt", true, None, None, "other-prompt", &mut refresh, cx);
+            assert!(app.title_generation.is_some());
+            app.on_response(
+                "prompt",
+                true,
+                None,
+                None,
+                "title-request",
+                &mut refresh,
+                cx,
+            );
+            assert!(app.title_generation.is_none());
+        });
     });
-    assert!(cx.update(|_, cx| app.read(cx).session_details_open));
-    assert!(cx.update(|_, cx| app.read(cx).session_name_editing));
+}
+
+#[gpui::test]
+fn project_rename_dialog_fits_a_long_folder_name_at_max_ui_size(cx: &mut gpui::TestAppContext) {
+    let (app, cx) = new_app(cx);
+    cx.update(|window, cx| {
+        let mut theme = *theme::get(cx);
+        theme.ui.ui_font_size = *theme::FONT_SIZES.last().unwrap();
+        theme.ui.spacing_density = *theme::SPACING_DENSITIES.last().unwrap();
+        theme.ui.motion = theme::MotionPreference::Reduced;
+        cx.set_global(theme);
+        app.update(cx, |app, cx| {
+            let label = "A long original project folder name ".repeat(6);
+            app.workspace_menu = Some(WorkspaceMenu {
+                cwd: PathBuf::from(&label),
+                label: label.clone(),
+                at: None,
+                picker: false,
+                can_move_up: false,
+                can_move_down: false,
+                cursor: Default::default(),
+            });
+            app.on_workspace_rename(window, cx);
+            assert_eq!(
+                app.project_rename.as_ref().unwrap().input.read(cx).text(),
+                label
+            );
+        });
+    });
+    let _ = cx.draw(
+        gpui::point(px(0.), px(0.)),
+        gpui::size(px(960.), px(640.)),
+        |_, _| app.clone(),
+    );
+    let card = cx.debug_bounds("project-rename-card").unwrap();
+    let header = cx.debug_bounds("project-rename-header").unwrap();
+    let field = cx.debug_bounds("project-rename-field").unwrap();
+    let footer = cx.debug_bounds("project-rename-actions").unwrap();
+    assert!(header.bottom() <= field.top() + px(1.));
+    assert!(field.bottom() <= footer.top() + px(1.));
+    assert!(
+        footer.bottom() <= card.bottom() + px(1.),
+        "footer {footer:?} vs card {card:?}, header {header:?}, field {field:?}"
+    );
+    assert!(
+        card.top() >= px(0.) && card.bottom() <= px(640.),
+        "{card:?}"
+    );
 }
 
 /// A new task has nothing to describe: the chip is hidden and a panel left

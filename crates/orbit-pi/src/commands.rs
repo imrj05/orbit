@@ -65,6 +65,9 @@ pub enum CommandId {
     PrevTurn,
     NextTurn,
     CopyLastResponse,
+    /// The transcript selection's menu (Quote in Composer, copy) from the
+    /// keyboard. Help-only: it needs a selection, which the palette cannot see.
+    OpenSelectionMenu,
     ToggleUsage,
     ReviewChanges,
     OpenGit,
@@ -528,6 +531,16 @@ pub static COMMANDS: &[CommandSpec] = &[
             "copy last response answer message",
         ),
         shortcuts::COPY_LAST_RESPONSE,
+    ),
+    with_chord(
+        help_only(command(
+            CommandId::OpenSelectionMenu,
+            Navigation,
+            "icons/compose.svg",
+            "shortcut.selection_menu",
+            "selection menu quote composer copy transcript context",
+        )),
+        shortcuts::SELECTION_MENU,
     ),
     with_chord(
         command(
@@ -1067,6 +1080,13 @@ pub static BINDINGS: &[Binding] = &[
         context: None,
         id: CommandId::CopyLastResponse,
     },
+    // Registered before the literal keymap in `bind_keys`, so the sidebar's
+    // own `shift-f10` (its row menu) wins inside the sidebar by order.
+    Binding {
+        chord: shortcuts::SELECTION_MENU,
+        context: None,
+        id: CommandId::OpenSelectionMenu,
+    },
     Binding {
         chord: shortcuts::CHECK_UPDATES,
         context: None,
@@ -1233,6 +1253,7 @@ pub fn tooltip(id: CommandId, alternate: bool) -> String {
 fn action_binding(binding: &Binding) -> Option<KeyBinding> {
     use crate::{
         AbortRun, CheckForUpdates, CloseTerminalTab, CopyLastResponse, FocusSessionSearch,
+        OpenSelectionMenu,
         FocusSessions, GitTabChanges, GitTabGraph, GitTabHistory, GitTabIssues, GitTabPulls,
         GitTabStashes, NewSession, NewTerminalTab, NextSession, NextTerminalTab, NextTurn, OpenGit,
         OpenSessionSlot, OpenSettings, OpenShortcutHelp, PrevSession, PrevTerminalTab, PrevTurn,
@@ -1274,6 +1295,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::PrevTurn => KeyBinding::new(chord, PrevTurn, context),
         CommandId::NextTurn => KeyBinding::new(chord, NextTurn, context),
         CommandId::CopyLastResponse => KeyBinding::new(chord, CopyLastResponse, context),
+        CommandId::OpenSelectionMenu => KeyBinding::new(chord, OpenSelectionMenu, context),
         CommandId::CheckForUpdates => KeyBinding::new(chord, CheckForUpdates, context),
         CommandId::ToggleTerminal => KeyBinding::new(chord, ToggleTerminal, context),
         CommandId::NewTerminalTab => KeyBinding::new(chord, NewTerminalTab, context),

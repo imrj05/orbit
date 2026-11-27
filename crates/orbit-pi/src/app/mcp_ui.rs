@@ -803,18 +803,13 @@ impl OrbitApp {
     }
 
     pub(super) fn mcp_request_remove(&mut self, name: String, cx: &mut Context<Self>) {
-        self.mcp_remove_confirm = Some(name);
-        cx.notify();
-    }
-
-    pub(super) fn mcp_cancel_remove(&mut self, cx: &mut Context<Self>) {
-        if self.mcp_remove_confirm.take().is_some() {
-            cx.notify();
-        }
+        self.request_confirm(
+            super::confirm_ui::PendingConfirm::RemoveMcpServer { name },
+            cx,
+        );
     }
 
     pub(super) fn mcp_confirm_remove(&mut self, name: String, cx: &mut Context<Self>) {
-        self.mcp_remove_confirm = None;
         match self.mcp.remove(&name) {
             Ok(()) => {
                 self.toast_success(tr!("mcp.removed_toast", name = name));
@@ -1384,7 +1379,6 @@ impl OrbitApp {
         let runtime = self.mcp.runtime(&name);
         let status = runtime.status;
         let selected = self.mcp_cursor == Some(server.name.clone());
-        let confirming = self.mcp_remove_confirm.as_deref() == Some(server.name.as_str());
         let pending = self
             .mcp_auth
             .as_ref()
@@ -1567,113 +1561,88 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(mcp_status_pill(&server.name, status, theme));
 
-        if confirming {
+        if pending {
+            // Pi is waiting on the browser: show the wait and a way out.
             right = right.child(
                 div()
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base06.px(&theme))
+                    .child(spinner(
+                        ElementId::Name(format!("mcp-auth-{name}").into()),
+                        IconSize::XSmall.px(&theme),
+                        theme.accent_text,
+                        theme,
+                    ))
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(tr!("mcp.waiting_for_browser")),
+                    )
                     .child(mcp_text_button(
-                        format!("mcp-remove-cancel-{name}"),
+                        format!("mcp-auth-cancel-{name}"),
                         tr!("mcp.cancel"),
                         theme,
                         false,
                         this.clone(),
-                        move |app, _, cx| app.mcp_cancel_remove(cx),
-                    ))
-                    .child(mcp_text_button(
-                        format!("mcp-remove-confirm-{name}"),
-                        tr!("mcp.remove"),
-                        theme,
-                        true,
-                        this.clone(),
-                        move |app, _, cx| app.mcp_confirm_remove(name.clone(), cx),
+                        move |app, _, cx| app.mcp_cancel_sign_in(cx),
                     )),
             );
         } else {
-            if pending {
-                // Pi is waiting on the browser: show the wait and a way out.
-                right = right.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .child(spinner(
-                            ElementId::Name(format!("mcp-auth-{name}").into()),
-                            IconSize::XSmall.px(&theme),
-                            theme.accent_text,
-                            theme,
-                        ))
-                        .child(
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(tr!("mcp.waiting_for_browser")),
-                        )
-                        .child(mcp_text_button(
-                            format!("mcp-auth-cancel-{name}"),
-                            tr!("mcp.cancel"),
-                            theme,
-                            false,
-                            this.clone(),
-                            move |app, _, cx| app.mcp_cancel_sign_in(cx),
-                        )),
-                );
-            } else {
-                // The one contextual auth action: a server Pi reported as
-                // needing a sign-in gets its button right where the state is.
-                if status == McpServerStatus::NeedsAuth {
-                    let name_sign_in = name.clone();
-                    right = right.child(mcp_text_button(
-                        format!("mcp-sign-in-{name}"),
-                        tr!("mcp.sign_in"),
-                        theme,
-                        true,
-                        this.clone(),
-                        move |app, _, cx| app.mcp_sign_in(name_sign_in.clone(), cx),
-                    ));
-                }
-                let name_toggle = name.clone();
-                let name_test = name.clone();
-                let name_edit = name.clone();
-                let name_remove = name.clone();
-                let actions = div()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base06.px(&theme))
-                    .child(mcp_switch(
-                        format!("mcp-enable-{name}"),
-                        server.def.enabled,
-                        theme,
-                        this.clone(),
-                        move |app, cx| app.mcp_toggle_server(name_toggle.clone(), cx),
-                    ))
-                    .child(mcp_icon_action(
-                        format!("mcp-test-{name}"),
-                        "icons/refresh.svg",
-                        tr!("mcp.test_connection"),
-                        theme,
-                        this.clone(),
-                        move |app, _, cx| app.mcp_test_server(name_test.clone(), cx),
-                    ))
-                    .child(mcp_icon_action(
-                        format!("mcp-edit-{name}"),
-                        "icons/pencil.svg",
-                        tr!("mcp.edit"),
-                        theme,
-                        this.clone(),
-                        move |app, window, cx| app.mcp_edit(&name_edit, window, cx),
-                    ))
-                    .child(mcp_icon_action(
-                        format!("mcp-delete-{name}"),
-                        "icons/trash.svg",
-                        tr!("mcp.delete"),
-                        theme,
-                        this.clone(),
-                        move |app, _, cx| app.mcp_request_remove(name_remove.clone(), cx),
-                    ));
-                right = right.child(actions);
+            // The one contextual auth action: a server Pi reported as
+            // needing a sign-in gets its button right where the state is.
+            if status == McpServerStatus::NeedsAuth {
+                let name_sign_in = name.clone();
+                right = right.child(mcp_text_button(
+                    format!("mcp-sign-in-{name}"),
+                    tr!("mcp.sign_in"),
+                    theme,
+                    true,
+                    this.clone(),
+                    move |app, _, cx| app.mcp_sign_in(name_sign_in.clone(), cx),
+                ));
             }
+            let name_toggle = name.clone();
+            let name_test = name.clone();
+            let name_edit = name.clone();
+            let name_remove = name.clone();
+            let actions = div()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(mcp_switch(
+                    format!("mcp-enable-{name}"),
+                    server.def.enabled,
+                    theme,
+                    this.clone(),
+                    move |app, cx| app.mcp_toggle_server(name_toggle.clone(), cx),
+                ))
+                .child(mcp_icon_action(
+                    format!("mcp-test-{name}"),
+                    "icons/refresh.svg",
+                    tr!("mcp.test_connection"),
+                    theme,
+                    this.clone(),
+                    move |app, _, cx| app.mcp_test_server(name_test.clone(), cx),
+                ))
+                .child(mcp_icon_action(
+                    format!("mcp-edit-{name}"),
+                    "icons/pencil.svg",
+                    tr!("mcp.edit"),
+                    theme,
+                    this.clone(),
+                    move |app, window, cx| app.mcp_edit(&name_edit, window, cx),
+                ))
+                .child(mcp_icon_action(
+                    format!("mcp-delete-{name}"),
+                    "icons/trash.svg",
+                    tr!("mcp.delete"),
+                    theme,
+                    this.clone(),
+                    move |app, _, cx| app.mcp_request_remove(name_remove.clone(), cx),
+                ));
+            right = right.child(actions);
         }
         row = row.child(right);
         row.into_any_element()

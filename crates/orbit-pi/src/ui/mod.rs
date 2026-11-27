@@ -33,6 +33,7 @@ pub(crate) mod card;
 pub(crate) mod chip;
 pub(crate) mod choice;
 pub(crate) mod chrome;
+pub(crate) mod confirm;
 pub(crate) mod dialog;
 pub(crate) mod diff;
 pub(crate) mod feedback;

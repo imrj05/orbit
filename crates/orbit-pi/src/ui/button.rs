@@ -50,7 +50,7 @@ pub(crate) enum ButtonVariant {
     /// No fill and no hairline; the wash appears under the pointer only.
     Ghost,
     /// The confirming action of an irreversible step (Delete, in the
-    /// confirmation that asked): the error fill with its own foreground.
+    /// confirmation that asked): a soft error fill with contrast-checked ink.
     /// Reserve it for the confirm itself — the entry that opens the
     /// confirmation stays [`Self::Danger`].
     Destructive,
@@ -71,9 +71,35 @@ impl ButtonVariant {
             Self::Outline => theme.text_primary,
             Self::Tinted => theme.accent_text,
             Self::Danger => theme.error,
-            Self::Destructive => theme.error_fg,
+            Self::Destructive => destructive_ink(theme),
             Self::Glass => theme.text_secondary,
         }
+    }
+}
+
+fn destructive_face(theme: &Theme, hover: bool) -> Hsla {
+    let alpha = match theme.mode {
+        crate::theme::ThemeMode::Dark => 0.20,
+        crate::theme::ThemeMode::Light => 0.10,
+    };
+    // Composite onto the palette first so the ink contrast is independent of
+    // the wallpaper visible through the dialog.
+    theme.surface_elevated.blend(
+        theme
+            .error
+            .opacity(if hover { alpha + 0.10 } else { alpha }),
+    )
+}
+
+fn destructive_ink(theme: &Theme) -> Hsla {
+    let contrast = crate::theme::appearance::contrast;
+    if [false, true]
+        .into_iter()
+        .all(|hover| contrast(theme.error, destructive_face(theme, hover)) >= 4.5)
+    {
+        theme.error
+    } else {
+        theme.text_primary
     }
 }
 
@@ -126,8 +152,8 @@ fn variant_treatment<E: Styled + StatefulInteractiveElement>(
         ButtonVariant::Destructive => press(
             el.border_1()
                 .border_color(gpui::transparent_black())
-                .raised(theme.error, theme)
-                .text_color(theme.error_fg),
+                .raised(destructive_face(theme, false), theme)
+                .text_color(destructive_ink(theme)),
         ),
         ButtonVariant::Glass => press(
             el.border_1()
@@ -147,7 +173,7 @@ fn hover_swap<E: Styled + InteractiveElement>(el: E, theme: &Theme, variant: But
         ButtonVariant::Outline => el.hover_face_bordered(theme, theme.surface_elevated),
         ButtonVariant::Tinted => el.hover_accent_wash(theme, AccentWash::Faint),
         ButtonVariant::Danger => el.hover_danger_soft(theme),
-        ButtonVariant::Destructive => el.hover_danger(theme),
+        ButtonVariant::Destructive => el,
         ButtonVariant::Glass => el.hover_overlay_strong(theme),
     }
 }
@@ -164,7 +190,11 @@ impl ButtonVariant {
                 theme.face_hover(theme.surface_elevated),
             )),
             Self::Ghost => Some(Hover::wash(theme)),
-            Self::Tinted | Self::Danger | Self::Destructive | Self::Glass => None,
+            Self::Destructive => Some(Hover::fill(
+                destructive_face(theme, false),
+                destructive_face(theme, true),
+            )),
+            Self::Tinted | Self::Danger | Self::Glass => None,
         }
     }
 }
@@ -1196,6 +1226,21 @@ mod tests {
                 closed.is_none_or(|fill| fill.a == 0.),
                 "{variant:?} rests unfilled"
             );
+        }
+    }
+
+    #[test]
+    fn destructive_confirmation_ink_is_readable_on_every_palette() {
+        for id in crate::theme::ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let ink = ButtonVariant::Destructive.ink(&theme);
+            for hover in [false, true] {
+                let face = destructive_face(&theme, hover);
+                assert!(
+                    crate::theme::appearance::contrast(ink, face) >= 4.5,
+                    "{id:?}, hover={hover}"
+                );
+            }
         }
     }
 

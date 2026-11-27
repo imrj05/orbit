@@ -319,6 +319,26 @@ impl OrbitApp {
         let from_message = self.rewind_preselect.is_some();
         let preselect = self.preselect_for(self.rewind_preselect, &points);
         self.rewind_preselect = None;
+        if from_message && self.rewind_intent == ForkIntent::Edit && !self.is_running() {
+            if let Some(entry_id) = preselect.clone() {
+                // This reply arrives on the heartbeat, outside a window callback.
+                // Restore focus before dropping the loading picker.
+                let opener = self.rewind_return_focus.take();
+                let fallback = self.input.read(cx).focus_handle(cx);
+                if let Some(window) = cx.windows().into_iter().next() {
+                    cx.defer(move |cx| {
+                        let _ = cx.update_window(window, |_, window, _| {
+                            window.focus(opener.as_ref().unwrap_or(&fallback));
+                        });
+                    });
+                }
+                self.request_rewind(entry_id, cx);
+                return;
+            }
+        }
+        if from_message && self.rewind_intent == ForkIntent::Edit && self.is_running() {
+            self.toast_warning(tr!("rewind.stop_first"));
+        }
         if self.rewind_intent == ForkIntent::Regenerate {
             match preselect {
                 Some(entry_id) => self.request_rewind(entry_id, cx),
@@ -422,6 +442,7 @@ impl OrbitApp {
                 && self.attachments.is_empty()
                 && self.files.is_empty()
                 && self.pasted_texts.is_empty()
+                && self.annotations.is_empty()
         };
 
         self.execution = SessionExecution::default();

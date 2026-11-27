@@ -38,6 +38,7 @@ macro_rules! tr_cow {
 
 mod access;
 mod agent_call_display;
+mod annotation;
 mod app;
 mod app_icon;
 mod archive;
@@ -202,6 +203,7 @@ actions!(
         ToggleModelMenu,
         ToggleThinkingMenu,
         CopyLastResponse,
+        OpenSelectionMenu,
         PrevTurn,
         NextTurn,
         CheckForUpdates,
@@ -388,6 +390,21 @@ actions!(
 // bindings so Enter saves the edited message instead of submitting the
 // composer, and Escape closes the field instead of aborting the run.
 actions!(queue_edit_keys, [QueueEditConfirm, QueueEditCancel]);
+
+// A quote's comment field above the composer (issue #187; bound to the
+// `AnnotationComment` context on its card, which the field's `Composer`
+// context sits under). Registered after the Composer bindings so Enter keeps
+// the comment instead of submitting, Escape undoes the edit instead of
+// aborting the run, and Backspace in an empty field removes the quote (it
+// passes the key on to the field while there is text to delete).
+actions!(
+    annotation_comment_keys,
+    [
+        AnnotationCommentConfirm,
+        AnnotationCommentCancel,
+        AnnotationCommentBackspace
+    ]
+);
 
 // Sessions-sidebar keyboard navigation (bound to the `Sidebar` context, which
 // rides the sidebar's focus handle while it is keyboard-focused). Arrow keys
@@ -658,6 +675,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         // message and Escape closes the field (issue #79).
         KeyBinding::new("enter", QueueEditConfirm, Some("QueueEdit")),
         KeyBinding::new("escape", QueueEditCancel, Some("QueueEdit")),
+        // A quote's comment field: the same shape as the queue edit.
+        KeyBinding::new("enter", AnnotationCommentConfirm, Some("AnnotationComment")),
+        KeyBinding::new("escape", AnnotationCommentCancel, Some("AnnotationComment")),
+        KeyBinding::new("backspace", AnnotationCommentBackspace, Some("AnnotationComment")),
         // Git commit message. The field carries `Composer GitCommitMessage`,
         // so caret/clipboard keys stay live; Enter inserts a newline (a commit
         // message is edited, not sent) and the primary modifier + Enter
@@ -806,6 +827,12 @@ fn main() {
     // the app quits; it must run before any GPUI setup.
     if let Some(code) = updater::run_install_helper() {
         std::process::exit(code);
+    }
+    // One instance per session: a second launch (a desktop shortcut, a
+    // double-clicked exe) raises the running window and exits, so two agents
+    // never share one session store (#173).
+    if !platform::claim_single_instance() {
+        return;
     }
 
     let mut application = Application::new().with_assets(assets::Assets);

@@ -49,6 +49,7 @@ use crate::theme::tokens::{
 use crate::theme::{self, Theme, ThemeMode};
 use crate::ui::banner::{Banner, BannerTone};
 use crate::ui::button::IconButton;
+use crate::ui::confirm::ConfirmPrompt;
 use crate::ui::feedback::{empty_state_with_action, EmptyFill};
 use crate::ui::field::TextField;
 use crate::ui::popover::{dropdown_above, dropdown_below, DropdownAlign};
@@ -300,6 +301,13 @@ pub struct GitPanel {
     selected_commit: Option<String>,
     /// Focus for the History / Issues / Pull requests list (`GitList`).
     list_focus: FocusHandle,
+    /// The confirm prompt's two footer stops. Cancel takes the keyboard when
+    /// a prompt opens; Tab then reaches the destructive button.
+    confirm_cancel_focus: FocusHandle,
+    confirm_ok_focus: FocusHandle,
+    /// Whether the last frame showed a confirm prompt, so opening one can
+    /// hand the keyboard to Cancel instead of leaving it on the page behind.
+    confirm_showing: bool,
     /// The keyboard cursor in the active tab's list. Separate from the
     /// selection: opening a row runs `git` or `gh`, so stepping through rows
     /// only moves this, and Enter opens.
@@ -646,6 +654,9 @@ impl GitPanel {
             commit_github: HashMap::new(),
             selected_commit: None,
             list_focus: cx.focus_handle().tab_stop(true),
+            confirm_cancel_focus: cx.focus_handle().tab_stop(true),
+            confirm_ok_focus: cx.focus_handle().tab_stop(true),
+            confirm_showing: false,
             list_cursor: None,
             list_focused: false,
             list_scroll: ScrollHandle::new(),
@@ -8288,7 +8299,26 @@ impl GitPanel {
     }
 
     /// The confirmation for a destructive recovery action (force push, abort).
-    fn confirm_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn confirm_popup(
+        &mut self,
+        theme: Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        // Opening hands the keyboard to Cancel; closing gives it back to the
+        // list, so Escape and Enter keep working in both directions.
+        let showing = self.pending_confirm.is_some();
+        if showing != self.confirm_showing {
+            self.confirm_showing = showing;
+            if showing {
+                window.focus(&self.confirm_cancel_focus);
+            } else {
+                window.focus(&self.list_focus);
+            }
+        }
+        if !showing {
+            return None;
+        }
         let theme = theme.for_floating();
         let confirm = self.pending_confirm.clone()?;
         let (title, body, confirm_label) = match confirm {
@@ -8330,78 +8360,20 @@ impl GitPanel {
                 tr!("git_panel.discard"),
             ),
         };
-        let card = div()
-            .debug_selector(|| "git-confirm-card".into())
-            // Give GPUI a definite width when measuring wrapped text. A
-            // percentage width capped by max_w measures at the wider parent
-            // width, leaving the footer outside the painted card.
-            .w(px(420.))
-            .max_w_full()
-            .elevation_2(&theme)
-            .p(DynamicSpacing::Base16.px(&theme))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base12.px(&theme))
-            .dismiss_on_outside(
-                cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
-            )
-            .child(
-                div()
-                    .debug_selector(|| "git-confirm-title".into())
-                    .text_size(TextSize::Default.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_primary)
-                    .child(title),
-            )
-            .child(
-                div()
-                    .debug_selector(|| "git-confirm-body".into())
-                    .text_size(TextSize::Small.px(&theme))
-                    .line_height(theme.ui_px(17.))
-                    .text_color(theme.text_secondary)
-                    .whitespace_normal()
-                    .child(body),
-            )
-            .child(
-                div()
-                    .debug_selector(|| "git-confirm-actions".into())
-                    .mt(DynamicSpacing::Base02.px(&theme))
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_end()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .child(action_button(
-                        "git-confirm-cancel",
-                        &tr!("git_panel.cancel"),
-                        None,
-                        false,
-                        false,
-                        theme,
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_modal(cx)),
-                    ))
-                    .child(action_button(
-                        "git-confirm-ok",
-                        &confirm_label,
-                        None,
-                        true,
-                        false,
-                        theme,
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.confirm_pending(cx)),
-                    )),
-            );
+        let this = cx.entity();
+        let cancel = this.clone();
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .px(DynamicSpacing::Base16.px(&theme))
-                .bg(theme.scrim())
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(card)
+            ConfirmPrompt::new("git-confirm", title)
+                .body(body)
+                .confirm_label(confirm_label)
+                .cancel_label(tr!("git_panel.cancel"))
+                .width(px(420.))
+                .focus(&self.confirm_cancel_focus, &self.confirm_ok_focus)
+                .on_confirm(move |_, cx| {
+                    this.update(cx, |panel, cx| panel.confirm_pending(cx))
+                })
+                .on_cancel(move |_, cx| cancel.update(cx, |panel, cx| panel.dismiss_modal(cx)))
+                .layer(&theme)
                 .into_any_element(),
         )
     }
@@ -8466,7 +8438,7 @@ impl Render for GitPanel {
             .children(self.branch_menu(theme, cx))
             .children(self.file_actions_menu(theme, cx))
             .children(self.stage_prompt_popup(theme, cx))
-            .children(self.confirm_popup(theme, cx))
+            .children(self.confirm_popup(theme, window, cx))
             .children(self.branch_prompt_popup(theme, cx))
             .into_any_element()
     }
@@ -11125,10 +11097,10 @@ mod tests {
     struct ConfirmPopupProbe(Entity<GitPanel>);
 
     impl Render for ConfirmPopupProbe {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let popup = self
                 .0
-                .update(cx, |panel, cx| panel.confirm_popup(*theme::get(cx), cx));
+                .update(cx, |panel, cx| panel.confirm_popup(*theme::get(cx), window, cx));
             div().size_full().relative().children(popup)
         }
     }
@@ -11138,6 +11110,10 @@ mod tests {
         use crate::theme::ThemeId;
 
         cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        // The prompt arrives with an entrance; this test measures where it
+        // lands, so the reduced-motion path (arrived state, no animation
+        // element) is the one whose bounds are worth asserting.
+        crate::theme::set_os_reduce_motion_for_test(true);
         let panel = cx.update(|cx| cx.new(GitPanel::new));
         let cx = cx.add_empty_window();
         let mut short_card_height = px(0.);
@@ -11162,19 +11138,20 @@ mod tests {
                 cx.new(|_| ConfirmPopupProbe(panel.clone()))
             });
             let card = cx.debug_bounds("git-confirm-card").unwrap();
-            let title = cx.debug_bounds("git-confirm-title").unwrap();
-            let body = cx.debug_bounds("git-confirm-body").unwrap();
+            // The question and the consequence share the header, so the
+            // header block is what the footer has to clear.
+            let header = cx.debug_bounds("git-confirm-title").unwrap();
             let actions = cx.debug_bounds("git-confirm-actions").unwrap();
+            // A sub-pixel of rounding between the header's hairline and the
+            // footer is not an overlap.
             assert!(
-                body.top() >= title.bottom(),
-                "title {title:?}, body {body:?}"
+                actions.top() + px(1.) >= header.bottom(),
+                "header {header:?}, actions {actions:?}"
             );
+            // A wrapped body must never push the footer past the card's
+            // edge: the footer is the card's last row, not a floating one.
             assert!(
-                actions.top() >= body.bottom(),
-                "body {body:?}, actions {actions:?}"
-            );
-            assert!(
-                actions.bottom() + px(16.) <= card.bottom(),
+                actions.bottom() <= card.bottom() + px(1.),
                 "width {width}, card {card:?}, actions {actions:?}"
             );
             assert!(card.size.width <= px(width - 32.));
@@ -11184,6 +11161,7 @@ mod tests {
                 assert!(card.size.height > short_card_height);
             }
         }
+        crate::theme::set_os_reduce_motion_for_test(false);
     }
 
     struct GithubHeaderProbe;

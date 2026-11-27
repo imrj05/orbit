@@ -304,10 +304,8 @@ fn leaving_the_section_discards_the_form(cx: &mut gpui::TestAppContext) {
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             app.remote_host_add(window, cx);
-            app.remote_host_remove_confirm = Some("alpha".into());
             app.set_settings_section(SettingsSection::General, cx);
             assert!(app.remote_host_editor.is_none());
-            assert!(app.remote_host_remove_confirm.is_none());
         })
     });
 }

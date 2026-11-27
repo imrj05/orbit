@@ -5,7 +5,7 @@
 
 use gpui::{
     div, App, FocusHandle, FontWeight, InteractiveElement, MouseButton, ParentElement, Pixels,
-    SharedString, Styled, Window,
+    SharedString, StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::theme::{
@@ -100,6 +100,8 @@ pub(crate) struct ModalHeader {
     leading: Option<gpui::AnyElement>,
     trailing: Option<gpui::AnyElement>,
     divider: bool,
+    centered: bool,
+    heading_selector: Option<SharedString>,
 }
 
 impl ModalHeader {
@@ -112,7 +114,16 @@ impl ModalHeader {
             leading: None,
             trailing: None,
             divider: true,
+            centered: false,
+            heading_selector: None,
         }
+    }
+
+    /// Name the text column for tests: the frame's own selector cannot say
+    /// where the title starts, and a header's alignment is exactly that.
+    pub(crate) fn heading_selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.heading_selector = Some(selector.into());
+        self
     }
 
     /// A quiet line above the title: what is asking ("Question").
@@ -142,6 +153,12 @@ impl ModalHeader {
         self
     }
 
+    /// Stack the media, title and description on the same center axis.
+    pub(crate) fn centered(mut self) -> Self {
+        self.centered = true;
+        self
+    }
+
     /// A control after the text (a close button).
     pub(crate) fn trailing(mut self, trailing: impl gpui::IntoElement) -> Self {
         self.trailing = Some(trailing.into_any_element());
@@ -156,7 +173,7 @@ impl ModalHeader {
     }
 
     pub(crate) fn render(self, theme: &Theme) -> gpui::Div {
-        let text = div()
+        let mut text = div()
             .flex_1()
             .min_w_0()
             .flex()
@@ -198,17 +215,30 @@ impl ModalHeader {
                     .text_color(theme.text_secondary)
                     .child(description)
             }));
-        let frame = div()
-            .px(modal::header_padding_x(theme))
-            .pt(modal::header_padding_top(theme))
-            .pb(modal::header_padding_bottom(theme))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base12.px(theme))
-            .children(self.leading)
-            .child(text)
-            .children(self.trailing);
+        if let Some(selector) = self.heading_selector {
+            text = text.debug_selector(move || selector.to_string());
+        }
+        let frame = div().flex_none().flex();
+        let frame = if self.centered {
+            frame
+                .flex_col()
+                .items_center()
+                .gap(DynamicSpacing::Base16.px(theme))
+                .p(DynamicSpacing::Base16.px(theme))
+                .children(self.leading)
+                .child(text.w_full().flex_none().text_center())
+                .children(self.trailing)
+        } else {
+            frame
+                .px(modal::header_padding_x(theme))
+                .pt(modal::header_padding_top(theme))
+                .pb(modal::header_padding_bottom(theme))
+                .items_center()
+                .gap(DynamicSpacing::Base12.px(theme))
+                .children(self.leading)
+                .child(text)
+                .children(self.trailing)
+        };
         if self.divider {
             frame.border_b_1().border_color(theme.hairline())
         } else {
@@ -231,6 +261,73 @@ pub(crate) fn modal_footer(theme: &Theme) -> gpui::Div {
         .gap(modal::footer_gap(theme))
         .border_t_1()
         .border_color(theme.hairline())
+}
+
+/// A form's left-aligned heading, with no rule between its copy and fields.
+/// The optional close control stays at the top right even when the copy wraps.
+pub(crate) fn form_dialog_header(
+    theme: &Theme,
+    title: impl Into<SharedString>,
+    subtitle: Option<ModalSubtitle>,
+    close: Option<gpui::AnyElement>,
+) -> gpui::Div {
+    let inset = DynamicSpacing::Base16.px(theme);
+    let header = ModalHeader::new(title).divider(false);
+    let header = match subtitle {
+        Some(ModalSubtitle::Text(description)) => header.description(description),
+        Some(id @ ModalSubtitle::Id(_)) => header.subtitle(id),
+        None => header,
+    };
+    let close_width = if close.is_some() {
+        crate::theme::tokens::ButtonSize::Medium.height(theme)
+    } else {
+        gpui::px(0.)
+    };
+    header
+        .render(theme)
+        .relative()
+        .pl(inset)
+        .pr(inset + close_width)
+        .pt(inset)
+        .pb_0()
+        .children(close)
+}
+
+/// The form's top-right dismiss control, backed by the same action as Cancel.
+pub(crate) fn form_dialog_close(
+    id: impl Into<gpui::ElementId>,
+    theme: &Theme,
+    handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> crate::motion::Hovered<gpui::Stateful<gpui::Div>> {
+    let inset = DynamicSpacing::Base08.px(theme);
+    crate::ui::button::IconButton::new(id, "icons/x.svg")
+        .size(crate::theme::tokens::ButtonSize::Medium)
+        .tip(tr!("common.close"))
+        .on_click(theme, handler)
+        .absolute()
+        .top(inset)
+        .right(inset)
+}
+
+/// Scroll only the fields, keeping the header and actions outside the viewport.
+pub(crate) fn form_dialog_body(
+    theme: &Theme,
+    id: impl Into<gpui::ElementId>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .min_w_0()
+        .min_h_0()
+        .overflow_y_scroll()
+        .p(DynamicSpacing::Base16.px(theme))
+}
+
+/// The inset action band used by editable forms, not by destructive alerts.
+pub(crate) fn form_dialog_footer(theme: &Theme) -> gpui::Div {
+    modal_footer(theme)
+        .p(DynamicSpacing::Base16.px(theme))
+        .bg(theme.overlay)
+        .flex_wrap()
 }
 
 /// A modal footer's button as a keyboard stop: a [`Button`] tracking `focus`,

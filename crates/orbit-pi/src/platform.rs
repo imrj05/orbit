@@ -1067,6 +1067,9 @@ pub mod shortcuts {
     pub const PREV_TURN: &str = "secondary-up";
     pub const NEXT_TURN: &str = "secondary-down";
     pub const COPY_LAST_RESPONSE: &str = "secondary-shift-c";
+    /// The transcript selection's menu, from the keyboard. The platform
+    /// context-menu key; the sidebar's own row menu wins inside the sidebar.
+    pub const SELECTION_MENU: &str = "shift-f10";
     pub const CHECK_UPDATES: &str = "secondary-shift-u";
     pub const QUIT: &str = "secondary-q";
     pub const CHOOSE_MODEL: &str = "secondary-shift-m";
@@ -2147,6 +2150,85 @@ fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
 
 /// Copy one clipboard format out and close the clipboard before decoding, so a
 /// slow PNG encode does not keep the clipboard locked.
+/// The title every window of this build carries (`main_window`'s
+/// `TitlebarOptions`), which is how a second launch finds the first.
+#[cfg(windows)]
+const WINDOW_TITLE: &str = "Orbit Pi";
+
+/// Whether this process should run: one instance per session, so a desktop
+/// shortcut brings the running window forward instead of starting a second
+/// agent. `false` means another instance held the slot, was asked to show its
+/// window, and this process should exit.
+///
+/// The claim is a named mutex; its handle is never closed, so the slot is held
+/// for the life of the process (closing it would let the next launch start a
+/// second instance while this one is still running).
+#[cfg(windows)]
+pub(crate) fn claim_single_instance() -> bool {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+
+    let name: Vec<u16> = "Local\\OrbitPi.SingleInstance"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: the name is a NUL-terminated wide string that outlives the call;
+    // no security descriptor is requested (null), and the returned handle is
+    // intentionally never closed.
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        // No mutex means no claim: a second instance is better than none.
+        return true;
+    }
+    // SAFETY: a plain accessor; it reads this thread's last error, which the
+    // failed-to-create branch above cannot have overwritten on success.
+    let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    // `handle` is deliberately never closed: a named mutex exists while a
+    // handle to it is open, so the slot is held until this process exits.
+    let _ = handle;
+    if !already_running {
+        return true;
+    }
+    focus_running_window();
+    false
+}
+
+/// Bring this build's already-running window to the front, restoring it when
+/// the user minimized or hid it. Best effort: Windows may refuse the
+/// foreground switch, and a process with no window just exits.
+#[cfg(windows)]
+fn focus_running_window() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+
+    let title: Vec<u16> = WINDOW_TITLE
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: both arguments are null-terminated wide strings (a null class
+    // asks for any class); the handle is only used for the two calls below.
+    let window = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+    if window.is_null() {
+        return;
+    }
+    // SAFETY: `window` is a window handle owned by the other instance; both
+    // calls only ask the shell to show and raise it.
+    unsafe {
+        if IsIconic(window) != 0 {
+            ShowWindow(window, SW_RESTORE);
+        }
+        SetForegroundWindow(window);
+    }
+}
+
+/// The single-instance guard is a Windows concern; macOS returns to the
+/// running app from the Dock and Linux desktops focus the existing window.
+#[cfg(not(windows))]
+pub(crate) fn claim_single_instance() -> bool {
+    true
+}
+
 #[cfg(windows)]
 fn windows_clipboard_png() -> Option<Vec<u8>> {
     use windows_sys::Win32::System::DataExchange::{

@@ -254,7 +254,7 @@ impl OrbitApp {
         self.custom_ui.clear();
         self.custom_ui_focus_pending = false;
         self.is_compacting = false;
-        self.title_generating = false;
+        self.title_generation = None;
         // A modal dialog or approval belonged to that process too: it can never
         // be answered, and its keys would land in the next one.
         self.dialog = None;
