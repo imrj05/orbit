@@ -1495,6 +1495,13 @@ bindings (Editor clipboard/undo/save, Files close, Git tabs), so Windows and
 Linux get the same shortcuts, and the dead ⌘. abort chord was fixed (gpui's key
 name is `.`, not `period`).
 
+The wheel belongs to the page unless the surface under the cursor asks for it:
+a single-axis scroller does not borrow the wheel's vertical delta for its own
+axis (`restrict_scroll_to_axis`). A transcript table wider than the column
+therefore stays horizontal-only — the wheel scrolls the conversation,
+**Shift+wheel** scrolls the table sideways and stops there so nothing behind
+it moves at the same time — the behaviour the tool-output scrollers already
+held.
 Inside the integrated terminal a key name is a wire format, not a hint: the
 program behind the PTY only ever sees bytes. Windows reports the spacebar as
 the named key `space` with no `key_char`, and the terminal's encoder routes
