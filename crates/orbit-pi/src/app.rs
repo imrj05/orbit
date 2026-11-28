@@ -4812,6 +4812,7 @@ enum SettingsSelect {
 // wiring. Rendering and feature-specific logic live in child modules; they
 // are descendants of `app`, so they reach private fields/methods directly.
 mod annotations;
+mod file_menu;
 mod ask;
 mod auth_prompt;
 mod bug_report_ui;

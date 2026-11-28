@@ -611,8 +611,14 @@ legacy app today:
 
 ### Implementation status (living)
 
+- **Local file actions in the transcript (#199).** Right-click a path in a
+  local session's main transcript for **Open**, **Reveal in File Manager**,
+  **Copy Path**, and **Save a Copy As…**, before the normal text actions.
+  Relative paths resolve against the session's working directory; remote
+  sessions don't offer local file actions.
+
 - **Quote a transcript selection into the composer (#187).** The transcript's
-  text menu leads with **Quote in Composer**: the selected passage (the
+  text-only menu leads with **Quote in Composer**: the selected passage (the
   rendered text, never its Markdown source) becomes a quote card above the
   input with a one-line comment field, and a message can hold eight. Sending
   leads the prompt with each quote as a `>` block, its comment on a
@@ -627,11 +633,14 @@ legacy app today:
   keyboard; the sidebar keeps the key for its row menu. **More Details** is not
   built: Orbit has no side chat for it to open.
 
-- **Plugins enable/disable.** Settings → Plugins gives each configured package
-  a switch that flips pi's own `autoload: false` form in `settings.json`, so a
-  disabled package stops loading on pi's next start or `/reload`. The switch
-  reads the on-disk entry (`autoload: false` with no resource filters), so it
-  reflects real state and is never decorative.
+- **Plugins enable/disable.** Settings → Plugins uses pi's `autoload: false`
+  form for managed and directory packages. For standalone local files (#199),
+  pi ignores package filters, so Orbit moves the declaration out of `packages`
+  and keeps it under `orbitDisabledLocalPackages` in the same scoped settings
+  file. Re-enabling restores the declaration without changing the file itself.
+  Changes apply on the next pi start or `/reload`. The switch controls the
+  package declaration, not copies loaded separately through `extensions`,
+  auto-discovery, or the other settings scope.
 
 - **One instance per session (Windows).** `platform::claim_single_instance`
   takes a named mutex before the window opens; a second launch finds the

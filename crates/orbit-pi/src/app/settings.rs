@@ -1789,6 +1789,7 @@ impl OrbitApp {
         let source = package.source.clone();
         let project = package.scope == PackageScope::Project;
         let name = package.name.clone();
+        let scope = package.scope.label();
 
         let mut badges = div()
             .flex()
@@ -1845,7 +1846,7 @@ impl OrbitApp {
             let toggle_source = source.clone();
             let toggle_enabled = package.enabled;
             actions = actions.child(switch(
-                format!("plugin-toggle-{source}"),
+                format!("plugin-toggle-{scope}-{source}"),
                 package.enabled,
                 &theme,
                 move |_, cx| {
@@ -1865,7 +1866,7 @@ impl OrbitApp {
             // fix: install it. Update and Remove only make sense on disk.
             if package.installed {
                 actions = actions.child(self.plugin_button(
-                    format!("plugin-update-{source}"),
+                    format!("plugin-update-{scope}-{source}"),
                     &tr!("settings.update"),
                     false,
                     PluginButtonSize::Compact,
@@ -1879,7 +1880,7 @@ impl OrbitApp {
                 ));
             } else {
                 actions = actions.child(self.plugin_button(
-                    format!("plugin-reinstall-{source}"),
+                    format!("plugin-reinstall-{scope}-{source}"),
                     &tr!("settings.install"),
                     false,
                     PluginButtonSize::Compact,
@@ -1894,7 +1895,7 @@ impl OrbitApp {
                 ));
             }
             actions = actions.child(self.plugin_button(
-                format!("plugin-remove-{source}"),
+                format!("plugin-remove-{scope}-{source}"),
                 &tr!("settings.remove"),
                 false,
                 PluginButtonSize::Compact,

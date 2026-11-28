@@ -1465,6 +1465,12 @@ impl Transcript {
         transcript_view::close_selection_toolbar(&self.text_selection, window)
     }
 
+    /// Where the text menu's file items (Open, Reveal, Copy Path, Save As)
+    /// send a path written in this transcript; `None` leaves them out.
+    pub fn set_file_opener(&self, opener: Option<crate::transcript_view::FileOpener>) {
+        self.text_selection.borrow_mut().files = opener;
+    }
+
     pub fn selected_text(&self) -> Option<String> {
         self.text_selection.borrow().selected_text()
     }

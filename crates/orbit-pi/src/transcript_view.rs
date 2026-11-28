@@ -124,6 +124,22 @@ pub(crate) type ResponseExporter = Rc<dyn Fn(String, bool, usize, &mut Window, &
 pub(crate) type QuoteOpener =
     Rc<dyn Fn(crate::annotation::Quote, crate::annotation::QuoteSource, &mut Window, &mut App)>;
 
+/// What the text menu can do with a file path written in the transcript
+/// (issue #199).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileAction {
+    Open,
+    Reveal,
+    CopyPath,
+    SaveAs,
+}
+
+/// Runs a [`FileAction`] on a path as written in the transcript (cleaned by
+/// [`crate::path_ref::candidate`], not yet resolved). The app resolves it
+/// against the session's folder and does the file work off the UI thread.
+/// `None` (a remote session, tests) leaves the file items out of the menu.
+pub(crate) type FileOpener = Rc<dyn Fn(String, FileAction, &mut Window, &mut App)>;
+
 /// The transcript content column's max width.
 /// Normal message content keeps this centered measure. Assistant tables
 /// break out to the transcript pane's width; their scroll viewport must not
@@ -495,7 +511,7 @@ struct TextMenu {
     focus: gpui::FocusHandle,
     /// What held focus when the menu opened; every close hands it back.
     restore: Option<gpui::FocusHandle>,
-    /// The keyboard cursor over [`TextMenuItem::ALL`], painted only once a key
+    /// The keyboard cursor over [`TextMenu::items`], painted only once a key
     /// has moved it (a pointer-opened menu stays quiet).
     highlight: crate::ui::menu::MenuState,
     keyed: bool,
@@ -503,6 +519,15 @@ struct TextMenu {
     /// cannot change while the menu is open.
     quote_source: Option<crate::annotation::QuoteSource>,
     kind: TextMenuKind,
+    /// The file path the menu was opened on (the one under the pointer, or a
+    /// selection that is one), captured on open. `None` hides the file items.
+    file: Option<String>,
+}
+
+impl TextMenu {
+    fn items(&self) -> &'static [TextMenuItem] {
+        TextMenuItem::items(self.file.is_some())
+    }
 }
 
 /// Open the text menu at the selection's end from the keyboard (Shift+F10),
@@ -539,8 +564,9 @@ pub(crate) fn open_selection_menu_from_keyboard(
         return false;
     };
     menu.keyed = true;
+    let items = menu.items();
     menu.highlight
-        .first(TextMenuItem::ALL.len(), |ix| TextMenuItem::ALL[ix].enabled(true, can_quote));
+        .first(items.len(), |ix| items[ix].enabled(true, can_quote));
     window.focus(&focus);
     state.borrow_mut().menu = Some(menu);
     window.refresh();
@@ -589,6 +615,7 @@ pub(crate) fn test_open_toolbar(state: &TextSelectionState, text: &str, cx: &mut
         keyed: false,
         quote_source: None,
         kind: TextMenuKind::Toolbar,
+        file: None,
     });
 }
 
@@ -618,7 +645,7 @@ fn selection_menu(
     focus: gpui::FocusHandle,
     restore: Option<gpui::FocusHandle>,
 ) -> Option<TextMenu> {
-    state.selected_text()?;
+    let selected = state.selected_text()?;
     let message = messages.get(state.selected_message_ix()?)?;
     Some(TextMenu {
         position,
@@ -629,6 +656,7 @@ fn selection_menu(
         keyed: false,
         quote_source: Some(quote_source(message)),
         kind,
+        file: state.file_in_selection(&selected),
     })
 }
 
@@ -668,21 +696,60 @@ fn open_selection_toolbar(
 /// The text menu's actions, top to bottom: one list for pointer and keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextMenuItem {
+    OpenFile,
+    RevealFile,
+    CopyPath,
+    SaveFileAs,
     QuoteSelection,
     CopySelection,
     CopyMessage,
 }
 
 impl TextMenuItem {
-    const ALL: [Self; 3] = [Self::QuoteSelection, Self::CopySelection, Self::CopyMessage];
+    const TEXT: [Self; 3] = [Self::QuoteSelection, Self::CopySelection, Self::CopyMessage];
+    /// A menu opened on a file path leads with what can be done to the file.
+    const WITH_FILE: [Self; 7] = [
+        Self::OpenFile,
+        Self::RevealFile,
+        Self::CopyPath,
+        Self::SaveFileAs,
+        Self::QuoteSelection,
+        Self::CopySelection,
+        Self::CopyMessage,
+    ];
+    /// How many leading entries act on the file; a rule follows them.
+    const FILE_ITEMS: usize = 4;
+
+    fn items(file: bool) -> &'static [Self] {
+        if file {
+            &Self::WITH_FILE
+        } else {
+            &Self::TEXT
+        }
+    }
+
+    fn file_action(self) -> Option<FileAction> {
+        match self {
+            Self::OpenFile => Some(FileAction::Open),
+            Self::RevealFile => Some(FileAction::Reveal),
+            Self::CopyPath => Some(FileAction::CopyPath),
+            Self::SaveFileAs => Some(FileAction::SaveAs),
+            _ => None,
+        }
+    }
 
     /// The selection items only act while there is a selection; quoting also
-    /// needs a composer to quote into.
+    /// needs a composer to quote into. A file item is only listed when the
+    /// menu has a path, so it can always act.
     fn enabled(self, has_selection: bool, can_quote: bool) -> bool {
         match self {
             Self::QuoteSelection => has_selection && can_quote,
             Self::CopySelection => has_selection,
-            Self::CopyMessage => true,
+            Self::CopyMessage
+            | Self::OpenFile
+            | Self::RevealFile
+            | Self::CopyPath
+            | Self::SaveFileAs => true,
         }
     }
 }
@@ -703,6 +770,21 @@ fn run_text_menu_item(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if let Some(action) = item.file_action() {
+        let target = {
+            let state = state.borrow();
+            state
+                .menu
+                .as_ref()
+                .and_then(|menu| menu.file.clone())
+                .zip(state.files.clone())
+        };
+        close_text_menu(state, window);
+        if let Some((path, files)) = target {
+            files(path, action, window, cx);
+        }
+        return;
+    }
     if item == TextMenuItem::QuoteSelection {
         let quote = {
             let state = state.borrow();
@@ -729,7 +811,11 @@ fn run_text_menu_item(
     let text = {
         let state = state.borrow();
         match item {
-            TextMenuItem::QuoteSelection => None,
+            TextMenuItem::QuoteSelection
+            | TextMenuItem::OpenFile
+            | TextMenuItem::RevealFile
+            | TextMenuItem::CopyPath
+            | TextMenuItem::SaveFileAs => None,
             TextMenuItem::CopySelection => state.selected_text(),
             TextMenuItem::CopyMessage => state.menu.as_ref().map(|menu| menu.message_text.clone()),
         }
@@ -749,12 +835,15 @@ fn text_menu_key(state: &TextSelectionState, key: &str, window: &mut Window, cx:
         close_text_menu(state, window);
         return;
     }
-    let (has_selection, can_quote) = {
+    let (has_selection, can_quote, items) = {
         let state = state.borrow();
-        (state.selected_text().is_some(), state.quote.is_some())
+        let Some(items) = state.menu.as_ref().map(TextMenu::items) else {
+            return;
+        };
+        (state.selected_text().is_some(), state.quote.is_some(), items)
     };
-    let enabled = |ix: usize| TextMenuItem::ALL[ix].enabled(has_selection, can_quote);
-    let len = TextMenuItem::ALL.len();
+    let enabled = |ix: usize| items[ix].enabled(has_selection, can_quote);
+    let len = items.len();
     let run = {
         let mut guard = state.borrow_mut();
         let Some(menu) = guard.menu.as_mut() else {
@@ -788,7 +877,7 @@ fn text_menu_key(state: &TextSelectionState, key: &str, window: &mut Window, cx:
                 .highlight
                 .selected(len)
                 .filter(|ix| enabled(*ix))
-                .map(|ix| TextMenuItem::ALL[ix]),
+                .map(|ix| items[ix]),
             _ => None,
         }
     };
@@ -824,6 +913,9 @@ pub(crate) struct TextSelection {
     /// Where Quote in Composer sends a selection; set by every transcript
     /// render from [`TranscriptView::quote`].
     quote: Option<QuoteOpener>,
+    /// Where the file items send a path; set by the app through
+    /// [`crate::transcript::Transcript::set_file_opener`].
+    pub(crate) files: Option<FileOpener>,
 }
 
 /// One text press remembered long enough to recognize a double- or triple-click.
@@ -854,6 +946,7 @@ impl TextSelection {
             menu: None,
             stream_fades: HashMap::new(),
             quote: None,
+            files: None,
         }
     }
 
@@ -1161,6 +1254,35 @@ impl TextSelection {
     pub(crate) fn clear(&mut self) {
         self.clear_selection();
         self.menu = None;
+    }
+
+    /// The file path written under `position`, when the app can act on files:
+    /// the path the pointer is on, or else a selection that is one path.
+    fn file_at(&self, position: gpui::Point<Pixels>) -> Option<String> {
+        self.files.as_ref()?;
+        let under_pointer = self
+            .blocks
+            .iter()
+            .position(|block| block.bounds.contains(&position))
+            .and_then(|_| self.hit(position))
+            .and_then(|(index, offset, _)| {
+                crate::path_ref::at(&self.blocks[index].text, offset)
+            });
+        under_pointer.or_else(|| {
+            self.selected_text()
+                .and_then(|selected| self.file_in_selection(&selected))
+        })
+    }
+
+    /// `selected` read as one file path (a selection may hold spaces a path
+    /// has), when the app can act on files. Several lines are not a path.
+    fn file_in_selection(&self, selected: &str) -> Option<String> {
+        self.files.as_ref()?;
+        let selected = selected.trim();
+        if selected.contains('\n') {
+            return None;
+        }
+        crate::path_ref::candidate(selected)
     }
 
     /// Message index of the block under `position` (context menu). A press in
@@ -1814,6 +1936,7 @@ fn register_text_selection(
                         .borrow()
                         .selected_message_ix()
                         .and_then(|ix| messages.borrow().get(ix).map(quote_source));
+                    let file = state.borrow().file_at(event.position);
                     window.focus(&focus);
                     state.borrow_mut().menu = Some(TextMenu {
                         position: event.position,
@@ -1824,6 +1947,7 @@ fn register_text_selection(
                         keyed: false,
                         quote_source,
                         kind: TextMenuKind::Context,
+                        file,
                     });
                     window.refresh();
                 }
@@ -1902,12 +2026,38 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
         let state = state.borrow();
         (state.selected_text().is_some(), state.quote.is_some())
     };
+    let entries = menu.items();
     let highlighted = menu
         .keyed
-        .then(|| menu.highlight.selected(TextMenuItem::ALL.len()))
+        .then(|| menu.highlight.selected(entries.len()))
         .flatten();
-    let items = TextMenuItem::ALL.iter().enumerate().map(|(ix, item)| {
+    let file_items = if menu.file.is_some() {
+        TextMenuItem::FILE_ITEMS
+    } else {
+        0
+    };
+    let items = entries.iter().enumerate().flat_map(|(ix, item)| {
         let (id, icon_path, label) = match item {
+            TextMenuItem::OpenFile => (
+                "transcript-open-file",
+                "icons/arrow-up-right.svg",
+                tr!("transcript.open_file"),
+            ),
+            TextMenuItem::RevealFile => (
+                "transcript-reveal-file",
+                "icons/folder-open.svg",
+                tr!("transcript.reveal_file"),
+            ),
+            TextMenuItem::CopyPath => (
+                "transcript-copy-path",
+                "icons/file.svg",
+                tr!("transcript.copy_path"),
+            ),
+            TextMenuItem::SaveFileAs => (
+                "transcript-save-file-as",
+                "icons/arrow-down.svg",
+                tr!("transcript.save_file_as"),
+            ),
             TextMenuItem::QuoteSelection => (
                 "transcript-quote-selection",
                 "icons/compose.svg",
@@ -1926,7 +2076,7 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
         };
         let item = *item;
         let run = state.clone();
-        selection_menu_item(
+        let entry = selection_menu_item(
             id,
             icon_path,
             label,
@@ -1937,7 +2087,12 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
                 cx.stop_propagation();
                 run_text_menu_item(&run, item, window, cx);
             },
-        )
+        );
+        // A rule between what acts on the file and what acts on the text.
+        let rule = (file_items > 0 && ix + 1 == file_items).then(|| {
+            crate::ui::menu::context_menu_separator(&theme).into_any_element()
+        });
+        std::iter::once(entry).chain(rule)
     });
     let dismiss = state.clone();
     let keys = state.clone();
@@ -1975,6 +2130,7 @@ fn selection_menu_item(
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     picker_entry(div().id(id), &theme)
+        .debug_selector(move || id.to_string())
         .h(picker::entry_height(&theme))
         .flex_none()
         // The keyboard cursor reads as the pointer's hover.
@@ -13742,10 +13898,11 @@ mod tests {
                 keyed: false,
                 quote_source: Some(QuoteSource::User),
                 kind: TextMenuKind::Context,
+                file: None,
             });
             text_menu_key(&selection, "down", window, cx);
             let menu = selection.borrow().menu.clone().expect("still open");
-            assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(0));
+            assert_eq!(menu.highlight.selected(TextMenuItem::TEXT.len()), Some(0));
             text_menu_key(&selection, "enter", window, cx);
         });
         assert!(selection.borrow().menu.is_none());
@@ -13762,7 +13919,7 @@ mod tests {
         assert!(TextMenuItem::QuoteSelection.enabled(true, true));
         assert!(!TextMenuItem::QuoteSelection.enabled(true, false));
         assert!(!TextMenuItem::QuoteSelection.enabled(false, true));
-        assert_eq!(TextMenuItem::ALL[0], TextMenuItem::QuoteSelection);
+        assert_eq!(TextMenuItem::TEXT[0], TextMenuItem::QuoteSelection);
     }
 
     /// A quote is the rendered text, not its Markdown source: selecting over
@@ -13812,6 +13969,7 @@ mod tests {
                 keyed: false,
                 quote_source: None,
                 kind: TextMenuKind::Context,
+                file: None,
             });
             opener
         });
@@ -13823,13 +13981,13 @@ mod tests {
             text_menu_key(&selection, "down", window, cx);
             let menu = selection.borrow().menu.clone().expect("still open");
             assert_eq!(
-                menu.highlight.selected(TextMenuItem::ALL.len()),
+                menu.highlight.selected(TextMenuItem::TEXT.len()),
                 Some(2),
                 "Quote and Copy Selection are disabled without a selection"
             );
             text_menu_key(&selection, "up", window, cx);
             let menu = selection.borrow().menu.clone().expect("still open");
-            assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(2));
+            assert_eq!(menu.highlight.selected(TextMenuItem::TEXT.len()), Some(2));
             text_menu_key(&selection, "enter", window, cx);
         });
         assert!(
@@ -17269,6 +17427,62 @@ mod tests {
         cx.update(|window, _| assert!(fixture.composer.is_focused(window)));
     }
 
+    #[gpui::test]
+    fn right_clicking_a_path_shows_file_actions_in_order(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let fixture = toolbar_fixture(cx);
+        let path = "./reports/summary.pdf";
+        fixture.messages.borrow_mut()[0].steps[0].text = format!("Saved to `{path}`.");
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let record = calls.clone();
+        fixture.state.borrow_mut().files = Some(Rc::new(move |path, action, _, _| {
+            record.borrow_mut().push((path, action));
+        }));
+        toolbar_paint(cx, &fixture.view);
+        let position = {
+            let state = fixture.state.borrow();
+            let block = state
+                .blocks
+                .iter()
+                .find(|block| block.text.contains(path))
+                .expect("painted path in the assistant reply");
+            let index = block.text.find(path).unwrap() + 3;
+            let caret = block.layout.position_for_index(index).unwrap();
+            point(caret.x, caret.y + block.layout.line_height() * 0.5)
+        };
+        assert!(fixture.state.borrow().selected_text().is_none());
+        cx.simulate_event(MouseDownEvent {
+            position,
+            button: MouseButton::Right,
+            click_count: 1,
+            modifiers: gpui::Modifiers::none(),
+            first_mouse: false,
+        });
+        toolbar_paint(cx, &fixture.view);
+        assert_eq!(menu_kind(&fixture.state), Some(TextMenuKind::Context));
+        let [open, reveal, copy, save, quote] = [
+            "transcript-open-file",
+            "transcript-reveal-file",
+            "transcript-copy-path",
+            "transcript-save-file-as",
+            "transcript-quote-selection",
+        ]
+        .map(|id| cx.debug_bounds(id).expect(id));
+        assert!(open.top() < reveal.top());
+        assert!(reveal.top() < copy.top());
+        assert!(copy.top() < save.top());
+        assert!(save.top() < quote.top());
+
+        cx.simulate_event(MouseDownEvent {
+            position: copy.center(),
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: gpui::Modifiers::none(),
+            first_mouse: false,
+        });
+        assert_eq!(&*calls.borrow(), &[(path.to_string(), FileAction::CopyPath)]);
+    }
+
     /// A plain click selects nothing, so it shows no toolbar.
     #[gpui::test]
     fn a_plain_click_opens_no_toolbar(cx: &mut gpui::TestAppContext) {
@@ -17351,7 +17565,7 @@ mod tests {
         assert!(menu.keyed, "a keyboard-opened menu shows its cursor");
         // No composer in this view, so Quote is disabled and Copy Selection
         // is the first item that acts.
-        assert_eq!(menu.highlight.selected(TextMenuItem::ALL.len()), Some(1));
+        assert_eq!(menu.highlight.selected(TextMenuItem::TEXT.len()), Some(1));
         assert!(
             (menu.position.y - fixture.charlie.y).abs() < px(30.),
             "anchored at the selection's end, not the window corner"

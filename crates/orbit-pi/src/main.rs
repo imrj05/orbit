@@ -98,6 +98,7 @@ mod session_order;
 // binary must not carry a frame hook or a recorder.
 #[cfg(debug_assertions)]
 mod perf;
+mod path_ref;
 mod permissions;
 mod plugins;
 mod project_trust;

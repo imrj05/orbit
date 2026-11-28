@@ -24,12 +24,17 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::pi_install::agent_dir;
+
 /// How long an install / update may run before it is killed.
 const TIMEOUT: Duration = Duration::from_secs(240);
 /// Update probes must not keep startup busy when a registry or Git host stalls.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_PARALLEL_PROBES: usize = 4;
 const SKIPPED_UPDATES_FILE: &str = "plugin-update-skips.json";
+// Pi ignores package filters for standalone local files. Keep their original
+// declarations here while disabled, outside Pi's active `packages` array.
+const DISABLED_LOCAL_FILES: &str = "orbitDisabledLocalPackages";
 
 /// Where a package is recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,10 +87,9 @@ pub(crate) struct PluginPackage {
     pub installed: bool,
     /// `version` from the installed package's `package.json`, when readable.
     pub version: Option<String>,
-    /// Whether the package loads its resources. A package recorded as
-    /// `{"source": …, "autoload": false}` with no resource filters is
-    /// disabled; every other entry is enabled.
+    /// Whether the configuration enables this package declaration.
     pub enabled: bool,
+    pub(crate) parked: bool,
 }
 
 /// One installed npm or Git package whose upstream has moved ahead.
@@ -101,9 +105,8 @@ pub(crate) struct PluginUpdate {
 /// is a malformed settings file; the returned list still holds whatever the
 /// other file contributed, so one bad file never hides the rest.
 pub(crate) fn discover(workspace: &Path) -> (Vec<PluginPackage>, Option<String>) {
-    let mut packages = Vec::new();
+    let mut packages: Vec<PluginPackage> = Vec::new();
     let mut error = None;
-    let mut seen: Vec<String> = Vec::new();
 
     // Project scope first — it wins a duplicate source over user scope.
     for (scope, path) in [
@@ -113,11 +116,7 @@ pub(crate) fn discover(workspace: &Path) -> (Vec<PluginPackage>, Option<String>)
         match read_packages(&path, scope, workspace) {
             Ok(list) => {
                 for package in list {
-                    if seen.contains(&package.source) {
-                        continue;
-                    }
-                    seen.push(package.source.clone());
-                    packages.push(package);
+                    merge_package(&mut packages, package);
                 }
             }
             Err(err) => {
@@ -128,6 +127,21 @@ pub(crate) fn discover(workspace: &Path) -> (Vec<PluginPackage>, Option<String>)
 
     sort_for_page(&mut packages);
     (packages, error)
+}
+
+fn merge_package(packages: &mut Vec<PluginPackage>, package: PluginPackage) {
+    if !packages.iter().any(|existing| {
+        if existing.kind == PackageKind::Local && package.kind == PackageKind::Local {
+            if existing.parked || package.parked {
+                return existing.scope == package.scope && existing.source == package.source;
+            }
+            existing.install_path == package.install_path
+        } else {
+            existing.source == package.source
+        }
+    }) {
+        packages.push(package);
+    }
 }
 
 /// What loads first: enabled packages by name, then the disabled ones. A
@@ -150,6 +164,20 @@ pub(crate) fn install(source: &str, project: bool, workspace: &Path) -> Result<S
 
 /// Remove `source` from the scope it was installed in.
 pub(crate) fn remove(source: &str, project: bool, workspace: &Path) -> Result<String, String> {
+    let scope = if project {
+        PackageScope::Project
+    } else {
+        PackageScope::User
+    };
+    if parse_source(source).kind() == PackageKind::Local
+        && change_settings(
+            &settings_path(scope, workspace),
+            source,
+            PackageEdit::RemoveParked,
+        )?
+    {
+        return Ok(String::new());
+    }
     let args = package_args("remove", source, project);
     run_pi(&args, workspace)
 }
@@ -171,11 +199,9 @@ pub(crate) fn update(source: &str, workspace: &Path) -> Result<String, String> {
 }
 
 /// Enable or disable one configured package by editing Pi's settings file in
-/// place. Disabling writes the same shape `pi config` writes —
-/// `{"source": …, "autoload": false}` — which loads none of the package's
-/// resources; enabling restores the plain string form, which loads everything
-/// the package declares. Pi picks the change up on its next start or
-/// `/reload`, like any other `packages` edit.
+/// place. Directory and managed packages use Pi's `autoload: false` form.
+/// Standalone local files have to leave the active list entirely. Pi picks
+/// the change up on its next start or `/reload`.
 pub(crate) fn set_enabled(
     source: &str,
     scope: PackageScope,
@@ -193,16 +219,40 @@ fn settings_path(scope: PackageScope, workspace: &Path) -> PathBuf {
     }
 }
 
-/// Read → mutate → atomically rewrite one settings file, replacing only the
-/// entry that matches `source`. A malformed file is never partially written.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ParkedDeclaration {
+    index: usize,
+    entry: Value,
+}
+
+enum PackageEdit {
+    SetEnabled(bool),
+    RemoveParked,
+}
+
 fn edit_settings(path: &Path, source: &str, enabled: bool) -> Result<(), String> {
-    let existing = fs::read_to_string(path).map_err(|err| {
-        tr!(
-            "errors.could_not_read",
-            path = path.display().to_string(),
-            error = err
-        )
-    })?;
+    change_settings(path, source, PackageEdit::SetEnabled(enabled)).map(|_| ())
+}
+
+/// Read → mutate → atomically rewrite one scoped settings file. For removal,
+/// return true if there was only a parked copy and no Pi declaration to remove.
+fn change_settings(path: &Path, source: &str, edit: PackageEdit) -> Result<bool, String> {
+    let existing = match fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(err)
+            if err.kind() == std::io::ErrorKind::NotFound
+                && matches!(edit, PackageEdit::RemoveParked) =>
+        {
+            return Ok(false)
+        }
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ));
+        }
+    };
     let mut doc: Value = if existing.trim().is_empty() {
         Value::Object(serde_json::Map::new())
     } else {
@@ -221,6 +271,11 @@ fn edit_settings(path: &Path, source: &str, enabled: bool) -> Result<(), String>
             error = "settings.json root is not an object".to_string()
         )
     })?;
+    let mut parked = root.remove(DISABLED_LOCAL_FILES);
+    let saved = parked
+        .as_mut()
+        .and_then(Value::as_object_mut)
+        .and_then(|entries| entries.remove(source));
     let packages = root
         .entry("packages")
         .or_insert_with(|| Value::Array(Vec::new()));
@@ -231,29 +286,83 @@ fn edit_settings(path: &Path, source: &str, enabled: bool) -> Result<(), String>
             error = "packages is not an array".to_string()
         )
     })?;
-    let mut found = false;
-    for entry in packages.iter_mut() {
-        let matches = match entry {
-            Value::String(text) => text == source,
-            Value::Object(map) => map.get("source").and_then(Value::as_str) == Some(source),
-            _ => false,
-        };
-        if matches {
-            *entry = if enabled {
-                Value::String(source.to_string())
-            } else {
-                serde_json::json!({ "source": source, "autoload": false })
-            };
-            found = true;
-            break;
+    let active = packages
+        .iter()
+        .position(|entry| entry_source(entry) == Some(source));
+    let removed_only_parked = match (edit, active, saved) {
+        (PackageEdit::RemoveParked, _, None) => return Ok(false),
+        (PackageEdit::RemoveParked, active, Some(_)) => active.is_none(),
+        (PackageEdit::SetEnabled(true), None, Some(declarations)) => {
+            let entries: Vec<ParkedDeclaration> =
+                serde_json::from_value(declarations).map_err(|err| {
+                    tr!(
+                        "errors.not_valid_json",
+                        path = path.display().to_string(),
+                        error = err
+                    )
+                })?;
+            for item in entries {
+                packages.insert(item.index.min(packages.len()), item.entry);
+            }
+            false
         }
-    }
-    if !found {
-        return Err(tr!("errors.plugin_not_found", source = source.to_string()));
+        (PackageEdit::SetEnabled(false), None, Some(_)) => return Ok(false),
+        (PackageEdit::SetEnabled(enabled), Some(index), _) => {
+            let base = path.parent().unwrap_or_else(|| Path::new("."));
+            if let Some(target) = (!enabled).then(|| local_file(source, base)).flatten() {
+                let entries = parked
+                    .get_or_insert_with(|| Value::Object(Default::default()))
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        tr!(
+                            "errors.not_valid_json",
+                            path = path.display().to_string(),
+                            error = format!("{DISABLED_LOCAL_FILES} is not an object")
+                        )
+                    })?;
+                let indices: Vec<_> = packages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| {
+                        entry_source(entry)
+                            .and_then(|source| local_file(source, base))
+                            .as_ref()
+                            == Some(&target)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut declarations: Vec<_> = indices
+                    .into_iter()
+                    .rev()
+                    .map(|index| ParkedDeclaration {
+                        index,
+                        entry: packages.remove(index),
+                    })
+                    .collect();
+                declarations.reverse();
+                entries.insert(source.to_string(), serde_json::json!(declarations));
+            } else {
+                packages[index] = if enabled {
+                    Value::String(source.to_string())
+                } else {
+                    serde_json::json!({ "source": source, "autoload": false })
+                };
+            }
+            false
+        }
+        (PackageEdit::SetEnabled(_), None, None) => {
+            return Err(tr!("errors.plugin_not_found", source = source.to_string()));
+        }
+    };
+    if let Some(parked) =
+        parked.filter(|value| !value.as_object().is_some_and(|map| map.is_empty()))
+    {
+        root.insert(DISABLED_LOCAL_FILES.to_string(), parked);
     }
     let indent = detect_indent(&existing);
     let text = serialize_settings(&doc, &indent)?;
-    crate::subagent_file::write_atomic(path, text.as_bytes())
+    crate::subagent_file::write_atomic(path, text.as_bytes())?;
+    Ok(removed_only_parked)
 }
 
 /// Serialize with the file's own indentation (Pi does the same), so a
@@ -263,12 +372,10 @@ fn serialize_settings(doc: &Value, indent: &[u8]) -> Result<String, String> {
     let mut bytes = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(indent);
     let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, formatter);
-    serde::Serialize::serialize(doc, &mut serializer).map_err(|err| {
-        tr!("errors.could_not_serialize_settings", error = err)
-    })?;
+    serde::Serialize::serialize(doc, &mut serializer)
+        .map_err(|err| tr!("errors.could_not_serialize_settings", error = err))?;
     bytes.push(b'\n');
-    String::from_utf8(bytes)
-        .map_err(|err| tr!("errors.could_not_serialize_settings", error = err))
+    String::from_utf8(bytes).map_err(|err| tr!("errors.could_not_serialize_settings", error = err))
 }
 
 /// The indentation of the first indented line: tabs win as-is, spaces are
@@ -575,10 +682,32 @@ fn read_packages(
             error = err
         )
     })?;
-    Ok(package_entries(&root)
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut packages: Vec<_> = package_entries(&root)
         .into_iter()
-        .map(|(source, enabled)| resolve(&source, scope, workspace, enabled))
-        .collect())
+        .map(|(source, enabled)| {
+            // Old Orbit settings may claim a file is disabled even though Pi
+            // still loads it. Show its real state so it can be disabled again.
+            resolve(
+                &source,
+                scope,
+                workspace,
+                enabled || local_file(&source, base).is_some(),
+            )
+        })
+        .collect();
+    if let Some(parked) = root.get(DISABLED_LOCAL_FILES).and_then(Value::as_object) {
+        for (source, entry) in parked {
+            if entry.as_array().is_some_and(|entries| !entries.is_empty())
+                && !packages.iter().any(|package| package.source == *source)
+            {
+                let mut package = resolve(source, scope, workspace, false);
+                package.parked = true;
+                packages.push(package);
+            }
+        }
+    }
+    Ok(packages)
 }
 
 /// Pull the configured package sources out of a settings document, paired with
@@ -590,18 +719,30 @@ fn package_entries(root: &Value) -> Vec<(String, bool)> {
         return Vec::new();
     };
     list.iter()
-        .filter_map(|entry| match entry {
-            Value::String(source) if !source.trim().is_empty() => Some((source.clone(), true)),
-            Value::Object(map) => {
-                let source = map
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .filter(|source| !source.trim().is_empty())?;
-                Some((source.to_string(), !package_disabled(map)))
-            }
-            _ => None,
+        .filter_map(|entry| {
+            let source = entry_source(entry)?;
+            Some((
+                source.to_string(),
+                !entry.as_object().is_some_and(package_disabled),
+            ))
         })
         .collect()
+}
+
+fn entry_source(entry: &Value) -> Option<&str> {
+    entry
+        .as_str()
+        .or_else(|| entry.get("source")?.as_str())
+        .filter(|source| !source.trim().is_empty())
+}
+
+fn local_file(source: &str, base: &Path) -> Option<PathBuf> {
+    let Source::Local { path } = parse_source(source) else {
+        return None;
+    };
+    let path = base.join(crate::pi_install::expand_tilde(path));
+    let resolved = path.canonicalize().ok()?;
+    resolved.is_file().then_some(resolved)
 }
 
 /// Whether an object-form package entry loads nothing: `autoload: false` with
@@ -621,12 +762,7 @@ fn package_disabled(map: &serde_json::Map<String, Value>) -> bool {
         })
 }
 
-fn resolve(
-    source: &str,
-    scope: PackageScope,
-    workspace: &Path,
-    enabled: bool,
-) -> PluginPackage {
+fn resolve(source: &str, scope: PackageScope, workspace: &Path, enabled: bool) -> PluginPackage {
     let parsed = parse_source(source);
     let install_path = parsed.install_path(scope, workspace);
     let installed = install_path.exists();
@@ -644,6 +780,7 @@ fn resolve(
         installed,
         version,
         enabled,
+        parked: false,
     }
 }
 
@@ -691,13 +828,7 @@ impl Source {
         match self {
             Source::Npm { name } => base.join("npm").join("node_modules").join(name),
             Source::Git { host, path, .. } => base.join("git").join(host).join(path),
-            Source::Local { path } => {
-                if path.is_absolute() {
-                    path.clone()
-                } else {
-                    base.join(path)
-                }
-            }
+            Source::Local { path } => base.join(crate::pi_install::expand_tilde(path.clone())),
         }
     }
 }
@@ -718,6 +849,14 @@ fn parse_source(raw: &str) -> Source {
     for scheme in ["https://", "http://", "ssh://", "git://"] {
         if let Some(rest) = source.strip_prefix(scheme) {
             return parse_git(rest);
+        }
+    }
+    if source.starts_with("file://") {
+        if let Some(path) = url::Url::parse(source)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+        {
+            return Source::Local { path };
         }
     }
     let path = source.strip_prefix("./").unwrap_or(source);
@@ -767,10 +906,6 @@ fn read_version(install_path: &Path) -> Option<String> {
         .get("version")
         .and_then(Value::as_str)
         .map(str::to_string)
-}
-
-fn agent_dir() -> PathBuf {
-    crate::platform::home_dir().join(".pi").join("agent")
 }
 
 /// Run `pi <args>` from `workspace`, returning stdout on success. Mirrors the
@@ -1036,6 +1171,7 @@ mod tests {
             installed: true,
             version: None,
             enabled,
+            parked: false,
         }
     }
 
@@ -1081,6 +1217,71 @@ mod tests {
         assert_eq!(packages[0], "npm:keep");
         assert_eq!(packages[1], "npm:target");
         assert_eq!(doc["otherKey"], true);
+    }
+
+    #[test]
+    fn standalone_local_file_leaves_pi_packages_until_reenabled() {
+        let workspace = temp_dir("toggle-file");
+        let scoped_dir = workspace.join(".pi");
+        fs::create_dir(&scoped_dir).unwrap();
+        let source = "./standalone.mjs";
+        fs::write(
+            scoped_dir.join("standalone.mjs"),
+            "export default () => {};",
+        )
+        .unwrap();
+        let settings = scoped_dir.join("settings.json");
+        // Older Orbit versions wrote this shape, which Pi ignores for files.
+        let declaration = serde_json::json!({"source": source, "autoload": false});
+        let file_url = url::Url::from_file_path(scoped_dir.join("standalone.mjs"))
+            .unwrap()
+            .to_string();
+        let original = serde_json::json!({"packages": [declaration, "npm:keep", file_url]});
+        fs::write(&settings, original.to_string()).unwrap();
+        let read = || read_packages(&settings, PackageScope::Project, &workspace).unwrap();
+        let doc =
+            || serde_json::from_str::<Value>(&fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(read()[0].enabled, "Pi still loads this legacy declaration");
+
+        set_enabled(source, PackageScope::Project, false, &workspace).unwrap();
+        assert_eq!(doc()["packages"], serde_json::json!(["npm:keep"]));
+        assert_eq!(doc()[DISABLED_LOCAL_FILES][source][0]["entry"], declaration);
+        assert!(!read()[1].enabled);
+        assert!(read()[1].installed);
+
+        set_enabled(source, PackageScope::Project, true, &workspace).unwrap();
+        assert_eq!(doc(), original);
+        assert!(read()[0].enabled);
+
+        set_enabled(source, PackageScope::Project, false, &workspace).unwrap();
+        remove(source, true, &workspace).unwrap();
+        assert_eq!(doc(), serde_json::json!({"packages": ["npm:keep"]}));
+        assert!(scoped_dir.join("standalone.mjs").is_file());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn parked_project_file_does_not_hide_an_active_user_declaration() {
+        let path = Path::new("/tmp/orbit-shared-extension.mjs");
+        let mut parked = resolve(
+            path.to_str().unwrap(),
+            PackageScope::Project,
+            Path::new("/tmp"),
+            false,
+        );
+        parked.parked = true;
+        let active = resolve(
+            path.to_str().unwrap(),
+            PackageScope::User,
+            Path::new("/tmp"),
+            true,
+        );
+        let mut packages = vec![parked];
+        merge_package(&mut packages, active);
+        assert_eq!(packages.len(), 2);
+        assert!(!packages[0].enabled);
+        assert_eq!(packages[1].scope, PackageScope::User);
+        assert!(packages[1].enabled);
     }
 
     #[test]
