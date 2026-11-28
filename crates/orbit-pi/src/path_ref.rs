@@ -90,7 +90,7 @@ pub fn token_at(text: &str, offset: usize) -> Option<&str> {
 /// extension with a letter in it (`src/lib.rs`, `MANIFEST.csv`; not `v1.2.9`).
 pub fn candidate(text: &str) -> Option<String> {
     let mut text = text.trim().trim_matches(|c| matches!(c, '"' | '\'' | '`'));
-    text = text.trim_end_matches(|c| matches!(c, '.' | ',' | ';' | '!' | '?' | ':'));
+    text = text.trim_end_matches(['.', ',', ';', '!', '?', ':']);
     if let Some(rest) = text.strip_prefix("file://") {
         text = rest;
     } else if text.contains("://") || text.starts_with("mailto:") {
@@ -146,11 +146,11 @@ fn strip_location(text: &str) -> &str {
 fn has_file_extension(text: &str) -> bool {
     let name = text.rsplit(['/', '\\']).next().unwrap_or(text);
     match name.rsplit_once('.') {
-        Some((stem, ext)) => {
-            !stem.is_empty()
-                // `e.g`, `i.e`: a one-letter stem and extension is prose.
-                && !(stem.chars().count() == 1 && ext.len() == 1)
-                && (1..=8).contains(&ext.len())
+        Some(("", _)) => false,
+        // `e.g`, `i.e`: a one-letter stem and extension is prose.
+        Some((stem, ext)) if stem.chars().count() == 1 && ext.len() == 1 => false,
+        Some((_, ext)) => {
+            (1..=8).contains(&ext.len())
                 && ext.chars().all(|c| c.is_ascii_alphanumeric())
                 && ext.chars().any(|c| c.is_ascii_alphabetic())
         }
