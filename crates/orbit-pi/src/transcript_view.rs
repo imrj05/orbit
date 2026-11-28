@@ -11259,6 +11259,23 @@ fn render_table(
                 })),
         );
     }
+    let mut scroll = div()
+        .id(ElementId::NamedInteger(
+            "table-scroll".into(),
+            ((ix as u64) << 40)
+                | ((id_namespace & 0xffff) << 24)
+                | ((block_ix as u64) << 8),
+        ))
+        .w_full()
+        .min_w_0()
+        .overflow_x_scroll();
+    // A plain wheel over the table belongs to the transcript: gpui maps a
+    // vertical wheel onto a table's only scrolling axis, so without this a
+    // wide table slid sideways every time the reader scrolled past it — the
+    // same thing the tool-output card already guards against. Sideways input
+    // (a tilt wheel, a trackpad swipe, or Shift+wheel — see the note in gpui's
+    // scroll listener) still reaches the table normally.
+    scroll.style().restrict_scroll_to_axis = Some(true);
     div()
         .w(px(table_width + 2.))
         .max_w_full()
@@ -11267,19 +11284,7 @@ fn render_table(
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.hairline())
-        .child(
-            div()
-                .id(ElementId::NamedInteger(
-                    "table-scroll".into(),
-                    ((ix as u64) << 40)
-                        | ((id_namespace & 0xffff) << 24)
-                        | ((block_ix as u64) << 8),
-                ))
-                .w_full()
-                .min_w_0()
-                .overflow_x_scroll()
-                .child(inner),
-        )
+        .child(scroll.child(inner))
         .into_any_element()
 }
 /// Footer stamp for the changed-files summary: `Today 1:15 PM`,

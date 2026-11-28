@@ -2424,6 +2424,15 @@ impl Interactivity {
                     if overflow.x == Overflow::Scroll {
                         if !delta.x.is_zero() {
                             delta_x = delta.x;
+                        } else if event.modifiers.shift {
+                            // Shift+wheel is the deliberate sideways gesture,
+                            // honored even on axis-restricted scrollers. It
+                            // belongs to the sideways scroller alone, so the
+                            // page behind it does not also move.
+                            delta_x = delta.y;
+                            if !delta.y.is_zero() {
+                                cx.stop_propagation();
+                            }
                         } else if !restrict_scroll_to_axis && overflow.y != Overflow::Scroll {
                             delta_x = delta.y;
                         }
