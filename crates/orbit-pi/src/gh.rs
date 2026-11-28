@@ -1839,10 +1839,14 @@ pub fn parse_pr_diff(raw: &str) -> Vec<PrDiffFile> {
     let mut in_hunk = false;
     for line in raw.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            // `a/<path> b/<path>`: the new path follows the last " b/".
+            // `a/<path> b/<path>`: the new path follows the last " b/". Git
+            // quotes a side whose path has non-ASCII or special characters —
+            // `"b/\346\227\245.rs"` — and that side is decoded.
             let path = rest
-                .rsplit_once(" b/")
-                .map(|(_, path)| path.to_string())
+                .rsplit_once(" \"b/")
+                .and_then(|(_, tail)| unquote_git_path(&format!("\"b/{tail}")))
+                .or_else(|| rest.rsplit_once(" b/").map(|(_, path)| format!("b/{path}")))
+                .and_then(|path| path.strip_prefix("b/").map(str::to_string))
                 .unwrap_or_else(|| rest.to_string());
             files.push(PrDiffFile {
                 path,
@@ -1852,8 +1856,16 @@ pub fn parse_pr_diff(raw: &str) -> Vec<PrDiffFile> {
             continue;
         }
         let Some(file) = files.last_mut() else { continue };
-        if let Some(path) = line.strip_prefix("+++ b/") {
-            file.path = path.to_string();
+        if let Some(side) = line.strip_prefix("+++ ") {
+            let side = if side.starts_with('"') {
+                unquote_git_path(side)
+            } else {
+                Some(side.to_string())
+            };
+            // `/dev/null` (a deleted file) keeps the header's path.
+            if let Some(path) = side.as_deref().and_then(|side| side.strip_prefix("b/")) {
+                file.path = path.to_string();
+            }
             continue;
         }
         if line.starts_with("@@") {
@@ -1886,6 +1898,48 @@ pub fn parse_pr_diff(raw: &str) -> Vec<PrDiffFile> {
         // `\ No newline at end of file` and other markers are skipped.
     }
     files
+}
+
+/// Decode a path Git printed in C-style quotes (`core.quotePath`): the
+/// surrounding quotes, `\\`, `\"`, the usual letter escapes, and `\NNN` octal
+/// bytes, which together spell the path's UTF-8. `None` when `quoted` is not
+/// a complete quoted string.
+pub fn unquote_git_path(quoted: &str) -> Option<String> {
+    let inner = quoted.strip_prefix('"')?.strip_suffix('"')?;
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut chars = inner.bytes().peekable();
+    while let Some(byte) = chars.next() {
+        if byte != b'\\' {
+            bytes.push(byte);
+            continue;
+        }
+        let escaped = chars.next()?;
+        let decoded = match escaped {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => 0x0b,
+            b'f' => 0x0c,
+            b'r' => b'\r',
+            b'0'..=b'7' => {
+                let mut value = u32::from(escaped - b'0');
+                for _ in 0..2 {
+                    match chars.peek() {
+                        Some(digit @ b'0'..=b'7') => {
+                            value = value * 8 + u32::from(digit - b'0');
+                            chars.next();
+                        }
+                        _ => break,
+                    }
+                }
+                u8::try_from(value).ok()?
+            }
+            other => other,
+        };
+        bytes.push(decoded);
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn push_pr_line(
@@ -1957,30 +2011,59 @@ pub struct ReviewThread {
     pub comments: Vec<(String, String)>,
 }
 
-const REVIEW_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved path line originalLine comments(first:20){nodes{author{login} body}}}}}}}";
+const REVIEW_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved path line originalLine comments(first:20){nodes{author{login} body}}}}}}}";
 
-/// The pull request's unresolved review threads.
+/// How many pages of 100 threads are read before giving up: a guard against
+/// a cursor that never ends, far past any real pull request.
+const MAX_REVIEW_THREAD_PAGES: usize = 50;
+
+/// The pull request's unresolved review threads, from every page. GitHub
+/// hands threads out 100 at a time and resolved ones are filtered here, so
+/// stopping at the first page would silently drop unresolved threads past it.
 pub fn review_threads(owner: &str, name: &str, number: u64) -> Result<Vec<ReviewThread>, String> {
     let query = format!("query={REVIEW_THREADS_QUERY}");
     let owner = format!("owner={owner}");
     let name = format!("name={name}");
     let number = format!("number={number}");
-    let raw = run(
-        &std::env::temp_dir(),
-        &["api", "graphql", "-f", &query, "-f", &owner, "-f", &name, "-F", &number],
-    )?;
-    parse_review_threads(&raw)
+    let mut threads = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..MAX_REVIEW_THREAD_PAGES {
+        let after_field = after.as_ref().map(|cursor| format!("after={cursor}"));
+        let mut args = vec![
+            "api", "graphql", "-f", &query, "-f", &owner, "-f", &name, "-F", &number,
+        ];
+        if let Some(field) = after_field.as_deref() {
+            args.push("-f");
+            args.push(field);
+        }
+        let raw = run(&std::env::temp_dir(), &args)?;
+        let (page, next) = parse_review_thread_page(&raw)?;
+        threads.extend(page);
+        match next {
+            Some(cursor) => after = Some(cursor),
+            None => return Ok(threads),
+        }
+    }
+    Err(tr!("git_panel.review_threads_truncated"))
 }
 
-/// Read `reviewThreads` leniently and keep the unresolved ones.
-pub fn parse_review_threads(raw: &str) -> Result<Vec<ReviewThread>, String> {
+/// One page of `reviewThreads`, read leniently: its unresolved threads, and
+/// the cursor of the next page when GitHub says there is one.
+pub fn parse_review_thread_page(raw: &str) -> Result<(Vec<ReviewThread>, Option<String>), String> {
     let value: serde_json::Value = parse_json(raw)?;
+    let threads = value.pointer("/data/repository/pullRequest/reviewThreads");
+    let next = threads
+        .filter(|threads| threads.pointer("/pageInfo/hasNextPage").and_then(|v| v.as_bool()) == Some(true))
+        .and_then(|threads| threads.pointer("/pageInfo/endCursor"))
+        .and_then(|cursor| cursor.as_str())
+        .filter(|cursor| !cursor.is_empty())
+        .map(str::to_string);
     let nodes = value
         .pointer("/data/repository/pullRequest/reviewThreads/nodes")
         .and_then(|nodes| nodes.as_array())
         .cloned()
         .unwrap_or_default();
-    Ok(nodes
+    let threads: Vec<ReviewThread> = nodes
         .iter()
         .filter(|node| !node["isResolved"].as_bool().unwrap_or(false))
         .map(|node| ReviewThread {
@@ -2005,7 +2088,8 @@ pub fn parse_review_threads(raw: &str) -> Result<Vec<ReviewThread>, String> {
                 })
                 .unwrap_or_default(),
         })
-        .collect())
+        .collect();
+    Ok((threads, next))
 }
 
 // ── GitHub Actions runs ─────────────────────────────────────────────────
@@ -2093,9 +2177,16 @@ pub fn valid_tag(tag: &str) -> bool {
             .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
 }
 
-/// Create a release tagged `tag` at `target`, with notes GitHub writes from
-/// the merged pull requests. Returns the release URL.
-pub fn create_release(cwd: &Path, tag: &str, target: &str, draft: bool) -> Result<String, String> {
+/// Create a release tagged `tag` at the commit HEAD points at, with notes
+/// GitHub writes from the merged pull requests. Returns the release URL.
+///
+/// The target is the pushed commit's SHA, never the branch name: GitHub
+/// would resolve a name against its own copy of the branch, so unpushed local
+/// commits would be left out and an unpushed branch would fail. A commit no
+/// remote branch contains yet is refused with "push first".
+pub fn create_release(cwd: &Path, tag: &str, draft: bool) -> Result<String, String> {
+    let target = crate::git::pushed_head(cwd)?;
+    let target = target.as_str();
     let mut args = vec![
         "release",
         "create",
@@ -2415,6 +2506,49 @@ mod tests {
         assert!(super::parse_logins(" , ").is_empty());
     }
 
+    /// Git quotes a path with non-ASCII or special characters in the diff
+    /// headers; the file row must still match `日本語.rs`, not the escapes.
+    #[test]
+    fn pr_diff_decodes_git_quoted_paths() {
+        let raw = "diff --git \"a/\\346\\227\\245\\346\\234\\254\\350\\252\\236.rs\" \"b/\\346\\227\\245\\346\\234\\254\\350\\252\\236.rs\"\nindex 1..2 100644\n--- \"a/\\346\\227\\245\\346\\234\\254\\350\\252\\236.rs\"\n+++ \"b/\\346\\227\\245\\346\\234\\254\\350\\252\\236.rs\"\n@@ -1 +1 @@\n-a\n+b\ndiff --git \"a/tab\\there.txt\" \"b/tab\\there.txt\"\ndeleted file mode 100644\n--- \"a/tab\\there.txt\"\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n";
+        let files = super::parse_pr_diff(raw);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "日本語.rs");
+        assert_eq!(files[0].lines.len(), 3, "the hunk and both lines");
+        assert_eq!(files[1].path, "tab\there.txt", "a deleted file keeps its decoded name");
+    }
+
+    #[test]
+    fn git_quoted_paths_decode_escapes_and_octal_bytes() {
+        assert_eq!(super::unquote_git_path(r#""a\"b\\c""#).as_deref(), Some("a\"b\\c"));
+        assert_eq!(super::unquote_git_path(r#""\303\251t\303\251""#).as_deref(), Some("été"));
+        assert_eq!(super::unquote_git_path("plain"), None, "not quoted");
+        assert_eq!(super::unquote_git_path(r#""dangling\""#), None, "unterminated");
+    }
+
+    /// Review threads come 100 a page; the cursor is only followed while
+    /// GitHub says another page exists, and resolved threads are dropped per
+    /// page so later pages' unresolved threads are never lost.
+    #[test]
+    fn review_thread_pages_carry_their_cursor() {
+        let page = |more: bool| {
+            format!(
+                r#"{{"data":{{"repository":{{"pullRequest":{{"reviewThreads":{{
+                    "pageInfo":{{"hasNextPage":{more},"endCursor":"Y3Vy"}},
+                    "nodes":[
+                        {{"isResolved":true,"path":"a.rs","line":1,"comments":{{"nodes":[]}}}},
+                        {{"isResolved":false,"path":"b.rs","line":2,"comments":{{"nodes":[]}}}}
+                    ]}}}}}}}}}}"#
+            )
+        };
+        let (threads, next) = super::parse_review_thread_page(&page(true)).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].path, "b.rs");
+        assert_eq!(next.as_deref(), Some("Y3Vy"));
+        let (_, last) = super::parse_review_thread_page(&page(false)).unwrap();
+        assert_eq!(last, None, "the last page ends the walk");
+    }
+
     #[test]
     fn pr_diff_splits_files_and_numbers_both_sides() {
         let raw = "diff --git a/src/a.rs b/src/a.rs\nindex 1..2 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,3 +1,3 @@ fn a\n keep\n-old\n+new\n keep2\ndiff --git a/img.png b/img.png\nBinary files differ\n";
@@ -2453,13 +2587,13 @@ mod tests {
             {"isResolved":false,"path":"b.rs","line":null,"originalLine":9,
              "comments":{"nodes":[{"author":{"login":"rev"},"body":"rename this"},{"author":null,"body":"ok"}]}}
         ]}}}}}"#;
-        let threads = super::parse_review_threads(raw).unwrap();
+        let threads = super::parse_review_thread_page(raw).unwrap().0;
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].path, "b.rs");
         assert_eq!(threads[0].line, Some(9));
         assert_eq!(threads[0].comments[0], ("rev".into(), "rename this".into()));
         assert_eq!(threads[0].comments[1].0, "ghost");
-        assert!(super::parse_review_threads("{}").unwrap().is_empty());
+        assert!(super::parse_review_thread_page("{}").unwrap().0.is_empty());
     }
 
     #[test]

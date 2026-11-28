@@ -103,6 +103,23 @@ pub fn permalink(file: &Path, line: Option<usize>) -> Result<(String, bool), Str
     Ok((web.file_url(&head, &relative, line), pushed))
 }
 
+/// The commit HEAD points at, when a remote-tracking branch already contains
+/// it — the exact commit a release or link may name on the remote. A commit
+/// only on this machine (an unpushed branch, local commits ahead of the
+/// remote) is refused with the reason, so the caller never hands the remote
+/// a branch name it would resolve to an older tip.
+pub fn pushed_head(cwd: &Path) -> Result<String, String> {
+    let head = run_git(cwd, &["rev-parse", "--verify", "HEAD"])?;
+    let pushed = run_git(cwd, &["branch", "-r", "--contains", &head])
+        .map(|out| !out.trim().is_empty())
+        .unwrap_or(false);
+    if pushed {
+        Ok(head)
+    } else {
+        Err(tr!("git_panel.release_unpushed"))
+    }
+}
+
 /// Current branch name, if any.
 pub fn current_branch(cwd: &Path) -> Option<String> {
     run_git(cwd, &["branch", "--show-current"])
@@ -1518,6 +1535,33 @@ mod tests {
         git_ok(&root, &["config", "user.email", "t@example.com"]);
         git_ok(&root, &["config", "user.name", "T"]);
         root
+    }
+
+    /// A release names the pushed commit itself: refused while the commit is
+    /// only local (no remote, or local commits ahead of it), then the exact
+    /// SHA once a remote branch contains it.
+    #[test]
+    fn pushed_head_is_the_sha_only_once_a_remote_has_it() {
+        let root = scratch_repo("pushed-head");
+        let remote = scratch_repo("pushed-head-remote");
+        git_ok(&remote, &["config", "receive.denyCurrentBranch", "ignore"]);
+        fs::write(root.join("a.txt"), "a\n").unwrap();
+        git_ok(&root, &["add", "."]);
+        git_ok(&root, &["commit", "-qm", "first"]);
+        assert!(pushed_head(&root).is_err(), "never pushed");
+
+        let url = remote.to_string_lossy().into_owned();
+        git_ok(&root, &["remote", "add", "origin", &url]);
+        git_ok(&root, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        git_ok(&root, &["fetch", "-q", "origin"]);
+        let head = run_git(&root, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(pushed_head(&root), Ok(head), "the pushed commit, by SHA");
+
+        fs::write(root.join("a.txt"), "b\n").unwrap();
+        git_ok(&root, &["commit", "-qam", "second"]);
+        assert!(pushed_head(&root).is_err(), "a local commit ahead of the remote");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&remote);
     }
 
     #[test]

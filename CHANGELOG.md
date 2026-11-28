@@ -56,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issue's text; that branch's new pull request starts with `Closes #N`.
   **Fix on this branch** works where you are. On a pull request: **Review with
   agent**, **Summarize for review**, and **Address review comments**, which
-  hands the agent every unresolved review thread.
+  hands the agent every unresolved review thread (all pages of them, not just
+  the first hundred).
 
 - **Review workflow.** A **For me** filter on Issues and Pull requests (review
   requested, assigned to me, created by me, mentioning me); **Assign me** and
@@ -66,11 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Pull request diff with line comments.** Click a changed file in a pull
   request to read its diff inline; hover a line to comment on it on GitHub.
+  The diff is re-read when new commits are pushed, so a comment always lands
+  on the lines it was written against, and paths with non-ASCII characters
+  (`日本語.rs`) show their diff too.
 
 - **Actions, releases and forks.** A new **Actions** tab lists recent workflow
   runs for the branch or every branch, with **Re-run failed** and **Cancel
-  run**. **Create release…** in the branch row's **…** menu tags the branch and
-  lets GitHub write the notes. A push refused for lack of access offers **Fork
+  run**. **Create release…** in the branch row's **…** menu tags the exact
+  pushed commit and lets GitHub write the notes; a commit that is not on
+  GitHub yet asks you to push first. A push refused for lack of access offers **Fork
   and push**.
 
 - **Copy GitHub link.** From a History commit's file menu, or from the Files

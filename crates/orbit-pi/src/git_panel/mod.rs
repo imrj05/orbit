@@ -250,6 +250,21 @@ enum PendingAfterStage {
     Commit(GitAction),
 }
 
+/// A pull request's diff key: its number and the head commit it was read at.
+type PrDiffKey = (u64, String);
+
+/// Whether the diff for `shown` must be read now: a file of it is open, and
+/// neither the cached diff nor the read in flight is for this number at this
+/// head. A read for another pull request, or for an older head, never counts.
+fn pr_diff_needs_read(
+    shown: &PrDiffKey,
+    any_open: bool,
+    cached: Option<&PrDiffKey>,
+    loading: Option<&PrDiffKey>,
+) -> bool {
+    any_open && cached != Some(shown) && loading != Some(shown)
+}
+
 pub struct GitPanel {
     open: bool,
     tab: GitTab,
@@ -404,9 +419,14 @@ pub struct GitPanel {
     /// The open GitHub dropdown (Agent menus, "for me" filters).
     github_menu: Option<GithubMenu>,
     github_menu_dismissed_at: crate::ui::popover::DismissGuard,
-    /// The open pull request's diff, read on the first file expanded.
-    pr_diff: Option<(u64, Result<Vec<gh::PrDiffFile>, String>)>,
-    pr_diff_loading: bool,
+    /// The open pull request's diff, read on the first file expanded. Keyed
+    /// by number *and* head commit: new commits pushed to the pull request
+    /// make the cached diff stale, and an inline comment must be placed on
+    /// the lines of the commit it is sent against.
+    pr_diff: Option<(PrDiffKey, Result<Vec<gh::PrDiffFile>, String>)>,
+    /// The diff being read, by the same key. Per key rather than one flag, so
+    /// a read for one pull request never suppresses another's.
+    pr_diff_loading: Option<PrDiffKey>,
     /// Files whose diff is expanded inline in the pull request detail.
     pr_diff_open: HashSet<String>,
     /// The Actions tab: recent workflow runs.
@@ -755,7 +775,7 @@ impl GitPanel {
             github_menu: None,
             github_menu_dismissed_at: Default::default(),
             pr_diff: None,
-            pr_diff_loading: false,
+            pr_diff_loading: None,
             pr_diff_open: HashSet::new(),
             runs: Vec::new(),
             runs_loading: false,
@@ -2097,26 +2117,49 @@ impl GitPanel {
         if !self.pr_diff_open.remove(&path) {
             self.pr_diff_open.insert(path);
         }
-        let Some(number) = self.pr_detail.as_ref().map(|pull| pull.number) else {
-            cx.notify();
-            return;
-        };
-        let loaded = self.pr_diff.as_ref().is_some_and(|(n, _)| *n == number);
-        if !loaded && !self.pr_diff_loading {
-            if let Some(cwd) = self.cwd() {
-                self.pr_diff_loading = true;
-                self.spawn_data(
-                    cx,
-                    move || Ok(gh::pull_diff(&cwd, number)),
-                    move |panel, result, cx| {
-                        panel.pr_diff_loading = false;
-                        panel.pr_diff = Some((number, result.and_then(|files| files)));
-                        cx.notify();
-                    },
-                );
-            }
-        }
+        self.ensure_pr_diff(cx);
         cx.notify();
+    }
+
+    /// The key of the pull request detail on screen: its number and the head
+    /// commit GitHub last reported.
+    fn shown_pr_diff_key(&self) -> Option<PrDiffKey> {
+        self.pr_detail
+            .as_ref()
+            .map(|pull| (pull.number, pull.head_oid.clone()))
+    }
+
+    /// Read the shown pull request's diff when a file of it is expanded and
+    /// no diff for its current head is cached or already being read. Called
+    /// when a file opens, when the detail (re)loads with a new head, and when
+    /// another read finishes — so a read for one pull request that was in
+    /// flight while the reader moved to another never strands the second.
+    fn ensure_pr_diff(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.shown_pr_diff_key() else { return };
+        if !pr_diff_needs_read(
+            &key,
+            !self.pr_diff_open.is_empty(),
+            self.pr_diff.as_ref().map(|(cached, _)| cached),
+            self.pr_diff_loading.as_ref(),
+        ) {
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        self.pr_diff_loading = Some(key.clone());
+        let number = key.0;
+        self.spawn_data(
+            cx,
+            move || Ok(gh::pull_diff(&cwd, number)),
+            move |panel, result, cx| {
+                if panel.pr_diff_loading.as_ref() == Some(&key) {
+                    panel.pr_diff_loading = None;
+                }
+                panel.pr_diff = Some((key, result.and_then(|files| files)));
+                // The reader may have moved on while this read ran.
+                panel.ensure_pr_diff(cx);
+                cx.notify();
+            },
+        );
     }
 
     /// One file's diff under its row: numbered lines in the diff tones, and a
@@ -2145,7 +2188,12 @@ impl GitPanel {
                 .text_color(theme.text_muted)
                 .child(text)
         };
-        let files = match self.pr_diff.as_ref().filter(|(n, _)| *n == number) {
+        let shown = self.shown_pr_diff_key();
+        let files = match self
+            .pr_diff
+            .as_ref()
+            .filter(|(key, _)| key.0 == number && Some(key) == shown.as_ref())
+        {
             None => return frame.child(note(tr!("git_panel.diff_loading"))).into_any_element(),
             Some((_, Err(err))) => return frame.child(note(err.clone())).into_any_element(),
             Some((_, Ok(files))) => files,
@@ -3347,7 +3395,7 @@ impl GitPanel {
 
     fn open_pull(&mut self, number: u64, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd() else { return };
-        if self.pr_diff.as_ref().map(|(n, _)| *n) != Some(number) {
+        if self.pr_diff.as_ref().map(|(key, _)| key.0) != Some(number) {
             self.pr_diff = None;
             self.pr_diff_open.clear();
         }
@@ -3377,7 +3425,12 @@ impl GitPanel {
                 }
                 panel.pr_detail_loading = false;
                 match result {
-                    Ok(pull) => panel.pr_detail = Some(pull),
+                    Ok(pull) => {
+                        panel.pr_detail = Some(pull);
+                        // A refresh after new commits carries a new head:
+                        // re-read the diff the open files show.
+                        panel.ensure_pr_diff(cx);
+                    }
                     Err(err) => {
                         panel.pr_detail_error = Some(err.clone());
                         panel.set_failure(err);
@@ -5024,11 +5077,10 @@ impl GitPanel {
                     cx.notify();
                     return;
                 }
-                let Some(target) = self.branch.clone() else { return };
                 let draft = self.release_draft;
                 self.run_operation(
                     move |cwd| {
-                        let url = gh::create_release(cwd, &name, &target, draft)?;
+                        let url = gh::create_release(cwd, &name, draft)?;
                         Ok(tr!("git_panel.release_created", url = url))
                     },
                     cx,
@@ -10182,6 +10234,39 @@ fn github_detail_pinned_title(title: &str, theme: Theme) -> AnyElement {
         .text_color(theme.text_primary)
         .child(line)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod pr_diff_key_tests {
+    use super::{pr_diff_needs_read, PrDiffKey};
+
+    fn key(number: u64, head: &str) -> PrDiffKey {
+        (number, head.to_string())
+    }
+
+    /// A read for pull request A that is still in flight must not suppress
+    /// B's, which the reader opened meanwhile.
+    #[test]
+    fn another_pull_requests_read_does_not_block_this_one() {
+        let b = key(2, "bbb");
+        assert!(pr_diff_needs_read(&b, true, None, Some(&key(1, "aaa"))));
+        assert!(!pr_diff_needs_read(&b, true, None, Some(&b)), "B's own read is in flight");
+    }
+
+    /// New commits move the head: the diff cached at the old head is stale,
+    /// so it is read again rather than shown against the new commit.
+    #[test]
+    fn a_new_head_makes_the_cached_diff_stale() {
+        let old = key(7, "old");
+        let new = key(7, "new");
+        assert!(!pr_diff_needs_read(&old, true, Some(&old), None), "cached at this head");
+        assert!(pr_diff_needs_read(&new, true, Some(&old), None), "same number, new head");
+    }
+
+    #[test]
+    fn nothing_is_read_until_a_file_is_open() {
+        assert!(!pr_diff_needs_read(&key(3, "h"), false, None, None));
+    }
 }
 
 #[cfg(test)]
