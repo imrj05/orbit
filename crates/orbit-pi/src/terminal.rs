@@ -857,6 +857,11 @@ pub(crate) fn encode_key(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8
     let special: Option<Vec<u8>> = match key {
         "enter" => Some(vec![b'\r']),
         "backspace" => Some(vec![0x7f]),
+        // Windows GPUI delivers the space bar as the named key "space" with no
+        // `key_char`, so it never reaches the text path below and the terminal
+        // swallows every space typed. Ctrl+Space maps to NUL, matching
+        // `control_byte(" ")` on platforms that report the character directly.
+        "space" => Some(vec![if modifiers.control { 0 } else { b' ' }]),
         "tab" if modifiers.shift => Some(b"\x1b[Z".to_vec()),
         "tab" => Some(vec![b'\t']),
         "escape" => Some(vec![0x1b]),
@@ -2342,6 +2347,19 @@ mod tests {
             Some(b"\x1bOA".to_vec())
         );
         assert_eq!(encode_key(&stroke("backspace"), mode), Some(vec![0x7f]));
+
+        // The space bar: Windows names it "space" with no `key_char`; other
+        // platforms report the character directly. Both must reach the PTY.
+        assert_eq!(encode_key(&stroke("space"), mode), Some(vec![b' ']));
+        let mut ctrl_space = stroke("space");
+        ctrl_space.modifiers.control = true;
+        assert_eq!(encode_key(&ctrl_space, mode), Some(vec![0]));
+        let mut meta_space = stroke("space");
+        meta_space.modifiers.alt = true;
+        assert_eq!(encode_key(&meta_space, mode), Some(vec![0x1b, b' ']));
+        let mut space_char = stroke(" ");
+        space_char.key_char = Some(" ".to_owned());
+        assert_eq!(encode_key(&space_char, mode), Some(vec![b' ']));
 
         // ctrl maps to the C0 control byte; alt prefixes meta.
         let mut control = stroke("c");

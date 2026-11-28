@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gesture that stops there, so the page never slides along with it. Single-axis
   scrollers keep to their axis (`restrict_scroll_to_axis`), as the tool- and
   detail-output scrollers already did.
+- **The space bar reaches the terminal on Windows (#196).** Words stopped
+  gluing together in the embedded terminal. Windows reports the spacebar as a
+  named key rather than a character, and the terminal's key encoder had no arm
+  for it, so the keystroke was dropped before reaching the PTY. Space — and
+  Ctrl+Space, as `pi` and other TUIs bind it — now send the byte the program
+  inside expects; plain, Ctrl, and Alt space are pinned by regression tests.
 
 ## [0.2.22] - 2026-11-27
 
