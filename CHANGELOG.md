@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Wide transcript tables stop hijacking the wheel (#197).** A table wider
+  than the message no longer steals the wheel: scrolling over it moves the
+  page, and **Shift+wheel** moves the table sideways — a deliberate sideways
+  gesture that stops there, so the page never slides along with it. Single-axis
+  scrollers keep to their axis (`restrict_scroll_to_axis`), as the tool- and
+  detail-output scrollers already did.
+
 ## [0.2.22] - 2026-11-27
 
 - **Plugin notifications keep their level (#173).** A toast an extension raises
