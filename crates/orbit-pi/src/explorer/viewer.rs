@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     div, img, prelude::*, px, AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
@@ -398,7 +398,12 @@ pub struct FileViewer {
     save_epoch: u64,
     /// The app's close callback (the toolbar's X).
     on_close: Rc<dyn Fn(&mut App)>,
+    /// The toolbar's short note after **Copy GitHub link** ("Link copied").
+    link_note: Option<(String, Instant)>,
 }
+
+/// How long the toolbar keeps the copy-link note.
+const LINK_NOTE_TTL: Duration = Duration::from_secs(4);
 
 impl FileViewer {
     pub fn new(on_close: Rc<dyn Fn(&mut App)>, cx: &mut Context<Self>) -> Self {
@@ -414,7 +419,44 @@ impl FileViewer {
             next_id: 0,
             save_epoch: 0,
             on_close,
+            link_note: None,
         }
+    }
+
+    /// Copy a GitHub link to the active file at the checked-out commit, at
+    /// the caret's line while the editor shows. Git runs off the UI thread;
+    /// the toolbar says what happened for a few seconds.
+    fn copy_github_link(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let path = tab.path.clone();
+        let line = editor_shown(tab).then(|| {
+            let editor = tab.editor.read(cx);
+            let text = editor.text();
+            let offset = editor.selection_start().min(text.len());
+            text.get(..offset).map_or(1, |head| head.matches('\n').count() + 1)
+        });
+        let task = cx.background_spawn(async move { crate::git::permalink(&path, line) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |viewer, cx| {
+                let note = match result {
+                    Ok((url, pushed)) => {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(url));
+                        if pushed {
+                            tr!("explorer.link_copied")
+                        } else {
+                            tr!("explorer.link_copied_unpushed")
+                        }
+                    }
+                    Err(err) => err,
+                };
+                viewer.link_note = Some((note, Instant::now()));
+                cx.notify();
+            });
+            Timer::after(LINK_NOTE_TTL).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
     }
 
     pub fn is_open(&self) -> bool {
@@ -940,6 +982,27 @@ impl FileViewer {
                         })),
                 )
             })
+            .children(
+                self.link_note
+                    .as_ref()
+                    .filter(|(_, at)| at.elapsed() < LINK_NOTE_TTL)
+                    .map(|(note, _)| {
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(theme::ui_font_family())
+                            .child(note.clone())
+                    }),
+            )
+            .child(
+                IconButton::new("viewer-copy-link", "icons/github.svg")
+                    .size(ButtonSize::Compact)
+                    .tip(tr!("explorer.copy_github_link"))
+                    .on_click(
+                        &theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.copy_github_link(cx)),
+                    ),
+            )
             .child(self.status_chip(theme, tab))
             .into_any_element()
     }

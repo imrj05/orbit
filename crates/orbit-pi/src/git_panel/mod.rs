@@ -28,6 +28,7 @@ use gpui::{
 };
 
 use crate::ui::chip::{ChipButton, ChipStyle};
+use crate::ui::diff::{DiffGutter, DiffRow, DiffTone};
 use crate::ui::tab::Tab;
 use crate::ui::button::{Button, ButtonVariant};
 use crate::app::ModelEntry;
@@ -145,6 +146,20 @@ enum GitTab {
     Stashes,
     Issues,
     Pulls,
+    Actions,
+}
+
+/// Which GitHub dropdown is open on the Issues / Pull requests tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GithubMenu {
+    /// The issue detail's Agent menu.
+    IssueAgent,
+    /// The pull request detail's Agent menu.
+    PullAgent,
+    /// The issue list's "for me" filter.
+    IssueMine,
+    /// The pull request list's "for me" filter.
+    PullMine,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +223,17 @@ enum BranchPrompt {
     /// Create a GitHub repository for this folder (`gh repo create`) and add
     /// it as `origin`. The field holds the repository name.
     Publish,
+    /// Ask people to review pull request `number`; the field holds logins.
+    Reviewers(u64),
+    /// Comment on one line of pull request `number`'s diff.
+    LineComment {
+        number: u64,
+        path: String,
+        line: u64,
+        side: &'static str,
+    },
+    /// Tag and publish a release from the current branch.
+    Release,
 }
 
 /// Which New form's repository-template picker is open.
@@ -375,6 +401,22 @@ pub struct GitPanel {
     branch_pull: Option<Option<gh::GhPull>>,
     /// When the GitHub facts above were last read, and for which branch.
     github_meta_at: Option<(Instant, Option<String>)>,
+    /// The open GitHub dropdown (Agent menus, "for me" filters).
+    github_menu: Option<GithubMenu>,
+    github_menu_dismissed_at: crate::ui::popover::DismissGuard,
+    /// The open pull request's diff, read on the first file expanded.
+    pr_diff: Option<(u64, Result<Vec<gh::PrDiffFile>, String>)>,
+    pr_diff_loading: bool,
+    /// Files whose diff is expanded inline in the pull request detail.
+    pr_diff_open: HashSet<String>,
+    /// The Actions tab: recent workflow runs.
+    runs: Vec<gh::GhRun>,
+    runs_loading: bool,
+    runs_error: Option<String>,
+    /// Every branch's runs instead of the current branch's.
+    runs_all_branches: bool,
+    /// The release prompt's "draft" choice.
+    release_draft: bool,
     /// Whether the branch row's Sync dropdown is open.
     sync_menu_open: bool,
     /// When the outside-click dismiss last fired. The chevron's click lands
@@ -710,6 +752,16 @@ impl GitPanel {
             repo_star_busy: false,
             branch_pull: None,
             github_meta_at: None,
+            github_menu: None,
+            github_menu_dismissed_at: Default::default(),
+            pr_diff: None,
+            pr_diff_loading: false,
+            pr_diff_open: HashSet::new(),
+            runs: Vec::new(),
+            runs_loading: false,
+            runs_error: None,
+            runs_all_branches: false,
+            release_draft: false,
             github_new_issues: 0,
             github_new_pulls: 0,
             issues: Vec::new(),
@@ -821,6 +873,7 @@ impl GitPanel {
             3 => GitTab::Stashes,
             4 => GitTab::Issues,
             5 => GitTab::Pulls,
+            6 => GitTab::Actions,
             _ => GitTab::Changes,
         };
         if self.tab != tab {
@@ -877,6 +930,7 @@ impl GitPanel {
             GitTab::Stashes => 3,
             GitTab::Issues => 4,
             GitTab::Pulls => 5,
+            GitTab::Actions => 6,
         }
     }
 
@@ -961,6 +1015,11 @@ impl GitPanel {
             self.repo_info = None;
             self.branch_pull = None;
             self.github_meta_at = None;
+            self.github_menu = None;
+            self.pr_diff = None;
+            self.pr_diff_open.clear();
+            self.runs.clear();
+            self.runs_error = None;
             if self.open {
                 self.refresh_all(cx);
             }
@@ -1244,6 +1303,7 @@ impl GitPanel {
             GitTab::Graph => self.refresh_graph(cx),
             GitTab::Issues => self.refresh_issues(cx),
             GitTab::Pulls => self.refresh_pulls(cx),
+            GitTab::Actions => self.refresh_runs(cx),
             // Stashes ride along with the branch refresh above.
             GitTab::Changes | GitTab::Stashes => {}
         }
@@ -1281,6 +1341,7 @@ impl GitPanel {
             GitTab::Graph => self.graph_loading,
             GitTab::Issues => self.issues_loading,
             GitTab::Pulls => self.pulls_loading,
+            GitTab::Actions => self.runs_loading,
             GitTab::Stashes => false,
         }
     }
@@ -1635,6 +1696,778 @@ impl GitPanel {
         .detach();
     }
 
+    // ── GitHub dropdowns: Agent menus and "for me" filters ─────────────
+
+    fn toggle_github_menu(&mut self, menu: GithubMenu, cx: &mut Context<Self>) {
+        // The outside-click dismiss runs on mouse-down for the same press, so
+        // a click inside its wake-up window is the close, not a reopen.
+        if !self.github_menu_dismissed_at.swallows() {
+            self.github_menu = if self.github_menu == Some(menu) {
+                None
+            } else {
+                Some(menu)
+            };
+        }
+        cx.notify();
+    }
+
+    /// The floating list a GitHub dropdown opens under its chip.
+    fn github_menu_popup(
+        &self,
+        menu: GithubMenu,
+        rows: Vec<AnyElement>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.github_menu != Some(menu) {
+            return None;
+        }
+        let list = popover_list(div().id("git-github-menu"), &theme)
+            .w(px(ACTION_MENU_W))
+            .dismiss_on_outside(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.github_menu = None;
+                this.github_menu_dismissed_at.arm();
+                cx.notify();
+            }))
+            .children(rows);
+        Some(dropdown_below(
+            DropdownAlign::Start,
+            px(6.),
+            list,
+            "anchored_popover-in-github",
+            &theme,
+        ))
+    }
+
+    /// The **Agent ▾** chip on an issue or a pull request: every way to hand
+    /// it to the agent, in one menu instead of a row of buttons.
+    fn agent_chip(
+        &self,
+        id: &'static str,
+        menu: GithubMenu,
+        disabled: bool,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.github_menu == Some(menu);
+        let floating = theme.for_floating();
+        let rows = match (open, menu) {
+            (true, GithubMenu::IssueAgent) => self.issue_agent_rows(floating, cx),
+            (true, GithubMenu::PullAgent) => self.pull_agent_rows(floating, cx),
+            _ => Vec::new(),
+        };
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                ChipButton::new(id, ChipStyle::Outlined { inset: false })
+                    .size(ButtonSize::Medium)
+                    .leading(icon(
+                        "icons/spark.svg",
+                        ButtonSize::Medium.icon_size().px(&theme),
+                        theme.accent_text,
+                    ))
+                    .label(tr!("git_panel.agent"))
+                    .open(open)
+                    .disabled(
+                        disabled
+                            || self.on_start_github_task.is_none()
+                            || self.pr_busy
+                            || self.operation_busy,
+                    )
+                    .on_click(
+                        &theme,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.toggle_github_menu(menu, cx)
+                        }),
+                    ),
+            )
+            .children(self.github_menu_popup(menu, rows, floating, cx))
+            .into_any_element()
+    }
+
+    fn issue_agent_rows(&self, theme: Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![
+            menu_row(
+                "git-agent-work-issue",
+                "icons/branch.svg",
+                &tr!("git_panel.agent_work_on_issue"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| this.work_on_issue(window, cx)),
+            ),
+            menu_row(
+                "git-agent-fix-issue",
+                "icons/spark.svg",
+                &tr!("git_panel.agent_fix_here"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| this.fix_issue_here(window, cx)),
+            ),
+        ]
+    }
+
+    fn pull_agent_rows(&self, theme: Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![
+            menu_row(
+                "git-agent-review",
+                "icons/eye.svg",
+                &tr!("git_panel.review_with_agent"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.review_pull_with_agent(window, cx)
+                }),
+            ),
+            menu_row(
+                "git-agent-summarize",
+                "icons/spark.svg",
+                &tr!("git_panel.agent_summarize_pr"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| this.summarize_pull(window, cx)),
+            ),
+            menu_row(
+                "git-agent-address",
+                "icons/chat.svg",
+                &tr!("git_panel.agent_address_comments"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.address_review_comments(window, cx)
+                }),
+            ),
+        ]
+    }
+
+    /// The list's **For me** filter: everyone's items, or the ones waiting on
+    /// the signed-in user.
+    fn mine_chip(
+        &self,
+        menu: GithubMenu,
+        current: gh::Mine,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.github_menu == Some(menu);
+        let floating = theme.for_floating();
+        let options: &[gh::Mine] = if menu == GithubMenu::PullMine {
+            &[
+                gh::Mine::Everyone,
+                gh::Mine::ReviewRequested,
+                gh::Mine::Assigned,
+                gh::Mine::Created,
+            ]
+        } else {
+            &[
+                gh::Mine::Everyone,
+                gh::Mine::Assigned,
+                gh::Mine::Created,
+                gh::Mine::Mentioned,
+            ]
+        };
+        let rows = if open {
+            options
+                .iter()
+                .map(|&option| {
+                    menu_row(
+                        mine_row_id(menu, option),
+                        if option == current {
+                            "icons/check.svg"
+                        } else {
+                            mine_icon(option)
+                        },
+                        &mine_label(option),
+                        floating,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.set_mine(menu, option, cx)
+                        }),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                ChipButton::new(
+                    if menu == GithubMenu::PullMine {
+                        "git-pr-mine"
+                    } else {
+                        "git-issue-mine"
+                    },
+                    ChipStyle::Outlined { inset: false },
+                )
+                .icon("icons/filter.svg")
+                .label(mine_label(current))
+                .selected(current != gh::Mine::Everyone)
+                .caret(true)
+                .open(open)
+                .on_click(
+                    &theme,
+                    cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_github_menu(menu, cx)),
+                ),
+            )
+            .children(self.github_menu_popup(menu, rows, floating, cx))
+            .into_any_element()
+    }
+
+    fn set_mine(&mut self, menu: GithubMenu, mine: gh::Mine, cx: &mut Context<Self>) {
+        self.github_menu = None;
+        match menu {
+            GithubMenu::IssueMine => {
+                self.issue_filter.mine = mine;
+                self.refresh_issues(cx);
+            }
+            GithubMenu::PullMine => {
+                self.pr_filter.mine = mine;
+                self.refresh_pulls(cx);
+            }
+            GithubMenu::IssueAgent | GithubMenu::PullAgent => {}
+        }
+        cx.notify();
+    }
+
+    // ── agent tasks from issues and pull requests ──────────────────────
+
+    /// Start an agent task in this workspace with `prompt`.
+    fn launch_agent(&mut self, prompt: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.github_menu = None;
+        let Some(start) = self.on_start_github_task.clone() else {
+            return;
+        };
+        let Some(workspace) = self.workspace.clone() else {
+            self.set_status(tr!("git_panel.status_no_workspace"));
+            cx.notify();
+            return;
+        };
+        cx.notify();
+        // Deferred: starting a task updates the app, which owns this panel.
+        window.defer(cx, move |window, cx| start(workspace, prompt, window, cx));
+    }
+
+    /// Fix the open issue on the branch that is checked out now.
+    fn fix_issue_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(issue) = self.issue_detail.as_ref() else { return };
+        let prompt = issue_prompt(issue, None);
+        self.launch_agent(prompt, window, cx);
+    }
+
+    /// Create a branch linked to the open issue (`gh issue develop`), check
+    /// it out, remember the issue for the pull request's `Closes #n`, and
+    /// start the agent there. Refused with uncommitted work, like checkout.
+    fn work_on_issue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.github_menu = None;
+        let Some(issue) = self.issue_detail.clone() else { return };
+        if self.git_operation.is_some() || !self.staged.is_empty() || !self.unstaged.is_empty() {
+            self.set_failure(tr!("git_panel.work_on_issue_dirty"));
+            cx.notify();
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        self.operation_busy = true;
+        cx.notify();
+        let number = issue.number;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let branch = gh::develop_issue(&cwd, number)?;
+                    git::set_branch_issue(&cwd, &branch, number)?;
+                    Ok::<String, String>(branch)
+                })
+                .await;
+            let _ = this.update_in(cx, |panel, window, cx| {
+                panel.operation_busy = false;
+                match result {
+                    Ok(branch) => {
+                        panel.clear_failure();
+                        panel.set_status(tr!("git_panel.issue_branch_created", name = branch.clone()));
+                        panel.refresh_all(cx);
+                        panel.launch_agent(issue_prompt(&issue, Some(&branch)), window, cx);
+                    }
+                    Err(err) => panel.set_failure(err),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn review_pull_with_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.github_menu = None;
+        let Some(url) = self.pr_detail.as_ref().map(|pull| pull.url.clone()) else {
+            return;
+        };
+        self.start_github_task(&url, true, window, cx);
+    }
+
+    fn summarize_pull(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pull) = self.pr_detail.as_ref() else { return };
+        let prompt = summarize_pull_prompt(pull);
+        self.launch_agent(prompt, window, cx);
+    }
+
+    /// Hand the pull request's unresolved review comments to the agent. Like
+    /// fixing checks, it needs the pull request's branch checked out.
+    fn address_review_comments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.github_menu = None;
+        let Some(pull) = self.pr_detail.as_ref() else { return };
+        if self.branch.as_deref() != Some(pull.head_ref.as_str()) {
+            self.set_failure(tr!("git_panel.checks_fix_needs_branch"));
+            cx.notify();
+            return;
+        }
+        let Some((owner, name)) = gh::url_repo_slug(&pull.url) else { return };
+        let (number, url, head) = (pull.number, pull.url.clone(), pull.head_ref.clone());
+        self.pr_busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { gh::review_threads(&owner, &name, number) })
+                .await;
+            let _ = this.update_in(cx, |panel, window, cx| {
+                panel.pr_busy = false;
+                match result {
+                    Ok(threads) if threads.is_empty() => {
+                        panel.set_status(tr!("git_panel.no_unresolved_comments"))
+                    }
+                    Ok(threads) => {
+                        let prompt = address_comments_prompt(&url, &head, &threads);
+                        panel.launch_agent(prompt, window, cx);
+                    }
+                    Err(err) => panel.set_failure(err),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // ── people ─────────────────────────────────────────────────────────
+
+    /// **Assign me** / **Unassign me** on an issue (`kind` = `issue`) or a
+    /// pull request (`pr`). Shown once `gh` has named the signed-in user.
+    fn assign_me_button(
+        &self,
+        id: &'static str,
+        kind: &'static str,
+        number: u64,
+        assignees: &[gh::GhUser],
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let me = self.gh_user.as_ref()?.login.clone();
+        let assigned = assignees
+            .iter()
+            .any(|user| user.login.eq_ignore_ascii_case(&me));
+        Some(action_button(
+            id,
+            &if assigned {
+                tr!("git_panel.unassign_me")
+            } else {
+                tr!("git_panel.assign_me")
+            },
+            Some(
+                icon(
+                    "icons/at-sign.svg",
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    theme.text_secondary,
+                )
+                .into_any_element(),
+            ),
+            false,
+            self.pr_busy || self.issue_busy,
+            theme,
+            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                let Some(cwd) = this.cwd() else { return };
+                let assign = !assigned;
+                if kind == "issue" {
+                    this.run_issue_op(move || gh::assign_me(&cwd, "issue", number, assign), cx);
+                } else {
+                    this.run_pr_op(move || gh::assign_me(&cwd, "pr", number, assign), cx);
+                }
+            }),
+        ))
+    }
+
+    // ── pull request diff, inline ──────────────────────────────────────
+
+    /// Expand or fold one file's diff in the pull request detail. The whole
+    /// diff is read once, on the first file opened.
+    fn toggle_pr_file(&mut self, path: String, cx: &mut Context<Self>) {
+        if !self.pr_diff_open.remove(&path) {
+            self.pr_diff_open.insert(path);
+        }
+        let Some(number) = self.pr_detail.as_ref().map(|pull| pull.number) else {
+            cx.notify();
+            return;
+        };
+        let loaded = self.pr_diff.as_ref().is_some_and(|(n, _)| *n == number);
+        if !loaded && !self.pr_diff_loading {
+            if let Some(cwd) = self.cwd() {
+                self.pr_diff_loading = true;
+                self.spawn_data(
+                    cx,
+                    move || Ok(gh::pull_diff(&cwd, number)),
+                    move |panel, result, cx| {
+                        panel.pr_diff_loading = false;
+                        panel.pr_diff = Some((number, result.and_then(|files| files)));
+                        cx.notify();
+                    },
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    /// One file's diff under its row: numbered lines in the diff tones, and a
+    /// comment button on each line (shown on hover) that posts to GitHub.
+    fn pr_file_diff(
+        &self,
+        number: u64,
+        path: &str,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let frame = div()
+            .mx(DynamicSpacing::Base12.px(&theme))
+            .mb(DynamicSpacing::Base06.px(&theme))
+            .rounded(Radius::Medium.px(&theme))
+            .border_1()
+            .border_color(theme.hairline_subtle())
+            .overflow_hidden()
+            .flex()
+            .flex_col();
+        let note = |text: String| {
+            div()
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base06.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
+                .child(text)
+        };
+        let files = match self.pr_diff.as_ref().filter(|(n, _)| *n == number) {
+            None => return frame.child(note(tr!("git_panel.diff_loading"))).into_any_element(),
+            Some((_, Err(err))) => return frame.child(note(err.clone())).into_any_element(),
+            Some((_, Ok(files))) => files,
+        };
+        let Some(file) = files.iter().find(|file| file.path == path) else {
+            return frame
+                .child(note(tr!("git_panel.diff_no_text")))
+                .into_any_element();
+        };
+        if file.lines.is_empty() {
+            return frame
+                .child(note(tr!("git_panel.diff_no_text")))
+                .into_any_element();
+        }
+        let gutter = DiffGutter::Number {
+            width: px(44.),
+            divider: true,
+        };
+        let mut rows = frame
+            .font_family(theme::code_font_family())
+            .text_size(TextSize::XSmall.px(&theme));
+        for (ix, line) in file.lines.iter().enumerate() {
+            if line.kind == gh::PrLineKind::Hunk {
+                rows = rows.child(
+                    div()
+                        .px(DynamicSpacing::Base08.px(&theme))
+                        .py(DynamicSpacing::Base02.px(&theme))
+                        .bg(theme.surface_secondary)
+                        .text_color(theme.text_muted)
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .child(line.text.clone()),
+                );
+                continue;
+            }
+            let tone = match line.kind {
+                gh::PrLineKind::Added => DiffTone::Addition,
+                gh::PrLineKind::Removed => DiffTone::Deletion,
+                _ => DiffTone::Context,
+            };
+            let number_text = line
+                .new_line
+                .or(line.old_line)
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+            let body = div().pl(DynamicSpacing::Base06.px(&theme)).child(if line.text.is_empty() {
+                " ".to_string()
+            } else {
+                line.text.clone()
+            });
+            let mut row = div()
+                .id(gpui::ElementId::Name(format!("pr-line-{path}-{ix}").into()))
+                .relative()
+                .group("pr-diff-line")
+                .child(
+                    DiffRow::new(tone, div().text_color(tone.ink(&theme)).child(number_text), body)
+                        .gutter(gutter)
+                        .min_h(px(18.))
+                        .render(&theme),
+                );
+            if let Some((anchor, side)) = gh::comment_anchor(line) {
+                let path = path.to_string();
+                row = row.child(
+                    div().absolute().top_0().right(px(4.)).child(
+                        IconButton::new(
+                            gpui::ElementId::Name(format!("pr-line-comment-{path}-{ix}").into()),
+                            "icons/chat.svg",
+                        )
+                        .size(ButtonSize::Compact)
+                        .tip(tr!("git_panel.comment_on_line"))
+                        .on_click(
+                            &theme,
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_branch_prompt(
+                                    BranchPrompt::LineComment {
+                                        number,
+                                        path: path.clone(),
+                                        line: anchor,
+                                        side,
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            }),
+                        )
+                        // Revealed on line hover, like a branch row's delete.
+                        .opacity(0.)
+                        .group_hover("pr-diff-line", |s| s.opacity(1.)),
+                    ),
+                );
+            }
+            rows = rows.child(row);
+        }
+        if file.hidden > 0 {
+            rows = rows.child(note(tr!("git_panel.diff_more_lines", count = file.hidden)));
+        }
+        rows.into_any_element()
+    }
+
+    // ── Actions tab ────────────────────────────────────────────────────
+
+    fn refresh_runs(&mut self, cx: &mut Context<Self>) {
+        if !self.gh_installed {
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        let branch = if self.runs_all_branches {
+            None
+        } else {
+            self.branch.clone()
+        };
+        self.runs_loading = true;
+        self.runs_error = None;
+        self.spawn_data(
+            cx,
+            move || gh::list_runs(&cwd, branch.as_deref()),
+            |panel, result, cx| {
+                panel.runs_loading = false;
+                match result {
+                    Ok(runs) => panel.runs = runs,
+                    Err(err) => {
+                        panel.runs.clear();
+                        panel.runs_error = Some(err);
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn run_actions_op<F>(&mut self, work: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce() -> Result<String, String> + Send + 'static,
+    {
+        self.spawn_data(cx, work, |panel, result, cx| {
+            match result {
+                Ok(note) => {
+                    panel.clear_failure();
+                    panel.set_status(note);
+                }
+                Err(err) => panel.set_failure(err),
+            }
+            panel.refresh_runs(cx);
+            cx.notify();
+        });
+    }
+
+    fn actions_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let scope = div()
+            .flex_none()
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
+            .border_b_1()
+            .border_color(theme.hairline())
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(DynamicSpacing::Base02.px(&theme))
+            .child(github_state_tab(
+                "git-runs-branch",
+                &tr!("git_panel.runs_this_branch"),
+                !self.runs_all_branches,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.runs_all_branches = false;
+                    this.refresh_runs(cx);
+                }),
+            ))
+            .child(github_state_tab(
+                "git-runs-all",
+                &tr!("git_panel.runs_all_branches"),
+                self.runs_all_branches,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.runs_all_branches = true;
+                    this.refresh_runs(cx);
+                }),
+            ));
+        let body: AnyElement = if !self.gh_authenticated {
+            empty_note(
+                theme,
+                "icons/github.svg",
+                &tr!("git_panel.gh_auth_title"),
+                Some(&tr!("git_panel.gh_auth_body")),
+            )
+        } else if let Some(error) = &self.runs_error {
+            empty_note(
+                theme,
+                "icons/stop.svg",
+                &tr!("git_panel.runs_unavailable"),
+                Some(error),
+            )
+        } else if self.runs.is_empty() {
+            empty_note(
+                theme,
+                "icons/rocket-01.svg",
+                &if self.runs_loading {
+                    tr!("git_panel.loading")
+                } else {
+                    tr!("git_panel.runs_empty")
+                },
+                None,
+            )
+        } else {
+            div()
+                .id("git-runs-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(DynamicSpacing::Base08.px(&theme))
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base02.px(&theme))
+                .children(self.runs.iter().map(|run| self.run_row(run, theme, cx)))
+                .into_any_element()
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(scope)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn run_row(&self, run: &gh::GhRun, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let (label, color, glyph) = check_status_parts(run.bucket(), theme);
+        let id = run.id;
+        let url = run.url.clone();
+        let details = [
+            run.workflow.as_str(),
+            run.branch.as_str(),
+            run.event.as_str(),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .chain(std::iter::once(gh::relative_time(&run.created_at)))
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let row = div()
+            .id(gpui::ElementId::Name(format!("git-run-{id}").into()))
+            .group("git-row")
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base06.px(&theme))
+            .rounded(Radius::Medium.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(icon(glyph, IconSize::Small.px(&theme), color))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_primary)
+                            .child(run.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(details),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(color)
+                    .child(label),
+            )
+            .children((run.bucket() == gh::CheckBucket::Failed).then(|| {
+                row_button(
+                    format!("git-run-rerun-{id}"),
+                    "icons/refresh.svg",
+                    "git_panel.checks_rerun_failed",
+                    theme,
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        let Some(cwd) = this.cwd() else { return };
+                        this.run_actions_op(
+                            move || {
+                                gh::rerun_failed(&cwd, id)
+                                    .map(|()| tr!("git_panel.checks_rerun_started"))
+                            },
+                            cx,
+                        );
+                    }),
+                )
+            }))
+            .children(run.is_running().then(|| {
+                row_button(
+                    format!("git-run-cancel-{id}"),
+                    "icons/stop-square.svg",
+                    "git_panel.run_cancel",
+                    theme,
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        let Some(cwd) = this.cwd() else { return };
+                        this.run_actions_op(move || gh::cancel_run(&cwd, id), cx);
+                    }),
+                )
+            }))
+            .children((!url.is_empty()).then(|| {
+                row_button(
+                    format!("git-run-open-{id}"),
+                    "icons/arrow-up-right.svg",
+                    "git_panel.open_on_github",
+                    theme,
+                    move |_, _, cx| cx.open_url(&url),
+                )
+            }));
+        crate::motion::hover(row, format!("git-run-{id}"), &theme, Hover::row(&theme))
+    }
+
     // ── issues ─────────────────────────────────────────────────────────
 
     /// Load the issue list under the current filter. Repository labels for the
@@ -1935,6 +2768,38 @@ impl GitPanel {
         }
         let default = (self.pr_templates.len() == 1).then_some(0);
         self.apply_pull_template(default, cx);
+        self.prefill_closes_issue(cx);
+    }
+
+    /// A branch made by **Work on issue** remembers its issue
+    /// (`branch.<name>.orbitIssue`); its pull request body starts with
+    /// `Closes #<n>`, so merging closes the issue.
+    fn prefill_closes_issue(&mut self, cx: &mut Context<Self>) {
+        let (Some(cwd), Some(branch)) = (self.cwd(), self.branch.clone()) else {
+            return;
+        };
+        self.spawn_data(
+            cx,
+            move || Ok(git::branch_issue(&cwd, &branch)),
+            |panel, result, cx| {
+                let Ok(Some(number)) = result else { return };
+                if !panel.pr_new_open {
+                    return;
+                }
+                let line = format!("Closes #{number}");
+                let body = panel.pr_new_body.read(cx).text();
+                if body.contains(&line) {
+                    return;
+                }
+                let text = if body.trim().is_empty() {
+                    line
+                } else {
+                    format!("{line}\n\n{body}")
+                };
+                panel.pr_new_body.update(cx, |input, cx| input.set_text(text, cx));
+                cx.notify();
+            },
+        );
     }
 
     /// Pick an issue template (`None` = blank), prefilling the title prefix and
@@ -2482,6 +3347,11 @@ impl GitPanel {
 
     fn open_pull(&mut self, number: u64, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd() else { return };
+        if self.pr_diff.as_ref().map(|(n, _)| *n) != Some(number) {
+            self.pr_diff = None;
+            self.pr_diff_open.clear();
+        }
+        self.github_menu = None;
         switch_comment_draft(
             &self.pr_comment,
             &mut self.pr_comment_owner,
@@ -2846,7 +3716,7 @@ impl GitPanel {
             GitTab::Graph => self.graph.len(),
             GitTab::Issues => self.issues.len(),
             GitTab::Pulls => self.pulls.len(),
-            GitTab::Changes | GitTab::Stashes => 0,
+            GitTab::Changes | GitTab::Stashes | GitTab::Actions => 0,
         }
     }
 
@@ -2869,7 +3739,7 @@ impl GitPanel {
                 let number = self.selected_pr?;
                 self.pulls.iter().position(|pull| pull.number == number)
             }
-            GitTab::Changes | GitTab::Stashes => None,
+            GitTab::Changes | GitTab::Stashes | GitTab::Actions => None,
         }
     }
 
@@ -2921,7 +3791,7 @@ impl GitPanel {
                 let number = self.pulls[ix].number;
                 self.open_pull(number, cx);
             }
-            GitTab::Changes | GitTab::Stashes => {}
+            GitTab::Changes | GitTab::Stashes | GitTab::Actions => {}
         }
     }
 
@@ -3880,6 +4750,7 @@ impl GitPanel {
             RecoveryAction::PublishToGithub => {
                 self.open_branch_prompt(BranchPrompt::Publish, window, cx)
             }
+            RecoveryAction::ForkAndPush => self.run_operation(gh::fork_and_push, cx),
             RecoveryAction::ForceWithLease => {
                 // Force pushing rewrites the remote; always confirm first.
                 self.pending_confirm = Some(PendingConfirm::ForcePush);
@@ -4051,11 +4922,18 @@ impl GitPanel {
                 .and_then(|cwd| cwd.file_name().map(|n| n.to_string_lossy().into_owned()))
                 .map(|folder| gh::suggested_repo_name(&folder))
                 .unwrap_or_default(),
+            BranchPrompt::Reviewers(_)
+            | BranchPrompt::LineComment { .. }
+            | BranchPrompt::Release => String::new(),
         };
         let placeholder = match &prompt {
             BranchPrompt::Publish => "git_panel.repo_name_placeholder",
+            BranchPrompt::Reviewers(_) => "git_panel.reviewers_placeholder",
+            BranchPrompt::LineComment { .. } => "git_panel.line_comment_placeholder",
+            BranchPrompt::Release => "git_panel.release_tag_placeholder",
             _ => "git_panel.branch_name_placeholder",
         };
+        self.github_menu = None;
         if prompt == BranchPrompt::Publish {
             self.publish_private = true;
         }
@@ -4109,6 +4987,49 @@ impl GitPanel {
                         let push = git::has_commits(cwd);
                         gh::create_repo(cwd, &name, private, push)?;
                         Ok(tr!("git_panel.published_github", name = name))
+                    },
+                    cx,
+                )
+            }
+            BranchPrompt::Reviewers(number) => {
+                let logins = gh::parse_logins(&name);
+                let Some(cwd) = self.cwd() else { return };
+                self.run_pr_op(move || gh::request_reviewers(&cwd, number, &logins), cx);
+            }
+            BranchPrompt::LineComment {
+                number,
+                path,
+                line,
+                side,
+            } => {
+                let Some(pull) = self.pr_detail.as_ref().filter(|pull| pull.number == number)
+                else {
+                    return;
+                };
+                let Some((owner, repo)) = gh::url_repo_slug(&pull.url) else {
+                    return;
+                };
+                let commit = pull.head_oid.clone();
+                let body = name;
+                self.run_pr_op(
+                    move || {
+                        gh::add_line_comment(&owner, &repo, number, &commit, &path, line, side, &body)
+                    },
+                    cx,
+                );
+            }
+            BranchPrompt::Release => {
+                if !gh::valid_tag(&name) {
+                    self.set_failure(tr!("git_panel.release_tag_invalid"));
+                    cx.notify();
+                    return;
+                }
+                let Some(target) = self.branch.clone() else { return };
+                let draft = self.release_draft;
+                self.run_operation(
+                    move |cwd| {
+                        let url = gh::create_release(cwd, &name, &target, draft)?;
+                        Ok(tr!("git_panel.release_created", url = url))
                     },
                     cx,
                 )
@@ -4431,6 +5352,7 @@ impl GitPanel {
                 "icons/git-pull-request.svg",
                 "git_panel.tab_pulls",
             ));
+            tabs.push((GitTab::Actions, "icons/rocket-01.svg", "git_panel.tab_actions"));
         }
         let changed = self.changed_file_count();
         // The page's first row sits under the card's rounded corner: 48px
@@ -4891,6 +5813,19 @@ impl GitPanel {
                 }),
             ));
         }
+        if self.gh_authenticated && self.has_remote && self.branch.is_some() {
+            menu = menu.child(menu_separator(theme)).child(menu_row(
+                "git-more-release",
+                "icons/tag-01.svg",
+                &tr!("git_panel.create_release"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.branch_more_open = false;
+                    this.release_draft = false;
+                    this.open_branch_prompt(BranchPrompt::Release, window, cx)
+                }),
+            ));
+        }
         Some(
             dropdown_below(
                 DropdownAlign::End,
@@ -4919,6 +5854,10 @@ impl GitPanel {
         // missing access; creating another repository would not fix that.
         if self.has_remote {
             actions.retain(|action| *action != RecoveryAction::PublishToGithub);
+        }
+        // Forking goes through the user's own `gh` account.
+        if !self.gh_authenticated {
+            actions.retain(|action| *action != RecoveryAction::ForkAndPush);
         }
         let copy = IconButton::new("git-failure-copy", "icons/copy.svg")
             .size(ButtonSize::Compact)
@@ -6142,7 +7081,11 @@ impl GitPanel {
     /// The per-file actions menu: open, reveal, copy path, file history.
     fn file_actions_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = theme.for_floating();
-        let (path, _hash) = self.file_menu.clone()?;
+        let (path, hash) = self.file_menu.clone()?;
+        let github_link = self
+            .remote_web
+            .as_ref()
+            .map(|web| web.file_url(&hash, &path, None));
         let menu = popover_list(div().id("git-file-menu"), &theme)
             .absolute()
             .top(px(42.))
@@ -6205,6 +7148,19 @@ impl GitPanel {
                     }
                 }),
             ))
+            .children(github_link.map(|url| {
+                menu_row(
+                    "git-file-copy-link",
+                    "icons/github.svg",
+                    &tr!("git_panel.copy_github_link"),
+                    theme,
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.close_file_menu(cx);
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+                        this.set_status(tr!("git_panel.link_copied"));
+                    }),
+                )
+            }))
             .child(menu_separator(theme))
             .child(menu_row(
                 "git-file-history",
@@ -6510,7 +7466,9 @@ impl GitPanel {
                         }),
                     )
                 }),
-            );
+            )
+            .child(div().flex_1())
+            .child(self.mine_chip(GithubMenu::IssueMine, self.issue_filter.mine, theme, cx));
         let compact = compact_github_tools(self.page_width, self.github_list_width);
         let label_trigger = github_label_filter_button(
             "git-issue-label-filter",
@@ -6733,28 +7691,15 @@ impl GitPanel {
             .child(
                 div()
                     .debug_selector(|| "github-issue-agent-action".into())
-                    .child({
-                        let url = issue.url.clone();
-                        action_button(
-                            "git-issue-agent",
-                            &tr!("git_panel.fix_with_agent"),
-                            Some(
-                                icon(
-                                    "icons/spark.svg",
-                                    ButtonSize::Medium.icon_size().px(&theme),
-                                    theme.accent_text,
-                                )
-                                .into_any_element(),
-                            ),
-                            false,
-                            url.is_empty() || self.on_start_github_task.is_none(),
-                            theme,
-                            cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.start_github_task(&url, false, window, cx);
-                            }),
-                        )
-                    }),
+                    .child(self.agent_chip(
+                        "git-issue-agent",
+                        GithubMenu::IssueAgent,
+                        issue.url.is_empty(),
+                        theme,
+                        cx,
+                    )),
             )
+            .children(self.assign_me_button("git-issue-assign", "issue", issue.number, &issue.assignees, theme, cx))
             .children((!issue.url.is_empty()).then(|| {
                 let url = issue.url.clone();
                 action_button(
@@ -7237,7 +8182,11 @@ impl GitPanel {
                         }),
                     )
                 }),
-            );
+            )
+            // Whose pull requests: with the states, so the search row keeps
+            // its width in a narrow pane.
+            .child(div().flex_1())
+            .child(self.mine_chip(GithubMenu::PullMine, self.pr_filter.mine, theme, cx));
         let compact = compact_github_tools(self.page_width, self.github_list_width);
         let tools = div()
             .debug_selector(|| "github-filter-tools".into())
@@ -7442,28 +8391,36 @@ impl GitPanel {
             .child(
                 div()
                     .debug_selector(|| "github-pr-agent-action".into())
-                    .child({
-                        let url = pull.url.clone();
-                        action_button(
-                            "git-pr-agent",
-                            &tr!("git_panel.review_with_agent"),
-                            Some(
-                                icon(
-                                    "icons/spark.svg",
-                                    ButtonSize::Medium.icon_size().px(&theme),
-                                    theme.accent_text,
-                                )
-                                .into_any_element(),
-                            ),
-                            false,
-                            url.is_empty() || self.on_start_github_task.is_none(),
-                            theme,
-                            cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.start_github_task(&url, true, window, cx);
-                            }),
-                        )
-                    }),
+                    .child(self.agent_chip(
+                        "git-pr-agent",
+                        GithubMenu::PullAgent,
+                        pull.url.is_empty(),
+                        theme,
+                        cx,
+                    )),
             )
+            .children(pull.is_open().then(|| {
+                let number = pull.number;
+                action_button(
+                    "git-pr-request-review",
+                    &tr!("git_panel.request_review_ellipsis"),
+                    Some(
+                        icon(
+                            "icons/eye.svg",
+                            ButtonSize::Medium.icon_size().px(&theme),
+                            theme.text_secondary,
+                        )
+                        .into_any_element(),
+                    ),
+                    false,
+                    self.pr_busy,
+                    theme,
+                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.open_branch_prompt(BranchPrompt::Reviewers(number), window, cx)
+                    }),
+                )
+            }))
+            .children(self.assign_me_button("git-pr-assign", "pr", pull.number, &pull.assignees, theme, cx))
             .children((!pull.url.is_empty()).then(|| {
                 let url = pull.url.clone();
                 action_button(
@@ -7530,6 +8487,7 @@ impl GitPanel {
             .child(meta)
             .child(branches)
             .child(summary)
+            .children(pull_people_line(pull, theme))
             .child(actions);
         let mut content = div()
             .w_full()
@@ -7727,9 +8685,12 @@ impl GitPanel {
                     glyph_size,
                     fallback,
                 );
+                let expanded = self.pr_diff_open.contains(&path);
                 files = files.child(
                     div()
+                        .id(gpui::ElementId::Name(format!("git-pr-file-row-{path}").into()))
                         .group("git-row")
+                        .cursor_pointer()
                         .px(DynamicSpacing::Base12.px(&theme))
                         .py(DynamicSpacing::Base04.px(&theme))
                         .rounded(Radius::Medium.px(&theme))
@@ -7737,6 +8698,19 @@ impl GitPanel {
                         .items_center()
                         .gap(DynamicSpacing::Base08.px(&theme))
                         .hover_state(&theme)
+                        .on_click(cx.listener({
+                            let path = path.clone();
+                            move |this, _: &ClickEvent, _, cx| this.toggle_pr_file(path.clone(), cx)
+                        }))
+                        .child(icon(
+                            if expanded {
+                                "icons/chevron-down.svg"
+                            } else {
+                                "icons/chevron-right.svg"
+                            },
+                            IconSize::XSmall.px(&theme),
+                            theme.text_muted,
+                        ))
                         .child(letter_tile(status, status_color(status, theme), theme))
                         .child(glyph)
                         .child(
@@ -7773,6 +8747,7 @@ impl GitPanel {
                             cx.listener({
                                 let path = path.clone();
                                 move |this, _: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
                                     if let Some(on_open) = this.on_open_file.clone() {
                                         on_open(path.clone(), window, cx);
                                     }
@@ -7780,6 +8755,9 @@ impl GitPanel {
                             }),
                         ))),
                 );
+                if expanded {
+                    files = files.child(self.pr_file_diff(pull.number, &path, theme, cx));
+                }
             }
             if pull.files.len() > MAX_FILE_ROWS {
                 files = files.child(
@@ -8711,9 +9689,21 @@ impl GitPanel {
                 tr!("git_panel.publish_github_title"),
                 tr!("git_panel.publish"),
             ),
+            BranchPrompt::Reviewers(_) => (
+                tr!("git_panel.request_review_title"),
+                tr!("git_panel.request_review"),
+            ),
+            BranchPrompt::LineComment { path, line, .. } => (
+                tr!("git_panel.line_comment_title", path = path.clone(), line = *line),
+                tr!("git_panel.comment"),
+            ),
+            BranchPrompt::Release => (
+                tr!("git_panel.release_title", branch = self.branch.clone().unwrap_or_default()),
+                tr!("git_panel.release_create"),
+            ),
         };
-        let private_toggle = (*prompt == BranchPrompt::Publish).then(|| {
-            github_check_toggle(
+        let private_toggle = match prompt {
+            BranchPrompt::Publish => Some(github_check_toggle(
                 "git-publish-private",
                 &tr!("git_panel.publish_private"),
                 self.publish_private,
@@ -8722,8 +9712,19 @@ impl GitPanel {
                     this.publish_private = !this.publish_private;
                     cx.notify();
                 }),
-            )
-        });
+            )),
+            BranchPrompt::Release => Some(github_check_toggle(
+                "git-release-draft",
+                &tr!("git_panel.release_draft"),
+                self.release_draft,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.release_draft = !this.release_draft;
+                    cx.notify();
+                }),
+            )),
+            _ => None,
+        };
         let card = div()
             .modal_width(px(420.))
             .elevation_2(&theme)
@@ -9009,6 +10010,7 @@ impl Render for GitPanel {
             GitTab::Stashes => self.stashes_tab(theme, cx),
             GitTab::Issues => self.issues_tab(theme, cx),
             GitTab::Pulls => self.pulls_tab(theme, cx),
+            GitTab::Actions => self.actions_tab(theme, cx),
         };
         div()
             .id("git-page")
@@ -9380,6 +10382,7 @@ fn recovery_button(action: RecoveryAction, theme: Theme, cx: &Context<GitPanel>)
         RecoveryAction::PublishToGithub => {
             ("git-recover-publish-github", "git_panel.publish_github", true)
         }
+        RecoveryAction::ForkAndPush => ("git-recover-fork", "git_panel.fork_and_push", true),
     };
     action_button(
         id,
@@ -10581,6 +11584,152 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
 }
 
 /// A small uppercase section header inside a bordered card.
+/// The `for me` options' labels, icons and menu-row ids.
+fn mine_label(mine: gh::Mine) -> String {
+    match mine {
+        gh::Mine::Everyone => tr!("git_panel.mine_everyone"),
+        gh::Mine::ReviewRequested => tr!("git_panel.mine_review_requested"),
+        gh::Mine::Assigned => tr!("git_panel.mine_assigned"),
+        gh::Mine::Created => tr!("git_panel.mine_created"),
+        gh::Mine::Mentioned => tr!("git_panel.mine_mentioned"),
+    }
+}
+
+fn mine_icon(mine: gh::Mine) -> &'static str {
+    match mine {
+        gh::Mine::Everyone => "icons/github.svg",
+        gh::Mine::ReviewRequested => "icons/eye.svg",
+        gh::Mine::Assigned => "icons/at-sign.svg",
+        gh::Mine::Created => "icons/pencil.svg",
+        gh::Mine::Mentioned => "icons/chat.svg",
+    }
+}
+
+fn mine_row_id(menu: GithubMenu, mine: gh::Mine) -> &'static str {
+    let pull = menu == GithubMenu::PullMine;
+    match (pull, mine) {
+        (true, gh::Mine::Everyone) => "git-pr-mine-everyone",
+        (true, gh::Mine::ReviewRequested) => "git-pr-mine-review",
+        (true, gh::Mine::Assigned) => "git-pr-mine-assigned",
+        (true, gh::Mine::Created) => "git-pr-mine-created",
+        (true, gh::Mine::Mentioned) => "git-pr-mine-mentioned",
+        (false, gh::Mine::Everyone) => "git-issue-mine-everyone",
+        (false, gh::Mine::ReviewRequested) => "git-issue-mine-review",
+        (false, gh::Mine::Assigned) => "git-issue-mine-assigned",
+        (false, gh::Mine::Created) => "git-issue-mine-created",
+        (false, gh::Mine::Mentioned) => "git-issue-mine-mentioned",
+    }
+}
+
+/// The pull request's requested reviewers and assignees, as one muted line.
+fn pull_people_line(pull: &gh::GhPull, theme: Theme) -> Option<AnyElement> {
+    let reviewers: Vec<String> = pull
+        .review_requests
+        .iter()
+        .map(gh::GhReviewRequest::label)
+        .filter(|label| !label.is_empty())
+        .map(|label| format!("@{label}"))
+        .collect();
+    let assignees: Vec<String> = pull
+        .assignees
+        .iter()
+        .map(|user| format!("@{}", user.login))
+        .collect();
+    let mut parts = Vec::new();
+    if !reviewers.is_empty() {
+        parts.push(tr!("git_panel.people_reviewers", names = reviewers.join(", ")));
+    }
+    if !assignees.is_empty() {
+        parts.push(tr!("git_panel.people_assignees", names = assignees.join(", ")));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(
+        div()
+            .w_full()
+            .min_w_0()
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_muted)
+            .child(parts.join(" · "))
+            .into_any_element(),
+    )
+}
+
+/// The first `max` bytes of `text`, on a character boundary, with a note
+/// when something was cut.
+fn clip(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n\n[… cut: {} more bytes]", &text[..end], text.len() - end)
+}
+
+const ISSUE_BODY_BYTES: usize = 8 * 1024;
+const THREAD_BODY_BYTES: usize = 2 * 1024;
+const MAX_THREADS: usize = 30;
+
+/// The prompt that hands an issue to the agent. Agent prompts stay English;
+/// `branch` is set when **Work on issue** made a linked branch for it.
+fn issue_prompt(issue: &gh::GhIssue, branch: Option<&str>) -> String {
+    let mut prompt = format!(
+        "Work on GitHub issue #{}: {}\n{}\n",
+        issue.number, issue.title, issue.url
+    );
+    if let Some(branch) = branch {
+        prompt.push_str(&format!(
+            "\nYou are on branch `{branch}`, created for this issue and linked to it on GitHub.\n"
+        ));
+    }
+    let body = issue.body.trim();
+    if !body.is_empty() {
+        prompt.push_str(&format!("\n## Issue\n\n{}\n", clip(body, ISSUE_BODY_BYTES)));
+    }
+    prompt.push_str(
+        "\nImplement it with a focused change, and run the relevant tests. Ask if the issue is unclear.",
+    );
+    prompt
+}
+
+fn summarize_pull_prompt(pull: &gh::GhPull) -> String {
+    format!(
+        "Summarize pull request #{} ({}) for a reviewer: {}\n\n\
+         Read it with `gh pr view {}` and `gh pr diff {}`. Say what it changes and why, \
+         how the change is put together, and anything risky or worth a closer look. \
+         Do not change any files.",
+        pull.number, pull.title, pull.url, pull.number, pull.number
+    )
+}
+
+fn address_comments_prompt(url: &str, branch: &str, threads: &[gh::ReviewThread]) -> String {
+    let mut prompt = format!(
+        "Address the unresolved review comments on pull request {url} \
+         (branch `{branch}`, which is checked out here). For each, make the change \
+         or explain briefly why not.\n"
+    );
+    for (ix, thread) in threads.iter().take(MAX_THREADS).enumerate() {
+        let place = match thread.line {
+            Some(line) => format!("{}:{line}", thread.path),
+            None => thread.path.clone(),
+        };
+        prompt.push_str(&format!("\n## {}. {place}\n", ix + 1));
+        for (author, body) in &thread.comments {
+            prompt.push_str(&format!("\n@{author}: {}\n", clip(body.trim(), THREAD_BODY_BYTES)));
+        }
+    }
+    if threads.len() > MAX_THREADS {
+        prompt.push_str(&format!(
+            "\n{} more unresolved threads are on GitHub.",
+            threads.len() - MAX_THREADS
+        ));
+    }
+    prompt
+}
+
 /// The glyph and colour that say a pull request's state on the branch chip.
 fn pull_state_mark(pull: &gh::GhPull, theme: Theme) -> (&'static str, Hsla) {
     if pull.is_merged() {
@@ -12332,6 +13481,9 @@ mod tests {
             deletions: 4,
             changed_files: 1,
             auto_merge: None,
+            head_oid: String::new(),
+            assignees: Vec::new(),
+            review_requests: Vec::new(),
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-02T00:00:00Z".into(),
             url: "https://github.com/orbit/a-repository-with-a-long-name/pull/149".into(),
@@ -12581,6 +13733,9 @@ mod tests {
                         deletions: 108,
                         changed_files: 2,
                         auto_merge: None,
+                        head_oid: String::new(),
+                        assignees: Vec::new(),
+                        review_requests: Vec::new(),
                         created_at: "2026-01-01T00:00:00Z".into(),
                         updated_at: "2026-01-02T00:00:00Z".into(),
                         url: "https://github.com/imrj05/orbit/pull/121".into(),
@@ -12705,6 +13860,9 @@ mod tests {
                 deletions: 103,
                 changed_files: 2,
                 auto_merge: None,
+                head_oid: String::new(),
+                assignees: Vec::new(),
+                review_requests: Vec::new(),
                 created_at: "2026-01-01T00:00:00Z".into(),
                 updated_at: "2026-01-02T00:00:00Z".into(),
                 url: "https://github.com/orbit/app/pull/113".into(),
@@ -12864,6 +14022,35 @@ mod tests {
         assert!(!split_github_view(px(799.)));
         assert!(split_github_view(px(800.)));
         assert!(split_github_view(px(1200.)));
+    }
+
+    #[test]
+    fn issue_prompt_names_the_branch_and_clips_long_bodies() {
+        let issue = gh::GhIssue {
+            number: 12,
+            title: "Crash on start".into(),
+            url: "https://github.com/o/r/issues/12".into(),
+            body: "x".repeat(super::ISSUE_BODY_BYTES + 10),
+            ..serde_json::from_str(r#"{"number":12,"title":"","state":"OPEN","author":{"login":"a"}}"#).unwrap()
+        };
+        let prompt = super::issue_prompt(&issue, Some("12-crash-on-start"));
+        assert!(prompt.starts_with("Work on GitHub issue #12: Crash on start"));
+        assert!(prompt.contains("`12-crash-on-start`"));
+        assert!(prompt.contains("[… cut: 10 more bytes]"));
+        assert!(!super::issue_prompt(&issue, None).contains("You are on branch"));
+    }
+
+    #[test]
+    fn address_comments_prompt_lists_each_thread_with_its_place() {
+        let threads = vec![gh::ReviewThread {
+            path: "src/a.rs".into(),
+            line: Some(4),
+            comments: vec![("rev".into(), "Rename this".into())],
+        }];
+        let prompt = super::address_comments_prompt("https://github.com/o/r/pull/3", "feat", &threads);
+        assert!(prompt.contains("## 1. src/a.rs:4"));
+        assert!(prompt.contains("@rev: Rename this"));
+        assert!(prompt.contains("`feat`"));
     }
 
     #[test]

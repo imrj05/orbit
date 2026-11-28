@@ -32,6 +32,8 @@ pub enum FailureKind {
     DirtyWorktree,
     /// Credentials were rejected by the remote.
     Auth,
+    /// Signed in fine, but the account may not push to this repository.
+    NoPushAccess,
     /// The push was blocked by server-side secret scanning.
     SecretScan,
     /// A file exceeds the remote's size limit.
@@ -82,6 +84,7 @@ impl FailureKind {
             ],
             Self::LocalOverwritten => vec![RecoveryAction::AbortOperation],
             Self::Auth => vec![RecoveryAction::Reauthenticate, RecoveryAction::Retry],
+            Self::NoPushAccess => vec![RecoveryAction::ForkAndPush],
             Self::Network => vec![RecoveryAction::Retry],
             Self::NoUpstream => vec![RecoveryAction::PublishBranch],
             // Server-side rejections need a code/config change first; there is
@@ -131,6 +134,8 @@ pub enum RecoveryAction {
     PublishBranch,
     /// Create a GitHub repository for this folder and add it as `origin`.
     PublishToGithub,
+    /// Fork the repository to the user's account and push the branch there.
+    ForkAndPush,
 }
 
 /// A failed Git operation, ready to render.
@@ -159,6 +164,7 @@ impl ActionError {
             FailureKind::RebaseConflict => tr!("git_panel.fail_rebase_conflicts"),
             FailureKind::LocalOverwritten => tr!("git_panel.fail_local_overwritten"),
             FailureKind::DirtyWorktree => tr!("git_panel.fail_dirty_worktree"),
+            FailureKind::NoPushAccess => tr!("git_panel.fail_no_push_access"),
             FailureKind::Auth => tr!("git_panel.fail_auth"),
             FailureKind::SecretScan => tr!("git_panel.fail_secret_scan"),
             FailureKind::LargeFile => tr!("git_panel.fail_large_file"),
@@ -228,6 +234,10 @@ fn classify(haystack: &str) -> FailureKind {
         || has("you have unstaged changes")
     {
         FailureKind::DirtyWorktree
+    } else if (has("permission to") && has("denied to"))
+        || has("the requested url returned error: 403")
+    {
+        FailureKind::NoPushAccess
     } else if has("authentication failed")
         || has("could not read username")
         || has("could not read password")
@@ -424,6 +434,16 @@ mod tests {
             error.recovery_actions(),
             vec![RecoveryAction::PublishBranch]
         );
+    }
+
+    #[test]
+    fn a_push_without_access_suggests_a_fork() {
+        let error = ActionError::from_raw(
+            "remote: Permission to o/r.git denied to someone.\n\
+             fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403",
+        );
+        assert_eq!(error.kind, FailureKind::NoPushAccess);
+        assert_eq!(error.recovery_actions(), vec![RecoveryAction::ForkAndPush]);
     }
 
     #[test]

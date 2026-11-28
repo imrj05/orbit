@@ -28,6 +28,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Re-run failed** restarts the failed GitHub Actions jobs and **Fix with
   agent** starts a task with the end of each failed job's log.
 
+- **An Agent menu for issues and pull requests.** One **Agent** dropdown
+  replaces the single agent button. On an issue, **Work on issue** creates a
+  branch linked to it on GitHub, checks it out and starts the agent with the
+  issue's text; that branch's new pull request starts with `Closes #N`.
+  **Fix on this branch** works where you are. On a pull request: **Review with
+  agent**, **Summarize for review**, and **Address review comments**, which
+  hands the agent every unresolved review thread.
+
+- **Review workflow.** A **For me** filter on Issues and Pull requests (review
+  requested, assigned to me, created by me, mentioning me); **Assign me** and
+  **Request review…**; requested reviewers and assignees shown on the pull
+  request; and the sidebar Git button counts pull requests waiting on your
+  review.
+
+- **Pull request diff with line comments.** Click a changed file in a pull
+  request to read its diff inline; hover a line to comment on it on GitHub.
+
+- **Actions, releases and forks.** A new **Actions** tab lists recent workflow
+  runs for the branch or every branch, with **Re-run failed** and **Cancel
+  run**. **Create release…** in the branch row's **…** menu tags the branch and
+  lets GitHub write the notes. A push refused for lack of access offers **Fork
+  and push**.
+
+- **Copy GitHub link.** From a History commit's file menu, or from the Files
+  viewer at the caret's line.
+
 - **Clone your own repositories.** The clone dialog lists your GitHub
   repositories under the URL field and filters them as you type; picking one
   fills in the URL and folder name.

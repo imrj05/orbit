@@ -63,6 +63,46 @@ pub fn init_repository(cwd: &Path) -> Result<(), String> {
     run_git(cwd, &["init", "--quiet"]).map(|_| ())
 }
 
+/// The issue a branch was made for by **Work on issue**, from
+/// `branch.<name>.orbitIssue` in the repository's own config.
+pub fn branch_issue(cwd: &Path, branch: &str) -> Option<u64> {
+    run_git(cwd, &["config", "--get", &format!("branch.{branch}.orbitIssue")])
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Remember that `branch` was made for issue `number`.
+pub fn set_branch_issue(cwd: &Path, branch: &str, number: u64) -> Result<(), String> {
+    run_git(
+        cwd,
+        &["config", &format!("branch.{branch}.orbitIssue"), &number.to_string()],
+    )
+    .map(|_| ())
+}
+
+/// A web link to `file` at the checked-out commit, at `line` when given.
+/// The flag says whether that commit is on a remote yet: until it is
+/// pushed, the link will not open.
+pub fn permalink(file: &Path, line: Option<usize>) -> Result<(String, bool), String> {
+    let dir = file.parent().ok_or_else(|| tr!("git_panel.link_unavailable"))?;
+    let root = PathBuf::from(run_git(dir, &["rev-parse", "--show-toplevel"])?);
+    let head = run_git(&root, &["rev-parse", "HEAD"])?;
+    let web = remote_web(&root).ok_or_else(|| tr!("git_panel.link_unavailable"))?;
+    let file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let root = root.canonicalize().unwrap_or(root);
+    let relative = file
+        .strip_prefix(&root)
+        .map_err(|_| tr!("git_panel.link_unavailable"))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let pushed = run_git(&root, &["branch", "-r", "--contains", &head])
+        .map(|out| !out.trim().is_empty())
+        .unwrap_or(false);
+    Ok((web.file_url(&head, &relative, line), pushed))
+}
+
 /// Current branch name, if any.
 pub fn current_branch(cwd: &Path) -> Option<String> {
     run_git(cwd, &["branch", "--show-current"])
@@ -1358,6 +1398,21 @@ pub struct RemoteWeb {
 }
 
 impl RemoteWeb {
+    /// The browser URL for `path` as it was at `rev`, optionally at a line.
+    pub fn file_url(&self, rev: &str, path: &str, line: Option<usize>) -> String {
+        let anchor = line.map(|line| match self.forge {
+            Forge::Github => format!("#L{line}"),
+            Forge::Gitlab => format!("#L{line}"),
+            Forge::Bitbucket => format!("#lines-{line}"),
+        });
+        let base = match self.forge {
+            Forge::Github => format!("{}/blob/{rev}/{path}", self.base),
+            Forge::Gitlab => format!("{}/-/blob/{rev}/{path}", self.base),
+            Forge::Bitbucket => format!("{}/src/{rev}/{path}", self.base),
+        };
+        format!("{base}{}", anchor.unwrap_or_default())
+    }
+
     /// The browser URL for one commit on this remote.
     pub fn commit_url(&self, hash: &str) -> String {
         match self.forge {
@@ -1447,6 +1502,66 @@ mod tests {
     fn git_ok(cwd: &Path, args: &[&str]) {
         let status = command(cwd).args(args).status().unwrap();
         assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn scratch_repo(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "orbit-git-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        init_repository(&root).expect("git init");
+        git_ok(&root, &["config", "user.email", "t@example.com"]);
+        git_ok(&root, &["config", "user.name", "T"]);
+        root
+    }
+
+    #[test]
+    fn file_urls_follow_each_forge() {
+        let web = |forge| RemoteWeb {
+            base: "https://host/o/r".into(),
+            forge,
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        assert_eq!(
+            web(Forge::Github).file_url("abc", "src/a.rs", Some(7)),
+            "https://host/o/r/blob/abc/src/a.rs#L7"
+        );
+        assert_eq!(
+            web(Forge::Gitlab).file_url("abc", "a.rs", None),
+            "https://host/o/r/-/blob/abc/a.rs"
+        );
+        assert_eq!(
+            web(Forge::Bitbucket).file_url("abc", "a.rs", Some(3)),
+            "https://host/o/r/src/abc/a.rs#lines-3"
+        );
+    }
+
+    #[test]
+    fn a_branch_remembers_its_issue_and_a_permalink_names_the_commit() {
+        let root = scratch_repo("permalink");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn a() {}\n").unwrap();
+        git_ok(&root, &["add", "."]);
+        git_ok(&root, &["commit", "-qm", "first"]);
+        let branch = current_branch(&root).expect("a branch");
+        assert_eq!(branch_issue(&root, &branch), None);
+        set_branch_issue(&root, &branch, 42).unwrap();
+        assert_eq!(branch_issue(&root, &branch), Some(42));
+
+        // No remote yet: no link, and the reason is said.
+        assert!(permalink(&root.join("src/lib.rs"), Some(1)).is_err());
+        git_ok(&root, &["remote", "add", "origin", "git@github.com:o/r.git"]);
+        let head = run_git(&root, &["rev-parse", "HEAD"]).unwrap();
+        let (url, pushed) = permalink(&root.join("src/lib.rs"), Some(1)).unwrap();
+        assert_eq!(url, format!("https://github.com/o/r/blob/{head}/src/lib.rs#L1"));
+        assert!(!pushed, "the commit is on no remote branch yet");
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Reads must not take optional index locks, or `git status` rewrites
