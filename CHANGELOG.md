@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Per-repository Git identity.** Settings → Git Accounts now has an
+  *Identity for <project>* section: enter a name and email and **Save for
+  this repository** to commit as that identity in the current project only
+  (`git config --local`, shared by its worktrees). **Use global identity**
+  removes the override. Your global `~/.gitconfig` is never changed.
+
 - **Standalone local plugins can be disabled (#199).** Pi ignored the disabled
   flag on standalone extension files. Orbit now removes the declaration from
   Pi's active package list and restores it when you turn the plugin back on.

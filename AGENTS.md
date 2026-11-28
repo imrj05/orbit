@@ -143,6 +143,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/git_activity_ui.rs  the sidebar Git button's GitHub half: the background `gh` check
                         (every 5 min + window activation), marking Issues / Pull requests seen
                         on arrival, the Settings → Privacy switch and the button's tooltip
+  src/git_identity.rs   a repository's own commit identity: read / validate / save / clear
+                        `user.name` + `user.email` with `git config --local` (Settings → Git Accounts)
   src/git_activity.rs   what the Git button flags: changed files + new issues / PRs, "new" =
                         opened after the last view, `~/.orbit-pi/git-activity.json` (switch +
                         per-`owner/name` view times, first sight baselined)

@@ -1393,7 +1393,7 @@ impl OrbitApp {
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
             SettingsSection::Agent => self.agent_rows(theme, this.clone(), cx),
             SettingsSection::Worktrees => self.worktree_settings_rows(theme, this.clone(), cx),
-            SettingsSection::GitAccounts => self.git_accounts_rows(theme, this.clone()),
+            SettingsSection::GitAccounts => self.git_accounts_rows(theme, this.clone(), cx),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
             // Rendered by `subagents_ui::render_subagents_page`.

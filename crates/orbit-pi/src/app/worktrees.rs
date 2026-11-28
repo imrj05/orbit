@@ -1550,7 +1550,11 @@ impl OrbitApp {
 
     /// The Settings field for a worktree text input (fixed width so the two
     /// rows align).
-    fn settings_text_field(&self, input: &Entity<ComposerInput>, theme: &Theme) -> AnyElement {
+    pub(super) fn settings_text_field(
+        &self,
+        input: &Entity<ComposerInput>,
+        theme: &Theme,
+    ) -> AnyElement {
         TextField::new(input.clone(), theme.background)
             .render(theme)
             .w(px(240.))

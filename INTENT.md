@@ -330,7 +330,7 @@ palette-invariant tests, and appear in Settings → Appearance's Dark or Light g
 
 ### D16 — Git account diagnostics are local and read-only
 
-Settings → Git Accounts inspects effective Git author settings, normalized generic and host-scoped helper configuration, SSH agent public fingerprints, conventional public-key file presence, sanitized remote hosts, GitHub CLI version and the presence (not values) of selected environment variables. Its separate, explicitly requested release check makes an anonymous request to GitHub for the latest stable `gh` version and shows manual package-manager commands; ordinary status refresh stays local and Orbit never runs the update. It does not manage credentials, execute helpers, inspect private keys or test remote access. Commit identity is not authentication, and helper or agent presence does not establish valid credentials or remote permissions. `gh auth status` may access the network and refresh credentials, so this local-only inspector does not run it and reports GitHub authentication as unknown. Desktop process environment can differ from the interactive shell; users resolve authentication manually in their own tools. No additional service or secret store is involved.
+Settings → Git Accounts inspects effective Git author settings, normalized generic and host-scoped helper configuration, SSH agent public fingerprints, conventional public-key file presence, sanitized remote hosts, GitHub CLI version and the presence (not values) of selected environment variables. Its separate, explicitly requested release check makes an anonymous request to GitHub for the latest stable `gh` version and shows manual package-manager commands; ordinary status refresh stays local and Orbit never runs the update. It does not manage credentials, execute helpers, inspect private keys or test remote access. The page edits exactly one thing — a repository-local `user.name` / `user.email` override for the current project — and never the global identity. Commit identity is not authentication, and helper or agent presence does not establish valid credentials or remote permissions. `gh auth status` may access the network and refresh credentials, so this local-only inspector does not run it and reports GitHub authentication as unknown. Desktop process environment can differ from the interactive shell; users resolve authentication manually in their own tools. No additional service or secret store is involved.
 
 ### D17 — The check reads the feed; a download is a user's decision
 
@@ -934,7 +934,7 @@ test, `remote_hosts`' store tests (surgical writes, unique names, alias
 discovery) and the app's `remote_ui_tests`; not yet exercised against a real VPS
 or in the GUI by hand.
 
-Settings → Git Accounts provides the local-only, read-only Git diagnostics described in D16; it does not check remote access or manage credentials.
+Settings → Git Accounts provides the local-only, read-only Git diagnostics described in D16; it does not check remote access or manage credentials. Its one write is the current repository's own commit identity: *Identity for <project>* saves `user.name` / `user.email` with `git config --local` (validated, off the UI thread, shared by the repository's worktrees) and *Use global identity* unsets them; the global `~/.gitconfig` is never written (`git_identity.rs`, `app/git_accounts_ui.rs`).
 
 The third round of #131 refines the workbench around projects and models. A
 session's **Delete session…** row is always listed — disabled with the reason
