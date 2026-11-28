@@ -572,9 +572,10 @@ exact events into a transcript.
 
 ### D25 — Subagents are their own right dock, not tabs on Review
 
-**Choice:** a delegated child opened from its card ("Open in Subagents") lands in a **Subagents**
-dock of its own (`RightDock::Subagents`): a header with the count, one entry row per opened child
-(state mark, name, elapsed, close), then the selected child's transcript. It shares the right-dock
+**Choice:** a delegated child opened from its card (the "Open in Subagents" icon on the child's row, reachable with the card closed) lands in a **Subagents**
+dock of its own (`RightDock::Subagents`): a header with the count, a strip with one tab per opened child
+(state mark, name, close; it scrolls sideways past the dock's edge), then the selected child's
+transcript under a status line that carries its elapsed time. It shares the right-dock
 slot with Review, the Explorer and session details — one at a time, opening any one closes the
 others — and borrows Review's docked width (`SidePane::docked_width`), so trading the two never
 moves the chat's edge. The entries (`right_dock.rs`) still ride on the session's `Transcript`;
@@ -791,9 +792,11 @@ fixed alphas. Unit tests cover the mode, the floors and the opaque fallbacks; th
 see-through window itself has not been looked at in the running app.
 
 Delegated children have their own **Subagents** right dock (D25, #190), apart
-from Review: one entry row per child the reader opens from its card ("Open in
-Subagents") — state mark, name (numbered when two share it), elapsed, close —
-under a header with the count, and the selected child's response below. The
+from Review: one tab per child the reader opens from its card ("Open in
+Subagents") — state mark, name (numbered when two share it), close — in a
+horizontally scrolling strip under a header with the count, and the selected
+child's response below, its status line carrying the elapsed time. A tab opened
+or selected past the strip's edge scrolls into view. The
 entries (`right_dock.rs`) ride on the session's `Transcript`, so parking a
 session parks them; whether the dock is *shown* is the app-wide
 `subagent_dock_open` flag, set only by that click or the top-bar Subagents chip
@@ -815,9 +818,9 @@ display only, never sent to the parent model. This is
 Orbit's own `subagent/1` delegation data, not upstream's dock, which reads the
 third-party `pi-subagents` async protocol. Covered by model tests, controller
 tests (open, hide-then-return, reload, close-last, Review trading the slot, the
-chip) and GPUI tests for the dock, its entries, Review without entries and the
+chip) and GPUI tests for the dock, its tabs on one row, Review without entries and the
 card's button; exercised by hand in the app (open two children, switch to Review
-and back with the chip, close an entry, close the dock). Gap: entry rows are
+and back with the chip, close an entry, close the dock). Gap: the tabs are
 pointer-driven; they are not yet keyboard stops.
 
 Transcript text selection counts its own clicks (Pi TUI's `getClickCount`:

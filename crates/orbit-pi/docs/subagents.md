@@ -131,8 +131,10 @@ glyph is accent-colored; a finished one is ink.
 ✓ worker    runs commands   edit src/auth.rs   24 tools   1:41   ↑8.2k ↓1.4k <$0.03
 ```
 
-Under the rows, the run footer says the state and the cost — `2 of 3 running`,
-`3 done · 44 tools`, `↑12.1K ↓2.6K <$0.05` — and a chain adds `step 2 of 3`.
+When a run has several children, a footer under the rows says the state and the
+cost — `2 of 3 running`, `3 done · 44 tools`, `↑12.1K ↓2.6K <$0.05` — and a
+chain adds `step 2 of 3`. A single child's card is one line: its tokens and cost
+sit on the row, before its tool count and clock, and no footer is drawn.
 
 **A reason line** appears when a run was refused before it started (`worker is a
 command-running agent; this session is Build · Supervised…`), when the mode

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Open in Subagents from the row.** Each subagent's row on its card now has
+  an icon (tooltip: Open in Subagents) just before its disclosure chevron, so
+  the dock is one click away without expanding the card first. The text button
+  that used to sit at the top of the expanded log is gone.
+
+- **A single subagent's card is one line.** The tokens and cost (`↑52.5K ↓522
+  · $0.06`) now sit on the child's row beside its tool count and clock, instead
+  of on a second footer line. Runs with several children keep their footer for
+  the run's totals.
+
+- **Subagents dock uses tabs.** Each subagent you open from its card now gets
+  its own tab in a strip at the top of the Subagents dock (state, name, close),
+  instead of a stacked list above one shared view. The strip scrolls sideways
+  when many children run, and a newly opened tab scrolls into view. The
+  elapsed time moved to the selected child's status line.
+
+- **Model and thinking chips stay one control during a run.** While a turn is
+  in flight, the composer's model and thinking chips used to gain a grey fill
+  and an outline each, splitting "Model Level ▾" into two cramped boxes. Now
+  they keep their faceless look and only their text and icon dim, just like a
+  disabled ghost button, so the pair keeps its spacing and reads as one setting.
+
 - **Publish to GitHub (#193).** A repository with commits but no remote now
   shows **Publish to GitHub** in the Git page's commit bar instead of a
   **Publish branch** that could only fail. It asks for the repository name

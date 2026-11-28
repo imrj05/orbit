@@ -1,4 +1,4 @@
-//! The Subagents dock: one entry per delegated subagent the reader opened
+//! The Subagents dock: one tab per delegated subagent the reader opened
 //! from a delegation card, above the selected child's own transcript (see
 //! [`crate::right_dock`]). It is a right dock of its own — Review stays the
 //! diff and nothing else (issue #190).
@@ -14,11 +14,13 @@ use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::ui::button::IconButton;
 use crate::ui::chip::{Badge, BadgeFill};
 use crate::ui::prelude::*;
-use crate::ui::row::{nav_row, nav_row_fill, NavRowHeight};
 
-/// How many entries the list shows before it scrolls, so a wide fan-out
-/// never pushes the selected child's transcript off the dock.
-const ENTRY_ROWS_VISIBLE: f32 = 5.;
+/// A subagent tab's size: the terminal's tighter density, since the dock is
+/// narrow and several children usually run side by side.
+const DOCK_TAB_SIZE: ButtonSize = ButtonSize::Default;
+
+/// A tab's label truncates past this width (the full name is its tooltip).
+const DOCK_TAB_MAX_W: f32 = 180.;
 
 impl OrbitApp {
     /// Handed to the transcript: a delegation card's "Open in side pane".
@@ -35,7 +37,15 @@ impl OrbitApp {
     /// the right-dock slot from Review, the Explorer and session details.
     pub(super) fn open_dock_subagent(&mut self, tab: SubagentTab, cx: &mut Context<Self>) {
         self.transcript.dock_tabs_mut().open(tab);
+        self.reveal_dock_tab(tab);
         self.show_subagent_dock(cx);
+    }
+
+    /// Scroll the tab strip so `tab` is in view (a wide fan-out overflows it).
+    fn reveal_dock_tab(&self, tab: SubagentTab) {
+        if let Some(ix) = self.transcript.dock_tabs().subagents().iter().position(|t| *t == tab) {
+            self.right_dock_scroll.scroll_to_item(ix);
+        }
     }
 
     /// Show the Subagents dock in the right-dock slot (one dock at a time).
@@ -73,6 +83,7 @@ impl OrbitApp {
 
     pub(super) fn activate_dock_tab(&mut self, tab: SubagentTab, cx: &mut Context<Self>) {
         self.transcript.dock_tabs_mut().activate(tab);
+        self.reveal_dock_tab(tab);
         cx.notify();
     }
 
@@ -243,107 +254,77 @@ impl OrbitApp {
             )
     }
 
-    /// One row per opened subagent: its state mark, its name, how long it ran,
-    /// and a close control. The selected row holds the selection wash; a
-    /// click shows that child's response below.
-    fn subagent_entry_list(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
+    /// One tab per opened subagent, in the order they were opened: its state
+    /// mark, its name and a close control. The open tab holds the pressed
+    /// wash; a click shows that child below. Past the dock's edge the strip
+    /// scrolls sideways instead of crushing the tabs.
+    fn subagent_tab_strip(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
         let app = cx.entity();
         let tabs = self.transcript.dock_tabs();
         let active = tabs.active();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as i64)
-            .unwrap_or(0);
-        let row_h = ButtonSize::Medium.height(&theme);
-        let inset = DynamicSpacing::Base04.px(&theme);
-        let rows = tabs.subagents().iter().copied().enumerate().map(|(ix, tab)| {
-            let selected = active == Some(tab);
+        let mut strip = crate::ui::tab::tab_strip(
+            "right-dock-subagent-tab-row",
+            &self.right_dock_scroll,
+            DOCK_TAB_SIZE,
+            &theme,
+        )
+        .flex_1()
+        .min_w_0();
+        for (ix, tab) in tabs.subagents().iter().copied().enumerate() {
             let child = self.dock_child(tab);
             let mark = child.as_ref().map(|child| {
                 crate::transcript_view::subagent_status_mark(
                     child,
                     child.is_live(),
-                    ElementId::NamedInteger("right-dock-entry-spin".into(), ix as u64),
+                    ElementId::NamedInteger("right-dock-tab-spin".into(), ix as u64),
                     IconSize::XSmall.px(&theme),
                     theme,
                 )
             });
-            let elapsed = child.as_ref().and_then(|child| {
-                crate::subagent::format_elapsed(child.started_at, child.ended_at, now_ms)
-            });
+            let label = self.dock_tab_label(tab);
             let select = app.clone();
             let close = app.clone();
-            let row = nav_row(
-                div().id(ElementId::NamedInteger("right-dock-entry".into(), ix as u64)),
-                &theme,
-                NavRowHeight::Item,
+            let mut button = crate::ui::tab::Tab::new(
+                ElementId::NamedInteger("right-dock-tab".into(), ix as u64),
+                label.clone(),
             )
-            .debug_selector(move || format!("right-dock-tab-{ix}"))
-            .pl(DynamicSpacing::Base08.px(&theme))
-            .pr(DynamicSpacing::Base02.px(&theme))
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .text_size(TextSize::Small.px(&theme))
-            .children(mark)
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
-                    .when(selected, |label| label.font_weight(FontWeight::MEDIUM))
-                    .text_color(if selected {
-                        theme.text_primary
-                    } else {
-                        theme.text_secondary
-                    })
-                    .child(self.dock_tab_label(tab)),
-            )
-            .children(elapsed.map(|elapsed| {
-                div()
-                    .flex_none()
-                    .font(crate::ui::style::text::num_font())
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_muted)
-                    .child(elapsed)
-            }))
-            .child(
-                IconButton::new(
-                    ElementId::NamedInteger("right-dock-entry-close".into(), ix as u64),
-                    "icons/x.svg",
-                )
-                .size(ButtonSize::Compact)
-                .tip(tr!("right_dock.close_entry"))
-                .faded(&theme, |button| {
-                    button.on_click(move |_, _, cx| {
-                        // The row underneath must not select what is closing.
-                        cx.stop_propagation();
-                        close.update(cx, |app, cx| app.close_dock_subagent(tab, cx));
-                    })
-                }),
-            )
-            .on_click(move |_, _, cx| {
-                select.update(cx, |app, cx| app.activate_dock_tab(tab, cx));
-            });
-            crate::motion::hover(
-                row,
-                format!("right-dock-entry-{ix}"),
-                &theme,
-                nav_row_fill(&theme, selected, false),
-            )
-        });
+            .size(DOCK_TAB_SIZE)
+            .max_w(px(DOCK_TAB_MAX_W))
+            .active(active == Some(tab))
+            .close(
+                ElementId::NamedInteger("right-dock-tab-close".into(), ix as u64),
+                tr!("right_dock.close_entry"),
+                move |_, _, cx| {
+                    close.update(cx, |app, cx| app.close_dock_subagent(tab, cx));
+                },
+            );
+            if let Some(mark) = mark {
+                button = button.glyph(mark);
+            }
+            strip = strip.child(
+                button
+                    .render(&theme)
+                    .debug_selector(move || format!("right-dock-tab-{ix}"))
+                    .tip(label)
+                    .on_click(move |_, _, cx| {
+                        select.update(cx, |app, cx| app.activate_dock_tab(tab, cx));
+                    }),
+            );
+        }
+        // One inset on every side, so the tabs sit centred in their row and
+        // the first one starts on the header's own leading edge.
+        let inset = DynamicSpacing::Base04.px(&theme).round();
         div()
-            .id("right-dock-subagent-entries")
-            .debug_selector(|| "right-dock-subagent-entries".to_string())
+            .debug_selector(|| "right-dock-subagent-tabs".to_string())
             .flex_none()
             .w_full()
-            .max_h(row_h * ENTRY_ROWS_VISIBLE + inset * 2.)
-            .overflow_y_scroll()
-            .track_scroll(&self.right_dock_scroll)
-            .p(inset)
+            .h(DOCK_TAB_SIZE.height(&theme) + inset * 2. + crate::theme::tokens::BORDER_WIDTH)
             .flex()
-            .flex_col()
+            .items_center()
+            .px(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
             .border_color(theme.hairline())
-            .children(rows)
+            .child(strip)
     }
 
     /// The Subagents dock: the shared dock frame, its header, one entry per
@@ -364,7 +345,7 @@ impl OrbitApp {
                 .flex()
                 .flex_col()
                 .child(this.subagent_dock_header(theme, cx))
-                .child(this.subagent_entry_list(theme, cx))
+                .child(this.subagent_tab_strip(theme, cx))
                 .child(content)
                 .into_any_element();
             crate::sidepane::dock_shell("right-dock-subagent", width, theme, body)
@@ -488,14 +469,19 @@ impl OrbitApp {
         )
     }
 
-    /// One quiet line above a child's transcript: what state it is in. Its
-    /// elapsed time is on its entry row; the task itself is the transcript's
-    /// first message.
+    /// One quiet line above a child's transcript: what state it is in and how
+    /// long it has run (a tab has no room for the time). The task itself is
+    /// the transcript's first message.
     fn subagent_status_line(
         &self,
         child: &crate::subagent::SubagentChild,
         theme: Theme,
     ) -> impl IntoElement {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or(0);
+        let elapsed = crate::subagent::format_elapsed(child.started_at, child.ended_at, now_ms);
         div()
             .debug_selector(|| "right-dock-subagent-status".to_string())
             .flex_none()
@@ -523,6 +509,14 @@ impl OrbitApp {
                     .truncate()
                     .child(crate::transcript_view::subagent_status_label(child)),
             )
+            .children(elapsed.map(|elapsed| {
+                div()
+                    .flex_none()
+                    .font(crate::ui::style::text::num_font())
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(elapsed)
+            }))
     }
 }
 
@@ -703,8 +697,8 @@ mod tests {
         let _ = cx.draw(gpui::point(px(0.), px(0.)), viewport, |_, _| app.clone());
         assert!(cx.debug_bounds("right-dock-subagent").is_some(), "the subagent dock");
         assert!(cx.debug_bounds("right-dock-subagents-header").is_some(), "its header");
-        assert!(cx.debug_bounds("right-dock-subagent-entries").is_some(), "its entries");
-        assert!(cx.debug_bounds("right-dock-tab-0").is_some(), "the subagent's entry");
+        assert!(cx.debug_bounds("right-dock-subagent-tabs").is_some(), "its tab strip");
+        assert!(cx.debug_bounds("right-dock-tab-0").is_some(), "the subagent's tab");
         assert!(cx.debug_bounds("header-subagents").is_some(), "the top-bar chip");
         assert!(cx.debug_bounds("side-pane").is_none(), "no Review beside it");
         assert!(cx.debug_bounds("subagent-panel-header").is_some(), "the panel header");
@@ -779,6 +773,14 @@ mod tests {
         let _ = cx.draw(gpui::point(px(0.), px(0.)), viewport, |_, _| app.clone());
         assert!(cx.debug_bounds("right-dock-subagent-transcript").is_some());
         assert!(cx.debug_bounds("right-dock-subagent-status").is_some());
+        // Each child is its own tab, side by side on one row — not a stacked
+        // list above the shared view.
+        let a = cx.debug_bounds("right-dock-tab-0").expect("the first tab");
+        let b = cx.debug_bounds("right-dock-tab-1").expect("the second tab");
+        assert_eq!(a.origin.y, b.origin.y, "the tabs share one row");
+        assert!(b.origin.x >= a.origin.x + a.size.width, "the second sits after the first");
+        let strip = cx.debug_bounds("right-dock-subagent-tabs").expect("the strip");
+        assert!(strip.size.height < a.size.height * 2., "one row tall, never a list");
         assert!(
             cx.debug_bounds("subagent-panel-header").is_none(),
             "the summary gives way to the transcript"
