@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **The space bar reaches the terminal on Windows (#196).** Words stopped
+  gluing together in the embedded terminal. Windows reports the spacebar as a
+  named key rather than a character, and the terminal's key encoder had no arm
+  for it, so the keystroke was dropped before reaching the PTY. Space — and
+  Ctrl+Space, as `pi` and other TUIs bind it — now send the byte the program
+  inside expects; plain, Ctrl, and Alt space are pinned by regression tests.
+
 ## [0.2.22] - 2026-11-27
 
 - **Plugin notifications keep their level (#173).** A toast an extension raises

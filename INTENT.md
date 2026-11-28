@@ -1495,6 +1495,14 @@ bindings (Editor clipboard/undo/save, Files close, Git tabs), so Windows and
 Linux get the same shortcuts, and the dead ⌘. abort chord was fixed (gpui's key
 name is `.`, not `period`).
 
+Inside the integrated terminal a key name is a wire format, not a hint: the
+program behind the PTY only ever sees bytes. Windows reports the spacebar as
+the named key `space` with no `key_char`, and the terminal's encoder routes
+named keys through its table — a name missing there is a keystroke dropped
+before it reaches the program. The space forms are encoded explicitly: space
+as a byte, Ctrl+Space as NUL the way `pi` and other TUIs bind it, with
+regression tests for the plain, Ctrl, and Alt forms.
+
 The Explorer builds its tree off the UI thread and in linear time. The walk was
 already on the background executor, but `TreeIndex::build` — one insert per entry,
 then a sort per directory — ran inside the `update` that published the result,
