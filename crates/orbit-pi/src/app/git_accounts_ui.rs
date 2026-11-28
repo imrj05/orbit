@@ -1,8 +1,11 @@
-//! Settings presentation and background lifecycle for local Git diagnostics.
+//! Settings presentation and background lifecycle for local Git diagnostics,
+//! plus the one thing the page edits: the current repository's own commit
+//! identity (`git config --local`, see `crate::git_identity`).
 use super::*;
+use crate::git_identity::{self, Invalid, LocalIdentity};
 use crate::ui::button::{Button, ButtonVariant};
 use crate::git_accounts::{self, State};
-use crate::theme::tokens::{ButtonSize, TextSize};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, TextSize};
 use crate::ui::prelude::*;
 
 fn state_text<T>(state: &State<T>) -> String {
@@ -24,6 +27,24 @@ fn scope(s: &str) -> String {
         _ => tr!("git_accounts.unknown"),
     }
 }
+fn invalid_text(invalid: Invalid) -> String {
+    match invalid {
+        Invalid::EmptyName => tr!("git_accounts.local_name_required"),
+        Invalid::EmptyEmail => tr!("git_accounts.local_email_required"),
+        Invalid::BadName => tr!("git_accounts.local_name_invalid"),
+        Invalid::BadEmail => tr!("git_accounts.local_email_invalid"),
+    }
+}
+
+/// Save is live only for a complete pair that differs from what the
+/// repository already holds.
+fn can_save_identity(stored: &LocalIdentity, name: &str, email: &str) -> bool {
+    let (name, email) = (name.trim(), email.trim());
+    !name.is_empty()
+        && !email.is_empty()
+        && (stored.name.as_deref() != Some(name) || stored.email.as_deref() != Some(email))
+}
+
 fn gh_release_status(status: GhUpdateStatus, installed: &State<String>) -> String {
     match status {
         GhUpdateStatus::NotChecked => tr!("git_accounts.update_not_checked"),
@@ -81,12 +102,190 @@ impl OrbitApp {
             let _ = this.update(cx, |app, cx| {
                 if app.git_accounts_generation == generation {
                     app.git_accounts_loading = false;
+                    app.seed_git_identity_form(snapshot.repository.as_ref(), cx);
                     app.git_accounts_snapshot = Some(snapshot);
                     cx.notify();
                 }
             });
         })
         .detach();
+    }
+
+    /// Show what the repository holds now, so the form never edits a stale
+    /// value: its own override, or empty fields over the global fallback.
+    fn seed_git_identity_form(&mut self, repo: Option<&LocalIdentity>, cx: &mut Context<Self>) {
+        let name = repo.and_then(|r| r.name.clone()).unwrap_or_default();
+        let email = repo.and_then(|r| r.email.clone()).unwrap_or_default();
+        self.git_identity_name.update(cx, |input, cx| input.set_text(name, cx));
+        self.git_identity_email.update(cx, |input, cx| input.set_text(email, cx));
+        self.git_identity_error = None;
+    }
+
+    /// Write the typed name and email to the current repository's config.
+    fn save_git_identity(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace) = self.current_workspace.clone() else {
+            return;
+        };
+        if self.git_identity_busy {
+            return;
+        }
+        let name = self.git_identity_name.read(cx).text();
+        let email = self.git_identity_email.read(cx).text();
+        let (name, email) = match git_identity::validate(&name, &email) {
+            Ok(pair) => pair,
+            Err(invalid) => {
+                self.git_identity_error = Some(invalid_text(invalid));
+                cx.notify();
+                return;
+            }
+        };
+        self.run_git_identity_change(
+            tr!("git_accounts.local_saved", project = self.workspace_label()),
+            move || git_identity::save(&workspace, &name, &email),
+            cx,
+        );
+    }
+
+    /// Drop the repository's override so the global identity applies again.
+    fn clear_git_identity(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace) = self.current_workspace.clone() else {
+            return;
+        };
+        if self.git_identity_busy {
+            return;
+        }
+        self.run_git_identity_change(
+            tr!("git_accounts.local_cleared", project = self.workspace_label()),
+            move || git_identity::clear(&workspace),
+            cx,
+        );
+    }
+
+    fn run_git_identity_change(
+        &mut self,
+        done: String,
+        change: impl FnOnce() -> Result<(), String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_identity_busy = true;
+        self.git_identity_error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { change() }).await;
+            let _ = this.update(cx, |app, cx| {
+                app.git_identity_busy = false;
+                match result {
+                    Ok(()) => {
+                        app.toast_success(done);
+                        // Re-read: the effective rows and the form follow git.
+                        app.refresh_git_accounts_for_workspace(cx);
+                    }
+                    Err(error) => {
+                        app.git_identity_error =
+                            Some(tr!("git_accounts.local_failed", error = error));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Settings → Git Accounts → the current repository's identity form.
+    fn git_identity_section(
+        &self,
+        theme: Theme,
+        repo: Option<&LocalIdentity>,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let project = self.workspace_label();
+        let title = tr!("git_accounts.local_title", project = project);
+        let Some(repo) = repo else {
+            return self.settings_section_desc(
+                theme,
+                &title,
+                None,
+                vec![self.setting_row(
+                    theme,
+                    &tr!("git_accounts.local_not_repo"),
+                    Some(&tr!("git_accounts.local_not_repo_hint")),
+                    None,
+                    None,
+                )],
+            );
+        };
+        let name = self.git_identity_name.read(cx).text();
+        let email = self.git_identity_email.read(cx).text();
+        let busy = self.git_identity_busy;
+        let can_save = !busy && can_save_identity(repo, &name, &email);
+        let save_this = this.clone();
+        let save = Button::new("git-identity-save", ButtonVariant::Primary)
+            .label(tr!("git_accounts.local_save"))
+            .loading(busy)
+            .disabled(!can_save)
+            .on_mouse_up(&theme, move |_, _, cx| {
+                save_this.update(cx, |app, cx| app.save_git_identity(cx));
+            })
+            .into_any_element();
+        let mut actions = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme));
+        if repo.is_set() {
+            actions = actions.child(
+                Button::new("git-identity-clear", ButtonVariant::Secondary)
+                    .label(tr!("git_accounts.local_clear"))
+                    .disabled(busy)
+                    .on_mouse_up(&theme, move |_, _, cx| {
+                        this.update(cx, |app, cx| app.clear_git_identity(cx));
+                    }),
+            );
+        }
+        let actions = actions.child(save).into_any_element();
+        let (status, status_hint) = if repo.is_set() {
+            (
+                tr!("git_accounts.local_overridden"),
+                tr!("git_accounts.local_overridden_hint"),
+            )
+        } else {
+            (
+                tr!("git_accounts.local_inherited"),
+                tr!("git_accounts.local_inherited_hint"),
+            )
+        };
+        let mut rows = vec![
+            self.setting_row(
+                theme,
+                &tr!("git_accounts.name"),
+                None,
+                None,
+                Some(self.settings_text_field(&self.git_identity_name, &theme)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("git_accounts.email"),
+                None,
+                None,
+                Some(self.settings_text_field(&self.git_identity_email, &theme)),
+            ),
+            self.setting_row(theme, &status, Some(&status_hint), None, Some(actions)),
+        ];
+        if let Some(error) = &self.git_identity_error {
+            rows.push(self.setting_row(
+                theme,
+                &tr!("git_accounts.local_error_title"),
+                Some(error),
+                None,
+                None,
+            ));
+        }
+        self.settings_section_desc(
+            theme,
+            &title,
+            Some(&tr!("git_accounts.local_description")),
+            rows,
+        )
     }
 
     pub(super) fn git_accounts_toolbar(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
@@ -115,6 +314,7 @@ impl OrbitApp {
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
+        cx: &Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(snapshot) = &self.git_accounts_snapshot else {
             return vec![div()
@@ -155,6 +355,12 @@ impl OrbitApp {
                 row(tr!("git_accounts.name"), value(&snapshot.name)),
                 row(tr!("git_accounts.email"), value(&snapshot.email)),
             ],
+        ));
+        sections.push(self.git_identity_section(
+            theme,
+            snapshot.repository.as_ref(),
+            this.clone(),
+            cx,
         ));
         let gh = match &snapshot.gh {
             State::Detected(version)
@@ -296,6 +502,20 @@ impl OrbitApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_needs_a_complete_pair_that_changes_something() {
+        let empty = LocalIdentity::default();
+        assert!(can_save_identity(&empty, "Ada", "ada@example.test"));
+        assert!(!can_save_identity(&empty, "Ada", "  "));
+        assert!(!can_save_identity(&empty, "", "ada@example.test"));
+        let stored = LocalIdentity {
+            name: Some("Ada".into()),
+            email: Some("ada@example.test".into()),
+        };
+        assert!(!can_save_identity(&stored, " Ada ", "ada@example.test"));
+        assert!(can_save_identity(&stored, "Ada", "ada@work.test"));
+    }
 
     #[test]
     fn release_comparison_never_invents_an_installed_version() {

@@ -700,6 +700,15 @@ pub struct OrbitApp {
     git_accounts_loading: bool,
     git_accounts_generation: u64,
     gh_latest: GhUpdateStatus,
+    /// Settings → Git Accounts → This repository: the identity form,
+    /// seeded from the repository's own config on every snapshot.
+    git_identity_name: Entity<ComposerInput>,
+    git_identity_email: Entity<ComposerInput>,
+    _git_identity_subs: [Subscription; 2],
+    /// A save / reset is running off-thread.
+    git_identity_busy: bool,
+    /// Why the last save / reset was refused, beside the form.
+    git_identity_error: Option<String>,
     /// Open dropdown on the settings surface (language / font sizes).
     settings_select: Option<SettingsSelect>,
     /// Filter text for the open settings dropdown.
@@ -2438,6 +2447,23 @@ impl OrbitApp {
             }
             cx.notify();
         });
+        let identity_input = |id: &'static str, placeholder: &'static str, cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                ComposerInput::new(cx)
+                    .with_element_id(id)
+                    .with_placeholder_key(placeholder)
+                    .with_key_context("Composer Picker")
+                    .with_max_lines(1)
+                    .with_wrap(false)
+            })
+        };
+        let git_identity_name =
+            identity_input("git-identity-name", "git_accounts.local_name_placeholder", cx);
+        let git_identity_email =
+            identity_input("git-identity-email", "git_accounts.local_email_placeholder", cx);
+        // Typing changes whether Save is live.
+        let git_identity_subs = [&git_identity_name, &git_identity_email]
+            .map(|input| cx.observe(input, |_, _, cx| cx.notify()));
         // Create / rename / move dialog fields. The create dialog's start
         // point defaults to HEAD (empty input).
         let clone_url_input = cx.new(|cx| {
@@ -2655,6 +2681,11 @@ impl OrbitApp {
             git_accounts_loading: false,
             git_accounts_generation: 0,
             gh_latest: GhUpdateStatus::NotChecked,
+            git_identity_name,
+            git_identity_email,
+            _git_identity_subs: git_identity_subs,
+            git_identity_busy: false,
+            git_identity_error: None,
             settings_select: None,
             settings_filter,
             wallpaper_preset_focus: cx.focus_handle().tab_stop(true),
@@ -4812,6 +4843,7 @@ enum SettingsSelect {
 // wiring. Rendering and feature-specific logic live in child modules; they
 // are descendants of `app`, so they reach private fields/methods directly.
 mod annotations;
+mod file_menu;
 mod ask;
 mod auth_prompt;
 mod bug_report_ui;

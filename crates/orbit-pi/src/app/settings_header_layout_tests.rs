@@ -165,6 +165,7 @@ fn a_disabled_package_is_badged_and_explained(cx: &mut gpui::TestAppContext) {
             installed: true,
             version: Some("1.0.0".into()),
             enabled: false,
+            parked: false,
         }];
     });
     draw(cx, &app);
@@ -174,7 +175,7 @@ fn a_disabled_package_is_badged_and_explained(cx: &mut gpui::TestAppContext) {
         "a page with a disabled package explains what that means"
     );
     assert!(
-        cx.debug_bounds("plugin-toggle-npm:pi-better").is_some(),
+        cx.debug_bounds("plugin-toggle-Global-npm:pi-better").is_some(),
         "the package keeps its card and its switch"
     );
 }

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Per-repository Git identity.** Settings → Git Accounts now has an
+  *Identity for <project>* section: enter a name and email and **Save for
+  this repository** to commit as that identity in the current project only
+  (`git config --local`, shared by its worktrees). **Use global identity**
+  removes the override. Your global `~/.gitconfig` is never changed.
+
+- **Standalone local plugins can be disabled (#199).** Pi ignored the disabled
+  flag on standalone extension files. Orbit now removes the declaration from
+  Pi's active package list and restores it when you turn the plugin back on.
+
+- **Local file actions in chat (#199).** Right-click a path in a local
+  session's main transcript to open it, reveal it in the file manager, copy
+  its path, or save a copy of the file.
+
 - **Open in Subagents from the row.** Each subagent's row on its card now has
   an icon (tooltip: Open in Subagents) just before its disclosure chevron, so
   the dock is one click away without expanding the card first. The text button

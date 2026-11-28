@@ -1,4 +1,5 @@
-//! Read-only, local Git configuration inspection. No credential protocol,
+//! Read-only, local Git configuration inspection (the one write — a
+//! repository's own identity — lives in `git_identity.rs`). No credential protocol,
 //! authentication command, private key, or remote connection is used here.
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -49,6 +50,10 @@ pub struct Snapshot {
     pub gh: State<String>,
     pub gh_token_present: bool,
     pub github_token_present: bool,
+    /// The workspace repository's own identity override; `None` when the
+    /// workspace is not a Git repository. Read here, written by
+    /// `crate::git_identity`.
+    pub repository: Option<crate::git_identity::LocalIdentity>,
 }
 
 // Read at most this much per invocation; discard stderr rather than retaining
@@ -500,6 +505,7 @@ pub fn discover(workspace: Option<PathBuf>) -> Snapshot {
         gh: gh(),
         gh_token_present: std::env::var_os("GH_TOKEN").is_some(),
         github_token_present: std::env::var_os("GITHUB_TOKEN").is_some(),
+        repository: path.and_then(crate::git_identity::read),
     }
 }
 

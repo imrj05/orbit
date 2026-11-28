@@ -1417,6 +1417,7 @@ impl Render for OrbitApp {
                         .w_full()
                         .relative();
                     if !empty {
+                        self.transcript.set_file_opener(self.file_opener(cx));
                         slot = slot
                             .child(self.transcript.render(
                                 review_workspace.as_deref(),

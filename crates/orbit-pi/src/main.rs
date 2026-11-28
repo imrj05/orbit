@@ -70,6 +70,7 @@ mod gh_templates;
 mod git;
 mod git_accounts;
 mod git_activity;
+mod git_identity;
 mod git_ops;
 mod git_panel;
 mod hidden_models;
@@ -98,6 +99,7 @@ mod session_order;
 // binary must not carry a frame hook or a recorder.
 #[cfg(debug_assertions)]
 mod perf;
+mod path_ref;
 mod permissions;
 mod plugins;
 mod project_trust;
