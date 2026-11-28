@@ -80,12 +80,15 @@ pub struct Activity {
     pub changes: usize,
     pub new_issues: usize,
     pub new_pulls: usize,
+    /// Open pull requests in this repository waiting on the user's review.
+    /// Not a "since you looked" count: one stays until it is reviewed.
+    pub review_requests: usize,
 }
 
 impl Activity {
     /// Whether the button shows its dot.
     pub fn any(&self) -> bool {
-        self.changes > 0 || self.new_issues > 0 || self.new_pulls > 0
+        self.changes > 0 || self.new_issues > 0 || self.new_pulls > 0 || self.review_requests > 0
     }
 
     /// The reasons for the dot, in reading order, each already worded
@@ -106,6 +109,11 @@ impl Activity {
             0 => {}
             1 => reasons.push(tr!("git_activity.new_pulls_one", count = 1)),
             n => reasons.push(tr!("git_activity.new_pulls_other", count = n)),
+        }
+        match self.review_requests {
+            0 => {}
+            1 => reasons.push(tr!("git_activity.review_requests_one", count = 1)),
+            n => reasons.push(tr!("git_activity.review_requests_other", count = n)),
         }
         reasons
     }
@@ -305,6 +313,7 @@ mod tests {
             changes: 4,
             new_issues: 0,
             new_pulls: 1,
+            review_requests: 0,
         };
         assert!(activity.any());
         assert_eq!(activity.reasons().len(), 2, "only the non-zero reasons");

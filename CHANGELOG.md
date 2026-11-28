@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Open in Subagents from the row.** Each subagent's row on its card now has
+  an icon (tooltip: Open in Subagents) just before its disclosure chevron, so
+  the dock is one click away without expanding the card first. The text button
+  that used to sit at the top of the expanded log is gone.
+
+- **A single subagent's card is one line.** The tokens and cost (`↑52.5K ↓522
+  · $0.06`) now sit on the child's row beside its tool count and clock, instead
+  of on a second footer line. Runs with several children keep their footer for
+  the run's totals.
+
+- **Subagents dock uses tabs.** Each subagent you open from its card now gets
+  its own tab in a strip at the top of the Subagents dock (state, name, close),
+  instead of a stacked list above one shared view. The strip scrolls sideways
+  when many children run, and a newly opened tab scrolls into view. The
+  elapsed time moved to the selected child's status line.
+
+- **Model and thinking chips stay one control during a run.** While a turn is
+  in flight, the composer's model and thinking chips used to gain a grey fill
+  and an outline each, splitting "Model Level ▾" into two cramped boxes. Now
+  they keep their faceless look and only their text and icon dim, just like a
+  disabled ghost button, so the pair keeps its spacing and reads as one setting.
+
+- **Publish to GitHub (#193).** A repository with commits but no remote now
+  shows **Publish to GitHub** in the Git page's commit bar instead of a
+  **Publish branch** that could only fail. It asks for the repository name
+  (prefilled from the folder) and whether it is private (the default), then
+  creates it through your signed-in `gh`, adds it as `origin` and pushes the
+  branch. A push that fails because there is no `origin` offers the same
+  button. **New pull request** now pushes the branch first when it has never
+  been pushed or has new commits, instead of failing in `gh`.
+
+- **GitHub at a glance on the Git page.** The tab bar now names the repository
+  (with a lock when private) and its star count: click the name to open it on
+  GitHub, or the star to star or unstar it. The branch row shows the current
+  branch's pull request as `#123` with its checks and review state, opening it
+  in one click, or **Create PR** when a pushed branch has none.
+
+- **Pull request quick actions.** Drafts get **Ready for review**, and open pull
+  requests get **Back to draft**, **Auto-merge** (merges once checks and reviews
+  pass) and, while behind their base, **Update branch**. When a check fails,
+  **Re-run failed** restarts the failed GitHub Actions jobs and **Fix with
+  agent** starts a task with the end of each failed job's log.
+
+- **An Agent menu for issues and pull requests.** One **Agent** dropdown
+  replaces the single agent button. On an issue, **Work on issue** creates a
+  branch linked to it on GitHub, checks it out and starts the agent with the
+  issue's text; that branch's new pull request starts with `Closes #N`.
+  **Fix on this branch** works where you are. On a pull request: **Review with
+  agent**, **Summarize for review**, and **Address review comments**, which
+  hands the agent every unresolved review thread (all pages of them, not just
+  the first hundred).
+
+- **Review workflow.** A **For me** filter on Issues and Pull requests (review
+  requested, assigned to me, created by me, mentioning me); **Assign me** and
+  **Request review…**; requested reviewers and assignees shown on the pull
+  request; and the sidebar Git button counts pull requests waiting on your
+  review.
+
+- **Pull request diff with line comments.** Click a changed file in a pull
+  request to read its diff inline; hover a line to comment on it on GitHub.
+  The diff is re-read when new commits are pushed, so a comment always lands
+  on the lines it was written against, and paths with non-ASCII characters
+  (`日本語.rs`) show their diff too.
+
+- **Actions, releases and forks.** A new **Actions** tab lists recent workflow
+  runs for the branch or every branch, with **Re-run failed** and **Cancel
+  run**. **Create release…** in the branch row's **…** menu tags the exact
+  pushed commit and lets GitHub write the notes; a commit that is not on
+  GitHub yet asks you to push first. A push refused for lack of access offers **Fork
+  and push**.
+
+- **Copy GitHub link.** From a History commit's file menu, or from the Files
+  viewer at the caret's line.
+
+- **Clone your own repositories.** The clone dialog lists your GitHub
+  repositories under the URL field and filters them as you type; picking one
+  fills in the URL and folder name.
+
 - **The space bar reaches the terminal on Windows (#196).** Words stopped
   gluing together in the embedded terminal. Windows reports the spacebar as a
   named key rather than a character, and the terminal's key encoder had no arm

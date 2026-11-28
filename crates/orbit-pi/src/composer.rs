@@ -524,6 +524,12 @@ impl ComposerInput {
         self
     }
 
+    /// Where the selection starts (the caret, with nothing selected), as a
+    /// byte offset into [`Self::text`].
+    pub fn selection_start(&self) -> usize {
+        self.selected_range.start
+    }
+
     pub fn text(&self) -> String {
         self.content.clone()
     }

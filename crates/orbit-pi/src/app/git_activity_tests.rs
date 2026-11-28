@@ -44,6 +44,7 @@ fn the_git_button_marks_activity_and_says_why(cx: &mut gpui::TestAppContext) {
                 changes: 3,
                 new_issues: 0,
                 new_pulls: 1,
+                review_requests: 0,
             }
         })
     });

@@ -416,7 +416,13 @@ impl ChipButton {
         let open = self.open;
         let marked = self.mark.is_some_and(ChipMark::on);
         let mut el = button_frame(div().id(self.id.clone()), theme, self.size);
-        el = if self.disabled {
+        el = if self.disabled && self.style == ChipStyle::Quiet {
+            // A quiet chip has no frame at rest, so it gains none when
+            // disabled — only the ink drops (the ghost `Button` rule). A
+            // fill and hairline here split a flush pair such as the composer's
+            // "Model Level ▾" into two cramped boxes for the length of a run.
+            el.cursor_not_allowed().text_color(theme.text_disabled)
+        } else if self.disabled {
             el.disabled_state(theme)
         } else {
             el.cursor_pointer()
@@ -888,14 +894,35 @@ mod tests {
     fn a_disabled_chip_is_never_open_and_takes_the_disabled_treatment() {
         for id in ThemeId::ALL {
             let theme = Theme::for_id(id);
-            let chip = ChipButton::new("c", ChipStyle::Quiet)
-                .disabled(true)
-                .open(true);
+            let outlined = ChipStyle::Outlined { inset: false };
+            let chip = ChipButton::new("c", outlined).disabled(true).open(true);
             assert!(!chip.open, "{id:?}");
             let mut frame = chip.frame(&theme);
-            let mut quiet = ChipButton::new("q", ChipStyle::Quiet).frame(&theme);
+            let mut rest = ChipButton::new("r", outlined).frame(&theme);
             assert_ne!(frame.style().background, Some(theme.surface_active.into()));
-            assert_ne!(frame.style().background, quiet.style().background, "{id:?}");
+            assert_ne!(frame.style().background, rest.style().background, "{id:?}");
+            assert_eq!(frame.style().text.as_ref().and_then(|t| t.color), Some(theme.text_disabled), "{id:?}");
+        }
+    }
+
+    /// A quiet chip is faceless at rest, so disabling it only drops the ink:
+    /// no fill and no visible edge appear, and its size does not move. The
+    /// composer's model and thinking chips sit flush as one setting and must
+    /// not split into two framed boxes while a run is in flight.
+    #[test]
+    fn a_disabled_quiet_chip_stays_faceless() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let chip = ChipButton::new("c", ChipStyle::Quiet).disabled(true).open(true);
+            assert!(!chip.open, "{id:?}");
+            let mut disabled = chip.frame(&theme);
+            let mut rest = ChipButton::new("q", ChipStyle::Quiet).frame(&theme);
+            let (disabled, rest) = (disabled.style(), rest.style());
+            assert_eq!(disabled.background, rest.background, "{id:?}");
+            assert_eq!(disabled.border_color, rest.border_color, "{id:?}");
+            assert_eq!(disabled.border_widths, rest.border_widths, "{id:?}");
+            assert_eq!(disabled.padding, rest.padding, "{id:?}");
+            assert_eq!(disabled.text.as_ref().and_then(|t| t.color), Some(theme.text_disabled), "{id:?}");
         }
     }
 

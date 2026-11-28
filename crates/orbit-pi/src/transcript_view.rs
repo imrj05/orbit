@@ -4733,13 +4733,15 @@ fn render_subagent_card(
         .flex_col();
 
     let children_len = run.children.len();
-    // With one child the row already carries its count and clock, so the
-    // footer keeps only what the row cannot say — the cost — and is left out
-    // when there is none. Whatever ends the card owns its rounded bottom:
-    // GPUI clips to a rectangle, so a fill on the last element would
+    // With one child the row is the whole run: it carries the tokens and
+    // cost beside its count and clock, so the card stays one line and no
+    // footer is drawn. Only a run of several children gets a footer, for the
+    // totals no single row can say. Whatever ends the card owns its rounded
+    // bottom: GPUI clips to a rectangle, so a fill on the last element would
     // otherwise square off the card's corners.
     let several = children_len > 1;
-    let has_footer = several || run.usage().is_some();
+    let has_footer = several;
+    let usage = run.usage().map(|usage| subagent_usage_label(&usage));
     let strips = subagent_reason_lines(run);
     let rows_end_card = !open && !has_footer && strips.is_empty();
     for (ix, child) in run.children.iter().enumerate() {
@@ -4900,6 +4902,23 @@ fn render_subagent_card(
                 tr!("transcript_view.subagent_tools_other", count = child.tools)
             }
         });
+        // A lone child's usage is the run's: it rides on the row instead of
+        // opening a second line for it.
+        if !several {
+            if let Some(usage) = usage.clone() {
+                row = row.child(
+                    div()
+                        .debug_selector(move || {
+                            format!("subagent-row-usage-{}-{}-{ix}", key.0, key.1)
+                        })
+                        .flex_none()
+                        .font(crate::ui::style::text::num_font())
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(usage),
+                );
+            }
+        }
         row = row
             .child(metric(56., tools))
             .child(
@@ -4909,6 +4928,33 @@ fn render_subagent_card(
                 )
                 .debug_selector(move || format!("subagent-row-clock-{}-{}-{ix}", key.0, key.1)),
             )
+            // Open in Subagents: the child's log in the roomier right dock,
+            // one click from its row whether or not the card is open. Always
+            // shown, never hover-only; its click stops here so it does not
+            // also fold the card.
+            .when_some(dock_opener.clone(), |row, opener| {
+                let tab = crate::right_dock::SubagentTab {
+                    message_ix: key.0,
+                    tool_ix: key.1,
+                    child_ix: ix,
+                };
+                row.child(
+                    IconButton::new(
+                        ElementId::NamedInteger(
+                            "subagent-open-in-pane".into(),
+                            ((key.0 as u64) << 32) | ((key.1 as u64) << 16) | ix as u64,
+                        ),
+                        "icons/sidebar-toggle-right.svg",
+                    )
+                    .size(ButtonSize::Compact)
+                    .tip(tr!("transcript_view.subagent_open_in_pane"))
+                    .on_click(&theme, move |_, window, cx| {
+                        cx.stop_propagation();
+                        opener(tab, window, cx);
+                    })
+                    .debug_selector(move || format!("subagent-open-in-pane-{ix}")),
+                )
+            })
             // The row opens a log, so it says so the way every other
             // expandable activity row does.
             .child(disclosure_chevron(
@@ -5017,21 +5063,12 @@ fn render_subagent_card(
         ));
     }
     footer = footer.child(div().flex_1());
-    if let Some(usage) = run.usage() {
-        let mut label = format!(
-            "↑{} ↓{}",
-            crate::context_meter::format_tokens(usage.input),
-            crate::context_meter::format_tokens(usage.output)
-        );
-        if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
-            label.push_str(" · ");
-            label.push_str(&crate::context_meter::format_cost(cost));
-        }
+    if let Some(usage) = usage {
         footer = footer.child(
             div()
                 .flex_none()
                 .font(crate::ui::style::text::num_font())
-                .child(SharedString::from(label)),
+                .child(usage),
         );
     }
     if has_footer {
@@ -5046,12 +5083,26 @@ fn render_subagent_card(
                 key,
                 copied_sections,
                 theme,
-                dock_opener,
             ));
         }
     }
 
     card.into_any_element()
+}
+
+/// What a run spent, as one muted figure: `↑52.5K ↓522 · $0.06` (the cost
+/// only when pi reported one).
+fn subagent_usage_label(usage: &MessageUsage) -> SharedString {
+    let mut label = format!(
+        "↑{} ↓{}",
+        crate::context_meter::format_tokens(usage.input),
+        crate::context_meter::format_tokens(usage.output)
+    );
+    if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
+        label.push_str(" · ");
+        label.push_str(&crate::context_meter::format_cost(cost));
+    }
+    label.into()
 }
 
 /// The step log's verb column width, before UI scaling: the compact 68px fits
@@ -5670,7 +5721,6 @@ fn render_subagent_detail(
     key: (usize, usize),
     copied_sections: CopiedSections,
     theme: Theme,
-    dock_opener: Option<DockOpener>,
 ) -> impl IntoElement {
     let mut body = div()
         .w_full()
@@ -5686,31 +5736,6 @@ fn render_subagent_detail(
     let Some(child) = run.children.get(child_ix) else {
         return body;
     };
-    // On the card, the log can move to the right pane: roomier to read
-    // while the conversation keeps going on the left.
-    if let Some(opener) = dock_opener {
-        let tab = crate::right_dock::SubagentTab {
-            message_ix: key.0,
-            tool_ix: key.1,
-            child_ix,
-        };
-        body = body.child(
-            div().w_full().flex().justify_end().child(
-                Button::keyed(
-                    ElementId::NamedInteger(
-                        "subagent-open-in-pane".into(),
-                        ((key.0 as u64) << 32) | ((key.1 as u64) << 16) | child_ix as u64,
-                    ),
-                    ButtonVariant::Ghost,
-                )
-                .size(ButtonSize::Compact)
-                .icon("icons/sidebar-toggle-right.svg")
-                .label(tr!("transcript_view.subagent_open_in_pane"))
-                .on_click(&theme, move |_, window, cx| opener(tab, window, cx))
-                .debug_selector(move || format!("subagent-open-in-pane-{}", child_ix)),
-            ),
-        );
-    }
     let quiet_line = |text: String| {
         div()
             .w_full()
@@ -14505,12 +14530,14 @@ mod tests {
         );
     }
 
-    /// A delegated child's log on its card offers "Open in side pane", and
-    /// the click hands the app exactly that child's tab key.
+    /// Each child's row carries "Open in Subagents" on its own line, the
+    /// click hands the app exactly that child's tab key, and it does not
+    /// also fold the card open.
     #[gpui::test]
-    fn a_childs_log_opens_in_the_side_pane(cx: &mut gpui::TestAppContext) {
+    fn a_childs_row_opens_it_in_the_subagents_dock(cx: &mut gpui::TestAppContext) {
         struct DetailView {
             opened: Rc<RefCell<Vec<crate::right_dock::SubagentTab>>>,
+            expanded: ExpandedTools,
         }
         impl gpui::Render for DetailView {
             fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
@@ -14537,26 +14564,40 @@ mod tests {
                 let run = crate::subagent::SubagentRun::from_tool(&tool).unwrap();
                 let opened = self.opened.clone();
                 let opener: DockOpener = Rc::new(move |tab, _, _| opened.borrow_mut().push(tab));
-                div().w(px(600.)).child(render_subagent_detail(
+                // A closed card: the control is on each child's row, so it
+                // needs no open log to be reached.
+                div().w(px(600.)).child(render_subagent_card(
                     &run,
-                    1,
-                    (2, 3),
-                    Rc::new(RefCell::new(HashMap::new())),
+                    false,
                     theme::Theme::for_id(theme::ThemeId::Orbit),
+                    (2, 3),
+                    false,
+                    self.expanded.clone(),
+                    Rc::new(RefCell::new(HashMap::new())),
+                    Rc::new(RefCell::new(HashMap::new())),
+                    MessageScrollerState::new(4),
                     Some(opener),
                 ))
             }
         }
         cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
         let opened = Rc::new(RefCell::new(Vec::new()));
+        let expanded: ExpandedTools = Rc::new(RefCell::new(HashSet::new()));
         let (_view, cx) = cx.add_window_view(|_, _| DetailView {
             opened: opened.clone(),
+            expanded: expanded.clone(),
         });
         cx.run_until_parked();
         let button = cx
             .debug_bounds("subagent-open-in-pane-1")
-            .expect("the button is on the second child's log");
+            .expect("the button is on the second child's row");
+        let row = cx.debug_bounds("subagent-row-2-3-1").expect("the second row");
+        assert!(
+            button.top() >= row.top() && button.bottom() <= row.bottom(),
+            "the control sits on the row's own line"
+        );
         cx.simulate_click(button.center(), gpui::Modifiers::none());
+        assert!(expanded.borrow().is_empty(), "opening the dock does not fold the card");
         assert_eq!(
             opened.borrow().as_slice(),
             &[crate::right_dock::SubagentTab {
@@ -14830,20 +14871,22 @@ mod tests {
         assert_eq!(format_kib(SUBAGENT_PARENT_REPORT_BYTES + 1), "5 KiB");
     }
 
-    /// One child's row already shows its count and clock: the footer is only
-    /// drawn for what the row cannot say, the cost.
+    /// One child is one line: its tokens and cost ride on the row beside its
+    /// count and clock, and no footer is drawn under it.
     #[gpui::test]
-    fn a_single_childs_footer_only_carries_the_cost(cx: &mut gpui::TestAppContext) {
+    fn a_single_child_keeps_its_usage_on_the_row(cx: &mut gpui::TestAppContext) {
         let child = serde_json::json!({
             "agent": "scout", "status": "done", "tools": 3,
-            "startedAt": 1_000, "endedAt": 9_000
+            "startedAt": 1_000, "endedAt": 9_000,
+            "usage": {"input": 52_500, "output": 522, "cost": 0.06}
         });
-        let [footer] = subagent_paints(
+        let [footer, usage] = subagent_paints(
             cx,
             serde_json::json!({"orbit": "subagent/1", "mode": "single", "children": [child]}),
-            ["subagent-footer"],
+            ["subagent-footer", "subagent-row-usage-0-0-0"],
         );
-        assert!(!footer, "no cost: the row is the whole card");
+        assert!(!footer, "the row is the whole card");
+        assert!(usage, "the cost moved onto the row");
     }
 
     /// A parallel run reads as a table: the clock column lines up even when

@@ -10,7 +10,9 @@ use crate::git_activity::{self, Kind, Stamp};
 
 /// What one GitHub check read: the workspace it ran in, the repository's
 /// `owner/name`, the signed-in login, and the open issues and pull requests.
-type CheckResult = (PathBuf, String, Option<String>, Vec<Stamp>, Vec<Stamp>);
+/// Workspace, `owner/name`, login, open issues, open pull requests, and how
+/// many open pull requests wait on the user's review.
+type CheckResult = (PathBuf, String, Option<String>, Vec<Stamp>, Vec<Stamp>, usize);
 
 impl OrbitApp {
     /// Heartbeat: mark a GitHub tab seen when the user arrives on it, and
@@ -80,7 +82,9 @@ impl OrbitApp {
                         .or_else(|| crate::gh::current_user(&cwd).ok().map(|user| user.login));
                     let issues = crate::gh::open_stamps(&cwd, Kind::Issues).ok()?;
                     let pulls = crate::gh::open_stamps(&cwd, Kind::Pulls).ok()?;
-                    Some((cwd, repo, login, issues, pulls))
+                    // A failed count is no count, not a failed check.
+                    let reviews = crate::gh::review_requested_count(&cwd).unwrap_or(0);
+                    Some((cwd, repo, login, issues, pulls, reviews))
                 })
                 .await;
             let _ = this.update(cx, |app, cx| app.apply_github_check(result, cx));
@@ -90,8 +94,9 @@ impl OrbitApp {
 
     fn apply_github_check(&mut self, result: Option<CheckResult>, cx: &mut Context<Self>) {
         self.github_checking = false;
-        let Some((cwd, repo, login, issues, pulls)) = result else {
+        let Some((cwd, repo, login, issues, pulls, reviews)) = result else {
             self.set_github_new(0, 0, cx);
+            self.set_review_requests(0, cx);
             return;
         };
         // The user switched workspace while `gh` ran; the next tick checks
@@ -117,6 +122,14 @@ impl OrbitApp {
         };
         let (new_issues, new_pulls) = (new(Kind::Issues, &issues), new(Kind::Pulls, &pulls));
         self.set_github_new(new_issues, new_pulls, cx);
+        self.set_review_requests(reviews, cx);
+    }
+
+    fn set_review_requests(&mut self, count: usize, cx: &mut Context<Self>) {
+        if self.git_activity.review_requests != count {
+            self.git_activity.review_requests = count;
+            cx.notify();
+        }
     }
 
     /// Arriving on the Git page's Issues or Pull requests tab marks that list
@@ -179,6 +192,7 @@ impl OrbitApp {
             self.check_github(cx);
         } else {
             self.set_github_new(0, 0, cx);
+            self.set_review_requests(0, cx);
         }
         cx.notify();
     }

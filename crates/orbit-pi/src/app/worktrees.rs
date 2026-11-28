@@ -293,7 +293,116 @@ impl OrbitApp {
         let url_focus = self.clone_url_input.read(cx).focus_handle(cx);
         self.clone_return_focus.capture(&url_focus, window, cx);
         window.focus(&url_focus);
+        self.load_clone_repos(cx);
         cx.notify();
+    }
+
+    /// Read the signed-in user's GitHub repositories for the clone dialog.
+    /// Quiet on failure: without `gh` the dialog is the plain URL form.
+    fn load_clone_repos(&mut self, cx: &mut Context<Self>) {
+        let list = cx.background_spawn(async move {
+            crate::gh::list_my_repos(&std::env::temp_dir())
+        });
+        self.clone_repos_task = Some(cx.spawn(async move |this, cx| {
+            let result = list.await;
+            this.update(cx, |app, cx| {
+                if let Ok(repos) = result {
+                    app.clone_repos = repos;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Fill the clone form from one of the user's repositories.
+    fn pick_clone_repo(&mut self, url: String, name: String, cx: &mut Context<Self>) {
+        self.clone_url_input
+            .update(cx, |input, cx| input.set_text(url, cx));
+        self.clone_name_input
+            .update(cx, |input, cx| input.set_text(name, cx));
+        self.worktree_dialog_error = None;
+        cx.notify();
+    }
+
+    /// The clone dialog's "Your repositories" list: up to five of the user's
+    /// repositories matching what the URL field holds. It steps aside once
+    /// the field holds a URL (pasted, or filled from a pick).
+    fn clone_repo_suggestions(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let query = self.clone_url_input.read(cx).text();
+        let matches = crate::gh::filter_repos(&self.clone_repos, &query, 5);
+        if matches.is_empty() {
+            return None;
+        }
+        let rows = matches.into_iter().map(|repo| {
+            let url = repo.url.clone();
+            let name = repo.name().to_string();
+            let this = this.clone();
+            let row = picker_entry(
+                div()
+                    .id(gpui::ElementId::Name(
+                        format!("clone-repo-{}", repo.name_with_owner).into(),
+                    ))
+                    .cursor_pointer(),
+                &theme,
+            )
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(icon(
+                if repo.private {
+                    "icons/lock.svg"
+                } else {
+                    "icons/github.svg"
+                },
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_none()
+                    .text_color(theme.text_primary)
+                    .child(repo.name_with_owner.clone()),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(repo.description.clone().unwrap_or_default()),
+            )
+            .on_click(move |_, _, cx| {
+                this.update(cx, |app, cx| {
+                    app.pick_clone_repo(url.clone(), name.clone(), cx)
+                });
+            });
+            crate::motion::hover(
+                row,
+                format!("clone-repo-{}", repo.name_with_owner),
+                &theme,
+                Hover::row(&theme),
+            )
+        });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base02.px(&theme))
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!("working_folder.clone_your_repos")),
+                )
+                .children(rows)
+                .into_any_element(),
+        )
     }
 
     /// A cancelled clone hands focus back to whatever opened the dialog.
@@ -2191,7 +2300,7 @@ impl OrbitApp {
             return Some(self.remove_worktree_layer(path, *dirty, theme, cx));
         }
         let body: AnyElement = match dialog {
-            WorktreeDialog::Clone => self.clone_dialog_body(theme, this.clone()),
+            WorktreeDialog::Clone => self.clone_dialog_body(theme, this.clone(), cx),
             WorktreeDialog::Create => self.create_worktree_dialog_body(theme, this.clone(), cx),
             WorktreeDialog::AllowSetup(pending) => {
                 self.allow_setup_dialog_body(pending, theme, this.clone())
@@ -2274,7 +2383,12 @@ impl OrbitApp {
         )
     }
 
-    fn clone_dialog_body(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+    fn clone_dialog_body(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let theme = theme.for_floating();
         let mut body = div()
             .flex()
@@ -2326,6 +2440,7 @@ impl OrbitApp {
                     None,
                     TextField::new(self.clone_url_input.clone(), theme.background).render(&theme),
                 ))
+                .children(self.clone_repo_suggestions(theme, this.clone(), cx))
                 .child(worktree_field(
                     &theme,
                     tr!("working_folder.clone_name"),

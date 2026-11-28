@@ -137,7 +137,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
                         the layer painted from the app root, and the request/cancel/run
                         entry points every destructive surface asks through
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
-  src/app/right_dock_ui.rs  the Subagents dock (D25): one entry per delegated subagent opened from
+  src/app/right_dock_ui.rs  the Subagents dock (D25): one tab per delegated subagent opened from
                         a card, the selected child's view in the shared `dock_shell` frame, the
                         top-bar chip and the controller; its own right dock, never a tab on Review
   src/app/git_activity_ui.rs  the sidebar Git button's GitHub half: the background `gh` check

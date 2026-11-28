@@ -865,7 +865,9 @@ colour, and it is the only press treatment outside the table.
 frame, takes `text_disabled` ink and an `overlay` fill, and is **non-interactive**: no
 pointer activation, no keyboard activation, no hover lift. Never fade a live control
 to pretend it is disabled, and never leave a control that looks disabled still
-clickable.
+clickable. A faceless control (a ghost button, a quiet chip) has no frame to keep,
+so it gains none: only its ink drops to `text_disabled`. A fill appearing on disable
+would split a flush group, such as the composer's model and thinking pair, into boxes.
 
 ### Command System
 
